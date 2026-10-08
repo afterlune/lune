@@ -148,6 +148,38 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
+	t.Run("runs default highlighted command", func(t *testing.T) {
+		client := &fakeTUICompactor{compactedTurns: 2}
+		ui := newTUIModel(client, client, false)
+		ui.input.SetValue("/")
+		ui.updateCommandSuggestions()
+
+		updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+		finished := updated.(*tuiModel)
+		if command == nil {
+			t.Fatal("Enter did not execute the highlighted /compact command")
+		}
+		finished.Update(command())
+		if client.compactCalls != 1 {
+			t.Fatalf("compact calls = %d, want 1", client.compactCalls)
+		}
+	})
+
+	t.Run("runs command selected with arrows", func(t *testing.T) {
+		client := &fakeResumableResponder{pending: true}
+		ui := newTUIModel(client, client, true)
+		ui.input.SetValue("/")
+		ui.updateCommandSuggestions()
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+		if client.discarded != 1 || client.pending {
+			t.Fatalf("discarded = %d, pending = %v; want selected /discard to execute", client.discarded, client.pending)
+		}
+	})
+}
+
 func TestTUICompactCommandAndPendingGuard(t *testing.T) {
 	client := &fakeTUICompactor{compactedTurns: 2}
 	ui := newTUIModel(client, client, false)

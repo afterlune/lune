@@ -251,6 +251,10 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.running || m.pendingApproval != nil {
 				return m, nil
 			}
+			if len(m.commandSuggestions) > 0 {
+				index := min(m.suggestionIndex, len(m.commandSuggestions)-1)
+				m.input.SetValue(m.commandSuggestions[index])
+			}
 			return m.submit()
 		case "esc":
 			if m.permissionMenu {
@@ -897,7 +901,7 @@ func (m *tuiModel) View() tea.View {
 	if m.pendingApproval != nil {
 		status = "Permission required: Y approve once · N deny · Esc interrupt task."
 	}
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(status + "\n/compact  /permissions  /resume  /discard  /exit  ·  PgUp/PgDn chat · Ctrl+↑/↓ activity")
+	footer := lipgloss.NewStyle().Width(max(1, width-2)).Foreground(lipgloss.Color("8")).Render(status + "\n/compact  /permissions  /resume  /discard  /exit  ·  PgUp/PgDn chat · Ctrl+↑/↓ activity")
 	parts := []string{header, body, inputLabel, inputPanel}
 	if m.permissionMenu {
 		parts = append(parts, m.renderPermissionMenu())
