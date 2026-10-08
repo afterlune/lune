@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -141,6 +142,188 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 			t.Errorf("second request history lost %q: %s", content, encoded)
 		}
 	}
+}
+
+func TestGraphResponderReportsUsageForEveryModelRound(t *testing.T) {
+	requester := &graphScriptedRequester{responses: []*model.Response{
+		{
+			Status: "completed",
+			Output: []model.ResponseOutputItem{model.OutputFunctionCall{CallID: "call-1", Name: "unknown_tool", Arguments: `{}`}},
+			Usage:  model.ResponseUsage{InputTokens: 10, InputTokensDetails: model.TokenInputDetails{CachedTokens: 2}, OutputTokens: 3, TotalTokens: 13},
+		},
+		{
+			Status: "completed",
+			Output: []model.ResponseOutputItem{model.OutputMessage{
+				Role:    model.RoleAssistant,
+				Content: []model.OutputContentPart{model.OutputText{Text: "done"}},
+			}},
+			Usage: model.ResponseUsage{
+				InputTokens:         20,
+				InputTokensDetails:  model.TokenInputDetails{CachedTokens: 5},
+				OutputTokens:        4,
+				OutputTokensDetails: model.TokenOutputDetails{ReasoningTokens: 1},
+				TotalTokens:         24,
+			},
+		},
+	}}
+	runtime, _ := newCompactionRuntime(t, requester)
+	var observed []model.ResponseUsage
+	runtime.SetUsageObserver(func(usage model.ResponseUsage) { observed = append(observed, usage) })
+	input, err := model.NewResponseInput("run a tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if len(observed) != 2 || observed[0].TotalTokens != 13 || observed[1].TotalTokens != 24 {
+		t.Fatalf("observed usage = %#v, want usage from both model rounds", observed)
+	}
+}
+
+func TestGraphResponderCompactSummarizesOlderTurnsAndKeepsLatestFour(t *testing.T) {
+	requester := &graphScriptedRequester{responses: []*model.Response{{
+		Status: "completed",
+		Output: []model.ResponseOutputItem{model.OutputMessage{
+			Role:    model.RoleAssistant,
+			Content: []model.OutputContentPart{model.OutputText{Text: "summary of older turns"}},
+		}},
+		Usage: model.ResponseUsage{
+			InputTokens:         30,
+			InputTokensDetails:  model.TokenInputDetails{CachedTokens: 10},
+			OutputTokens:        8,
+			OutputTokensDetails: model.TokenOutputDetails{ReasoningTokens: 4},
+			TotalTokens:         38,
+		},
+	}}}
+	runtime, tracked := newCompactionRuntime(t, requester)
+	items := make([]model.InputItem, 0, 24)
+	for turn := 1; turn <= 6; turn++ {
+		content := model.NewMessageText(fmt.Sprintf("user-%d", turn))
+		if turn == 6 {
+			content = model.NewMessageContentParts(
+				model.InputText{Text: "user-6"},
+				model.InputImage{ImageURL: "data:image/png;base64,AA=="},
+				model.UnknownContentPart{Raw: json.RawMessage(`{"type":"input_audio","data":"audio-tail"}`)},
+			)
+		}
+		items = append(items,
+			model.InputMessage{Role: model.RoleUser, Content: content},
+			model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(fmt.Sprintf("assistant-%d", turn))},
+		)
+		if turn >= 3 {
+			items = append(items,
+				model.InputFunctionCall{CallID: fmt.Sprintf("call-%d", turn), Name: "read_file", Arguments: `{}`},
+				model.InputFunctionCallOutput{CallID: fmt.Sprintf("call-%d", turn), Output: model.NewToolOutputText(fmt.Sprintf("tool-result-%d", turn))},
+			)
+		}
+	}
+	runtime.history = model.NewResponseInputItems(items...)
+	var observed []model.ResponseUsage
+	runtime.SetUsageObserver(func(usage model.ResponseUsage) { observed = append(observed, usage) })
+
+	compactedTurns, err := runtime.Compact(context.Background())
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if compactedTurns != 2 {
+		t.Fatalf("compacted turns = %d, want 2", compactedTurns)
+	}
+	if len(requester.requests) != 1 {
+		t.Fatalf("summary requests = %d, want 1", len(requester.requests))
+	}
+	request := requester.requests[0]
+	if request.Model != model.DeepSeekFlashModel || len(request.Tools) != 0 || request.Input == nil {
+		t.Fatalf("summary request = %#v, want model request without tools", request)
+	}
+	requestJSON, err := json.Marshal(request.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(requestJSON), "user-1") || !strings.Contains(string(requestJSON), "user-2") || strings.Contains(string(requestJSON), "user-3") {
+		t.Fatalf("summary request did not contain only the older prefix: %s", requestJSON)
+	}
+	if len(observed) != 1 || observed[0].TotalTokens != 38 || tracked.observer == nil {
+		t.Fatalf("usage observer values = %#v", observed)
+	}
+
+	compactedJSON, err := json.Marshal(runtime.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, preserved := range []string{"summary of older turns", "user-3", "user-4", "user-5", "user-6", "tool-result-3", "tool-result-6", "audio-tail"} {
+		if !strings.Contains(string(compactedJSON), preserved) {
+			t.Errorf("compacted history lost %q: %s", preserved, compactedJSON)
+		}
+	}
+	for _, removed := range []string{"user-1", "user-2", "assistant-1", "assistant-2"} {
+		if strings.Contains(string(compactedJSON), removed) {
+			t.Errorf("compacted history retained old detail %q: %s", removed, compactedJSON)
+		}
+	}
+}
+
+func TestGraphResponderCompactNoOpAndFailurePreserveHistory(t *testing.T) {
+	t.Run("no older turns", func(t *testing.T) {
+		requester := &graphScriptedRequester{}
+		runtime, _ := newCompactionRuntime(t, requester)
+		runtime.history = model.NewResponseInputItems(model.InputMessage{
+			Role: model.RoleUser, Content: model.NewMessageText("recent only"),
+		})
+		compactedTurns, err := runtime.Compact(context.Background())
+		if err != nil || compactedTurns != 0 || len(requester.requests) != 0 {
+			t.Fatalf("Compact = (%d, %v), requests=%d; want no-op", compactedTurns, err, len(requester.requests))
+		}
+	})
+
+	for _, test := range []struct {
+		name      string
+		requester *graphScriptedRequester
+	}{
+		{name: "request error", requester: &graphScriptedRequester{errors: []error{errors.New("temporary error")}}},
+		{name: "empty summary", requester: &graphScriptedRequester{responses: []*model.Response{{Status: "completed"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, _ := newCompactionRuntime(t, test.requester)
+			items := make([]model.InputItem, 0, 5)
+			for turn := 1; turn <= 5; turn++ {
+				items = append(items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(fmt.Sprintf("user-%d", turn))})
+			}
+			runtime.history = model.NewResponseInputItems(items...)
+			before, err := json.Marshal(runtime.history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runtime.Compact(context.Background()); err == nil {
+				t.Fatal("Compact succeeded, want an error")
+			}
+			after, err := json.Marshal(runtime.history)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("failed compaction changed history: before=%s after=%s", before, after)
+			}
+		})
+	}
+}
+
+func newCompactionRuntime(t *testing.T, requester *graphScriptedRequester) (*graphResponder, *usageTrackingRequester) {
+	t.Helper()
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := &usageTrackingRequester{inner: requester}
+	agent, err := agentgraph.New(tracked, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[agentgraph.State](graph.JSONClone[agentgraph.State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &graphResponder{agent: agent, store: store, requester: tracked}, tracked
 }
 
 func graphResponse(t *testing.T, raw string) *model.Response {

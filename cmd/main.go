@@ -58,11 +58,12 @@ func run() (runErr error) {
 			runErr = errors.Join(runErr, fmt.Errorf("close agent checkpoints: %w", err))
 		}
 	}()
-	agent, err := agentgraph.New(client, registry)
+	requester := &usageTrackingRequester{inner: client}
+	agent, err := agentgraph.New(requester, registry)
 	if err != nil {
 		return err
 	}
-	runtime := &graphResponder{agent: agent, store: store}
+	runtime := &graphResponder{agent: agent, store: store, requester: requester}
 	if useTUI(os.Stdin, os.Stdout) {
 		logFile, err := os.OpenFile(filepath.Join(stateDir, "agent.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {

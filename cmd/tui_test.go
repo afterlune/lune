@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -9,8 +10,21 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/tool"
 )
+
+type fakeTUICompactor struct {
+	fakeResumableResponder
+	compactedTurns int
+	compactErr     error
+	compactCalls   int
+}
+
+func (f *fakeTUICompactor) Compact(context.Context) (int, error) {
+	f.compactCalls++
+	return f.compactedTurns, f.compactErr
+}
 
 func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 	client := &fakeResponder{}
@@ -103,6 +117,104 @@ func TestTUIResumeAndDiscardCommands(t *testing.T) {
 	}
 }
 
+func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
+	client := &fakeResponder{}
+	ui := newTUIModel(client, nil, false)
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	if len(ui.commandSuggestions) != 4 {
+		t.Fatalf("suggestions = %#v, want all four commands", ui.commandSuggestions)
+	}
+	if !strings.Contains(ui.View().Content, "/compact") {
+		t.Fatalf("view = %q, want command suggestions", ui.View().Content)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	if ui.suggestionIndex != 1 {
+		t.Fatalf("selected suggestion = %d, want index 1", ui.suggestionIndex)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if ui.input.Value() != "/discard" {
+		t.Fatalf("Tab completion = %q, want /discard", ui.input.Value())
+	}
+
+	ui.input.SetValue("/not-a-command")
+	ui.updateCommandSuggestions()
+	ui.submit()
+	if client.responses != 0 || len(client.inputs) != 0 {
+		t.Fatalf("unknown command was sent as a prompt: responses=%d inputs=%#v", client.responses, client.inputs)
+	}
+	if !strings.Contains(ui.entries[len(ui.entries)-1].text, "Unknown command") {
+		t.Fatalf("last entry = %#v, want unknown-command error", ui.entries[len(ui.entries)-1])
+	}
+}
+
+func TestTUICompactCommandAndPendingGuard(t *testing.T) {
+	client := &fakeTUICompactor{compactedTurns: 2}
+	ui := newTUIModel(client, client, false)
+	ui.input.SetValue("/compact")
+	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	finished := updated.(*tuiModel)
+	if command == nil {
+		t.Fatal("/compact did not start an operation")
+	}
+	finished.Update(command())
+	if client.compactCalls != 1 || !strings.Contains(finished.entries[len(finished.entries)-1].text, "Compacted 2 older") {
+		t.Fatalf("compact calls=%d entries=%#v", client.compactCalls, finished.entries)
+	}
+
+	client.pending = true
+	finished.input.SetValue("/compact")
+	_, command = finished.submit()
+	if command != nil || client.compactCalls != 1 {
+		t.Fatalf("pending task allowed compaction: command=%v calls=%d", command != nil, client.compactCalls)
+	}
+}
+
+func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.Update(modelUsageMsg{usage: model.ResponseUsage{
+		InputTokens:         100,
+		InputTokensDetails:  model.TokenInputDetails{CachedTokens: 25},
+		OutputTokens:        40,
+		TotalTokens:         140,
+		OutputTokensDetails: model.TokenOutputDetails{ReasoningTokens: 12},
+	}})
+	ui.Update(modelUsageMsg{usage: model.ResponseUsage{
+		InputTokens:        50,
+		InputTokensDetails: model.TokenInputDetails{CachedTokens: 5},
+		OutputTokens:       10,
+		TotalTokens:        60,
+	}})
+	if ui.taskUsage.requests != 2 || ui.taskUsage.input != 150 || ui.taskUsage.output != 50 || ui.taskUsage.reasoning != 12 || ui.taskUsage.total != 200 || ui.taskUsage.cached != 30 {
+		t.Fatalf("task usage = %#v", ui.taskUsage)
+	}
+	view := ui.View().Content
+	for _, expected := range []string{"#1 100/40/12/140/25", "#2 50/10/0/60/5", "Task 150/50/12/200/30", "Session 150/50/12/200/30", "20.0%"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("view missing %q: %q", expected, view)
+		}
+	}
+
+	ui.Update(modelUsageMsg{})
+	if !strings.Contains(ui.View().Content, "usage unavailable") {
+		t.Fatalf("zero usage should be marked unavailable: %q", ui.View().Content)
+	}
+	if ui.sessionUsage.requests != 3 || ui.sessionUsage.measured != 2 {
+		t.Fatalf("session usage = %#v, want three requests and two metered", ui.sessionUsage)
+	}
+
+	ui.input.SetValue("next task")
+	updated, command := ui.submit()
+	if command == nil {
+		t.Fatal("next task did not start")
+	}
+	finished := updated.(*tuiModel)
+	if finished.taskUsage.requests != 0 || finished.sessionUsage.requests != 3 || len(finished.usageRequests) != 3 {
+		t.Fatalf("task usage=%#v session usage=%#v request details=%d after new task", finished.taskUsage, finished.sessionUsage, len(finished.usageRequests))
+	}
+	finished.Update(command())
+}
+
 func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
 	input, output, err := os.Pipe()
 	if err != nil {
@@ -125,6 +237,13 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		}
 		if got := lipgloss.Height(view); got > size.height {
 			t.Errorf("layout height = %d, terminal height = %d", got, size.height)
+		}
+		ui.input.SetValue("/")
+		ui.updateCommandSuggestions()
+		ui.updateLayout()
+		view = ui.View().Content
+		if got := lipgloss.Height(view); got > size.height {
+			t.Errorf("layout with command suggestions height = %d, terminal height = %d", got, size.height)
 		}
 	}
 }
