@@ -100,7 +100,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 	}
 }
 
-// NewDefaultRegistry creates the four built-in tools, scoped to workspace.
+// NewDefaultRegistry creates the built-in workspace and web tools.
 func NewDefaultRegistry(workspace string) (*Registry, error) {
 	root, err := canonicalWorkspace(workspace)
 	if err != nil {
@@ -111,5 +111,7 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 		ReadFileTool{Workspace: root},
 		WriteFileTool{Workspace: root},
 		EditFileTool{Workspace: root},
+		WebSearchTool{httpClient: defaultWebHTTPClient},
+		WebFetchTool{httpClient: defaultWebHTTPClient},
 	)
 }
