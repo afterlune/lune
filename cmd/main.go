@@ -9,11 +9,15 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/afterlune/lune/internal/agentgraph"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/tool"
+	"github.com/afterlune/luneGraph/checkpoint"
+	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 	"github.com/eiannone/keyboard"
 )
 
@@ -23,17 +27,54 @@ type responder interface {
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if err := run(); err != nil {
+		fatal(err)
+	}
+}
+
+func run() (runErr error) {
 	registry, err := tool.NewDefaultRegistry(".")
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	client, err := model.NewClient(registry)
 	if err != nil {
-		fatal(err)
+		return err
 	}
-	if err := chatLoopWithEscape(client, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher); err != nil {
-		fatal(err)
+	workspace, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get workspace: %w", err)
 	}
+	stateDir := filepath.Join(workspace, ".luneagent")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return fmt.Errorf("create agent state directory: %w", err)
+	}
+	store, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints.db"), checkpoint.JSON[agentgraph.State]{})
+	if err != nil {
+		return fmt.Errorf("open agent checkpoints: %w", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close agent checkpoints: %w", err))
+		}
+	}()
+	agent, err := agentgraph.New(client, registry)
+	if err != nil {
+		return err
+	}
+	runtime := &graphResponder{agent: agent, store: store}
+	if useTUI(os.Stdin, os.Stdout) {
+		logFile, err := os.OpenFile(filepath.Join(stateDir, "agent.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("open TUI log: %w", err)
+		}
+		defer logFile.Close()
+		previousLogger := slog.Default()
+		defer slog.SetDefault(previousLogger)
+		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		return runTUI(runtime, registry)
+	}
+	return chatLoopWithEscape(runtime, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher)
 }
 
 func fatal(err error) {
@@ -60,7 +101,75 @@ func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr i
 		if line == "/exit" {
 			return nil
 		}
-		if line != "" {
+		switch line {
+		case "/resume":
+			runtime, ok := client.(resumableResponder)
+			if !ok {
+				if _, err := fmt.Fprintln(stderr, "error: task recovery is unavailable"); err != nil {
+					return fmt.Errorf("write error: %w", err)
+				}
+				break
+			}
+			pending, err := runtime.HasPending()
+			if err != nil {
+				if _, writeErr := fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err); writeErr != nil {
+					return fmt.Errorf("write error: %w", writeErr)
+				}
+				break
+			}
+			if !pending {
+				if _, err := fmt.Fprintln(stdout, "No interrupted task to resume."); err != nil {
+					return fmt.Errorf("write status: %w", err)
+				}
+				break
+			}
+			if _, err := fmt.Fprintln(stderr, "Warning: recovery may repeat a model request or tool call."); err != nil {
+				return fmt.Errorf("write warning: %w", err)
+			}
+			response, callErr, interrupted := respondWithEscapeOperation(runtime.Resume, watchEscape, stderr)
+			if err := printTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
+				return err
+			}
+		case "/discard":
+			runtime, ok := client.(resumableResponder)
+			if !ok {
+				if _, err := fmt.Fprintln(stderr, "error: task recovery is unavailable"); err != nil {
+					return fmt.Errorf("write error: %w", err)
+				}
+				break
+			}
+			discarded, err := runtime.Discard(context.Background())
+			if err != nil {
+				if _, writeErr := fmt.Fprintf(stderr, "error: discard task: %v\n", err); writeErr != nil {
+					return fmt.Errorf("write error: %w", writeErr)
+				}
+				break
+			}
+			message := "No interrupted task to discard."
+			if discarded {
+				message = "Interrupted task discarded."
+			}
+			if _, err := fmt.Fprintln(stdout, message); err != nil {
+				return fmt.Errorf("write status: %w", err)
+			}
+		case "":
+			// Empty lines only display the next prompt.
+		default:
+			if runtime, ok := client.(resumableResponder); ok {
+				pending, err := runtime.HasPending()
+				if err != nil {
+					if _, writeErr := fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err); writeErr != nil {
+						return fmt.Errorf("write error: %w", writeErr)
+					}
+					break
+				}
+				if pending {
+					if _, err := fmt.Fprintln(stderr, "An interrupted task is pending. Use /resume or /discard first."); err != nil {
+						return fmt.Errorf("write error: %w", err)
+					}
+					break
+				}
+			}
 			input, err := parseInputLine(line)
 			if err != nil {
 				if _, writeErr := fmt.Fprintf(stderr, "error: %v\n", err); writeErr != nil {
@@ -68,20 +177,8 @@ func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr i
 				}
 			} else {
 				response, callErr, interrupted := respondWithEscape(client, input, watchEscape, stderr)
-				if response != nil {
-					if err := printResponse(stdout, response); err != nil {
-						return err
-					}
-				}
-				if interrupted {
-					if _, writeErr := fmt.Fprintln(stdout, "Task interrupted."); writeErr != nil {
-						return fmt.Errorf("write interruption status: %w", writeErr)
-					}
-				}
-				if callErr != nil && !(interrupted && errors.Is(callErr, context.Canceled)) {
-					if _, writeErr := fmt.Fprintf(stderr, "error: %v\n", callErr); writeErr != nil {
-						return fmt.Errorf("write error: %w", writeErr)
-					}
+				if err := printTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
+					return err
 				}
 			}
 		}
@@ -92,6 +189,12 @@ func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr i
 }
 
 func respondWithEscape(client responder, input *model.ResponseInput, watchEscape escapeWatcher, stderr io.Writer) (*model.Response, error, bool) {
+	return respondWithEscapeOperation(func(ctx context.Context) (*model.Response, error) {
+		return client.Respond(ctx, input)
+	}, watchEscape, stderr)
+}
+
+func respondWithEscapeOperation(operation func(context.Context) (*model.Response, error), watchEscape escapeWatcher, stderr io.Writer) (*model.Response, error, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -113,7 +216,7 @@ func respondWithEscape(client responder, input *model.ResponseInput, watchEscape
 	defer stopWatching()
 
 	if escape == nil {
-		response, err := client.Respond(ctx, input)
+		response, err := operation(ctx)
 		return response, err, false
 	}
 	if _, err := fmt.Fprintln(stderr, "Working... Press Esc to cancel."); err != nil {
@@ -126,7 +229,7 @@ func respondWithEscape(client responder, input *model.ResponseInput, watchEscape
 	}
 	done := make(chan result, 1)
 	go func() {
-		response, err := client.Respond(ctx, input)
+		response, err := operation(ctx)
 		done <- result{response: response, err: err}
 	}()
 
@@ -145,6 +248,25 @@ func respondWithEscape(client responder, input *model.ResponseInput, watchEscape
 		result := <-done
 		return result.response, result.err, true
 	}
+}
+
+func printTaskResult(stdout, stderr io.Writer, response *model.Response, callErr error, interrupted bool) error {
+	if response != nil {
+		if err := printResponse(stdout, response); err != nil {
+			return err
+		}
+	}
+	if interrupted {
+		if _, err := fmt.Fprintln(stdout, "Task interrupted. Use /resume to continue, or /discard to abandon."); err != nil {
+			return fmt.Errorf("write interruption status: %w", err)
+		}
+	}
+	if callErr != nil && !(interrupted && errors.Is(callErr, context.Canceled)) {
+		if _, err := fmt.Fprintf(stderr, "error: %v\n", callErr); err != nil {
+			return fmt.Errorf("write error: %w", err)
+		}
+	}
+	return nil
 }
 
 func startKeyboardEscapeWatcher() (<-chan struct{}, func(), error) {

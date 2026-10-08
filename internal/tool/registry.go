@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -22,7 +23,23 @@ type Registry struct {
 	categories     map[string]model.ToolCategory
 	categoryOrder  []string
 	uncategorized  int
+	eventObserver  ToolEventObserver
 }
+
+// ToolEvent describes the start or completion of a tool execution. It never
+// contains tool arguments, output, or error text.
+type ToolEvent struct {
+	CallID   string
+	Name     string
+	Started  bool
+	Duration time.Duration
+	Failed   bool
+	Canceled bool
+}
+
+// ToolEventObserver receives tool lifecycle events. Implementations should
+// return promptly because tool execution calls the observer synchronously.
+type ToolEventObserver func(ToolEvent)
 
 var _ model.ToolExecutor = (*Registry)(nil)
 var _ model.CategorizedToolExecutor = (*Registry)(nil)
@@ -54,6 +71,16 @@ func NewCategorizedRegistry(registrations ...ToolRegistration) (*Registry, error
 	return registry, nil
 }
 
+// SetToolEventObserver installs an observer for tool start and finish events.
+func (r *Registry) SetToolEventObserver(observer ToolEventObserver) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.eventObserver = observer
+	r.mu.Unlock()
+}
+
 func (r *Registry) Register(registeredTool Tool) error {
 	return r.register(model.ToolCategory{}, registeredTool)
 }
@@ -77,8 +104,8 @@ func (r *Registry) register(category model.ToolCategory, registeredTool Tool) er
 	if definition.Name == "" {
 		return errors.New("tool name is empty")
 	}
-	if category.Name != "" && definition.Name == "select_tool_category" {
-		return errors.New("tool name is reserved: select_tool_category")
+	if category.Name != "" && definition.Name == model.CategorySelectorName {
+		return errors.New("tool name is reserved: " + model.CategorySelectorName)
 	}
 	if len(definition.Parameters) == 0 {
 		return errors.New("tool parameters schema is empty")
@@ -200,11 +227,13 @@ func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessa
 func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCall) model.InputFunctionCallOutput {
 	started := time.Now()
 	slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
+	r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, Started: true})
 	result := r.Run(ctx, call.Name, json.RawMessage(call.Arguments))
+	duration := time.Since(started)
 	attributes := []any{
 		"tool", call.Name,
 		"call_id", call.CallID,
-		"duration", time.Since(started),
+		"duration", duration,
 		"failed", result.Err != nil,
 		"canceled", errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 	}
@@ -213,10 +242,33 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 	} else {
 		slog.Info("tool execution finished", attributes...)
 	}
+	r.observeToolEvent(ToolEvent{
+		CallID: call.CallID, Name: call.Name, Duration: duration,
+		Failed:   result.Err != nil,
+		Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
+	})
 	return model.InputFunctionCallOutput{
 		CallID: call.CallID,
 		Output: model.NewToolOutputText(result.Text()),
 	}
+}
+
+func (r *Registry) observeToolEvent(event ToolEvent) {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	observer := r.eventObserver
+	r.mu.RUnlock()
+	if observer == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Warn("tool event observer panicked", "panic_type", fmt.Sprintf("%T", recovered))
+		}
+	}()
+	observer(event)
 }
 
 // NewDefaultRegistry creates the built-in workspace and web tools.

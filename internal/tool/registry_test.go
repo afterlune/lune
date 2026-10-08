@@ -55,6 +55,72 @@ func TestExecuteCallLogsMetadataWithoutPayloads(t *testing.T) {
 	}
 }
 
+func TestExecuteCallPublishesSanitizedLifecycleEvents(t *testing.T) {
+	registry, err := NewRegistry(loggingTestTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []ToolEvent
+	registry.SetToolEventObserver(func(event ToolEvent) {
+		events = append(events, event)
+	})
+	registry.ExecuteCall(context.Background(), model.OutputFunctionCall{
+		CallID:    "call-456",
+		Name:      "private_tool",
+		Arguments: `{"secret":"private-tool-arguments"}`,
+	})
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want start and finish", events)
+	}
+	if !events[0].Started || events[0].Name != "private_tool" || events[0].CallID != "call-456" {
+		t.Errorf("start event = %#v", events[0])
+	}
+	finished := events[1]
+	if finished.Started || finished.Name != "private_tool" || finished.CallID != "call-456" || !finished.Failed || finished.Canceled {
+		t.Errorf("finish event = %#v", finished)
+	}
+	if finished.Duration < 0 {
+		t.Errorf("finish duration = %s, want nonnegative duration", finished.Duration)
+	}
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "private-tool-") {
+			t.Errorf("event contains tool payload: %s", encoded)
+		}
+	}
+}
+
+func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
+	registry, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	want := map[string]bool{
+		"command": false, "read_file": false, "write_file": false,
+		"edit_file": false, "web_search": false, "web_fetch": false,
+	}
+	for _, definition := range registry.Definitions() {
+		function, ok := definition.(model.FunctionTool)
+		if !ok {
+			t.Errorf("tool definition has type %T, want model.FunctionTool", definition)
+			continue
+		}
+		if _, exists := want[function.Name]; !exists {
+			t.Errorf("unexpected tool %q", function.Name)
+			continue
+		}
+		want[function.Name] = true
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("default registry is missing %q", name)
+		}
+	}
+}
+
 func TestCategorizedRegistryPreservesCategoryAndToolOrder(t *testing.T) {
 	first := loggingTestTool{}
 	second := privateNamedTool{name: "second_tool"}

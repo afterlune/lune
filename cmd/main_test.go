@@ -23,6 +23,13 @@ type blockingResponder struct {
 	started chan struct{}
 }
 
+type fakeResumableResponder struct {
+	fakeResponder
+	pending   bool
+	resumes   int
+	discarded int
+}
+
 func (f *blockingResponder) Respond(ctx context.Context, _ *model.ResponseInput) (*model.Response, error) {
 	close(f.started)
 	<-ctx.Done()
@@ -41,6 +48,25 @@ func (f *fakeResponder) Respond(_ context.Context, input *model.ResponseInput) (
 			Content: []model.OutputContentPart{model.OutputText{Text: "reply"}},
 		},
 	}}, nil
+}
+
+func (f *fakeResumableResponder) HasPending() (bool, error) { return f.pending, nil }
+
+func (f *fakeResumableResponder) Resume(context.Context) (*model.Response, error) {
+	f.resumes++
+	f.pending = false
+	return &model.Response{Output: []model.ResponseOutputItem{
+		model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: "resumed"}}},
+	}}, nil
+}
+
+func (f *fakeResumableResponder) Discard(context.Context) (bool, error) {
+	if !f.pending {
+		return false, nil
+	}
+	f.pending = false
+	f.discarded++
+	return true, nil
 }
 
 func TestChatLoopReadsTextAndJSONUntilExit(t *testing.T) {
@@ -132,5 +158,43 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "task interrupted by user") || !strings.Contains(logs.String(), "source=escape") {
 		t.Fatalf("logs = %q, want the Esc interruption event", logs.String())
+	}
+}
+
+func TestChatLoopResumesExplicitlyAndWarnsAboutReplay(t *testing.T) {
+	client := &fakeResumableResponder{pending: true}
+	var stdout, stderr strings.Builder
+	if err := chatLoopWithEscape(client, bufio.NewReader(strings.NewReader("/resume\n/exit\n")), &stdout, &stderr, nil); err != nil {
+		t.Fatalf("chatLoopWithEscape: %v", err)
+	}
+	if client.resumes != 1 || client.pending {
+		t.Fatalf("resume calls=%d pending=%v, want one resume and no pending task", client.resumes, client.pending)
+	}
+	if !strings.Contains(stdout.String(), "resumed") {
+		t.Fatalf("stdout = %q, want resumed response", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "may repeat a model request or tool call") {
+		t.Fatalf("stderr = %q, want replay warning", stderr.String())
+	}
+}
+
+func TestChatLoopBlocksNewInputUntilPendingTaskIsResumedOrDiscarded(t *testing.T) {
+	client := &fakeResumableResponder{pending: true}
+	var stdout, stderr strings.Builder
+	input := "must not run\n/discard\nnew task\n/exit\n"
+	if err := chatLoopWithEscape(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, nil); err != nil {
+		t.Fatalf("chatLoopWithEscape: %v", err)
+	}
+	if client.discarded != 1 || client.pending {
+		t.Fatalf("discarded=%d pending=%v, want discarded once", client.discarded, client.pending)
+	}
+	if len(client.inputs) != 1 || client.inputs[0].Text == nil || *client.inputs[0].Text != "new task" {
+		t.Fatalf("responder inputs = %#v, want only new task after discard", client.inputs)
+	}
+	if !strings.Contains(stderr.String(), "Use /resume or /discard first") {
+		t.Fatalf("stderr = %q, want pending-task instruction", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Interrupted task discarded.") {
+		t.Fatalf("stdout = %q, want discard confirmation", stdout.String())
 	}
 }

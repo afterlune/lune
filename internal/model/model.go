@@ -53,7 +53,7 @@ type CategorizedToolExecutor interface {
 	DefinitionsForCategory(string) []ResponseTool
 }
 
-const categorySelectorName = "select_tool_category"
+const CategorySelectorName = "select_tool_category"
 
 type Client struct {
 	mu         sync.Mutex
@@ -95,6 +95,25 @@ func NewClient(tools ToolExecutor) (*Client, error) {
 		return nil, err
 	}
 	return newClient(apiKey, deepSeekResponsesEndpoint, &http.Client{Timeout: requestTimeout}, tools), nil
+}
+
+// CreateResponse sends one request to DeepSeek without managing conversation
+// history or executing returned tool calls. Callers may use it to manage those
+// steps in an external workflow runtime.
+func (c *Client) CreateResponse(ctx context.Context, request ResponseRequest) (*Response, error) {
+	if c == nil {
+		return nil, errors.New("model client is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	if c.httpClient == nil {
+		return nil, errors.New("HTTP client is required")
+	}
+	if request.Model == "" {
+		request.Model = DeepSeekFlashModel
+	}
+	return c.createResponse(ctx, request)
 }
 
 // Respond sends input to DeepSeek and runs any returned function calls without
@@ -150,7 +169,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		)
 		var visibleTools []ResponseTool
 		if isCategorized {
-			selector, err := categorySelectorDefinition(categories)
+			selector, err := CategorySelectorDefinition(categories)
 			if err != nil {
 				return nil, fmt.Errorf("build category selector: %w", err)
 			}
@@ -166,7 +185,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			Input: NewResponseInputItems(history...),
 			Tools: visibleTools,
 		}
-		response, err := c.createResponse(ctx, request)
+		response, err := c.CreateResponse(ctx, request)
 		if err != nil {
 			slog.Warn("model request failed",
 				"model", DeepSeekFlashModel,
@@ -235,8 +254,8 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
 				return response, ctx.Err()
 			}
-			if isCategorized && call.Name == categorySelectorName {
-				category, err := selectedToolCategory(call.Arguments, categories)
+			if isCategorized && call.Name == CategorySelectorName {
+				category, err := ParseCategorySelection(call.Arguments, categories)
 				output := ""
 				if err != nil {
 					output = "Category was not changed: " + err.Error()
@@ -271,7 +290,9 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 	}
 }
 
-func categorySelectorDefinition(categories []ToolCategory) (FunctionTool, error) {
+// CategorySelectorDefinition builds the virtual tool used to reveal one
+// category at a time.
+func CategorySelectorDefinition(categories []ToolCategory) (FunctionTool, error) {
 	names := make([]string, 0, len(categories))
 	descriptions := make([]string, 0, len(categories))
 	for _, category := range categories {
@@ -296,14 +317,16 @@ func categorySelectorDefinition(categories []ToolCategory) (FunctionTool, error)
 	}
 	strict := true
 	return FunctionTool{
-		Name:        categorySelectorName,
+		Name:        CategorySelectorName,
 		Description: "Choose a tool category to reveal its tools. Available categories: " + strings.Join(descriptions, "; "),
 		Parameters:  parameters,
 		Strict:      &strict,
 	}, nil
 }
 
-func selectedToolCategory(arguments string, categories []ToolCategory) (string, error) {
+// ParseCategorySelection validates the arguments returned for the virtual
+// category selector.
+func ParseCategorySelection(arguments string, categories []ToolCategory) (string, error) {
 	var input struct {
 		Category string `json:"category"`
 	}

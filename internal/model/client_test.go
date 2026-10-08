@@ -238,6 +238,43 @@ func TestRespondRunsFunctionCallAndSendsFullHistory(t *testing.T) {
 	}
 }
 
+func TestCreateResponseSendsOneRequestWithoutManagingToolsOrHistory(t *testing.T) {
+	executor := newTestExecutor()
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Model != DeepSeekFlashModel || request.Input == nil || len(request.Tools) != 1 {
+			t.Errorf("unexpected request: %#v", request)
+		}
+		_, _ = fmt.Fprint(w, `{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("one request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.CreateResponse(context.Background(), ResponseRequest{
+		Input: input,
+		Tools: executor.Definitions(),
+	})
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	if len(response.Output) != 1 || requestCount != 1 || len(executor.calls) != 0 || len(client.history) != 0 {
+		t.Fatalf("response=%#v requests=%d tool_calls=%d history=%#v", response, requestCount, len(executor.calls), client.history)
+	}
+}
+
 func TestRespondRevealsCategoriesAndValidatesVisibleTools(t *testing.T) {
 	executor := newCategorizedTestExecutor()
 	requestCount := 0
@@ -252,7 +289,7 @@ func TestRespondRevealsCategoriesAndValidatesVisibleTools(t *testing.T) {
 		if requestCount == 1 {
 			if len(request.Tools) != 1 {
 				t.Errorf("initial tools = %d, want only category selector", len(request.Tools))
-			} else if selector, ok := request.Tools[0].(FunctionTool); !ok || selector.Name != categorySelectorName {
+			} else if selector, ok := request.Tools[0].(FunctionTool); !ok || selector.Name != CategorySelectorName {
 				t.Errorf("initial tool = %#v, want category selector", request.Tools[0])
 			} else if !strings.Contains(string(selector.Parameters), `"enum":["files","command","web"]`) {
 				t.Errorf("selector schema does not enumerate categories: %s", selector.Parameters)
