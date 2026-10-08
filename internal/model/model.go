@@ -1,1 +1,242 @@
 package model
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	DeepSeekFlashModel = "deepseek-flash"
+	MaxToolRounds      = 8
+
+	deepSeekResponsesEndpoint = "https://api.deepseek.com/responses"
+	configFile                = "config.json"
+	requestTimeout            = 2 * time.Minute
+	maxResponseBodyBytes      = 8 * 1024 * 1024
+)
+
+var ErrToolCallLimit = errors.New("maximum tool-call rounds reached")
+
+// ToolExecutor is implemented by the tool registry. Keeping this interface in
+// model avoids importing the tool package and creating an import cycle.
+type ToolExecutor interface {
+	Definitions() []ResponseTool
+	ExecuteCall(context.Context, OutputFunctionCall) InputFunctionCallOutput
+}
+
+type Client struct {
+	mu         sync.Mutex
+	apiKey     string
+	endpoint   string
+	httpClient *http.Client
+	tools      ToolExecutor
+	history    []InputItem
+}
+
+type clientConfig struct {
+	APIKey string `json:"apikey"`
+}
+
+// NewResponseInput encodes any JSON-serializable Responses input value. Pass a
+// string for simple text or an item slice for structured and multimodal input.
+func NewResponseInput[T any](value T) (*ResponseInput, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode input: %w", err)
+	}
+	var input ResponseInput
+	if err := json.Unmarshal(data, &input); err != nil {
+		return nil, fmt.Errorf("decode input: %w", err)
+	}
+	if input.Text == nil && input.Items == nil {
+		return nil, errors.New("input must be a string or an item list")
+	}
+	return &input, nil
+}
+
+// NewClient reads apikey from config.json in the current working directory.
+func NewClient(tools ToolExecutor) (*Client, error) {
+	if tools == nil {
+		return nil, errors.New("tool executor is required")
+	}
+	apiKey, err := readAPIKey(configFile)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(apiKey, deepSeekResponsesEndpoint, &http.Client{Timeout: requestTimeout}, tools), nil
+}
+
+// Respond sends input to DeepSeek and runs any returned function calls. It
+// keeps successful conversation history on this Client, so use one Client per
+// conversation. It returns the final response, or the last response with
+// ErrToolCallLimit when the model continues requesting tools beyond MaxToolRounds.
+func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, error) {
+	if c == nil {
+		return nil, errors.New("model client is nil")
+	}
+	if input == nil {
+		return nil, errors.New("input is nil")
+	}
+	if c.tools == nil {
+		return nil, errors.New("tool executor is required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	newItems, err := initialInputHistory(input)
+	if err != nil {
+		return nil, err
+	}
+	history := append(append([]InputItem(nil), c.history...), newItems...)
+
+	toolRounds := 0
+	for {
+		request := ResponseRequest{
+			Model: DeepSeekFlashModel,
+			Input: NewResponseInputItems(history...),
+			Tools: c.tools.Definitions(),
+		}
+		response, err := c.createResponse(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		if response.Status == "failed" {
+			if response.Error != nil {
+				return response, fmt.Errorf("DeepSeek response failed (%s): %s", response.Error.Code, response.Error.Message)
+			}
+			return response, errors.New("DeepSeek response failed")
+		}
+
+		calls := functionCalls(response.Output)
+		if len(calls) == 0 {
+			history, err = appendResponseHistory(history, response.Output)
+			if err != nil {
+				return response, err
+			}
+			c.history = history
+			return response, nil
+		}
+		if toolRounds >= MaxToolRounds {
+			return response, fmt.Errorf("%w: %d", ErrToolCallLimit, MaxToolRounds)
+		}
+
+		// DeepSeek Responses is stateless, so append the whole assistant response
+		// and tool outputs to input and resend that history on the next request.
+		history, err = appendResponseHistory(history, response.Output)
+		if err != nil {
+			return response, err
+		}
+		for _, call := range calls {
+			history = append(history, c.tools.ExecuteCall(ctx, call))
+		}
+		toolRounds++
+	}
+}
+
+func newClient(apiKey, endpoint string, httpClient *http.Client, tools ToolExecutor) *Client {
+	return &Client{
+		apiKey:     apiKey,
+		endpoint:   endpoint,
+		httpClient: httpClient,
+		tools:      tools,
+	}
+}
+
+func readAPIKey(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	var config clientConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return "", fmt.Errorf("decode %s: %w", path, err)
+	}
+	apiKey := strings.TrimSpace(config.APIKey)
+	if apiKey == "" {
+		return "", fmt.Errorf("%s must contain a non-empty apikey", path)
+	}
+	return apiKey, nil
+}
+
+func (c *Client) createResponse(ctx context.Context, requestBody ResponseRequest) (*Response, error) {
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("encode Responses request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create Responses request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call DeepSeek Responses API: %w", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read DeepSeek response: %w", err)
+	}
+	if len(responseBody) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("DeepSeek response exceeds %d bytes", maxResponseBodyBytes)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		message := strings.TrimSpace(string(responseBody))
+		if message == "" {
+			message = response.Status
+		}
+		return nil, fmt.Errorf("DeepSeek Responses API returned %s: %s", response.Status, message)
+	}
+	var decoded Response
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return nil, fmt.Errorf("decode DeepSeek response: %w", err)
+	}
+	return &decoded, nil
+}
+
+func initialInputHistory(input *ResponseInput) ([]InputItem, error) {
+	if input.Text != nil && input.Items != nil {
+		return nil, errors.New("responses input cannot contain both text and items")
+	}
+	if input.Text != nil {
+		return []InputItem{InputMessage{Role: RoleUser, Content: NewMessageText(*input.Text)}}, nil
+	}
+	if len(input.Items) == 0 {
+		return nil, errors.New("input item list is empty")
+	}
+	return append([]InputItem(nil), input.Items...), nil
+}
+
+func appendResponseHistory(history []InputItem, output []ResponseOutputItem) ([]InputItem, error) {
+	for _, item := range output {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return nil, fmt.Errorf("encode response history: %w", err)
+		}
+		history = append(history, UnknownInputItem{Raw: encoded})
+	}
+	return history, nil
+}
+
+func functionCalls(items []ResponseOutputItem) []OutputFunctionCall {
+	calls := make([]OutputFunctionCall, 0)
+	for _, item := range items {
+		if call, ok := item.(OutputFunctionCall); ok {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
