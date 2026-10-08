@@ -26,10 +26,97 @@ type resumableResponder interface {
 }
 
 type graphResponder struct {
-	agent     *agentgraph.Agent
-	store     graph.Store[agentgraph.State]
-	requester *usageTrackingRequester
-	history   *model.ResponseInput
+	agent        *agentgraph.Agent
+	store        graph.Store[agentgraph.State]
+	requester    *usageTrackingRequester
+	historyMu    sync.RWMutex
+	history      *model.ResponseInput
+	sessionID    string
+	planMode     bool
+	historySaver func(string, *model.ResponseInput) error
+}
+
+func (r *graphResponder) SetPlanMode(enabled bool) { r.planMode = enabled }
+
+func (r *graphResponder) SetHistorySaver(saver func(string, *model.ResponseInput) error) {
+	r.historyMu.Lock()
+	r.historySaver = saver
+	r.historyMu.Unlock()
+}
+
+func (r *graphResponder) SetSession(id string, history *model.ResponseInput) {
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+	r.sessionID = id
+	if history == nil {
+		r.history = nil
+		return
+	}
+	r.history = model.NewResponseInputItems(responseHistoryItems(history)...)
+}
+
+func (r *graphResponder) SessionHistory() *model.ResponseInput {
+	r.historyMu.RLock()
+	defer r.historyMu.RUnlock()
+	if r.history == nil {
+		return nil
+	}
+	return model.NewResponseInputItems(responseHistoryItems(r.history)...)
+}
+
+func (r *graphResponder) persistSessionHistory() error {
+	r.historyMu.RLock()
+	id, saver := r.sessionID, r.historySaver
+	r.historyMu.RUnlock()
+	if saver == nil || id == "" {
+		return nil
+	}
+	return saver(id, r.SessionHistory())
+}
+
+func (r *graphResponder) PendingHistory() (*model.ResponseInput, error) {
+	checkpoint, err := r.store.Load(context.Background(), r.runID())
+	if err != nil {
+		return nil, err
+	}
+	for index := len(checkpoint.Invocations) - 1; index >= 0; index-- {
+		invocation := checkpoint.Invocations[index]
+		if invocation.Status == graph.InvocationEnded || invocation.Status == graph.InvocationFailed || invocation.Status == graph.InvocationJoined {
+			continue
+		}
+		history := invocation.State.History
+		return model.NewResponseInputItems(responseHistoryItems(&history)...), nil
+	}
+	if checkpoint.Final != nil {
+		history := checkpoint.Final.History
+		return model.NewResponseInputItems(responseHistoryItems(&history)...), nil
+	}
+	return nil, nil
+}
+
+func (r *graphResponder) PendingPlanMode() (bool, error) {
+	checkpoint, err := r.store.Load(context.Background(), r.runID())
+	if err != nil {
+		return false, err
+	}
+	for index := len(checkpoint.Invocations) - 1; index >= 0; index-- {
+		invocation := checkpoint.Invocations[index]
+		if invocation.Status == graph.InvocationEnded || invocation.Status == graph.InvocationFailed || invocation.Status == graph.InvocationJoined {
+			continue
+		}
+		return invocation.State.PlanMode, nil
+	}
+	if checkpoint.Final != nil {
+		return checkpoint.Final.PlanMode, nil
+	}
+	return false, nil
+}
+
+func (r *graphResponder) runID() string {
+	if r.sessionID == "" || r.sessionID == activeRunID {
+		return activeRunID
+	}
+	return "lune-session-" + r.sessionID
 }
 
 type usageTrackingRequester struct {
@@ -67,19 +154,22 @@ func (r *graphResponder) Respond(ctx context.Context, input *model.ResponseInput
 	if pending, err := r.HasPending(); err != nil {
 		return nil, fmt.Errorf("inspect pending task: %w", err)
 	} else if pending {
-		return nil, errors.New("an interrupted task is pending; use /resume or /discard first")
+		return nil, errors.New("a task is paused in this session; use /continue or start a new session")
 	}
-	result, err := r.agent.Start(ctx, activeRunID, r.history, input, agentgraph.TaskOptions{}, r.options())
+	runID := r.runID()
+	history := r.SessionHistory()
+	result, err := r.agent.Start(ctx, runID, history, input, agentgraph.TaskOptions{PlanMode: r.planMode}, r.options())
 	return r.finish(result, err)
 }
 
 func (r *graphResponder) Resume(ctx context.Context) (*model.Response, error) {
-	result, err := r.agent.Recover(ctx, activeRunID, nil, r.options())
+	runID := r.runID()
+	result, err := r.agent.Recover(ctx, runID, nil, r.options())
 	return r.finish(result, err)
 }
 
 func (r *graphResponder) HasPending() (bool, error) {
-	_, err := r.store.Load(context.Background(), activeRunID)
+	_, err := r.store.Load(context.Background(), r.runID())
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		return false, nil
 	}
@@ -90,14 +180,14 @@ func (r *graphResponder) HasPending() (bool, error) {
 }
 
 func (r *graphResponder) Discard(ctx context.Context) (bool, error) {
-	err := r.store.Delete(ctx, activeRunID)
+	err := r.store.Delete(ctx, r.runID())
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	slog.Warn("interrupted agent task discarded", "run_id", activeRunID)
+	slog.Warn("interrupted agent task discarded", "run_id", r.runID())
 	return true, nil
 }
 
@@ -111,10 +201,11 @@ func (r *graphResponder) Compact(ctx context.Context) (int, error) {
 	if pending, err := r.HasPending(); err != nil {
 		return 0, fmt.Errorf("inspect pending task: %w", err)
 	} else if pending {
-		return 0, errors.New("an interrupted task is pending; use /resume or /discard first")
+		return 0, errors.New("a task is paused in this session; continue it or start a new session before compacting")
 	}
 
-	items := responseHistoryItems(r.history)
+	history := r.SessionHistory()
+	items := responseHistoryItems(history)
 	userStarts := make([]int, 0, len(items))
 	for index, item := range items {
 		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser {
@@ -156,7 +247,9 @@ func (r *graphResponder) Compact(ctx context.Context) (int, error) {
 		Content: model.NewMessageText("Earlier conversation summary:\n" + summary),
 	})
 	compacted = append(compacted, items[cut:]...)
+	r.historyMu.Lock()
 	r.history = model.NewResponseInputItems(compacted...)
+	r.historyMu.Unlock()
 	return olderUserTurns, nil
 }
 
@@ -238,13 +331,18 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 			}
 			return nil, errors.Join(runErr, errors.New(state.TaskError))
 		}
+		r.historyMu.Lock()
 		r.history = model.NewResponseInputItems(state.History.Items...)
+		r.historyMu.Unlock()
 		response := state.FinalResponse
 		if response == nil {
 			if err := r.deleteCompletedRun(); err != nil {
 				runErr = errors.Join(runErr, err)
 			}
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final response"))
+		}
+		if err := r.persistSessionHistory(); err != nil {
+			return response, errors.Join(runErr, fmt.Errorf("persist completed session history: %w", err))
 		}
 		if err := r.deleteCompletedRun(); err != nil {
 			return response, errors.Join(runErr, err)
@@ -277,13 +375,13 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		}
 	}
 	if result.Status == graph.StatusCancelled || result.Status == graph.StatusBudget || result.Status == graph.StatusWaiting {
-		slog.Warn("agent task remains resumable", "run_id", activeRunID, "status", result.Status)
+		slog.Warn("agent task remains resumable", "run_id", r.runID(), "status", result.Status)
 	}
 	return nil, runErr
 }
 
 func (r *graphResponder) deleteCompletedRun() error {
-	err := r.store.Delete(context.Background(), activeRunID)
+	err := r.store.Delete(context.Background(), r.runID())
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		return nil
 	}

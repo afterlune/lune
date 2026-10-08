@@ -27,6 +27,7 @@ type Requester interface {
 // and checkpoint round trips.
 type State struct {
 	History          model.ResponseInput        `json:"history"`
+	PlanMode         bool                       `json:"plan_mode,omitempty"`
 	SelectedCategory string                     `json:"selected_category,omitempty"`
 	PendingCalls     []model.OutputFunctionCall `json:"pending_calls,omitempty"`
 	PendingIndex     int                        `json:"pending_index,omitempty"`
@@ -40,6 +41,7 @@ type State struct {
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
 type TaskOptions struct {
 	MaxToolRounds int
+	PlanMode      bool
 }
 
 // Agent runs one model request or one tool call per graph step.
@@ -102,6 +104,7 @@ func (a *Agent) Start(ctx context.Context, runID string, history, input *model.R
 		return graph.Result[State]{Status: graph.StatusFailed}, err
 	}
 	state.MaxToolRounds = taskOptions.MaxToolRounds
+	state.PlanMode = taskOptions.PlanMode
 	return a.runner.Start(ctx, runID, state, options)
 }
 
@@ -159,15 +162,19 @@ func responseInputItems(input *model.ResponseInput) ([]model.InputItem, error) {
 }
 
 func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
-	visibleTools, visibleNames, err := a.visibleTools(state.SelectedCategory)
+	visibleTools, visibleNames, err := a.visibleTools(state.SelectedCategory, state.PlanMode)
 	if err != nil {
 		return failTask(state, err)
 	}
-	response, err := a.requester.CreateResponse(ctx, model.ResponseRequest{
+	request := model.ResponseRequest{
 		Model: model.DeepSeekFlashModel,
 		Input: model.NewResponseInputItems(state.History.Items...),
 		Tools: visibleTools,
-	})
+	}
+	if state.PlanMode {
+		request.Instructions = "You are in plan mode. Inspect and reason about the requested work, then present a concise implementation plan for user review. You may use read-only tools only. Do not claim to have made changes."
+	}
+	response, err := a.requester.CreateResponse(ctx, request)
 	if err != nil {
 		if ctx.Err() != nil {
 			return graph.Transition[State]{}, err
@@ -223,7 +230,11 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	var output model.InputFunctionCallOutput
 	switch {
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
-		category, err := model.ParseCategorySelection(call.Arguments, a.categories)
+		categories := a.categories
+		if state.PlanMode {
+			categories = a.readOnlyCategories()
+		}
+		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
 			text = "Category was not changed: " + err.Error()
@@ -231,6 +242,11 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 			state.SelectedCategory = category
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
+	case state.PlanMode && !isReadOnlyTool(call.Name):
+		output = model.InputFunctionCallOutput{
+			CallID: call.CallID,
+			Output: model.NewToolOutputText("Tool is not available in plan mode."),
+		}
 	case !contains(state.VisibleTools, call.Name):
 		output = model.InputFunctionCallOutput{
 			CallID: call.CallID,
@@ -252,20 +268,61 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	return graph.To(state, modelNode), nil
 }
 
-func (a *Agent) visibleTools(category string) ([]model.ResponseTool, []string, error) {
+func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTool, []string, error) {
 	if a.categorized == nil {
 		definitions := a.tools.Definitions()
+		if planMode {
+			definitions = readOnlyDefinitions(definitions)
+		}
 		return definitions, toolNames(definitions), nil
 	}
-	selector, err := model.CategorySelectorDefinition(a.categories)
+	categories := a.categories
+	if planMode {
+		categories = a.readOnlyCategories()
+	}
+	selector, err := model.CategorySelectorDefinition(categories)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build category selector: %w", err)
 	}
 	definitions := []model.ResponseTool{selector}
 	if category != "" {
 		definitions = append(definitions, a.categorized.DefinitionsForCategory(category)...)
+		if planMode {
+			definitions = readOnlyDefinitions(definitions)
+			definitions = append([]model.ResponseTool{selector}, definitions...)
+		}
 	}
 	return definitions, toolNames(definitions), nil
+}
+
+func (a *Agent) readOnlyCategories() []model.ToolCategory {
+	var categories []model.ToolCategory
+	for _, category := range a.categories {
+		if len(readOnlyDefinitions(a.categorized.DefinitionsForCategory(category.Name))) > 0 {
+			categories = append(categories, category)
+		}
+	}
+	return categories
+}
+
+func readOnlyDefinitions(definitions []model.ResponseTool) []model.ResponseTool {
+	filtered := make([]model.ResponseTool, 0, len(definitions))
+	for _, definition := range definitions {
+		function, ok := definition.(model.FunctionTool)
+		if ok && isReadOnlyTool(function.Name) {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
+func isReadOnlyTool(name string) bool {
+	switch name {
+	case "read_file", "web_search", "web_fetch":
+		return true
+	default:
+		return false
+	}
 }
 
 func appendResponseHistory(history model.ResponseInput, output []model.ResponseOutputItem) (model.ResponseInput, error) {

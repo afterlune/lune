@@ -9,6 +9,7 @@ require (
 	github.com/afterlune/luneGraph v0.0.0-20261008085435-d4d35e1c76cd
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	golang.org/x/net v0.59.0
+	modernc.org/sqlite v1.59.0
 )
 
 require (
@@ -36,5 +37,4 @@ require (
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.59.0 // indirect
 )
