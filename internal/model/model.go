@@ -16,7 +16,6 @@ import (
 
 const (
 	DeepSeekFlashModel = "deepseek-flash"
-	MaxToolRounds      = 8
 
 	deepSeekResponsesEndpoint = "https://api.deepseek.com/responses"
 	configFile                = "config.json"
@@ -25,6 +24,12 @@ const (
 )
 
 var ErrToolCallLimit = errors.New("maximum tool-call rounds reached")
+
+// RespondOptions configures one call to RespondWithOptions.
+type RespondOptions struct {
+	// MaxToolRounds limits batches of tool calls. Zero means unlimited.
+	MaxToolRounds int
+}
 
 // ToolExecutor is implemented by the tool registry. Keeping this interface in
 // model avoids importing the tool package and creating an import cycle.
@@ -75,11 +80,16 @@ func NewClient(tools ToolExecutor) (*Client, error) {
 	return newClient(apiKey, deepSeekResponsesEndpoint, &http.Client{Timeout: requestTimeout}, tools), nil
 }
 
-// Respond sends input to DeepSeek and runs any returned function calls. It
-// keeps successful conversation history on this Client, so use one Client per
-// conversation. It returns the final response, or the last response with
-// ErrToolCallLimit when the model continues requesting tools beyond MaxToolRounds.
+// Respond sends input to DeepSeek and runs any returned function calls without
+// imposing a tool-call round limit. It keeps conversation history on this
+// Client, so use one Client per conversation.
 func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, error) {
+	return c.RespondWithOptions(ctx, input, RespondOptions{})
+}
+
+// RespondWithOptions sends input to DeepSeek with per-call execution options.
+// A positive MaxToolRounds limits batches of tool calls; zero means unlimited.
+func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, options RespondOptions) (*Response, error) {
 	if c == nil {
 		return nil, errors.New("model client is nil")
 	}
@@ -88,6 +98,9 @@ func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, 
 	}
 	if c.tools == nil {
 		return nil, errors.New("tool executor is required")
+	}
+	if options.MaxToolRounds < 0 {
+		return nil, errors.New("MaxToolRounds must not be negative")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -107,6 +120,10 @@ func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, 
 		}
 		response, err := c.createResponse(ctx, request)
 		if err != nil {
+			if ctx.Err() != nil {
+				c.saveInterruptedHistory(history, "The task was interrupted while waiting for the model response.")
+				return nil, ctx.Err()
+			}
 			return nil, err
 		}
 		if response.Status == "failed" {
@@ -125,9 +142,6 @@ func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, 
 			c.history = history
 			return response, nil
 		}
-		if toolRounds >= MaxToolRounds {
-			return response, fmt.Errorf("%w: %d", ErrToolCallLimit, MaxToolRounds)
-		}
 
 		// DeepSeek Responses is stateless, so append the whole assistant response
 		// and tool outputs to input and resend that history on the next request.
@@ -135,11 +149,44 @@ func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, 
 		if err != nil {
 			return response, err
 		}
-		for _, call := range calls {
+		if options.MaxToolRounds > 0 && toolRounds >= options.MaxToolRounds {
+			appendSkippedToolCalls(&history, calls, "Skipped because the tool-call round limit was reached.")
+			c.saveInterruptedHistory(history, "The task stopped after reaching its tool-call round limit.")
+			return response, fmt.Errorf("%w: %d", ErrToolCallLimit, options.MaxToolRounds)
+		}
+
+		for i, call := range calls {
+			if ctx.Err() != nil {
+				appendSkippedToolCalls(&history, calls[i:], "Skipped because the task was interrupted before execution.")
+				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
+				return response, ctx.Err()
+			}
 			history = append(history, c.tools.ExecuteCall(ctx, call))
+			if ctx.Err() != nil {
+				appendSkippedToolCalls(&history, calls[i+1:], "Skipped because the task was interrupted before execution.")
+				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
+				return response, ctx.Err()
+			}
 		}
 		toolRounds++
 	}
+}
+
+func appendSkippedToolCalls(history *[]InputItem, calls []OutputFunctionCall, reason string) {
+	for _, call := range calls {
+		*history = append(*history, InputFunctionCallOutput{
+			CallID: call.CallID,
+			Output: NewToolOutputText(reason),
+		})
+	}
+}
+
+func (c *Client) saveInterruptedHistory(history []InputItem, message string) {
+	history = append(history, InputMessage{
+		Role:    RoleAssistant,
+		Content: NewMessageText(message),
+	})
+	c.history = history
 }
 
 func newClient(apiKey, endpoint string, httpClient *http.Client, tools ToolExecutor) *Client {

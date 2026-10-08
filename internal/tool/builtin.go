@@ -97,7 +97,10 @@ func (ReadFileTool) Definition() model.FunctionTool {
 	return functionDefinition("read_file", "Read and return the contents of a file in the workspace.", readFileSchema)
 }
 
-func (t ReadFileTool) Run(_ context.Context, raw json.RawMessage) Result {
+func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("read stopped: %w", err)}
+	}
 	var args struct {
 		Path string `json:"path"`
 	}
@@ -107,6 +110,9 @@ func (t ReadFileTool) Run(_ context.Context, raw json.RawMessage) Result {
 	path, err := resolveWorkspacePath(t.Workspace, args.Path, true)
 	if err != nil {
 		return Result{Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("read stopped: %w", err)}
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -124,7 +130,10 @@ func (WriteFileTool) Definition() model.FunctionTool {
 	return functionDefinition("write_file", "Create or replace a file in the workspace with the supplied contents.", writeFileSchema)
 }
 
-func (t WriteFileTool) Run(_ context.Context, raw json.RawMessage) Result {
+func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("write stopped: %w", err)}
+	}
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -135,6 +144,9 @@ func (t WriteFileTool) Run(_ context.Context, raw json.RawMessage) Result {
 	path, err := resolveWorkspacePath(t.Workspace, args.Path, false)
 	if err != nil {
 		return Result{Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("write stopped: %w", err)}
 	}
 	if err := os.WriteFile(path, []byte(args.Content), 0o644); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
@@ -151,7 +163,10 @@ func (EditFileTool) Definition() model.FunctionTool {
 	return functionDefinition("edit_file", "Replace one unique exact text occurrence in a file in the workspace.", editFileSchema)
 }
 
-func (t EditFileTool) Run(_ context.Context, raw json.RawMessage) Result {
+func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
+	}
 	var args struct {
 		Path    string `json:"path"`
 		OldText string `json:"old_text"`
@@ -167,9 +182,15 @@ func (t EditFileTool) Run(_ context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: err}
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
+	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return Result{Err: fmt.Errorf("read %q: %w", args.Path, err)}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
 	}
 	count := bytes.Count(contents, []byte(args.OldText))
 	if count != 1 {
@@ -179,6 +200,9 @@ func (t EditFileTool) Run(_ context.Context, raw json.RawMessage) Result {
 	info, err := os.Stat(path)
 	if err != nil {
 		return Result{Err: fmt.Errorf("stat %q: %w", args.Path, err)}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
 	}
 	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}

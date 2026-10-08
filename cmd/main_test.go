@@ -17,6 +17,16 @@ type fakeResponder struct {
 	responses int
 }
 
+type blockingResponder struct {
+	started chan struct{}
+}
+
+func (f *blockingResponder) Respond(ctx context.Context, _ *model.ResponseInput) (*model.Response, error) {
+	close(f.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (f *fakeResponder) Respond(_ context.Context, input *model.ResponseInput) (*model.Response, error) {
 	f.inputs = append(f.inputs, input)
 	f.responses++
@@ -85,5 +95,32 @@ func TestChatLoopContinuesAfterRequestError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "temporary API error") || !strings.Contains(stdout.String(), "reply") {
 		t.Fatalf("stderr=%q stdout=%q", stderr.String(), stdout.String())
+	}
+}
+
+func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
+	client := &blockingResponder{started: make(chan struct{})}
+	escape := make(chan struct{}, 1)
+	watchEscape := func() (<-chan struct{}, func(), error) {
+		return escape, func() {}, nil
+	}
+	go func() {
+		<-client.started
+		escape <- struct{}{}
+	}()
+
+	var stdout, stderr strings.Builder
+	input := "long task\n/exit\n"
+	if err := chatLoopWithEscape(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, watchEscape); err != nil {
+		t.Fatalf("chatLoopWithEscape: %v", err)
+	}
+	if got := strings.Count(stdout.String(), "> "); got != 2 {
+		t.Fatalf("prompt count = %d, want 2 after returning to prompt: %q", got, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Task interrupted.") {
+		t.Fatalf("stdout = %q, want interruption status", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Press Esc to cancel") || strings.Contains(stderr.String(), "context canceled") {
+		t.Fatalf("stderr = %q, want Esc status without cancellation error", stderr.String())
 	}
 }

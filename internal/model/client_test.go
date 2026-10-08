@@ -18,6 +18,17 @@ type testToolExecutor struct {
 	calls       []OutputFunctionCall
 }
 
+type cancelingToolExecutor struct {
+	*testToolExecutor
+	cancel context.CancelFunc
+}
+
+func (e *cancelingToolExecutor) ExecuteCall(_ context.Context, call OutputFunctionCall) InputFunctionCallOutput {
+	e.calls = append(e.calls, call)
+	e.cancel()
+	return InputFunctionCallOutput{CallID: call.CallID, Output: NewToolOutputText("completed before interruption")}
+}
+
 func (e *testToolExecutor) Definitions() []ResponseTool {
 	return e.definitions
 }
@@ -224,12 +235,16 @@ func TestRespondKeepsHistoryAcrossUserTurns(t *testing.T) {
 	}
 }
 
-func TestRespondStopsAfterMaxToolRounds(t *testing.T) {
+func TestRespondIsUnlimitedByDefault(t *testing.T) {
 	executor := newTestExecutor()
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requestCount++
-		_, _ = fmt.Fprintf(w, `{"id":"resp_%d","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[{"type":"function_call","call_id":"call_%d","name":"read_file","arguments":"{}"}]}`, requestCount, requestCount)
+		if requestCount <= 9 {
+			_, _ = fmt.Fprintf(w, `{"id":"resp_%d","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[{"type":"function_call","call_id":"call_%d","name":"read_file","arguments":"{}"}]}`, requestCount, requestCount)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_10","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -239,11 +254,144 @@ func TestRespondStopsAfterMaxToolRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	response, err := client.Respond(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if response == nil || requestCount != 10 || len(executor.calls) != 9 {
+		t.Fatalf("response=%#v requests=%d tool calls=%d", response, requestCount, len(executor.calls))
+	}
+}
+
+func TestRespondWithOptionsStopsAtConfiguredToolRoundLimit(t *testing.T) {
+	executor := newTestExecutor()
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		_, _ = fmt.Fprintf(w, `{"id":"resp_%d","object":"response","created_at":1,"status":"completed","model":"deepseek-flash","output":[{"type":"function_call","call_id":"call_%d","name":"read_file","arguments":"{}"}]}`, requestCount, requestCount)
+	}))
+	defer server.Close()
+
+	client := newClient("test-key", server.URL+"/responses", server.Client(), executor)
+	input, err := NewResponseInput("stop after two rounds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.RespondWithOptions(context.Background(), input, RespondOptions{MaxToolRounds: 2})
 	if !errors.Is(err, ErrToolCallLimit) {
 		t.Fatalf("error = %v, want ErrToolCallLimit", err)
 	}
-	if response == nil || requestCount != MaxToolRounds+1 || len(executor.calls) != MaxToolRounds {
+	if response == nil || requestCount != 3 || len(executor.calls) != 2 {
 		t.Fatalf("response=%#v requests=%d tool calls=%d", response, requestCount, len(executor.calls))
+	}
+	lastOutput, ok := client.history[len(client.history)-2].(InputFunctionCallOutput)
+	if !ok || lastOutput.CallID != "call_3" {
+		t.Fatalf("history before interruption marker = %#v, want skipped output for call_3", client.history[len(client.history)-2])
+	}
+}
+
+func TestRespondWithOptionsAllowsFinalAnswerAtLimitBoundary(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), newTestExecutor())
+	input, err := NewResponseInput("one tool call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RespondWithOptions(context.Background(), input, RespondOptions{MaxToolRounds: 1}); err != nil {
+		t.Fatalf("final answer at the limit returned an error: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requests = %d, want 2", requestCount)
+	}
+}
+
+func TestRespondWithOptionsRejectsNegativeLimit(t *testing.T) {
+	client := newClient("test-key", "", nil, newTestExecutor())
+	input, err := NewResponseInput("hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RespondWithOptions(context.Background(), input, RespondOptions{MaxToolRounds: -1}); err == nil {
+		t.Fatal("expected a negative tool-round limit to fail")
+	}
+}
+
+func TestRespondPreservesHistoryWhenCanceledDuringRequest(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(requestStarted)
+		<-releaseHandler
+	}))
+	defer server.Close()
+	defer close(releaseHandler)
+	client := newClient("test-key", server.URL, server.Client(), newTestExecutor())
+	input, err := NewResponseInput("cancel this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.Respond(ctx, input)
+		result <- err
+	}()
+	<-requestStarted
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Respond error = %v, want context.Canceled", err)
+	}
+	if len(client.history) != 2 {
+		t.Fatalf("history items = %d, want user input and interruption marker", len(client.history))
+	}
+	marker, ok := client.history[1].(InputMessage)
+	if !ok || marker.Role != RoleAssistant {
+		t.Fatalf("history marker = %#v, want assistant interruption marker", client.history[1])
+	}
+}
+
+func TestRespondPreservesCompletedAndSkippedToolCallsOnCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"},{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{}"}]}`)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	executor := &cancelingToolExecutor{testToolExecutor: newTestExecutor(), cancel: cancel}
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("cancel between tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Respond(ctx, input)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Respond error = %v, want context.Canceled", err)
+	}
+	if len(executor.calls) != 1 {
+		t.Fatalf("executed calls = %d, want 1", len(executor.calls))
+	}
+	var outputs []InputFunctionCallOutput
+	for _, item := range client.history {
+		if output, ok := item.(InputFunctionCallOutput); ok {
+			outputs = append(outputs, output)
+		}
+	}
+	if len(outputs) != 2 || outputs[0].CallID != "call_1" || outputs[1].CallID != "call_2" {
+		t.Fatalf("function call outputs = %#v, want outputs for both call IDs", outputs)
+	}
+	if len(client.history) == 0 {
+		t.Fatal("interrupted history was not saved")
+	}
+	marker, ok := client.history[len(client.history)-1].(InputMessage)
+	if !ok || marker.Role != RoleAssistant {
+		t.Fatalf("final history item = %#v, want assistant interruption marker", client.history[len(client.history)-1])
 	}
 }
 
