@@ -24,6 +24,7 @@ type Registry struct {
 	categoryOrder  []string
 	uncategorized  int
 	eventObserver  ToolEventObserver
+	permissions    *permissionSettings
 }
 
 // ToolEvent describes the start or completion of a tool execution. It never
@@ -51,7 +52,10 @@ type ToolRegistration struct {
 }
 
 func NewRegistry(tools ...Tool) (*Registry, error) {
-	registry := &Registry{tools: make(map[string]Tool, len(tools))}
+	registry := &Registry{
+		tools:       make(map[string]Tool, len(tools)),
+		permissions: newPermissionSettings(PermissionModeFullAccess),
+	}
 	for _, registeredTool := range tools {
 		if err := registry.Register(registeredTool); err != nil {
 			return nil, err
@@ -62,7 +66,7 @@ func NewRegistry(tools ...Tool) (*Registry, error) {
 
 // NewCategorizedRegistry creates a registry whose tools are revealed by category.
 func NewCategorizedRegistry(registrations ...ToolRegistration) (*Registry, error) {
-	registry := &Registry{}
+	registry := &Registry{permissions: newPermissionSettings(PermissionModeFullAccess)}
 	for _, registration := range registrations {
 		if err := registry.RegisterInCategory(registration.Category, registration.Tool); err != nil {
 			return nil, err
@@ -79,6 +83,39 @@ func (r *Registry) SetToolEventObserver(observer ToolEventObserver) {
 	r.mu.Lock()
 	r.eventObserver = observer
 	r.mu.Unlock()
+}
+
+func (r *Registry) PermissionMode() PermissionMode {
+	if r == nil {
+		return PermissionModeFullAccess
+	}
+	r.mu.RLock()
+	permissions := r.permissions
+	r.mu.RUnlock()
+	return permissions.modeValue()
+}
+
+func (r *Registry) SetPermissionMode(mode PermissionMode) error {
+	if r == nil {
+		return errors.New("tool registry is nil")
+	}
+	r.mu.RLock()
+	permissions := r.permissions
+	r.mu.RUnlock()
+	if permissions == nil {
+		return errors.New("permission settings are unavailable")
+	}
+	return permissions.setMode(mode)
+}
+
+func (r *Registry) SetPermissionApprovalHandler(handler PermissionApprovalHandler) {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	permissions := r.permissions
+	r.mu.RUnlock()
+	permissions.setApprovalHandler(handler)
 }
 
 func (r *Registry) Register(registeredTool Tool) error {
@@ -210,25 +247,43 @@ func (r *Registry) DefinitionsForCategory(category string) []model.ResponseTool 
 
 // Run executes a named tool with its JSON arguments.
 func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessage) Result {
+	registeredTool, err := r.authorizedTool(ctx, name, arguments)
+	if err != nil {
+		return Result{Err: err}
+	}
+	return registeredTool.Run(ctx, arguments)
+}
+
+func (r *Registry) authorizedTool(ctx context.Context, name string, arguments json.RawMessage) (Tool, error) {
 	if r == nil {
-		return Result{Err: errors.New("tool registry is nil")}
+		return nil, errors.New("tool registry is nil")
 	}
 	r.mu.RLock()
 	registeredTool, exists := r.tools[name]
+	permissions := r.permissions
 	r.mu.RUnlock()
 	if !exists {
-		return Result{Err: errors.New("unknown tool: " + name)}
+		return nil, errors.New("unknown tool: " + name)
 	}
-	return registeredTool.Run(ctx, arguments)
+	if err := permissions.authorize(ctx, PermissionRequest{Tool: name, Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
+		return nil, err
+	}
+	return registeredTool, nil
 }
 
 // ExecuteCall runs a function call from a Responses API result and returns the
 // matching function_call_output input item for the next request.
 func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCall) model.InputFunctionCallOutput {
 	started := time.Now()
-	slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
-	r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, Started: true})
-	result := r.Run(ctx, call.Name, json.RawMessage(call.Arguments))
+	registeredTool, permissionErr := r.authorizedTool(ctx, call.Name, json.RawMessage(call.Arguments))
+	var result Result
+	if permissionErr != nil {
+		result = Result{Err: permissionErr}
+	} else {
+		slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
+		r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, Started: true})
+		result = registeredTool.Run(ctx, json.RawMessage(call.Arguments))
+	}
 	duration := time.Since(started)
 	attributes := []any{
 		"tool", call.Name,
@@ -277,7 +332,7 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewCategorizedRegistry(
+	registry, err := NewCategorizedRegistry(
 		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
 		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
 		ToolRegistration{Tool: EditFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
@@ -285,4 +340,11 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},
 	)
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		return nil, err
+	}
+	return registry, nil
 }

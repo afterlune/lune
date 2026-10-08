@@ -75,7 +75,7 @@ func run() (runErr error) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
 		return runTUI(runtime, registry)
 	}
-	return chatLoopWithEscape(runtime, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher)
+	return chatLoopWithEscapeAndPermissions(runtime, registry, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher)
 }
 
 func fatal(err error) {
@@ -90,6 +90,10 @@ func chatLoop(client responder, reader *bufio.Reader, stdout, stderr io.Writer) 
 type escapeWatcher func() (<-chan struct{}, func(), error)
 
 func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr io.Writer, watchEscape escapeWatcher) error {
+	return chatLoopWithEscapeAndPermissions(client, nil, reader, stdout, stderr, watchEscape)
+}
+
+func chatLoopWithEscapeAndPermissions(client responder, permissions *tool.Registry, reader *bufio.Reader, stdout, stderr io.Writer, watchEscape escapeWatcher) error {
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -101,6 +105,13 @@ func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr i
 		line = strings.TrimSpace(line)
 		if line == "/exit" {
 			return nil
+		}
+		if line == "/permissions" || strings.HasPrefix(line, "/permissions ") {
+			handleCLIPermissionsCommand(permissions, line, stdout, stderr)
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			continue
 		}
 		switch line {
 		case "/resume":
@@ -187,6 +198,33 @@ func chatLoopWithEscape(client responder, reader *bufio.Reader, stdout, stderr i
 			return nil
 		}
 	}
+}
+
+func handleCLIPermissionsCommand(registry *tool.Registry, line string, stdout, stderr io.Writer) {
+	if registry == nil {
+		fmt.Fprintln(stderr, "permission settings are unavailable")
+		return
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 1 {
+		mode := registry.PermissionMode()
+		fmt.Fprintf(stdout, "Permission mode: %s — %s\n", mode, permissionModeDescription(mode))
+		fmt.Fprintln(stdout, "Available modes:")
+		for _, option := range tuiPermissionOptions {
+			fmt.Fprintf(stdout, "  %s — %s\n", option.mode, option.description)
+		}
+		return
+	}
+	if len(fields) != 2 {
+		fmt.Fprintln(stderr, "usage: /permissions [workspace|read-only|full-access]")
+		return
+	}
+	mode := tool.PermissionMode(fields[1])
+	if err := registry.SetPermissionMode(mode); err != nil {
+		fmt.Fprintln(stderr, err)
+		return
+	}
+	fmt.Fprintf(stdout, "Permission mode set to %s. %s\n", mode, permissionModeDescription(mode))
 }
 
 func respondWithEscape(client responder, input *model.ResponseInput, watchEscape escapeWatcher, stderr io.Writer) (*model.Response, error, bool) {

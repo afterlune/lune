@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +34,13 @@ type tuiActivity struct {
 
 type toolActivityMsg struct{ event tool.ToolEvent }
 
+type toolApprovalRequestMsg struct {
+	request  tool.PermissionRequest
+	response chan bool
+}
+
+type toolApprovalCancelledMsg struct{ response chan bool }
+
 type taskFinishedMsg struct {
 	result taskResult
 }
@@ -43,16 +52,20 @@ type taskResult struct {
 }
 
 type tuiModel struct {
-	client   responder
-	runtime  resumableResponder
-	input    textarea.Model
-	chat     viewport.Model
-	activity viewport.Model
+	client      responder
+	runtime     resumableResponder
+	permissions *tool.Registry
+	input       textarea.Model
+	chat        viewport.Model
+	activity    viewport.Model
 
 	entries            []tuiEntry
 	activities         []tuiActivity
 	commandSuggestions []string
 	suggestionIndex    int
+	permissionMenu     bool
+	permissionIndex    int
+	pendingApproval    *toolApprovalRequestMsg
 	taskUsage          tokenUsageTotals
 	sessionUsage       tokenUsageTotals
 	usageRequests      []tokenUsageRecord
@@ -87,7 +100,19 @@ type tokenUsageTotals struct {
 	cached    int64
 }
 
-var tuiCommands = []string{"/compact", "/discard", "/exit", "/resume"}
+var tuiCommands = []string{"/compact", "/discard", "/exit", "/permissions", "/resume"}
+
+type tuiPermissionOption struct {
+	mode        tool.PermissionMode
+	label       string
+	description string
+}
+
+var tuiPermissionOptions = []tuiPermissionOption{
+	{mode: tool.PermissionModeWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
+	{mode: tool.PermissionModeReadOnly, label: "Read-only", description: "Read workspace files; ask before web; block writes and shell"},
+	{mode: tool.PermissionModeFullAccess, label: "Full access", description: "Allow all tools; shell can access files outside the workspace"},
+}
 
 func useTUI(stdin, stdout *os.File) bool {
 	return isTerminal(stdin) && isTerminal(stdout)
@@ -111,7 +136,24 @@ func runTUI(client responder, registry *tool.Registry) error {
 			return fmt.Errorf("inspect interrupted task: %w", err)
 		}
 	}
-	program := tea.NewProgram(newTUIModel(client, runtime, pending), tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	ui := newTUIModel(client, runtime, pending)
+	ui.permissions = registry
+	ui.refreshPanels()
+	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	if registry != nil {
+		registry.SetPermissionApprovalHandler(func(ctx context.Context, request tool.PermissionRequest) bool {
+			response := make(chan bool, 1)
+			program.Send(toolApprovalRequestMsg{request: request, response: response})
+			select {
+			case approved := <-response:
+				return approved
+			case <-ctx.Done():
+				program.Send(toolApprovalCancelledMsg{response: response})
+				return false
+			}
+		})
+		defer registry.SetPermissionApprovalHandler(nil)
+	}
 	if observer, ok := client.(interface {
 		SetUsageObserver(func(model.ResponseUsage))
 	}); ok {
@@ -180,6 +222,18 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateToolActivity(message.event)
 		m.refreshPanels()
 		return m, nil
+	case toolApprovalRequestMsg:
+		m.pendingApproval = &message
+		m.status = "Permission required: press Y to approve once or N to deny."
+		m.addEntry("permission", formatToolApproval(message.request), true)
+		return m, nil
+	case toolApprovalCancelledMsg:
+		if m.pendingApproval != nil && m.pendingApproval.response == message.response {
+			m.pendingApproval = nil
+			m.status = "Tool approval cancelled."
+			m.refreshPanels()
+		}
+		return m, nil
 	case modelUsageMsg:
 		m.updateModelUsage(message.usage)
 		m.refreshPanels()
@@ -191,11 +245,20 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch message.String() {
 		case "enter":
-			if m.running {
+			if m.permissionMenu {
+				return m.selectPermissionMode()
+			}
+			if m.running || m.pendingApproval != nil {
 				return m, nil
 			}
 			return m.submit()
 		case "esc":
+			if m.permissionMenu {
+				m.permissionMenu = false
+				m.status = "Permission selection cancelled."
+				m.updateLayout()
+				return m, nil
+			}
 			m.interrupt()
 			return m, nil
 		case "ctrl+c":
@@ -215,6 +278,28 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+down":
 			m.activity.HalfPageDown()
+			return m, nil
+		}
+		if m.permissionMenu {
+			switch message.String() {
+			case "up":
+				if m.permissionIndex > 0 {
+					m.permissionIndex--
+				}
+			case "down":
+				if m.permissionIndex+1 < len(tuiPermissionOptions) {
+					m.permissionIndex++
+				}
+			}
+			return m, nil
+		}
+		if m.pendingApproval != nil && m.running {
+			switch strings.ToLower(message.String()) {
+			case "y":
+				m.resolveToolApproval(true)
+			case "n":
+				m.resolveToolApproval(false)
+			}
 			return m, nil
 		}
 		if m.running {
@@ -271,6 +356,16 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.discard()
 	case "/compact":
 		return m.compact()
+	case "/permissions":
+		return m.openPermissionMenu()
+	case "/":
+		m.updateCommandSuggestions()
+		m.status = "Choose a command; use ↑/↓ to select and Tab to complete."
+		m.updateLayout()
+		return m, nil
+	}
+	if strings.HasPrefix(line, "/permissions ") || strings.HasPrefix(line, "/permissions\t") {
+		return m.setPermissionModeFromCommand(line)
 	}
 	if strings.HasPrefix(line, "/") {
 		m.status = "Unknown command."
@@ -302,6 +397,109 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		response, err := m.client.Respond(ctx, input)
 		return taskResult{response: response, err: err}
 	}, true)
+}
+
+func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
+	if m.permissions == nil {
+		m.status = "Permission settings are unavailable."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	m.permissionIndex = 0
+	for index, option := range tuiPermissionOptions {
+		if option.mode == m.permissions.PermissionMode() {
+			m.permissionIndex = index
+			break
+		}
+	}
+	m.permissionMenu = true
+	m.resetInput()
+	m.status = "Choose a permission mode; Enter applies it, Esc cancels."
+	m.refreshPanels()
+	return m, nil
+}
+
+func (m *tuiModel) selectPermissionMode() (tea.Model, tea.Cmd) {
+	if m.permissionIndex < 0 || m.permissionIndex >= len(tuiPermissionOptions) {
+		m.permissionMenu = false
+		return m, nil
+	}
+	option := tuiPermissionOptions[m.permissionIndex]
+	return m.applyPermissionMode(option.mode)
+}
+
+func (m *tuiModel) setPermissionModeFromCommand(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		m.status = "Usage: /permissions [workspace|read-only|full-access]"
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	return m.applyPermissionMode(tool.PermissionMode(fields[1]))
+}
+
+func (m *tuiModel) applyPermissionMode(mode tool.PermissionMode) (tea.Model, tea.Cmd) {
+	if m.permissions == nil {
+		m.status = "Permission settings are unavailable."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	if err := m.permissions.SetPermissionMode(mode); err != nil {
+		m.status = err.Error()
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	m.permissionMenu = false
+	m.resetInput()
+	m.status = "Permission mode updated."
+	m.addEntry("notice", fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode)), false)
+	return m, nil
+}
+
+func permissionModeLabel(mode tool.PermissionMode) string {
+	for _, option := range tuiPermissionOptions {
+		if option.mode == mode {
+			return option.label
+		}
+	}
+	return string(mode)
+}
+
+func permissionModeDescription(mode tool.PermissionMode) string {
+	for _, option := range tuiPermissionOptions {
+		if option.mode == mode {
+			return option.description
+		}
+	}
+	return ""
+}
+
+func (m *tuiModel) resolveToolApproval(approved bool) {
+	if m.pendingApproval == nil {
+		return
+	}
+	request := m.pendingApproval
+	m.pendingApproval = nil
+	request.response <- approved
+	if approved {
+		m.status = "Tool call approved once."
+		m.addEntry("notice", "Approved this tool call once.", false)
+	} else {
+		m.status = "Tool call denied."
+		m.addEntry("notice", "Denied this tool call.", false)
+	}
+}
+
+func formatToolApproval(request tool.PermissionRequest) string {
+	var arguments bytes.Buffer
+	if json.Indent(&arguments, request.Arguments, "", "  ") != nil {
+		arguments.Write(request.Arguments)
+	}
+	warning := ""
+	if request.Tool == "command" {
+		warning = "\nApproved shell commands run as your user and can access files outside the workspace."
+	}
+	return fmt.Sprintf("Allow %s once?\n%s%s\nPress Y to approve once, N to deny, or Esc to interrupt the task.", request.Tool, arguments.String(), warning)
 }
 
 func (m *tuiModel) resume() (tea.Model, tea.Cmd) {
@@ -424,6 +622,7 @@ func (m *tuiModel) interrupt() {
 
 func (m *tuiModel) finishTask(result taskResult) {
 	m.running = false
+	m.pendingApproval = nil
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
@@ -636,6 +835,9 @@ func (m *tuiModel) refreshPanels() {
 	activities.WriteByte('\n')
 	activities.WriteString(m.sessionUsage.String("Session"))
 	activities.WriteString(fmt.Sprintf("\nMetered requests: task %d/%d · session %d/%d", m.taskUsage.measured, m.taskUsage.requests, m.sessionUsage.measured, m.sessionUsage.requests))
+	if m.permissions != nil {
+		activities.WriteString("\nPermissions: " + permissionModeLabel(m.permissions.PermissionMode()))
+	}
 	m.activity.SetContent(activities.String())
 	m.activity.GotoBottom()
 }
@@ -672,6 +874,9 @@ func (m *tuiModel) updateLayout() {
 }
 
 func (m *tuiModel) commandSuggestionHeight() int {
+	if m.permissionMenu {
+		return len(tuiPermissionOptions) + 2
+	}
 	if len(m.commandSuggestions) == 0 {
 		return 0
 	}
@@ -689,9 +894,14 @@ func (m *tuiModel) View() tea.View {
 	if m.running {
 		status = "Working… Press Esc to interrupt."
 	}
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(status + "\n/compact  /resume  /discard  /exit  ·  PgUp/PgDn chat · Ctrl+↑/↓ activity")
+	if m.pendingApproval != nil {
+		status = "Permission required: Y approve once · N deny · Esc interrupt task."
+	}
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(status + "\n/compact  /permissions  /resume  /discard  /exit  ·  PgUp/PgDn chat · Ctrl+↑/↓ activity")
 	parts := []string{header, body, inputLabel, inputPanel}
-	if suggestions != "" {
+	if m.permissionMenu {
+		parts = append(parts, m.renderPermissionMenu())
+	} else if suggestions != "" {
 		parts = append(parts, suggestions)
 	}
 	parts = append(parts, footer)
@@ -707,7 +917,7 @@ func (m *tuiModel) View() tea.View {
 }
 
 func (m *tuiModel) renderCommandSuggestions() string {
-	if len(m.commandSuggestions) == 0 {
+	if m.permissionMenu || len(m.commandSuggestions) == 0 {
 		return ""
 	}
 	lines := make([]string, 0, len(m.commandSuggestions)+1)
@@ -720,6 +930,20 @@ func (m *tuiModel) renderCommandSuggestions() string {
 		lines = append(lines, line)
 	}
 	lines = append(lines, "  ↑/↓ select · Tab complete · Enter run")
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderPermissionMenu() string {
+	lines := []string{"Permission mode · current: " + permissionModeLabel(m.permissions.PermissionMode())}
+	for index, option := range tuiPermissionOptions {
+		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
+		if index == m.permissionIndex {
+			line = fmt.Sprintf("› %-12s %s", option.label, option.description)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
 	return strings.Join(lines, "\n")
 }
 

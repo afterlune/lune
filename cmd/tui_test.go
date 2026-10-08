@@ -122,8 +122,8 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	ui := newTUIModel(client, nil, false)
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if len(ui.commandSuggestions) != 4 {
-		t.Fatalf("suggestions = %#v, want all four commands", ui.commandSuggestions)
+	if len(ui.commandSuggestions) != 5 {
+		t.Fatalf("suggestions = %#v, want all five commands", ui.commandSuggestions)
 	}
 	if !strings.Contains(ui.View().Content, "/compact") {
 		t.Fatalf("view = %q, want command suggestions", ui.View().Content)
