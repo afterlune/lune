@@ -1,10 +1,12 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,15 @@ import (
 	"strings"
 	"testing"
 )
+
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	previous := slog.Default()
+	buffer := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(buffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return buffer
+}
 
 type testToolExecutor struct {
 	definitions []ResponseTool
@@ -259,6 +270,34 @@ func TestRespondIsUnlimitedByDefault(t *testing.T) {
 	}
 	if response == nil || requestCount != 10 || len(executor.calls) != 9 {
 		t.Fatalf("response=%#v requests=%d tool calls=%d", response, requestCount, len(executor.calls))
+	}
+}
+
+func TestRespondLogsRequestMetadataWithoutPayloads(t *testing.T) {
+	logs := captureLogs(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"private-response-content"}]}]}`)
+	}))
+	defer server.Close()
+	client := newClient("private-api-key", server.URL, server.Client(), newTestExecutor())
+	input, err := NewResponseInput("private-user-input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+
+	output := logs.String()
+	for _, expected := range []string{"model request started", "model response received", "model=deepseek-flash", "request=1", "status=completed", "tool_calls=0"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("logs %q do not contain %q", output, expected)
+		}
+	}
+	for _, private := range []string{"private-user-input", "private-response-content", "private-api-key"} {
+		if strings.Contains(output, private) {
+			t.Errorf("logs contain private payload %q: %s", private, output)
+		}
 	}
 }
 

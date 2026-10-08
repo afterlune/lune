@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/afterlune/lune/internal/model"
 )
@@ -93,7 +95,21 @@ func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessa
 // ExecuteCall runs a function call from a Responses API result and returns the
 // matching function_call_output input item for the next request.
 func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCall) model.InputFunctionCallOutput {
+	started := time.Now()
+	slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
 	result := r.Run(ctx, call.Name, json.RawMessage(call.Arguments))
+	attributes := []any{
+		"tool", call.Name,
+		"call_id", call.CallID,
+		"duration", time.Since(started),
+		"failed", result.Err != nil,
+		"canceled", errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
+	}
+	if result.Err != nil {
+		slog.Warn("tool execution finished", attributes...)
+	} else {
+		slog.Info("tool execution finished", attributes...)
+	}
 	return model.InputFunctionCallOutput{
 		CallID: call.CallID,
 		Output: model.NewToolOutputText(result.Text()),

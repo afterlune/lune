@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type responder interface {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	registry, err := tool.NewDefaultRegistry(".")
 	if err != nil {
 		fatal(err)
@@ -139,6 +141,7 @@ func respondWithEscape(client responder, input *model.ResponseInput, watchEscape
 		default:
 		}
 		cancel()
+		slog.Warn("task interrupted by user", "source", "escape")
 		result := <-done
 		return result.response, result.err, true
 	}

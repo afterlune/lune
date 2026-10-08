@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -112,7 +113,15 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 	history := append(append([]InputItem(nil), c.history...), newItems...)
 
 	toolRounds := 0
+	requestNumber := 0
 	for {
+		requestNumber++
+		requestStarted := time.Now()
+		slog.Info("model request started",
+			"model", DeepSeekFlashModel,
+			"request", requestNumber,
+			"tool_rounds_completed", toolRounds,
+		)
 		request := ResponseRequest{
 			Model: DeepSeekFlashModel,
 			Input: NewResponseInputItems(history...),
@@ -120,20 +129,35 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		}
 		response, err := c.createResponse(ctx, request)
 		if err != nil {
+			slog.Warn("model request failed",
+				"model", DeepSeekFlashModel,
+				"request", requestNumber,
+				"duration", time.Since(requestStarted),
+				"canceled", ctx.Err() != nil,
+				"error_type", fmt.Sprintf("%T", err),
+			)
 			if ctx.Err() != nil {
 				c.saveInterruptedHistory(history, "The task was interrupted while waiting for the model response.")
 				return nil, ctx.Err()
 			}
 			return nil, err
 		}
+		calls := functionCalls(response.Output)
+		slog.Info("model response received",
+			"model", DeepSeekFlashModel,
+			"request", requestNumber,
+			"duration", time.Since(requestStarted),
+			"status", response.Status,
+			"tool_calls", len(calls),
+		)
 		if response.Status == "failed" {
+			slog.Warn("model response failed", "model", DeepSeekFlashModel, "request", requestNumber)
 			if response.Error != nil {
 				return response, fmt.Errorf("DeepSeek response failed (%s): %s", response.Error.Code, response.Error.Message)
 			}
 			return response, errors.New("DeepSeek response failed")
 		}
 
-		calls := functionCalls(response.Output)
 		if len(calls) == 0 {
 			history, err = appendResponseHistory(history, response.Output)
 			if err != nil {
@@ -150,6 +174,11 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			return response, err
 		}
 		if options.MaxToolRounds > 0 && toolRounds >= options.MaxToolRounds {
+			slog.Warn("tool round limit reached",
+				"limit", options.MaxToolRounds,
+				"tool_rounds_completed", toolRounds,
+				"skipped_tool_calls", len(calls),
+			)
 			appendSkippedToolCalls(&history, calls, "Skipped because the tool-call round limit was reached.")
 			c.saveInterruptedHistory(history, "The task stopped after reaching its tool-call round limit.")
 			return response, fmt.Errorf("%w: %d", ErrToolCallLimit, options.MaxToolRounds)
@@ -157,12 +186,22 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 
 		for i, call := range calls {
 			if ctx.Err() != nil {
+				slog.Warn("tool batch interrupted",
+					"tool_round", toolRounds+1,
+					"completed_tool_calls", i,
+					"skipped_tool_calls", len(calls)-i,
+				)
 				appendSkippedToolCalls(&history, calls[i:], "Skipped because the task was interrupted before execution.")
 				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
 				return response, ctx.Err()
 			}
 			history = append(history, c.tools.ExecuteCall(ctx, call))
 			if ctx.Err() != nil {
+				slog.Warn("tool batch interrupted",
+					"tool_round", toolRounds+1,
+					"completed_tool_calls", i+1,
+					"skipped_tool_calls", len(calls)-i-1,
+				)
 				appendSkippedToolCalls(&history, calls[i+1:], "Skipped because the task was interrupted before execution.")
 				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
 				return response, ctx.Err()

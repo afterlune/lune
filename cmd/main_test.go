@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -99,6 +101,11 @@ func TestChatLoopContinuesAfterRequestError(t *testing.T) {
 }
 
 func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
+	previous := slog.Default()
+	logs := &bytes.Buffer{}
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
 	client := &blockingResponder{started: make(chan struct{})}
 	escape := make(chan struct{}, 1)
 	watchEscape := func() (<-chan struct{}, func(), error) {
@@ -122,5 +129,8 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Press Esc to cancel") || strings.Contains(stderr.String(), "context canceled") {
 		t.Fatalf("stderr = %q, want Esc status without cancellation error", stderr.String())
+	}
+	if !strings.Contains(logs.String(), "task interrupted by user") || !strings.Contains(logs.String(), "source=escape") {
+		t.Fatalf("logs = %q, want the Esc interruption event", logs.String())
 	}
 }
