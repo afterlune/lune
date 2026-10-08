@@ -79,6 +79,9 @@ func New(requester Requester, tools model.ToolExecutor) (*Agent, error) {
 	if err := workflow.AddEdge(modelNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add model-to-tool edge: %w", err)
 	}
+	if err := workflow.AddEdge(toolNode, toolNode); err != nil {
+		return nil, fmt.Errorf("add tool-to-tool edge: %w", err)
+	}
 	if err := workflow.AddEdge(toolNode, modelNode); err != nil {
 		return nil, fmt.Errorf("add tool-to-model edge: %w", err)
 	}

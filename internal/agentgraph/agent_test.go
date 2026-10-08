@@ -70,6 +70,62 @@ func (t *recordingTool) Run(context.Context, json.RawMessage) tool.Result {
 	return tool.Result{Output: "file contents"}
 }
 
+type namedRecordingTool struct {
+	name  string
+	calls int
+}
+
+func (t *namedRecordingTool) Definition() model.FunctionTool {
+	return model.FunctionTool{
+		Name:        t.name,
+		Description: "A test tool.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+	}
+}
+
+func (t *namedRecordingTool) Run(context.Context, json.RawMessage) tool.Result {
+	t.calls++
+	return tool.Result{Output: t.name + " completed"}
+}
+
+func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
+	readFile := &namedRecordingTool{name: "read_file"}
+	writeFile := &namedRecordingTool{name: "write_file"}
+	registry, err := tool.NewRegistry(readFile, writeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"},{"type":"function_call","call_id":"write_1","name":"write_file","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	input, err := model.NewResponseInput("read and then write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "multiple-tools", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+		t.Fatalf("result = %#v, want a completed task", result)
+	}
+	if readFile.calls != 1 || writeFile.calls != 1 {
+		t.Fatalf("tool calls = read_file:%d write_file:%d, want one each", readFile.calls, writeFile.calls)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requester.requests))
+	}
+}
+
 func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	readFile := &recordingTool{}
 	registry, err := tool.NewCategorizedRegistry(tool.ToolRegistration{
