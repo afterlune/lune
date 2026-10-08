@@ -39,6 +39,22 @@ type ToolExecutor interface {
 	ExecuteCall(context.Context, OutputFunctionCall) InputFunctionCallOutput
 }
 
+// ToolCategory describes a group of tools that can be revealed on demand.
+type ToolCategory struct {
+	Name        string
+	Description string
+}
+
+// CategorizedToolExecutor optionally exposes tools one category at a time.
+// Executors that only implement ToolExecutor retain the original behavior.
+type CategorizedToolExecutor interface {
+	ToolExecutor
+	Categories() []ToolCategory
+	DefinitionsForCategory(string) []ResponseTool
+}
+
+const categorySelectorName = "select_tool_category"
+
 type Client struct {
 	mu         sync.Mutex
 	apiKey     string
@@ -112,6 +128,16 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 	}
 	history := append(append([]InputItem(nil), c.history...), newItems...)
 
+	categorized, isCategorized := c.tools.(CategorizedToolExecutor)
+	var categories []ToolCategory
+	if isCategorized {
+		categories = categorized.Categories()
+	}
+	if len(categories) == 0 {
+		isCategorized = false
+	}
+	selectedCategory := ""
+
 	toolRounds := 0
 	requestNumber := 0
 	for {
@@ -122,10 +148,23 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			"request", requestNumber,
 			"tool_rounds_completed", toolRounds,
 		)
+		var visibleTools []ResponseTool
+		if isCategorized {
+			selector, err := categorySelectorDefinition(categories)
+			if err != nil {
+				return nil, fmt.Errorf("build category selector: %w", err)
+			}
+			visibleTools = []ResponseTool{selector}
+			if selectedCategory != "" {
+				visibleTools = append(visibleTools, categorized.DefinitionsForCategory(selectedCategory)...)
+			}
+		} else {
+			visibleTools = c.tools.Definitions()
+		}
 		request := ResponseRequest{
 			Model: DeepSeekFlashModel,
 			Input: NewResponseInputItems(history...),
-			Tools: c.tools.Definitions(),
+			Tools: visibleTools,
 		}
 		response, err := c.createResponse(ctx, request)
 		if err != nil {
@@ -184,6 +223,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			return response, fmt.Errorf("%w: %d", ErrToolCallLimit, options.MaxToolRounds)
 		}
 
+		visibleToolNames := responseToolNames(visibleTools)
 		for i, call := range calls {
 			if ctx.Err() != nil {
 				slog.Warn("tool batch interrupted",
@@ -195,7 +235,27 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 				c.saveInterruptedHistory(history, "The task was interrupted while running tools. Completed tool calls and their results are recorded above.")
 				return response, ctx.Err()
 			}
-			history = append(history, c.tools.ExecuteCall(ctx, call))
+			if isCategorized && call.Name == categorySelectorName {
+				category, err := selectedToolCategory(call.Arguments, categories)
+				output := ""
+				if err != nil {
+					output = "Category was not changed: " + err.Error()
+				} else {
+					selectedCategory = category
+					output = "Category selected. Its tools will be available in the next request."
+				}
+				history = append(history, InputFunctionCallOutput{
+					CallID: call.CallID,
+					Output: NewToolOutputText(output),
+				})
+			} else if _, visible := visibleToolNames[call.Name]; !visible {
+				history = append(history, InputFunctionCallOutput{
+					CallID: call.CallID,
+					Output: NewToolOutputText("Tool is not available in the current request."),
+				})
+			} else {
+				history = append(history, c.tools.ExecuteCall(ctx, call))
+			}
 			if ctx.Err() != nil {
 				slog.Warn("tool batch interrupted",
 					"tool_round", toolRounds+1,
@@ -209,6 +269,68 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		}
 		toolRounds++
 	}
+}
+
+func categorySelectorDefinition(categories []ToolCategory) (FunctionTool, error) {
+	names := make([]string, 0, len(categories))
+	descriptions := make([]string, 0, len(categories))
+	for _, category := range categories {
+		names = append(names, category.Name)
+		descriptions = append(descriptions, category.Name+": "+category.Description)
+	}
+	parameters, err := json.Marshal(struct {
+		Type                 string   `json:"type"`
+		Properties           any      `json:"properties"`
+		Required             []string `json:"required"`
+		AdditionalProperties bool     `json:"additionalProperties"`
+	}{
+		Type: "object",
+		Properties: map[string]any{
+			"category": map[string]any{"type": "string", "enum": names},
+		},
+		Required:             []string{"category"},
+		AdditionalProperties: false,
+	})
+	if err != nil {
+		return FunctionTool{}, err
+	}
+	strict := true
+	return FunctionTool{
+		Name:        categorySelectorName,
+		Description: "Choose a tool category to reveal its tools. Available categories: " + strings.Join(descriptions, "; "),
+		Parameters:  parameters,
+		Strict:      &strict,
+	}, nil
+}
+
+func selectedToolCategory(arguments string, categories []ToolCategory) (string, error) {
+	var input struct {
+		Category string `json:"category"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return "", fmt.Errorf("invalid category selection: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return "", errors.New("invalid category selection: expected one JSON object")
+	}
+	for _, category := range categories {
+		if input.Category == category.Name {
+			return input.Category, nil
+		}
+	}
+	return "", fmt.Errorf("unknown category %q", input.Category)
+}
+
+func responseToolNames(tools []ResponseTool) map[string]struct{} {
+	names := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if function, ok := tool.(FunctionTool); ok {
+			names[function.Name] = struct{}{}
+		}
+	}
+	return names
 }
 
 func appendSkippedToolCalls(history *[]InputItem, calls []OutputFunctionCall, reason string) {

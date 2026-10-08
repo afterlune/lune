@@ -34,6 +34,12 @@ type cancelingToolExecutor struct {
 	cancel context.CancelFunc
 }
 
+type categorizedTestExecutor struct {
+	*testToolExecutor
+	categories []ToolCategory
+	byCategory map[string][]ResponseTool
+}
+
 func (e *cancelingToolExecutor) ExecuteCall(_ context.Context, call OutputFunctionCall) InputFunctionCallOutput {
 	e.calls = append(e.calls, call)
 	e.cancel()
@@ -49,6 +55,14 @@ func (e *testToolExecutor) ExecuteCall(_ context.Context, call OutputFunctionCal
 	return InputFunctionCallOutput{CallID: call.CallID, Output: NewToolOutputText("tool result")}
 }
 
+func (e *categorizedTestExecutor) Categories() []ToolCategory {
+	return append([]ToolCategory(nil), e.categories...)
+}
+
+func (e *categorizedTestExecutor) DefinitionsForCategory(category string) []ResponseTool {
+	return append([]ResponseTool(nil), e.byCategory[category]...)
+}
+
 func newTestExecutor() *testToolExecutor {
 	strict := true
 	return &testToolExecutor{definitions: []ResponseTool{
@@ -58,6 +72,38 @@ func newTestExecutor() *testToolExecutor {
 			Strict:     &strict,
 		},
 	}}
+}
+
+func newCategorizedTestExecutor() *categorizedTestExecutor {
+	strict := true
+	readFile := FunctionTool{
+		Name:       "read_file",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+		Strict:     &strict,
+	}
+	command := FunctionTool{
+		Name:       "command",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+		Strict:     &strict,
+	}
+	webSearch := FunctionTool{
+		Name:       "web_search",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+		Strict:     &strict,
+	}
+	return &categorizedTestExecutor{
+		testToolExecutor: &testToolExecutor{definitions: []ResponseTool{readFile, command, webSearch}},
+		categories: []ToolCategory{
+			{Name: "files", Description: "Workspace files."},
+			{Name: "command", Description: "Run commands."},
+			{Name: "web", Description: "Search the web."},
+		},
+		byCategory: map[string][]ResponseTool{
+			"files":   {readFile},
+			"command": {command},
+			"web":     {webSearch},
+		},
+	}
 }
 
 func TestReadAPIKey(t *testing.T) {
@@ -189,6 +235,153 @@ func TestRespondRunsFunctionCallAndSendsFullHistory(t *testing.T) {
 	}
 	if len(executor.calls) != 1 || executor.calls[0].CallID != "call_1" {
 		t.Fatalf("unexpected tool calls: %#v", executor.calls)
+	}
+}
+
+func TestRespondRevealsCategoriesAndValidatesVisibleTools(t *testing.T) {
+	executor := newCategorizedTestExecutor()
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if requestCount == 1 {
+			if len(request.Tools) != 1 {
+				t.Errorf("initial tools = %d, want only category selector", len(request.Tools))
+			} else if selector, ok := request.Tools[0].(FunctionTool); !ok || selector.Name != categorySelectorName {
+				t.Errorf("initial tool = %#v, want category selector", request.Tools[0])
+			} else if !strings.Contains(string(selector.Parameters), `"enum":["files","command","web"]`) {
+				t.Errorf("selector schema does not enumerate categories: %s", selector.Parameters)
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"select_1","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`)
+			return
+		}
+		if requestCount == 2 {
+			if len(request.Tools) != 2 {
+				t.Errorf("files category tools = %d, want selector and read_file", len(request.Tools))
+			} else if definition, ok := request.Tools[1].(FunctionTool); !ok || definition.Name != "read_file" {
+				t.Errorf("revealed tool = %#v, want read_file", request.Tools[1])
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"function_call","call_id":"select_2","name":"select_tool_category","arguments":"{\"category\":\"web\"}"},{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"},{"type":"function_call","call_id":"hidden_1","name":"command","arguments":"{}"}]}`)
+			return
+		}
+		if requestCount == 3 {
+			if len(request.Tools) != 2 {
+				t.Errorf("web category tools = %d, want selector and web_search", len(request.Tools))
+			} else if definition, ok := request.Tools[1].(FunctionTool); !ok || definition.Name != "web_search" {
+				t.Errorf("switched tool = %#v, want web_search", request.Tools[1])
+			}
+			if len(request.Input.Items) != 9 {
+				t.Errorf("continued history items = %d, want 9", len(request.Input.Items))
+			}
+			for _, item := range request.Input.Items {
+				if output, ok := item.(InputFunctionCallOutput); ok && output.CallID == "hidden_1" {
+					encoded, _ := json.Marshal(output.Output)
+					if !strings.Contains(string(encoded), "not available") {
+						t.Errorf("hidden tool output = %s, want unavailable error", encoded)
+					}
+				}
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_3","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+			return
+		}
+		if requestCount == 4 {
+			if len(request.Tools) != 1 {
+				t.Errorf("new task tools = %d, want category selector only", len(request.Tools))
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_4","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second task done"}]}]}`)
+			return
+		}
+		t.Errorf("unexpected request %d", requestCount)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+
+	for _, prompt := range []string{"first task", "second task"} {
+		input, err := NewResponseInput(prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Respond(context.Background(), input); err != nil {
+			t.Fatalf("Respond(%q): %v", prompt, err)
+		}
+	}
+	if got, want := len(executor.calls), 1; got != want || executor.calls[0].Name != "read_file" {
+		t.Fatalf("executed calls = %#v, want only read_file", executor.calls)
+	}
+}
+
+func TestRespondCountsCategorySelectionTowardToolRoundLimit(t *testing.T) {
+	executor := newCategorizedTestExecutor()
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"select_1","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("read a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.RespondWithOptions(context.Background(), input, RespondOptions{MaxToolRounds: 1})
+	if !errors.Is(err, ErrToolCallLimit) {
+		t.Fatalf("RespondWithOptions error = %v, want ErrToolCallLimit", err)
+	}
+	if len(executor.calls) != 0 {
+		t.Fatalf("executed calls = %#v, want no calls after selection reached the limit", executor.calls)
+	}
+}
+
+func TestRespondRejectsUnknownCategorySelection(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if requestCount == 1 {
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"select_1","name":"select_tool_category","arguments":"{\"category\":\"hidden\"}"}]}`)
+			return
+		}
+		if len(request.Tools) != 1 {
+			t.Errorf("tools after invalid category = %d, want selector only", len(request.Tools))
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), newCategorizedTestExecutor())
+	input, err := NewResponseInput("select a category")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requests = %d, want 2", requestCount)
+	}
+	foundErrorOutput := false
+	for _, item := range client.history {
+		if output, ok := item.(InputFunctionCallOutput); ok && output.CallID == "select_1" {
+			encoded, _ := json.Marshal(output.Output)
+			foundErrorOutput = strings.Contains(string(encoded), "unknown category")
+		}
+	}
+	if !foundErrorOutput {
+		t.Fatal("history is missing an error output for the unknown category")
 	}
 }
 
