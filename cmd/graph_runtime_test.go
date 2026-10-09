@@ -88,11 +88,12 @@ func TestGraphResponderClearsFailedModelTaskAndContinues(t *testing.T) {
 }
 
 func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
-	registry, err := tool.NewRegistry()
+	registry, err := tool.NewDefaultRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	requester := &graphScriptedRequester{responses: []*model.Response{
+		graphResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_files","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`),
 		graphResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}]}`),
 		graphResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second answer"}]}]}`),
 	}}
@@ -130,10 +131,31 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 	if responseText(second) != "second answer" {
 		t.Fatalf("second response = %q", responseText(second))
 	}
-	if len(requester.requests) != 2 {
-		t.Fatalf("model requests = %d, want 2", len(requester.requests))
+	if len(requester.requests) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(requester.requests))
 	}
-	encoded, err := json.Marshal(requester.requests[1].Input)
+	toolNames := func(request model.ResponseRequest) map[string]bool {
+		names := make(map[string]bool, len(request.Tools))
+		for _, definition := range request.Tools {
+			if function, ok := definition.(model.FunctionTool); ok {
+				names[function.Name] = true
+			}
+		}
+		return names
+	}
+	initialTools := toolNames(requester.requests[0])
+	if len(initialTools) != 1 || !initialTools[model.CategorySelectorName] {
+		t.Fatalf("first task initial tools = %#v, want only category selector", initialTools)
+	}
+	selectedTools := toolNames(requester.requests[1])
+	if !selectedTools["read_file"] {
+		t.Fatalf("files category did not expose read_file: %#v", selectedTools)
+	}
+	newTaskTools := toolNames(requester.requests[2])
+	if len(newTaskTools) != 1 || !newTaskTools[model.CategorySelectorName] {
+		t.Fatalf("second task initial tools = %#v, want only category selector", newTaskTools)
+	}
+	encoded, err := json.Marshal(requester.requests[2].Input)
 	if err != nil {
 		t.Fatal(err)
 	}

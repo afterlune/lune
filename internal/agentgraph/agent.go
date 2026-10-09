@@ -175,6 +175,14 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if state.PlanMode {
 		request.Instructions = "You are in plan mode. Inspect and reason about the requested work, then present a concise implementation plan for user review. You may use read-only tools only. Do not claim to have made changes."
 	}
+	slog.InfoContext(ctx, "agent model request started",
+		"model", model.DeepSeekFlashModel,
+		"request", state.ToolRounds+1,
+		"tool_rounds_completed", state.ToolRounds,
+		"plan_mode", state.PlanMode,
+		"selected_category", state.SelectedCategory,
+		"visible_tools", visibleNames,
+	)
 	response, err := a.requester.CreateResponse(ctx, request)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -238,9 +246,14 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
+			slog.WarnContext(ctx, "tool category selection rejected",
+				"selected_category", state.SelectedCategory,
+				"error_type", fmt.Sprintf("%T", err),
+			)
 			text = "Category was not changed: " + err.Error()
 		} else {
 			state.SelectedCategory = category
+			slog.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
 	case state.PlanMode && !isReadOnlyTool(call.Name):

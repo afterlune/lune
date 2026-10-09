@@ -212,6 +212,85 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	}
 }
 
+func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) {
+	readFile := &recordingTool{}
+	registry, err := tool.NewCategorizedRegistry(tool.ToolRegistration{
+		Tool:     readFile,
+		Category: model.ToolCategory{Name: "files", Description: "Workspace files."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_1","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "category-checkpoints.db")
+	store, err := sqlite.Open[State](context.Background(), dbPath, checkpoint.JSON[State]{})
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	input, err := model.NewResponseInput("read a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := agent.Start(context.Background(), "category-recovery", nil, input, TaskOptions{}, graph.Options[State]{
+		Store: store, MaxSteps: 2,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if paused.Status != graph.StatusBudget {
+		t.Fatalf("paused status = %q, want budget checkpoint", paused.Status)
+	}
+	selectedCategoryPersisted := false
+	for _, invocation := range paused.Checkpoint.Invocations {
+		if invocation.State.SelectedCategory == "files" {
+			selectedCategoryPersisted = true
+		}
+	}
+	if !selectedCategoryPersisted {
+		t.Fatalf("checkpoint did not retain selected category: %#v", paused.Checkpoint.Invocations)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := sqlite.Open[State](context.Background(), dbPath, checkpoint.JSON[State]{})
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	recoveredAgent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New after reopen: %v", err)
+	}
+	completed, err := recoveredAgent.Recover(context.Background(), "category-recovery", nil, graph.Options[State]{
+		Store: reopened, MaxSteps: 100,
+	})
+	if err != nil {
+		t.Fatalf("Recover after reopen: %v", err)
+	}
+	if completed.Status != graph.StatusCompleted || completed.Checkpoint.Final == nil {
+		t.Fatalf("recovered result = %#v, want completed task", completed)
+	}
+	if readFile.calls != 1 || len(requester.requests) != 3 {
+		t.Fatalf("read_file calls=%d, model requests=%d; want one tool call and three requests", readFile.calls, len(requester.requests))
+	}
+	for _, index := range []int{1, 2} {
+		got := strings.Join(toolNames(requester.requests[index].Tools), ",")
+		want := model.CategorySelectorName + ",read_file"
+		if got != want {
+			t.Errorf("request %d visible tools = %q, want %q", index+1, got, want)
+		}
+	}
+}
+
 func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	logBuffer := &bytes.Buffer{}
 	previousLogger := slog.Default()
@@ -278,7 +357,17 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 			t.Errorf("hidden tool history is missing %q: %s", expected, encodedHistory)
 		}
 	}
-	for _, expected := range []string{"tool call is not in the visible tool set", "tool=web_search", "selected_category=files", "visible_tools", "expected_category=web"} {
+	for _, expected := range []string{
+		"agent model request started",
+		"request=2",
+		"selected_category=files",
+		`visible_tools="[select_tool_category read_file]"`,
+		"tool category selected",
+		"tool call is not in the visible tool set",
+		"tool=web_search",
+		"visible_tools",
+		"expected_category=web",
+	} {
 		if !strings.Contains(logBuffer.String(), expected) {
 			t.Errorf("logs %q missing %q", logBuffer.String(), expected)
 		}
