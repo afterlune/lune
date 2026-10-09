@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/afterlune/lune/internal/model"
+	"github.com/afterlune/lune/internal/tool"
 )
 
 type fakeResponder struct {
@@ -28,6 +29,29 @@ type fakeResumableResponder struct {
 	pending   bool
 	resumes   int
 	discarded int
+}
+
+func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
+	registry, err := tool.NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	handleCLIPermissionsCommand(registry, "/permissions ask", &stdout, &stderr)
+	if registry.PermissionMode() != tool.PermissionModeAsk {
+		t.Fatalf("permission mode = %q, want ask", registry.PermissionMode())
+	}
+	if !strings.Contains(stdout.String(), "Ask") || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want Ask mode confirmation", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	handleCLIPermissionsCommand(registry, "/permissions", &stdout, &stderr)
+	for _, mode := range []string{"read-only", "workspace", "ask", "full-access"} {
+		if !strings.Contains(stdout.String(), mode) {
+			t.Errorf("permission list %q does not contain %q", stdout.String(), mode)
+		}
+	}
 }
 
 func (f *blockingResponder) Respond(ctx context.Context, _ *model.ResponseInput) (*model.Response, error) {

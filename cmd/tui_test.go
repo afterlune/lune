@@ -21,6 +21,15 @@ type fakeTUICompactor struct {
 	compactCalls   int
 }
 
+type planModeResponder struct {
+	fakeResponder
+	planModes []bool
+}
+
+func (f *planModeResponder) SetPlanMode(enabled bool) {
+	f.planModes = append(f.planModes, enabled)
+}
+
 func (f *fakeTUICompactor) Compact(context.Context) (int, error) {
 	f.compactCalls++
 	return f.compactedTurns, f.compactErr
@@ -137,8 +146,11 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	ui := newTUIModel(client, nil, false)
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if len(ui.commandSuggestions) != 5 {
-		t.Fatalf("suggestions = %#v, want all five commands", ui.commandSuggestions)
+	if len(ui.commandSuggestions) != 6 {
+		t.Fatalf("suggestions = %#v, want all six legacy commands", ui.commandSuggestions)
+	}
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") {
+		t.Fatalf("suggestions = %#v, want /plan", ui.commandSuggestions)
 	}
 	if !strings.Contains(ui.View().Content, "/compact") {
 		t.Fatalf("view = %q, want command suggestions", ui.View().Content)
@@ -160,6 +172,76 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(ui.entries[len(ui.entries)-1].text, "Unknown command") {
 		t.Fatalf("last entry = %#v, want unknown-command error", ui.entries[len(ui.entries)-1])
+	}
+}
+
+func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
+	registry, err := tool.NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.permissions = registry
+	if registry.PermissionMode() != tool.PermissionModeWorkspace {
+		t.Fatalf("initial mode = %q, want workspace", registry.PermissionMode())
+	}
+	ui.input.SetValue("keep this draft")
+
+	for _, mode := range []tool.PermissionMode{
+		tool.PermissionModeAsk,
+		tool.PermissionModeFullAccess,
+		tool.PermissionModeReadOnly,
+		tool.PermissionModeWorkspace,
+	} {
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+		if got := registry.PermissionMode(); got != mode {
+			t.Fatalf("mode = %q, want %q", got, mode)
+		}
+		if ui.input.Value() != "keep this draft" {
+			t.Fatalf("mode switch cleared input draft: %q", ui.input.Value())
+		}
+	}
+	if !strings.Contains(ui.View().Content, "Workspace") || !strings.Contains(ui.status, "Workspace") {
+		t.Fatalf("view/status should show active mode: view=%q status=%q", ui.View().Content, ui.status)
+	}
+
+	ui.running = true
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	if registry.PermissionMode() != tool.PermissionModeWorkspace {
+		t.Fatalf("mode changed while task was running: %q", registry.PermissionMode())
+	}
+}
+
+func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
+	client := &planModeResponder{}
+	registry, err := tool.NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := newTUIModel(client, nil, false)
+	ui.permissions = registry
+	initialPermissionMode := registry.PermissionMode()
+
+	ui.input.SetValue("/plan")
+	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if command != nil {
+		t.Fatal("/plan should toggle locally without starting a model request")
+	}
+	finished := updated.(*tuiModel)
+	if !finished.planMode || len(client.planModes) != 1 || !client.planModes[0] {
+		t.Fatalf("plan mode=%v updates=%v, want enabled", finished.planMode, client.planModes)
+	}
+	if registry.PermissionMode() != initialPermissionMode {
+		t.Fatalf("/plan changed permission mode to %q", registry.PermissionMode())
+	}
+	if finished.input.Value() != "" {
+		t.Fatalf("/plan input = %q, want cleared", finished.input.Value())
+	}
+
+	finished.input.SetValue("/plan")
+	finished.submit()
+	if finished.planMode || len(client.planModes) != 2 || client.planModes[1] {
+		t.Fatalf("second /plan should return to build mode: plan=%v updates=%v", finished.planMode, client.planModes)
 	}
 }
 

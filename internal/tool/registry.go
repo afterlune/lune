@@ -54,7 +54,7 @@ type ToolRegistration struct {
 func NewRegistry(tools ...Tool) (*Registry, error) {
 	registry := &Registry{
 		tools:       make(map[string]Tool, len(tools)),
-		permissions: newPermissionSettings(PermissionModeFullAccess),
+		permissions: newPermissionSettings(PermissionModeReadOnly),
 	}
 	for _, registeredTool := range tools {
 		if err := registry.Register(registeredTool); err != nil {
@@ -66,7 +66,7 @@ func NewRegistry(tools ...Tool) (*Registry, error) {
 
 // NewCategorizedRegistry creates a registry whose tools are revealed by category.
 func NewCategorizedRegistry(registrations ...ToolRegistration) (*Registry, error) {
-	registry := &Registry{permissions: newPermissionSettings(PermissionModeFullAccess)}
+	registry := &Registry{permissions: newPermissionSettings(PermissionModeReadOnly)}
 	for _, registration := range registrations {
 		if err := registry.RegisterInCategory(registration.Category, registration.Tool); err != nil {
 			return nil, err

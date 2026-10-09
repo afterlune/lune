@@ -35,6 +35,9 @@ func TestExecuteCallLogsMetadataWithoutPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := registry.SetPermissionMode(PermissionModeFullAccess); err != nil {
+		t.Fatal(err)
+	}
 	call := model.OutputFunctionCall{
 		CallID:    "call-123",
 		Name:      "private_tool",
@@ -58,6 +61,9 @@ func TestExecuteCallLogsMetadataWithoutPayloads(t *testing.T) {
 func TestExecuteCallPublishesSanitizedLifecycleEvents(t *testing.T) {
 	registry, err := NewRegistry(loggingTestTool{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeFullAccess); err != nil {
 		t.Fatal(err)
 	}
 	var events []ToolEvent
@@ -98,6 +104,9 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry: %v", err)
 	}
+	if mode := registry.PermissionMode(); mode != PermissionModeWorkspace {
+		t.Fatalf("default registry mode = %q, want workspace", mode)
+	}
 	want := map[string]bool{
 		"command": false, "read_file": false, "write_file": false,
 		"edit_file": false, "web_search": false, "web_fetch": false,
@@ -119,6 +128,33 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 		if !found {
 			t.Errorf("default registry is missing %q", name)
 		}
+	}
+}
+
+func TestCustomRegistryConstructorsDefaultToReadOnly(t *testing.T) {
+	uncategorized, err := NewRegistry(privateNamedTool{name: "custom_tool"})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if mode := uncategorized.PermissionMode(); mode != PermissionModeReadOnly {
+		t.Errorf("NewRegistry mode = %q, want read-only", mode)
+	}
+	if result := uncategorized.Run(context.Background(), "custom_tool", json.RawMessage(`{}`)); result.Err == nil {
+		t.Error("NewRegistry ran an unrecognized custom tool in its default read-only mode")
+	}
+
+	categorized, err := NewCategorizedRegistry(ToolRegistration{
+		Tool:     privateNamedTool{name: "custom_tool"},
+		Category: model.ToolCategory{Name: "custom", Description: "Custom tools."},
+	})
+	if err != nil {
+		t.Fatalf("NewCategorizedRegistry: %v", err)
+	}
+	if mode := categorized.PermissionMode(); mode != PermissionModeReadOnly {
+		t.Errorf("NewCategorizedRegistry mode = %q, want read-only", mode)
+	}
+	if result := categorized.Run(context.Background(), "custom_tool", json.RawMessage(`{}`)); result.Err == nil {
+		t.Error("NewCategorizedRegistry ran an unrecognized custom tool in its default read-only mode")
 	}
 }
 

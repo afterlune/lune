@@ -216,7 +216,7 @@ func handleCLIPermissionsCommand(registry *tool.Registry, line string, stdout, s
 		return
 	}
 	if len(fields) != 2 {
-		fmt.Fprintln(stderr, "usage: /permissions [workspace|read-only|full-access]")
+		fmt.Fprintln(stderr, "usage: /permissions [read-only|workspace|ask|full-access]")
 		return
 	}
 	mode := tool.PermissionMode(fields[1])

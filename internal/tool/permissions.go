@@ -8,12 +8,13 @@ import (
 	"sync"
 )
 
-// PermissionMode controls how the built-in tools are authorized.
+// PermissionMode controls how registered tools are authorized.
 type PermissionMode string
 
 const (
 	PermissionModeReadOnly   PermissionMode = "read-only"
 	PermissionModeWorkspace  PermissionMode = "workspace"
+	PermissionModeAsk        PermissionMode = "ask"
 	PermissionModeFullAccess PermissionMode = "full-access"
 )
 
@@ -50,7 +51,7 @@ func (p *permissionSettings) setMode(mode PermissionMode) error {
 		return errors.New("permission settings are unavailable")
 	}
 	switch mode {
-	case PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeFullAccess:
+	case PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeAsk, PermissionModeFullAccess:
 	default:
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
@@ -91,6 +92,10 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		return requestApproval(ctx, approve, request)
 	case PermissionModeWorkspace:
 		if request.Tool == "command" || isNetworkTool(request.Tool) {
+			return requestApproval(ctx, approve, request)
+		}
+	case PermissionModeAsk:
+		if !isWorkspaceReadTool(request.Tool) {
 			return requestApproval(ctx, approve, request)
 		}
 	case PermissionModeFullAccess:

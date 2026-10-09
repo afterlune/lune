@@ -168,8 +168,8 @@ type tokenUsageTotals struct {
 	cached    int64
 }
 
-var tuiCommands = []string{"/compact", "/continue", "/discard", "/exit", "/new", "/permissions", "/queue", "/resume", "/vim"}
-var legacyTUICommands = []string{"/compact", "/discard", "/exit", "/permissions", "/resume"}
+var tuiCommands = []string{"/compact", "/continue", "/discard", "/exit", "/new", "/permissions", "/plan", "/queue", "/resume", "/vim"}
+var legacyTUICommands = []string{"/compact", "/discard", "/exit", "/permissions", "/plan", "/resume"}
 
 type tuiPermissionOption struct {
 	mode        tool.PermissionMode
@@ -178,8 +178,9 @@ type tuiPermissionOption struct {
 }
 
 var tuiPermissionOptions = []tuiPermissionOption{
-	{mode: tool.PermissionModeWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
 	{mode: tool.PermissionModeReadOnly, label: "Read-only", description: "Read workspace files; ask before web; block writes and shell"},
+	{mode: tool.PermissionModeWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
+	{mode: tool.PermissionModeAsk, label: "Ask", description: "Ask before writes, shell, web, and other non-read tools"},
 	{mode: tool.PermissionModeFullAccess, label: "Full access", description: "Allow all tools; shell can access files outside the workspace"},
 }
 
@@ -504,14 +505,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		case "shift+tab":
-			if !m.running && !m.permissionMenu && !m.sessionPicker && !m.queuePicker {
-				m.planMode = !m.planMode
-				m.setRuntimePlanMode(m.planMode)
-				if m.planMode {
-					m.status = "Plan mode · read-only tools are available."
-				} else {
-					m.status = "Build mode."
-				}
+			if !m.running && !m.permissionMenu && !m.sessionPicker && !m.queuePicker && !m.detailsOpen {
+				return m.cyclePermissionMode()
 			}
 			return m, nil
 		case "ctrl+enter":
@@ -653,6 +648,8 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.compact()
 	case "/permissions":
 		return m.openPermissionMenu()
+	case "/plan":
+		return m.togglePlanMode()
 	case "/vim":
 		return m.toggleVimMode()
 	case "/":
@@ -852,6 +849,24 @@ func (m *tuiModel) setRuntimePlanMode(enabled bool) {
 	}
 }
 
+func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
+	if m.running {
+		m.status = "Plan mode can only be changed while idle."
+		m.addEntry("notice", m.status, false)
+		return m, nil
+	}
+	m.planMode = !m.planMode
+	m.setRuntimePlanMode(m.planMode)
+	if m.planMode {
+		m.status = "Plan mode · read-only tools are available."
+	} else {
+		m.status = "Build mode."
+	}
+	m.addEntry("notice", m.status, false)
+	m.resetInput()
+	return m, nil
+}
+
 func (m *tuiModel) toggleVimMode() (tea.Model, tea.Cmd) {
 	m.vimMode = !m.vimMode
 	m.vimNormal = false
@@ -964,6 +979,26 @@ func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *tuiModel) cyclePermissionMode() (tea.Model, tea.Cmd) {
+	if m.permissions == nil {
+		m.status = "Permission settings are unavailable."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	currentIndex := -1
+	for index, option := range tuiPermissionOptions {
+		if option.mode == m.permissions.PermissionMode() {
+			currentIndex = index
+			break
+		}
+	}
+	if currentIndex < 0 {
+		currentIndex = 0
+	}
+	next := tuiPermissionOptions[(currentIndex+1)%len(tuiPermissionOptions)]
+	return m.changePermissionMode(next.mode, false)
+}
+
 func (m *tuiModel) selectPermissionMode() (tea.Model, tea.Cmd) {
 	if m.permissionIndex < 0 || m.permissionIndex >= len(tuiPermissionOptions) {
 		m.permissionMenu = false
@@ -976,7 +1011,7 @@ func (m *tuiModel) selectPermissionMode() (tea.Model, tea.Cmd) {
 func (m *tuiModel) setPermissionModeFromCommand(line string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		m.status = "Usage: /permissions [workspace|read-only|full-access]"
+		m.status = "Usage: /permissions [read-only|workspace|ask|full-access]"
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
@@ -984,6 +1019,10 @@ func (m *tuiModel) setPermissionModeFromCommand(line string) (tea.Model, tea.Cmd
 }
 
 func (m *tuiModel) applyPermissionMode(mode tool.PermissionMode) (tea.Model, tea.Cmd) {
+	return m.changePermissionMode(mode, true)
+}
+
+func (m *tuiModel) changePermissionMode(mode tool.PermissionMode, resetInput bool) (tea.Model, tea.Cmd) {
 	if m.permissions == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
@@ -995,9 +1034,15 @@ func (m *tuiModel) applyPermissionMode(mode tool.PermissionMode) (tea.Model, tea
 		return m, nil
 	}
 	m.permissionMenu = false
-	m.resetInput()
-	m.status = "Permission mode updated."
+	if resetInput {
+		m.resetInput()
+	} else {
+		m.updateCommandSuggestions()
+		m.updateLayout()
+	}
+	m.status = fmt.Sprintf("Permission mode: %s.", permissionModeLabel(mode))
 	m.addEntry("notice", fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode)), false)
+	m.refreshPanels()
 	return m, nil
 }
 
@@ -1997,7 +2042,7 @@ func (m *tuiModel) renderFooter(width int) string {
 	case m.pending:
 		status = "Paused task · /continue to resume"
 	case m.status == "Ready":
-		status = "/ commands · Enter send · Ctrl+O newline · Shift+Tab mode · Ctrl+B activity"
+		status = "/ commands · Enter send · Shift+Tab permissions · /plan planning · Ctrl+B activity"
 	}
 	if m.vimMode {
 		vimState := "VIM INSERT"

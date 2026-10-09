@@ -98,6 +98,9 @@ func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := registry.SetPermissionMode(tool.PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"},{"type":"function_call","call_id":"write_1","name":"write_file","arguments":"{}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
@@ -222,6 +225,9 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 		tool.ToolRegistration{Tool: webSearch, Category: model.ToolCategory{Name: "web", Description: "Web search."}},
 	)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
 		t.Fatal(err)
 	}
 	requester := &scriptedRequester{responses: []*model.Response{
@@ -486,7 +492,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetPermissionMode(tool.PermissionModeReadOnly); err != nil {
+	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
 		t.Fatal(err)
 	}
 	requester := &scriptedRequester{responses: []*model.Response{
