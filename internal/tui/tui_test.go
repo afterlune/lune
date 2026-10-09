@@ -1,14 +1,18 @@
-package main
+package tui
 
 import (
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/tool"
@@ -97,10 +101,10 @@ func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "internal-call-id", Name: "read_file", Started: true}})
 	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "internal-call-id", Name: "read_file", Duration: 25, Failed: true}})
 	view := ui.View().Content
-	if !strings.Contains(view, "read_file") || !strings.Contains(view, "failed") {
-		t.Fatalf("view = %q, want tool name and failure status", view)
+	if !strings.Contains(view, "Reading a workspace file") || !strings.Contains(view, "failed") {
+		t.Fatalf("view = %q, want humanized tool and failure status", view)
 	}
-	if strings.Contains(view, "internal-call-id") || strings.Contains(view, "arguments") || strings.Contains(view, "output") {
+	if strings.Contains(view, "read_file") || strings.Contains(view, "internal-call-id") || strings.Contains(view, "arguments") || strings.Contains(view, "output") {
 		t.Fatalf("view contains internal or tool payload data: %q", view)
 	}
 }
@@ -112,11 +116,24 @@ func TestTUIHistoryTranscriptHidesToolArgumentsAndOutput(t *testing.T) {
 		model.InputFunctionCallOutput{CallID: "call-1", Output: model.ToolOutput{Text: &toolOutput}},
 	)
 	entries := transcriptFromHistory(history)
-	if len(entries) != 1 || entries[0].Text != "read_file · done" {
+	if len(entries) != 1 || entries[0].Text != "Reading private.txt · done" {
 		t.Fatalf("transcript entries = %#v, want one sanitized tool lifecycle", entries)
 	}
-	if strings.Contains(entries[0].Text, "private.txt") || strings.Contains(entries[0].Text, toolOutput) {
+	if strings.Contains(entries[0].Text, "read_file") || strings.Contains(entries[0].Text, toolOutput) {
 		t.Fatalf("transcript exposes tool payload: %#v", entries[0])
+	}
+}
+
+func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.restoreSessionState(savedTUISession{
+		Entries:    []savedTUIEntry{{Role: "tool", Text: "read_file · done"}},
+		Activities: []savedActivity{{Name: "read_file", Status: "done"}},
+	})
+	ui.refreshPanels()
+	view := ui.View().Content
+	if strings.Contains(view, "read_file") || !strings.Contains(view, "Reading a workspace file") {
+		t.Fatalf("legacy transcript exposes internal tool name: %q", view)
 	}
 }
 
@@ -146,8 +163,8 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	ui := newTUIModel(client, nil, false)
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if len(ui.commandSuggestions) != 6 {
-		t.Fatalf("suggestions = %#v, want all six legacy commands", ui.commandSuggestions)
+	if len(ui.commandSuggestions) != 7 {
+		t.Fatalf("suggestions = %#v, want all seven legacy commands", ui.commandSuggestions)
 	}
 	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") {
 		t.Fatalf("suggestions = %#v, want /plan", ui.commandSuggestions)
@@ -364,7 +381,7 @@ func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
 	}
 	defer input.Close()
 	defer output.Close()
-	if useTUI(input, output) {
+	if UseTUI(input, output) {
 		t.Fatal("piped streams should use the line interface")
 	}
 }
@@ -399,6 +416,20 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 			t.Errorf("layout with command suggestions height = %d, terminal height = %d", got, size.height)
 		}
 	}
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.preferences = uiPreferences{Theme: themeAnime, AnimeLayout: layoutFocus}
+	ui.colorProfile = colorprofile.TrueColor
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.input.SetValue("cursor alignment")
+	ui.updateLayout()
+	view := ui.View()
+	if got := lipgloss.Height(view.Content); got > 30 {
+		t.Errorf("anime focus layout height = %d, want <= 30", got)
+	}
+	inputCursor := ui.input.Cursor()
+	if view.Cursor == nil || inputCursor == nil || view.Cursor.Y != inputCursor.Y+lipgloss.Height(ui.renderHeader(100))+ui.chat.Height()+1 {
+		t.Errorf("anime avatar shifted cursor unexpectedly: cursor=%v header=%d chat=%d", view.Cursor, lipgloss.Height(ui.renderHeader(100)), ui.chat.Height())
+	}
 }
 
 func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
@@ -419,5 +450,156 @@ func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	if ui.detailsOpen {
 		t.Fatal("Esc should close details overlay")
+	}
+}
+
+func TestUIPreferencesLoadSaveAndFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ui.json")
+	prefs, err := loadUIPreferences(path)
+	if err != nil || prefs != defaultUIPreferences() {
+		t.Fatalf("missing preferences = %#v, %v; want defaults", prefs, err)
+	}
+	want := uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}
+	if err := saveUIPreferences(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadUIPreferences(path)
+	if err != nil || got != want {
+		t.Fatalf("loaded preferences = %#v, %v; want %#v", got, err, want)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = loadUIPreferences(path)
+	if err == nil || got != defaultUIPreferences() {
+		t.Fatalf("invalid preferences = %#v, %v; want defaults and an error", got, err)
+	}
+}
+
+func TestTUIThemeCommandPersistsAndKeepsAnimeCommandsHidden(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings", "ui.json")
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.preferencesPath = path
+	ui.input.SetValue("/theme")
+	ui.submit()
+	if strings.Contains(ui.status, "anime") {
+		t.Fatalf("bare theme command revealed hidden theme variants: %q", ui.status)
+	}
+	ui.input.SetValue("/theme anime studio")
+	ui.submit()
+	if ui.preferences != (uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}) {
+		t.Fatalf("preferences = %#v, want anime studio", ui.preferences)
+	}
+	loaded, err := loadUIPreferences(path)
+	if err != nil || loaded != ui.preferences {
+		t.Fatalf("persisted preferences = %#v, %v", loaded, err)
+	}
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/theme") || strings.Contains(strings.Join(ui.commandSuggestions, " "), "anime") {
+		t.Fatalf("theme command suggestions expose anime variants: %#v", ui.commandSuggestions)
+	}
+	ui.input.SetValue("/theme a")
+	ui.updateCommandSuggestions()
+	if len(ui.commandSuggestions) != 0 {
+		t.Fatalf("anime subcommands should stay hidden from suggestions: %#v", ui.commandSuggestions)
+	}
+	ui.input.SetValue("/theme light")
+	ui.submit()
+	if ui.preferences.Theme != themeLight {
+		t.Fatalf("theme = %q, want light", ui.preferences.Theme)
+	}
+}
+
+func TestTUIActivityUsesWorkspacePathsAndStudioShowsOnlyRealState(t *testing.T) {
+	workspace := t.TempDir()
+	file := filepath.ToSlash(filepath.Join(workspace, "internal", "tool", "html.go"))
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.workspace = workspace
+	ui.preferences = uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}
+	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	ui.Update(toolActivityMsg{event: tool.ToolEvent{
+		CallID: "call-1", Name: "read_file", DisplaySummary: "Reading internal/tool/html.go", Started: true,
+	}})
+	ui.Update(toolActivityMsg{event: tool.ToolEvent{
+		CallID: "call-1", Name: "read_file", DisplaySummary: "Reading internal/tool/html.go", Duration: 12,
+	}})
+	view := ui.View().Content
+	if len(ui.activities) != 1 || ui.activities[0].summary != "Reading "+file || !strings.Contains(view, "single agent") || !strings.Contains(view, "Model usage") {
+		t.Fatalf("studio view is missing real activity, agent status, or usage: %q", view)
+	}
+	if strings.Contains(view, "read_file") || strings.Contains(view, "subagent") || strings.Contains(view, "artifact") || strings.Contains(view, "0%") {
+		t.Fatalf("studio view includes internal names or fabricated state: %q", view)
+	}
+	if got := lipgloss.Width(view); got > 120 {
+		t.Errorf("wide studio width = %d, want <= 120", got)
+	}
+	if got := lipgloss.Height(view); got > 30 {
+		t.Errorf("wide studio height = %d, want <= 30", got)
+	}
+
+	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	view = ui.View().Content
+	if !strings.Contains(view, "STUDIO") || lipgloss.Width(view) > 80 || lipgloss.Height(view) > 24 {
+		t.Fatalf("narrow studio did not stack within the terminal: %q", view)
+	}
+}
+
+func TestToolApprovalUsesHumanTextAndSafeCommandPreview(t *testing.T) {
+	workspace := t.TempDir()
+	read := formatToolApproval(tool.PermissionRequest{
+		Tool: "read_file", Arguments: json.RawMessage(`{"path":"notes.txt"}`),
+	}, workspace)
+	if !strings.Contains(read, "Reading "+filepath.ToSlash(filepath.Join(workspace, "notes.txt"))) || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
+		t.Fatalf("read approval = %q; want a human-readable path without internal payload", read)
+	}
+	command := formatToolApproval(tool.PermissionRequest{
+		Tool: "command", Arguments: json.RawMessage(`{"command":"echo hi\nrm file\u001b[31m"}`),
+	})
+	if !strings.Contains(command, `echo hi\nrm file[31m`) || !strings.Contains(command, "outside the workspace") {
+		t.Fatalf("command approval = %q; want visible escaped preview and warning", command)
+	}
+}
+
+func TestAnimeSpriteUsesHalfBlockCellsAndStateFallback(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 4))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(0, 1, color.RGBA{G: 255, A: 255})
+	img.Set(1, 0, color.RGBA{B: 255, A: 255})
+	img.Set(1, 1, color.RGBA{A: 255})
+	rendered := renderHalfBlock(img, img.Bounds(), 2, 1, "#000000")
+	if lipgloss.Width(rendered) != 2 || lipgloss.Height(rendered) != 1 {
+		t.Fatalf("half-block size = %dx%d, want 2x1", lipgloss.Width(rendered), lipgloss.Height(rendered))
+	}
+	if sprite := assistantSprite(stateThinking, 8, 4, colorsFor(themeAnime).Background); sprite == "" || lipgloss.Width(sprite) != 8 || lipgloss.Height(sprite) != 4 {
+		t.Fatalf("embedded sprite dimensions = %dx%d, want 8x4", lipgloss.Width(sprite), lipgloss.Height(sprite))
+	}
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.preferences.Theme = themeAnime
+	ui.colorProfile = colorprofile.TrueColor
+	t.Setenv("NO_COLOR", "1")
+	if ui.canRenderColorArt() {
+		t.Fatal("NO_COLOR should disable the true-color sprite")
+	}
+	if stateName(ui.visualState()) != "Ready" {
+		t.Fatalf("initial state = %q, want Ready", stateName(ui.visualState()))
+	}
+	ui.running = true
+	if got := ui.visualState(); got != stateThinking {
+		t.Fatalf("running without tool activity state = %v, want thinking", got)
+	}
+	ui.pendingApproval = &toolApprovalRequestMsg{}
+	if got := ui.visualState(); got != stateApproval {
+		t.Fatalf("pending approval state = %v, want approval", got)
+	}
+}
+
+func TestResponseDisplayHidesRawToolCalls(t *testing.T) {
+	text, err := responseDisplayText(&model.Response{Output: []model.ResponseOutputItem{
+		model.OutputFunctionCall{CallID: "call-1", Name: "read_file", Arguments: `{"path":"secret.txt"}`},
+		model.OutputCustomToolCall{CallID: "call-2", Name: "internal_tool", Input: "secret input"},
+	}})
+	if err != nil || text != "" {
+		t.Fatalf("tool response display = %q, %v; want no raw tool details", text, err)
 	}
 }

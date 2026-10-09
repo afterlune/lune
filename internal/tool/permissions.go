@@ -18,6 +18,32 @@ const (
 	PermissionModeFullAccess PermissionMode = "full-access"
 )
 
+// PermissionModes returns the supported permission modes in UI order.
+func PermissionModes() []PermissionMode {
+	return []PermissionMode{
+		PermissionModeReadOnly,
+		PermissionModeWorkspace,
+		PermissionModeAsk,
+		PermissionModeFullAccess,
+	}
+}
+
+// PermissionModeDescription returns the user-facing explanation for a mode.
+func PermissionModeDescription(mode PermissionMode) string {
+	switch mode {
+	case PermissionModeReadOnly:
+		return "Read workspace files; ask before web; block writes and shell"
+	case PermissionModeWorkspace:
+		return "Workspace file operations; commands and web need approval"
+	case PermissionModeAsk:
+		return "Read workspace files; Ask before every other tool"
+	case PermissionModeFullAccess:
+		return "Allow all tools; shell can access paths outside the workspace"
+	default:
+		return ""
+	}
+}
+
 // PermissionRequest contains the exact tool input shown before one-time approval.
 type PermissionRequest struct {
 	Tool      string

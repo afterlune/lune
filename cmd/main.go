@@ -16,6 +16,7 @@ import (
 	"github.com/afterlune/lune/internal/agentgraph"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/tool"
+	"github.com/afterlune/lune/internal/tui"
 	"github.com/afterlune/luneGraph/checkpoint"
 	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 	"github.com/eiannone/keyboard"
@@ -64,7 +65,7 @@ func run() (runErr error) {
 		return err
 	}
 	runtime := &graphResponder{agent: agent, store: store, requester: requester}
-	if useTUI(os.Stdin, os.Stdout) {
+	if tui.UseTUI(os.Stdin, os.Stdout) {
 		logFile, err := os.OpenFile(filepath.Join(stateDir, "agent.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
 			return fmt.Errorf("open TUI log: %w", err)
@@ -73,7 +74,7 @@ func run() (runErr error) {
 		previousLogger := slog.Default()
 		defer slog.SetDefault(previousLogger)
 		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
-		return runTUI(runtime, registry)
+		return tui.Run(runtime, registry)
 	}
 	return chatLoopWithEscapeAndPermissions(runtime, registry, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher)
 }
@@ -208,10 +209,10 @@ func handleCLIPermissionsCommand(registry *tool.Registry, line string, stdout, s
 	fields := strings.Fields(line)
 	if len(fields) == 1 {
 		mode := registry.PermissionMode()
-		fmt.Fprintf(stdout, "Permission mode: %s — %s\n", mode, permissionModeDescription(mode))
+		fmt.Fprintf(stdout, "Permission mode: %s — %s\n", mode, tool.PermissionModeDescription(mode))
 		fmt.Fprintln(stdout, "Available modes:")
-		for _, option := range tuiPermissionOptions {
-			fmt.Fprintf(stdout, "  %s — %s\n", option.mode, option.description)
+		for _, mode := range tool.PermissionModes() {
+			fmt.Fprintf(stdout, "  %s — %s\n", mode, tool.PermissionModeDescription(mode))
 		}
 		return
 	}
@@ -224,7 +225,7 @@ func handleCLIPermissionsCommand(registry *tool.Registry, line string, stdout, s
 		fmt.Fprintln(stderr, err)
 		return
 	}
-	fmt.Fprintf(stdout, "Permission mode set to %s. %s\n", mode, permissionModeDescription(mode))
+	fmt.Fprintf(stdout, "Permission mode set to %s. %s\n", mode, tool.PermissionModeDescription(mode))
 }
 
 func respondWithEscape(client responder, input *model.ResponseInput, watchEscape escapeWatcher, stderr io.Writer) (*model.Response, error, bool) {

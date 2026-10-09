@@ -30,12 +30,13 @@ type Registry struct {
 // ToolEvent describes the start or completion of a tool execution. It never
 // contains tool arguments, output, or error text.
 type ToolEvent struct {
-	CallID   string
-	Name     string
-	Started  bool
-	Duration time.Duration
-	Failed   bool
-	Canceled bool
+	CallID         string
+	Name           string
+	DisplaySummary string
+	Started        bool
+	Duration       time.Duration
+	Failed         bool
+	Canceled       bool
 }
 
 // ToolEventObserver receives tool lifecycle events. Implementations should
@@ -275,13 +276,14 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 // matching function_call_output input item for the next request.
 func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCall) model.InputFunctionCallOutput {
 	started := time.Now()
+	displaySummary := DisplaySummary(call.Name, json.RawMessage(call.Arguments))
 	registeredTool, permissionErr := r.authorizedTool(ctx, call.Name, json.RawMessage(call.Arguments))
 	var result Result
 	if permissionErr != nil {
 		result = Result{Err: permissionErr}
 	} else {
 		slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
-		r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, Started: true})
+		r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, DisplaySummary: displaySummary, Started: true})
 		result = registeredTool.Run(ctx, json.RawMessage(call.Arguments))
 	}
 	duration := time.Since(started)
@@ -298,7 +300,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 		slog.Info("tool execution finished", attributes...)
 	}
 	r.observeToolEvent(ToolEvent{
-		CallID: call.CallID, Name: call.Name, Duration: duration,
+		CallID: call.CallID, Name: call.Name, DisplaySummary: displaySummary, Duration: duration,
 		Failed:   result.Err != nil,
 		Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 	})

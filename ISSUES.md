@@ -8,9 +8,9 @@ Context: observed while running inside the lune agent in **plan mode**, with the
 
 ---
 
-## I-1 工具在会话中途变为不可用，且提示信息误导
+## I-1 工具在会话中途变为不可用，根因尚未定位
 
-**状态**：已在 `719eb47` 增加可操作提示和脱敏诊断日志；类别选择丢失的根因仍未复现，继续跟踪。
+**状态**：`719eb47` 已将提示改为可操作说明，并增加诊断日志；工具可见性丢失的根因仍未确认，继续跟踪。
 
 **现象**
 同一批任务中，`read_file` 连续两次返回：
@@ -22,22 +22,21 @@ Tool is not available in the current request.
 而这些路径此前刚成功读取过（例如 `go.mod`、`cmd/main.go`）。重新调用 `select_tool_category` 选择 `files`（或 `command`）后即恢复。
 
 **证据**
-该字符串有两处来源，均为“调用名不在当前可见工具集合内”时的兜底输出：
-- `internal/agentgraph/agent.go` → `executeTool`：
-  `if !contains(state.VisibleTools, call.Name) { ... NewToolOutputText("Tool is not available in the current request.") }`
-- `internal/model/client.go` → `RespondWithOptions`：
-  `else if _, visible := visibleToolNames[call.Name]; !visible { ... }`
+- `internal/agentgraph/agent.go` 和 `internal/model/model.go` 都会检查模型调用是否属于本轮可见工具集合；不属于时返回普通工具输出，而不是执行工具。
+- `unavailableToolMessage` 会在已知工具分类时提示调用 `select_tool_category`，并在无法归类时提示检查当前可用工具。
+- `internal/agentgraph/agent.go` 和 `internal/model/model.go` 会记录所选分类、可见工具及预期分类，便于排查；当前源码不再使用旧提示 `Tool is not available in the current request.`。
 
 **影响**
-- 分类按需发现（staged discovery）下，会出现“上一轮可用、这一轮不可用”的能力丢失；调用方（模型/用户）无法判断是“需重新选类目”还是“工具不存在”。
-- 该失败以**普通工具输出**回传，而非错误（`Result.Err`），上层无法据此区分，容易导致反复重试或静默降级。
-- 触发点不透明：`VisibleTools` 每轮 tool batch 后会置空（`state.VisibleTools = nil`），可见性由 `SelectedCategory` + `PlanMode` 共同决定，缺少可观测性。
+- 分类按需发现（staged discovery）下，仍观察到“上一轮可用、这一轮不可用”；当前提示能引导重新选择分类，但还不能解释可见性状态为何变化。
+- 该分支以**普通工具输出**回传，而非 `Result.Err`；模型可据提示恢复，但上层仍不能把“工具不可见”与“执行失败”直接区分。
+- `VisibleTools` 每轮 tool batch 后会按设计清空，可见性由 `SelectedCategory` + `PlanMode` 重新计算。新增日志包含本轮可见性快照，但用户界面不直接展示这些诊断信息。
 
-**建议**
-- 使该分支的文本**可操作**，例如：
-  `Tool "read_file" is not visible; call select_tool_category to reveal category "files".`
-- 或将其作为错误回传（`Result{Err: ...}`）以便上层区分“未可见”与“执行失败”。
-- 排查 `State.SelectedCategory` / `VisibleTools` 在跨轮次（尤其新建会话 / 分支 / 恢复）时是否被意外清空，并在 UI/日志中暴露“当前可见工具集合”。
+**已处理**
+- 不可见工具的提示现在会说明应如何选择工具分类；诊断日志记录分类和可见工具名，不记录工具参数或结果。
+
+**待查**
+- 复现并定位 `State.SelectedCategory` / `VisibleTools` 在跨轮次、分支或恢复时与模型预期不一致的原因。
+- 再决定是否需要把“工具不可见”与普通工具执行失败区分为不同错误类型；目前该提示仍以工具输出返回。
 
 ---
 
