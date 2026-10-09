@@ -101,6 +101,7 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	want := map[string]bool{
 		"command": false, "read_file": false, "write_file": false,
 		"edit_file": false, "web_search": false, "web_fetch": false,
+		"list_dir": false, "glob": false, "grep": false,
 	}
 	for _, definition := range registry.Definitions() {
 		function, ok := definition.(model.FunctionTool)
@@ -185,7 +186,7 @@ func TestDefaultRegistryCategorizesBuiltInTools(t *testing.T) {
 		t.Fatalf("NewDefaultRegistry: %v", err)
 	}
 	want := map[string][]string{
-		"files":   {"read_file", "write_file", "edit_file"},
+		"files":   {"list_dir", "glob", "grep", "read_file", "write_file", "edit_file"},
 		"command": {"command"},
 		"web":     {"web_search", "web_fetch"},
 	}

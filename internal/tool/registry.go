@@ -333,9 +333,12 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 		return nil, err
 	}
 	registry, err := NewCategorizedRegistry(
-		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
-		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
-		ToolRegistration{Tool: EditFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Read, write, and edit workspace files."}},
+		ToolRegistration{Tool: ListDirTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
+		ToolRegistration{Tool: GlobTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
+		ToolRegistration{Tool: GrepTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
+		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
+		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
+		ToolRegistration{Tool: EditFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
 		ToolRegistration{Tool: CommandTool{Workspace: root}, Category: model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},

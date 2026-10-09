@@ -82,7 +82,7 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 
 	switch mode {
 	case PermissionModeReadOnly:
-		if request.Tool == "read_file" {
+		if isWorkspaceReadTool(request.Tool) {
 			break
 		}
 		if !isNetworkTool(request.Tool) {
@@ -118,4 +118,13 @@ func requestApproval(ctx context.Context, approve PermissionApprovalHandler, req
 
 func isNetworkTool(name string) bool {
 	return name == "web_search" || name == "web_fetch"
+}
+
+func isWorkspaceReadTool(name string) bool {
+	switch name {
+	case "read_file", "list_dir", "glob", "grep":
+		return true
+	default:
+		return false
+	}
 }

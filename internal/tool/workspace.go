@@ -52,13 +52,26 @@ func resolveWorkspacePath(workspace, requestedPath string, mustExist bool) (stri
 	}
 
 	candidate := filepath.Clean(filepath.Join(root, requestedPath))
-	if !pathWithin(root, candidate) || candidate == root {
-		return "", errors.New("path must stay inside the workspace and name a file")
+	if !pathWithin(root, candidate) {
+		return "", errors.New("path escapes the workspace")
+	}
+	if candidate == root {
+		return "", errors.New("path refers to a directory; use list_dir to inspect it")
 	}
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err == nil {
 		if !pathWithin(root, resolved) {
 			return "", errors.New("path resolves outside the workspace")
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil {
+			return "", fmt.Errorf("stat path %q: %w", requestedPath, statErr)
+		}
+		if info.IsDir() {
+			return "", errors.New("path refers to a directory; use list_dir to inspect it")
+		}
+		if !info.Mode().IsRegular() {
+			return "", errors.New("path does not refer to a regular file")
 		}
 		if mustExist {
 			return resolved, nil
@@ -84,6 +97,41 @@ func resolveWorkspacePath(workspace, requestedPath string, mustExist bool) (stri
 		return "", errors.New("path resolves outside the workspace")
 	}
 	return filepath.Join(parent, filepath.Base(candidate)), nil
+}
+
+// resolveWorkspaceEntry resolves an existing workspace-relative path and
+// returns its metadata. An empty path or "." refers to the workspace root.
+func resolveWorkspaceEntry(workspace, requestedPath string) (string, fs.FileInfo, error) {
+	root, err := canonicalWorkspace(workspace)
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(requestedPath) == "" {
+		requestedPath = "."
+	}
+	if filepath.IsAbs(requestedPath) {
+		return "", nil, errors.New("path must be relative to the workspace")
+	}
+
+	candidate := filepath.Clean(filepath.Join(root, requestedPath))
+	if !pathWithin(root, candidate) {
+		return "", nil, errors.New("path escapes the workspace")
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil, fmt.Errorf("path %q does not exist", requestedPath)
+		}
+		return "", nil, fmt.Errorf("resolve path %q: %w", requestedPath, err)
+	}
+	if !pathWithin(root, resolved) {
+		return "", nil, errors.New("path resolves outside the workspace")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", nil, fmt.Errorf("stat path %q: %w", requestedPath, err)
+	}
+	return resolved, info, nil
 }
 
 func pathWithin(root, candidate string) bool {

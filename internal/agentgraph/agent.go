@@ -318,7 +318,7 @@ func readOnlyDefinitions(definitions []model.ResponseTool) []model.ResponseTool 
 
 func isReadOnlyTool(name string) bool {
 	switch name {
-	case "read_file", "web_search", "web_fetch":
+	case "read_file", "list_dir", "glob", "grep", "web_search", "web_fetch":
 		return true
 	default:
 		return false

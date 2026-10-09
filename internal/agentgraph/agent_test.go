@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -396,6 +397,76 @@ func mustMarshal(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "src", "main.go"), []byte("package main\n// target\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewDefaultRegistry(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_1","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"list_1","name":"list_dir","arguments":"{}"},{"type":"function_call","call_id":"glob_1","name":"glob","arguments":"{\"pattern\":\"**/*.go\"}"},{"type":"function_call","call_id":"grep_1","name":"grep","arguments":"{\"pattern\":\"target\"}"},{"type":"function_call","call_id":"write_1","name":"write_file","arguments":"{\"path\":\"blocked.txt\",\"content\":\"no\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"plan ready"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	input, err := model.NewResponseInput("inspect the repository")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "plan-exploration-tools", nil, input, TaskOptions{PlanMode: true}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || len(requester.requests) != 3 {
+		t.Fatalf("result = %#v, model requests = %d", result, len(requester.requests))
+	}
+
+	visible := map[string]bool{}
+	for _, definition := range requester.requests[1].Tools {
+		if function, ok := definition.(model.FunctionTool); ok {
+			visible[function.Name] = true
+		}
+	}
+	for _, name := range []string{"list_dir", "glob", "grep", "read_file", model.CategorySelectorName} {
+		if !visible[name] {
+			t.Errorf("Plan mode did not expose %q: %#v", name, visible)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "command"} {
+		if visible[name] {
+			t.Errorf("Plan mode exposed %q", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "blocked.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blocked write created a file: %v", err)
+	}
+	encoded, err := json.Marshal(requester.requests[2].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{"src", "src/main.go", "src/main.go:2:// target", "Tool is not available in plan mode."} {
+		if !strings.Contains(string(encoded), output) {
+			t.Errorf("tool output %q missing from history: %s", output, encoded)
+		}
+	}
 }
 
 func decodeResponse(raw string) (*model.Response, error) {
