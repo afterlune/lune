@@ -27,6 +27,13 @@ func (t *permissionTestTool) Run(context.Context, json.RawMessage) Result {
 }
 
 func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
+	metadata := map[string]model.ToolMetadata{
+		"read_file":   {PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"write_file":  {PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"command":     {PermissionClass: model.ToolPermissionCommand},
+		"web_fetch":   {PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+		"custom_tool": {},
+	}
 	tests := []struct {
 		name          string
 		mode          PermissionMode
@@ -42,33 +49,33 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 		{
 			name:          "workspace",
 			mode:          PermissionModeWorkspace,
-			allowed:       map[string]bool{"read_file": true, "write_file": true, "custom_tool": true, "command": true, "web_fetch": true},
+			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true},
 			needsApproval: map[string]bool{"command": true, "web_fetch": true},
 		},
 		{
 			name:          "ask",
 			mode:          PermissionModeAsk,
-			allowed:       map[string]bool{"read_file": true, "write_file": true, "custom_tool": true, "command": true, "web_fetch": true},
-			needsApproval: map[string]bool{"write_file": true, "custom_tool": true, "command": true, "web_fetch": true},
+			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
+			needsApproval: map[string]bool{"write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
 		},
 		{
 			name:    "full-access",
 			mode:    PermissionModeFullAccess,
-			allowed: map[string]bool{"read_file": true, "write_file": true, "custom_tool": true, "command": true, "web_fetch": true},
+			allowed: map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
 		},
 	}
 
-	toolNames := []string{"read_file", "write_file", "custom_tool", "command", "web_fetch"}
+	toolNames := []string{"read_file", "write_file", "command", "web_fetch", "custom_tool"}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			tools := make(map[string]*permissionTestTool, len(toolNames))
-			registered := make([]Tool, 0, len(toolNames))
+			registrations := make([]ToolRegistration, 0, len(toolNames))
 			for _, name := range toolNames {
 				registeredTool := &permissionTestTool{name: name}
 				tools[name] = registeredTool
-				registered = append(registered, registeredTool)
+				registrations = append(registrations, ToolRegistration{Tool: registeredTool, Metadata: metadata[name]})
 			}
-			registry, err := NewRegistry(registered...)
+			registry, err := NewRegistry(registrations...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,6 +116,30 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 	}
 }
 
+func TestWorkspaceModeRejectsUnclassifiedToolWithoutPrompting(t *testing.T) {
+	registeredTool := &permissionTestTool{name: "custom_tool"}
+	registry, err := NewRegistry(ToolRegistration{Tool: registeredTool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	approvals := 0
+	registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
+		approvals++
+		return true
+	})
+
+	result := registry.Run(context.Background(), "custom_tool", json.RawMessage(`{}`))
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "unclassified") {
+		t.Fatalf("error = %v, want an unclassified-tool rejection", result.Err)
+	}
+	if approvals != 0 || registeredTool.calls != 0 {
+		t.Fatalf("approvals = %d, calls = %d, want both zero", approvals, registeredTool.calls)
+	}
+}
+
 func TestAskModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -120,7 +151,10 @@ func TestAskModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			registeredTool := &permissionTestTool{name: "write_file"}
-			registry, err := NewRegistry(registeredTool)
+			registry, err := NewRegistry(ToolRegistration{
+				Tool:     registeredTool,
+				Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionWorkspaceWrite},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

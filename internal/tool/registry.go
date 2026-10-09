@@ -16,15 +16,15 @@ import (
 
 // Registry stores tools by their function name.
 type Registry struct {
-	mu             sync.RWMutex
-	tools          map[string]Tool
-	toolOrder      []string
-	toolCategories map[string]string
-	categories     map[string]model.ToolCategory
-	categoryOrder  []string
-	uncategorized  int
-	eventObserver  ToolEventObserver
-	permissions    *permissionSettings
+	mu            sync.RWMutex
+	tools         map[string]Tool
+	toolMetadata  map[string]model.ToolMetadata
+	toolOrder     []string
+	categories    map[string]model.ToolCategory
+	categoryOrder []string
+	uncategorized int
+	eventObserver ToolEventObserver
+	permissions   *permissionSettings
 }
 
 // ToolEvent describes the start or completion of a tool execution. It never
@@ -46,30 +46,20 @@ type ToolEventObserver func(ToolEvent)
 var _ model.ToolExecutor = (*Registry)(nil)
 var _ model.CategorizedToolExecutor = (*Registry)(nil)
 
-// ToolRegistration associates a tool with a category for staged discovery.
+// ToolRegistration associates a tool with its discovery and safety metadata.
 type ToolRegistration struct {
 	Tool     Tool
-	Category model.ToolCategory
+	Metadata model.ToolMetadata
 }
 
-func NewRegistry(tools ...Tool) (*Registry, error) {
+func NewRegistry(registrations ...ToolRegistration) (*Registry, error) {
 	registry := &Registry{
-		tools:       make(map[string]Tool, len(tools)),
-		permissions: newPermissionSettings(PermissionModeReadOnly),
+		tools:        make(map[string]Tool, len(registrations)),
+		toolMetadata: make(map[string]model.ToolMetadata, len(registrations)),
+		permissions:  newPermissionSettings(PermissionModeReadOnly),
 	}
-	for _, registeredTool := range tools {
-		if err := registry.Register(registeredTool); err != nil {
-			return nil, err
-		}
-	}
-	return registry, nil
-}
-
-// NewCategorizedRegistry creates a registry whose tools are revealed by category.
-func NewCategorizedRegistry(registrations ...ToolRegistration) (*Registry, error) {
-	registry := &Registry{permissions: newPermissionSettings(PermissionModeReadOnly)}
 	for _, registration := range registrations {
-		if err := registry.RegisterInCategory(registration.Category, registration.Tool); err != nil {
+		if err := registry.Register(registration); err != nil {
 			return nil, err
 		}
 	}
@@ -119,22 +109,19 @@ func (r *Registry) SetPermissionApprovalHandler(handler PermissionApprovalHandle
 	permissions.setApprovalHandler(handler)
 }
 
-func (r *Registry) Register(registeredTool Tool) error {
-	return r.register(model.ToolCategory{}, registeredTool)
-}
-
-// RegisterInCategory registers a tool and makes it available under category.
-func (r *Registry) RegisterInCategory(category model.ToolCategory, registeredTool Tool) error {
-	if strings.TrimSpace(category.Name) == "" || category.Name != strings.TrimSpace(category.Name) {
-		return errors.New("tool category name must not be empty or padded with whitespace")
+// Register adds a tool and its discovery and safety metadata.
+func (r *Registry) Register(registration ToolRegistration) error {
+	category := registration.Metadata.Category
+	registeredTool := registration.Tool
+	if category.Name == "" && category.Description != "" {
+		return errors.New("tool category description requires a category name")
 	}
-	if strings.TrimSpace(category.Description) == "" {
+	if category.Name != "" && category.Name != strings.TrimSpace(category.Name) {
+		return errors.New("tool category name must not be padded with whitespace")
+	}
+	if category.Name != "" && strings.TrimSpace(category.Description) == "" {
 		return errors.New("tool category description must not be empty")
 	}
-	return r.register(category, registeredTool)
-}
-
-func (r *Registry) register(category model.ToolCategory, registeredTool Tool) error {
 	if registeredTool == nil {
 		return errors.New("cannot register a nil tool")
 	}
@@ -165,27 +152,38 @@ func (r *Registry) register(category model.ToolCategory, registeredTool Tool) er
 	if r.tools == nil {
 		r.tools = make(map[string]Tool)
 	}
+	if r.toolMetadata == nil {
+		r.toolMetadata = make(map[string]model.ToolMetadata)
+	}
 	if _, exists := r.tools[definition.Name]; exists {
 		return errors.New("tool is already registered: " + definition.Name)
 	}
 	r.tools[definition.Name] = registeredTool
+	r.toolMetadata[definition.Name] = registration.Metadata
 	r.toolOrder = append(r.toolOrder, definition.Name)
 	if category.Name != "" {
 		if r.categories == nil {
 			r.categories = make(map[string]model.ToolCategory)
 		}
-		if r.toolCategories == nil {
-			r.toolCategories = make(map[string]string)
-		}
 		if _, exists := r.categories[category.Name]; !exists {
 			r.categories[category.Name] = category
 			r.categoryOrder = append(r.categoryOrder, category.Name)
 		}
-		r.toolCategories[definition.Name] = category.Name
 	} else {
 		r.uncategorized++
 	}
 	return nil
+}
+
+// ToolMetadata returns the registration metadata for a tool.
+func (r *Registry) ToolMetadata(name string) (model.ToolMetadata, bool) {
+	if r == nil {
+		return model.ToolMetadata{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	metadata, ok := r.toolMetadata[name]
+	return metadata, ok
 }
 
 // Definitions returns function-tool definitions suitable for ResponseRequest.Tools.
@@ -234,7 +232,7 @@ func (r *Registry) DefinitionsForCategory(category string) []model.ResponseTool 
 	r.mu.RLock()
 	registeredTools := make([]Tool, 0)
 	for _, name := range r.toolOrder {
-		if r.toolCategories[name] == category {
+		if r.toolMetadata[name].Category.Name == category {
 			registeredTools = append(registeredTools, r.tools[name])
 		}
 	}
@@ -261,12 +259,15 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 	}
 	r.mu.RLock()
 	registeredTool, exists := r.tools[name]
+	metadata := r.toolMetadata[name]
 	permissions := r.permissions
 	r.mu.RUnlock()
 	if !exists {
 		return nil, errors.New("unknown tool: " + name)
 	}
-	if err := permissions.authorize(ctx, PermissionRequest{Tool: name, Arguments: append(json.RawMessage(nil), arguments...)}); err != nil {
+	if err := permissions.authorize(ctx, PermissionRequest{
+		Tool: name, Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
+	}); err != nil {
 		return nil, err
 	}
 	return registeredTool, nil
@@ -334,16 +335,23 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry, err := NewCategorizedRegistry(
-		ToolRegistration{Tool: ListDirTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: GlobTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: GrepTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: EditFileTool{Workspace: root}, Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}},
-		ToolRegistration{Tool: CommandTool{Workspace: root}, Category: model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}},
-		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},
-		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}},
+	filesCategory := model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}
+	commandCategory := model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}
+	webCategory := model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}
+	workspaceRead := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
+	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite}
+	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand}
+	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true}
+	registry, err := NewRegistry(
+		ToolRegistration{Tool: ListDirTool{Workspace: root}, Metadata: workspaceRead},
+		ToolRegistration{Tool: GlobTool{Workspace: root}, Metadata: workspaceRead},
+		ToolRegistration{Tool: GrepTool{Workspace: root}, Metadata: workspaceRead},
+		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Metadata: workspaceRead},
+		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Metadata: workspaceWrite},
+		ToolRegistration{Tool: EditFileTool{Workspace: root}, Metadata: workspaceWrite},
+		ToolRegistration{Tool: CommandTool{Workspace: root}, Metadata: command},
+		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
+		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)
 	if err != nil {
 		return nil, err

@@ -3,6 +3,22 @@
 Guidance for contributors and AI agents working in this repository.
 本文件写给本仓库的贡献者与 AI agent。
 
+## 设计准则
+
+以下五条是用户定下的长期准则，是判断"该不该这么改"的依据；本文件其余规则都由它们派生。
+与其它规则冲突时，以准则为准。
+
+1. **实用性高于象征性**
+   不为了"看起来像框架""概念完整""和某项目对齐"而增加能力。任何抽象、接口和功能，都必须解决真实问题。
+2. **简洁优雅高于复杂完备**
+   在满足需求的前提下，优先选择更少的概念、更少的状态、更少的配置、更短的调用链。复杂度必须有明确收益，否则删除。
+3. **正确设计高于向后兼容**
+   当出现明显更好的实现时，允许并鼓励破坏性更新。不得为了兼容旧 API、旧数据结构或旧行为而永久保留次优设计。
+4. **兼容成本不得污染核心**
+   如果兼容旧版本会提高核心复杂度，则放弃兼容。必要的迁移成本应由版本升级、迁移工具或调用方承担，而不是由核心长期背负。
+5. **不为假想需求设计**
+   不因为"未来可能需要"提前增加抽象。只有真实用例或已经出现的结构性问题，才有资格推动核心设计变化。
+
 ## Non-goals / 非目标
 
 ### Skill / 技能机制
@@ -44,9 +60,9 @@ Plan 模式与权限档位相互独立：Plan 模式只向模型提供只读工�
 
 ## Conventions / 约定
 
-- Register new built-in tools in `internal/tool`, assign a tool category, and explicitly review how the tool is classified in `internal/tool/permissions.go` and `internal/agentgraph`.
-  新增内置工具请在 `internal/tool` 注册并归入工具分类，同时检查它在 `internal/tool/permissions.go` 和 `internal/agentgraph` 中的权限与只读分类。
-- Until tool permission metadata is unified, do not assume an unknown tool will require approval: `workspace` currently explicitly gates commands and web tools, while other tool names can pass through without approval. Track this gap in `ROADMAP.md`.
-  工具权限元数据统一前，不要假设未知工具一定会要求授权：当前 `workspace` 档明确拦截命令和 web 工具，其他工具名可能无需授权即可通过。此缺口由 `ROADMAP.md` 跟踪。
+- Register each tool with metadata for its category, permission class, and read-only behavior; an empty category means the tool is not discovered by category. Keep permission decisions and Plan mode filtering based on this metadata rather than tool names.
+  注册工具时统一声明类别、权限类别和只读属性；类别为空表示该工具不参与按类别发现。权限判断和 Plan 模式筛选均读取元数据，不按工具名称判断。
+- Unclassified tools are blocked in `read-only` and `workspace` modes; `workspace` does not prompt for missing metadata. `ask` prompts for unclassified tools, while `full-access` allows every registered tool.
+  未分类工具在 `read-only` 和 `workspace` 模式下会被阻止；`workspace` 不会为缺失元数据弹出授权。`ask` 会请求授权，`full-access` 允许所有已注册工具。
 - Keep the Chinese and English text in this file in sync.
   本文件的中英文需保持同步。

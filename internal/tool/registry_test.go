@@ -31,7 +31,7 @@ func TestExecuteCallLogsMetadataWithoutPayloads(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	registry, err := NewRegistry(loggingTestTool{})
+	registry, err := NewRegistry(ToolRegistration{Tool: loggingTestTool{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestExecuteCallLogsMetadataWithoutPayloads(t *testing.T) {
 }
 
 func TestExecuteCallPublishesSanitizedLifecycleEvents(t *testing.T) {
-	registry, err := NewRegistry(loggingTestTool{})
+	registry, err := NewRegistry(ToolRegistration{Tool: loggingTestTool{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,10 +107,16 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	if mode := registry.PermissionMode(); mode != PermissionModeWorkspace {
 		t.Fatalf("default registry mode = %q, want workspace", mode)
 	}
-	want := map[string]bool{
-		"command": false, "read_file": false, "write_file": false,
-		"edit_file": false, "web_search": false, "web_fetch": false,
-		"list_dir": false, "glob": false, "grep": false,
+	want := map[string]model.ToolMetadata{
+		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}, PermissionClass: model.ToolPermissionCommand},
+		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"web_search": {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+		"web_fetch":  {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+		"list_dir":   {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"glob":       {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"grep":       {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
 	}
 	for _, definition := range registry.Definitions() {
 		function, ok := definition.(model.FunctionTool)
@@ -122,17 +128,23 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 			t.Errorf("unexpected tool %q", function.Name)
 			continue
 		}
-		want[function.Name] = true
-	}
-	for name, found := range want {
-		if !found {
-			t.Errorf("default registry is missing %q", name)
+		metadata, exists := registry.ToolMetadata(function.Name)
+		if !exists {
+			t.Errorf("metadata missing for %q", function.Name)
+			continue
 		}
+		if metadata != want[function.Name] {
+			t.Errorf("metadata for %q = %#v, want %#v", function.Name, metadata, want[function.Name])
+		}
+		delete(want, function.Name)
+	}
+	for name := range want {
+		t.Errorf("default registry is missing %q", name)
 	}
 }
 
-func TestCustomRegistryConstructorsDefaultToReadOnly(t *testing.T) {
-	uncategorized, err := NewRegistry(privateNamedTool{name: "custom_tool"})
+func TestCustomRegistryDefaultsToReadOnly(t *testing.T) {
+	uncategorized, err := NewRegistry(ToolRegistration{Tool: privateNamedTool{name: "custom_tool"}})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
@@ -143,31 +155,31 @@ func TestCustomRegistryConstructorsDefaultToReadOnly(t *testing.T) {
 		t.Error("NewRegistry ran an unrecognized custom tool in its default read-only mode")
 	}
 
-	categorized, err := NewCategorizedRegistry(ToolRegistration{
+	categorized, err := NewRegistry(ToolRegistration{
 		Tool:     privateNamedTool{name: "custom_tool"},
-		Category: model.ToolCategory{Name: "custom", Description: "Custom tools."},
+		Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "custom", Description: "Custom tools."}},
 	})
 	if err != nil {
-		t.Fatalf("NewCategorizedRegistry: %v", err)
+		t.Fatalf("NewRegistry: %v", err)
 	}
 	if mode := categorized.PermissionMode(); mode != PermissionModeReadOnly {
-		t.Errorf("NewCategorizedRegistry mode = %q, want read-only", mode)
+		t.Errorf("categorized registry mode = %q, want read-only", mode)
 	}
 	if result := categorized.Run(context.Background(), "custom_tool", json.RawMessage(`{}`)); result.Err == nil {
-		t.Error("NewCategorizedRegistry ran an unrecognized custom tool in its default read-only mode")
+		t.Error("categorized registry ran an unclassified custom tool in its default read-only mode")
 	}
 }
 
 func TestCategorizedRegistryPreservesCategoryAndToolOrder(t *testing.T) {
 	first := loggingTestTool{}
 	second := privateNamedTool{name: "second_tool"}
-	registry, err := NewCategorizedRegistry(
-		ToolRegistration{Tool: first, Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
-		ToolRegistration{Tool: second, Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
-		ToolRegistration{Tool: privateNamedTool{name: "web_tool"}, Category: model.ToolCategory{Name: "web", Description: "Web access."}},
+	registry, err := NewRegistry(
+		ToolRegistration{Tool: first, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}}},
+		ToolRegistration{Tool: second, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}}},
+		ToolRegistration{Tool: privateNamedTool{name: "web_tool"}, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "web", Description: "Web access."}}},
 	)
 	if err != nil {
-		t.Fatalf("NewCategorizedRegistry: %v", err)
+		t.Fatalf("NewRegistry: %v", err)
 	}
 
 	categories := registry.Categories()
@@ -186,9 +198,9 @@ func TestCategorizedRegistryPreservesCategoryAndToolOrder(t *testing.T) {
 }
 
 func TestCategorizedRegistryRejectsInconsistentCategoryMetadata(t *testing.T) {
-	_, err := NewCategorizedRegistry(
-		ToolRegistration{Tool: loggingTestTool{}, Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
-		ToolRegistration{Tool: privateNamedTool{name: "second_tool"}, Category: model.ToolCategory{Name: "files", Description: "Different description."}},
+	_, err := NewRegistry(
+		ToolRegistration{Tool: loggingTestTool{}, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}}},
+		ToolRegistration{Tool: privateNamedTool{name: "second_tool"}, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Different description."}}},
 	)
 	if err == nil {
 		t.Fatal("expected inconsistent category descriptions to fail")
@@ -196,22 +208,22 @@ func TestCategorizedRegistryRejectsInconsistentCategoryMetadata(t *testing.T) {
 }
 
 func TestRegistryDoesNotMixCategorizedAndUncategorizedTools(t *testing.T) {
-	registry, err := NewRegistry(loggingTestTool{})
+	registry, err := NewRegistry(ToolRegistration{Tool: loggingTestTool{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.RegisterInCategory(model.ToolCategory{Name: "files", Description: "Workspace files."}, privateNamedTool{name: "second_tool"}); err == nil {
+	if err := registry.Register(ToolRegistration{Tool: privateNamedTool{name: "second_tool"}, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}}}); err == nil {
 		t.Fatal("expected a categorized tool to be rejected after an uncategorized tool")
 	}
 
-	categorized, err := NewCategorizedRegistry(ToolRegistration{
+	categorized, err := NewRegistry(ToolRegistration{
 		Tool:     loggingTestTool{},
-		Category: model.ToolCategory{Name: "files", Description: "Workspace files."},
+		Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := categorized.Register(privateNamedTool{name: "second_tool"}); err == nil {
+	if err := categorized.Register(ToolRegistration{Tool: privateNamedTool{name: "second_tool"}}); err == nil {
 		t.Fatal("expected an uncategorized tool to be rejected from a categorized registry")
 	}
 }

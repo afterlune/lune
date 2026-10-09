@@ -37,12 +37,47 @@ type RespondOptions struct {
 type ToolExecutor interface {
 	Definitions() []ResponseTool
 	ExecuteCall(context.Context, OutputFunctionCall) InputFunctionCallOutput
+	ToolMetadata(string) (ToolMetadata, bool)
 }
 
 // ToolCategory describes a group of tools that can be revealed on demand.
 type ToolCategory struct {
 	Name        string
 	Description string
+}
+
+// ToolPermissionClass describes the effect boundary used by permission modes.
+type ToolPermissionClass string
+
+const (
+	ToolPermissionWorkspaceRead  ToolPermissionClass = "workspace-read"
+	ToolPermissionWorkspaceWrite ToolPermissionClass = "workspace-write"
+	ToolPermissionCommand        ToolPermissionClass = "command"
+	ToolPermissionNetwork        ToolPermissionClass = "network"
+)
+
+// ToolMetadata keeps discovery, permission, and plan-mode classification next
+// to the tool registration that owns it. An empty permission class is treated
+// as unclassified and must fail closed where the active mode requires it.
+type ToolMetadata struct {
+	Category        ToolCategory
+	PermissionClass ToolPermissionClass
+	ReadOnly        bool
+}
+
+// Valid reports whether the class is recognized by the permission system.
+func (c ToolPermissionClass) Valid() bool {
+	switch c {
+	case ToolPermissionWorkspaceRead, ToolPermissionWorkspaceWrite, ToolPermissionCommand, ToolPermissionNetwork:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsReadOnly is true only for explicitly classified read-only tools.
+func (m ToolMetadata) IsReadOnly() bool {
+	return m.PermissionClass.Valid() && m.ReadOnly
 }
 
 // CategorizedToolExecutor optionally exposes tools one category at a time.

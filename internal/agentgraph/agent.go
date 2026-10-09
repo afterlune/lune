@@ -256,7 +256,7 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 			slog.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
-	case state.PlanMode && !isReadOnlyTool(call.Name):
+	case state.PlanMode && !isReadOnlyTool(a.tools, call.Name):
 		output = model.InputFunctionCallOutput{
 			CallID: call.CallID,
 			Output: model.NewToolOutputText("Tool is not available in plan mode."),
@@ -293,7 +293,7 @@ func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTo
 	if a.categorized == nil {
 		definitions := a.tools.Definitions()
 		if planMode {
-			definitions = readOnlyDefinitions(definitions)
+			definitions = readOnlyDefinitions(a.tools, definitions)
 		}
 		return definitions, toolNames(definitions), nil
 	}
@@ -309,7 +309,7 @@ func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTo
 	if category != "" {
 		definitions = append(definitions, a.categorized.DefinitionsForCategory(category)...)
 		if planMode {
-			definitions = readOnlyDefinitions(definitions)
+			definitions = readOnlyDefinitions(a.tools, definitions)
 			definitions = append([]model.ResponseTool{selector}, definitions...)
 		}
 	}
@@ -319,7 +319,7 @@ func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTo
 func (a *Agent) readOnlyCategories() []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		if len(readOnlyDefinitions(a.categorized.DefinitionsForCategory(category.Name))) > 0 {
+		if len(readOnlyDefinitions(a.tools, a.categorized.DefinitionsForCategory(category.Name))) > 0 {
 			categories = append(categories, category)
 		}
 	}
@@ -352,24 +352,20 @@ func unavailableToolMessage(name, category string, categorized bool) string {
 	return fmt.Sprintf("Tool %q is not available in this request. Only call tools listed in the current request.", name)
 }
 
-func readOnlyDefinitions(definitions []model.ResponseTool) []model.ResponseTool {
+func readOnlyDefinitions(tools model.ToolExecutor, definitions []model.ResponseTool) []model.ResponseTool {
 	filtered := make([]model.ResponseTool, 0, len(definitions))
 	for _, definition := range definitions {
 		function, ok := definition.(model.FunctionTool)
-		if ok && isReadOnlyTool(function.Name) {
+		if ok && isReadOnlyTool(tools, function.Name) {
 			filtered = append(filtered, definition)
 		}
 	}
 	return filtered
 }
 
-func isReadOnlyTool(name string) bool {
-	switch name {
-	case "read_file", "list_dir", "glob", "grep", "web_search", "web_fetch":
-		return true
-	default:
-		return false
-	}
+func isReadOnlyTool(tools model.ToolExecutor, name string) bool {
+	metadata, ok := tools.ToolMetadata(name)
+	return ok && metadata.IsReadOnly()
 }
 
 func appendResponseHistory(history model.ResponseInput, output []model.ResponseOutputItem) (model.ResponseInput, error) {

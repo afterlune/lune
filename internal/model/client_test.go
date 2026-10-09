@@ -55,6 +55,19 @@ func (e *testToolExecutor) ExecuteCall(_ context.Context, call OutputFunctionCal
 	return InputFunctionCallOutput{CallID: call.CallID, Output: NewToolOutputText("tool result")}
 }
 
+func (e *testToolExecutor) ToolMetadata(name string) (ToolMetadata, bool) {
+	switch name {
+	case "read_file":
+		return ToolMetadata{PermissionClass: ToolPermissionWorkspaceRead, ReadOnly: true}, true
+	case "command":
+		return ToolMetadata{PermissionClass: ToolPermissionCommand}, true
+	case "web_search":
+		return ToolMetadata{PermissionClass: ToolPermissionNetwork, ReadOnly: true}, true
+	default:
+		return ToolMetadata{}, false
+	}
+}
+
 func (e *categorizedTestExecutor) Categories() []ToolCategory {
 	return append([]ToolCategory(nil), e.categories...)
 }

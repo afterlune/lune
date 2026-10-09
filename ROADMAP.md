@@ -15,8 +15,8 @@
 **目标：** 权限、配置和持久化规则明确，后续功能有可测试的基础。
 
 - [ ] 用当前版本复现 I-1；结合请求快照日志定位类别或可见工具集合变化。未取得证据前保持问题开放，不猜测根因。
-- [ ] 注册工具时统一声明 category、权限类别和只读属性；移除 permissions.go、agentgraph 和默认 Registry 的重复硬编码。
-- [ ] 修复 workspace 模式下未知工具无需批准的安全缺口，并为四档权限与自定义工具补充覆盖测试。
+- [x] 注册工具时统一声明 category、权限类别和只读属性；移除 permissions.go、agentgraph 和默认 Registry 的重复硬编码。
+- [x] 修复 workspace 模式下未知工具无需批准的安全缺口，并为四档权限与自定义工具补充覆盖测试。
 - [ ] 为 config.json 增加结构化加载与校验，覆盖 models、mcpServers、contextWindow、autoCompact、autoCompactThreshold、reserveOutputTokens 和附件限制。
 - [ ] 为会话数据增加版本与迁移策略；明确 sessions.db 和 checkpoints.db 的删除级联规则。
 - [ ] 增加 internal/session/store_test.go；按上下文策略决策门确定 token 计数口径并补测试。

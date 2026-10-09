@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/afterlune/lune/internal/model"
 )
 
 // PermissionMode controls how registered tools are authorized.
@@ -48,6 +50,7 @@ func PermissionModeDescription(mode PermissionMode) string {
 type PermissionRequest struct {
 	Tool      string
 	Arguments json.RawMessage
+	Metadata  model.ToolMetadata
 }
 
 // PermissionApprovalHandler asks the user to allow one tool call.
@@ -109,21 +112,28 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 
 	switch mode {
 	case PermissionModeReadOnly:
-		if isWorkspaceReadTool(request.Tool) {
-			break
-		}
-		if !isNetworkTool(request.Tool) {
+		switch request.Metadata.PermissionClass {
+		case model.ToolPermissionWorkspaceRead:
+			return ctx.Err()
+		case model.ToolPermissionNetwork:
+			return requestApproval(ctx, approve, request)
+		default:
 			return fmt.Errorf("tool %q is disabled in read-only mode", request.Tool)
 		}
-		return requestApproval(ctx, approve, request)
 	case PermissionModeWorkspace:
-		if request.Tool == "command" || isNetworkTool(request.Tool) {
+		switch request.Metadata.PermissionClass {
+		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
+			return ctx.Err()
+		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
 			return requestApproval(ctx, approve, request)
+		default:
+			return fmt.Errorf("tool %q is unclassified and disabled in workspace mode", request.Tool)
 		}
 	case PermissionModeAsk:
-		if !isWorkspaceReadTool(request.Tool) {
-			return requestApproval(ctx, approve, request)
+		if request.Metadata.PermissionClass == model.ToolPermissionWorkspaceRead {
+			return ctx.Err()
 		}
+		return requestApproval(ctx, approve, request)
 	case PermissionModeFullAccess:
 		// Full access intentionally skips tool approval. CommandTool itself is
 		// unrestricted by the workspace boundary, so the UI describes this risk.
@@ -145,17 +155,4 @@ func requestApproval(ctx context.Context, approve PermissionApprovalHandler, req
 		return fmt.Errorf("permission denied for tool %q", request.Tool)
 	}
 	return ctx.Err()
-}
-
-func isNetworkTool(name string) bool {
-	return name == "web_search" || name == "web_fetch"
-}
-
-func isWorkspaceReadTool(name string) bool {
-	switch name {
-	case "read_file", "list_dir", "glob", "grep":
-		return true
-	default:
-		return false
-	}
 }

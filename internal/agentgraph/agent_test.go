@@ -91,10 +91,62 @@ func (t *namedRecordingTool) Run(context.Context, json.RawMessage) tool.Result {
 	return tool.Result{Output: t.name + " completed"}
 }
 
+func toolRegistration(registeredTool tool.Tool, category model.ToolCategory, permissionClass model.ToolPermissionClass, readOnly bool) tool.ToolRegistration {
+	return tool.ToolRegistration{
+		Tool: registeredTool,
+		Metadata: model.ToolMetadata{
+			Category: category, PermissionClass: permissionClass, ReadOnly: readOnly,
+		},
+	}
+}
+
+func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
+	customRead := &namedRecordingTool{name: "custom_read"}
+	customWrite := &namedRecordingTool{name: "custom_write"}
+	networkRead := &namedRecordingTool{name: "network_lookup"}
+	unclassifiedRead := &namedRecordingTool{name: "unclassified_read"}
+	registry, err := tool.NewRegistry(
+		toolRegistration(customRead, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true),
+		toolRegistration(customWrite, model.ToolCategory{}, model.ToolPermissionWorkspaceWrite, false),
+		toolRegistration(networkRead, model.ToolCategory{}, model.ToolPermissionNetwork, true),
+		toolRegistration(unclassifiedRead, model.ToolCategory{}, "future-class", true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(&scriptedRequester{}, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, _, err := agent.visibleTools("", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := map[string]bool{}
+	for _, definition := range definitions {
+		if function, ok := definition.(model.FunctionTool); ok {
+			visible[function.Name] = true
+		}
+	}
+	for _, name := range []string{"custom_read", "network_lookup"} {
+		if !visible[name] {
+			t.Errorf("Plan Mode did not expose explicitly read-only tool %q", name)
+		}
+	}
+	for _, name := range []string{"custom_write", "unclassified_read"} {
+		if visible[name] {
+			t.Errorf("Plan Mode exposed non-read-only or unclassified tool %q", name)
+		}
+	}
+}
+
 func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 	readFile := &namedRecordingTool{name: "read_file"}
 	writeFile := &namedRecordingTool{name: "write_file"}
-	registry, err := tool.NewRegistry(readFile, writeFile)
+	registry, err := tool.NewRegistry(
+		toolRegistration(readFile, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true),
+		toolRegistration(writeFile, model.ToolCategory{}, model.ToolPermissionWorkspaceWrite, false),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,10 +186,12 @@ func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 
 func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	readFile := &recordingTool{}
-	registry, err := tool.NewCategorizedRegistry(tool.ToolRegistration{
-		Tool:     readFile,
-		Category: model.ToolCategory{Name: "files", Description: "Workspace files."},
-	})
+	registry, err := tool.NewRegistry(toolRegistration(
+		readFile,
+		model.ToolCategory{Name: "files", Description: "Workspace files."},
+		model.ToolPermissionWorkspaceRead,
+		true,
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,10 +268,12 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 
 func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) {
 	readFile := &recordingTool{}
-	registry, err := tool.NewCategorizedRegistry(tool.ToolRegistration{
-		Tool:     readFile,
-		Category: model.ToolCategory{Name: "files", Description: "Workspace files."},
-	})
+	registry, err := tool.NewRegistry(toolRegistration(
+		readFile,
+		model.ToolCategory{Name: "files", Description: "Workspace files."},
+		model.ToolPermissionWorkspaceRead,
+		true,
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,9 +355,9 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 
 	readFile := &namedRecordingTool{name: "read_file"}
 	webSearch := &namedRecordingTool{name: "web_search"}
-	registry, err := tool.NewCategorizedRegistry(
-		tool.ToolRegistration{Tool: readFile, Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
-		tool.ToolRegistration{Tool: webSearch, Category: model.ToolCategory{Name: "web", Description: "Web search."}},
+	registry, err := tool.NewRegistry(
+		toolRegistration(readFile, model.ToolCategory{Name: "files", Description: "Workspace files."}, model.ToolPermissionWorkspaceRead, true),
+		toolRegistration(webSearch, model.ToolCategory{Name: "web", Description: "Web search."}, model.ToolPermissionNetwork, true),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -502,7 +558,7 @@ func TestAgentGraphRecoversAfterSQLiteStoreReopen(t *testing.T) {
 
 func TestAgentGraphPreservesHistoryAndEnforcesPerTaskToolRoundLimit(t *testing.T) {
 	readFile := &recordingTool{}
-	registry, err := tool.NewRegistry(readFile)
+	registry, err := tool.NewRegistry(toolRegistration(readFile, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true))
 	if err != nil {
 		t.Fatal(err)
 	}
