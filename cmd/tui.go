@@ -24,15 +24,17 @@ import (
 )
 
 type tuiEntry struct {
-	role string
-	text string
-	err  bool
+	role       string
+	text       string
+	err        bool
+	activityID string
 }
 
 type savedTUIEntry struct {
-	Role  string `json:"role"`
-	Text  string `json:"text"`
-	Error bool   `json:"error,omitempty"`
+	Role       string `json:"role"`
+	Text       string `json:"text"`
+	Error      bool   `json:"error,omitempty"`
+	ActivityID string `json:"activity_id,omitempty"`
 }
 
 type savedTUISession struct {
@@ -122,7 +124,7 @@ type tuiModel struct {
 	sessionList        []session.Snapshot
 	sessionIndex       int
 	queued             []queuedInput
-	showSidebar        bool
+	detailsOpen        bool
 	planMode           bool
 	planReview         bool
 	taskPlanMode       bool
@@ -395,22 +397,38 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.width >= 100 && m.showSidebar && message.X >= m.width-min(44, max(40, m.width/3)) {
-			m.activity, _ = m.activity.Update(message)
-		} else if m.width < 100 && m.showSidebar {
+		if m.detailsOpen {
 			m.activity, _ = m.activity.Update(message)
 		} else {
 			m.chat, _ = m.chat.Update(message)
 		}
 		return m, nil
 	case tea.MouseClickMsg:
-		if message.Button == tea.MouseLeft && message.Y == 0 {
-			m.showSidebar = !m.showSidebar
-			m.updateLayout()
-			return m, nil
-		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.detailsOpen {
+			switch message.String() {
+			case "ctrl+c":
+				if m.running {
+					m.detailsOpen = false
+					m.interrupt()
+					return m, nil
+				}
+				return m, tea.Quit
+			case "esc", "ctrl+b":
+				m.detailsOpen = false
+				m.updateLayout()
+				return m, nil
+			case "pgup", "up", "ctrl+up":
+				m.activity.HalfPageUp()
+				return m, nil
+			case "pgdown", "down", "ctrl+down":
+				m.activity.HalfPageDown()
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
 		if !(m.running && message.String() == "esc") {
 			if handled, command := m.handleVimKey(message); handled {
 				m.updateLayout()
@@ -482,7 +500,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "ctrl+b":
-			m.showSidebar = !m.showSidebar
+			m.detailsOpen = true
 			m.updateLayout()
 			return m, nil
 		case "shift+tab":
@@ -1223,7 +1241,9 @@ func (m *tuiModel) persistSession() {
 		if entry.role == "queued" {
 			continue
 		}
-		state.Entries = append(state.Entries, savedTUIEntry{Role: entry.role, Text: entry.text, Error: entry.err})
+		state.Entries = append(state.Entries, savedTUIEntry{
+			Role: entry.role, Text: entry.text, Error: entry.err, ActivityID: entry.activityID,
+		})
 	}
 	state.Activities = make([]savedActivity, 0, len(m.activities))
 	for _, activity := range m.activities {
@@ -1270,7 +1290,9 @@ func (m *tuiModel) persistSessionHistory() {
 func (m *tuiModel) restoreSessionState(state savedTUISession) {
 	m.entries = make([]tuiEntry, 0, len(state.Entries))
 	for _, entry := range state.Entries {
-		m.entries = append(m.entries, tuiEntry{role: entry.Role, text: entry.Text, err: entry.Error})
+		m.entries = append(m.entries, tuiEntry{
+			role: entry.Role, text: entry.Text, err: entry.Error, activityID: entry.ActivityID,
+		})
 	}
 	m.activities = make([]tuiActivity, 0, len(state.Activities))
 	for _, activity := range state.Activities {
@@ -1339,11 +1361,10 @@ func transcriptFromHistory(history *model.ResponseInput) []savedTUIEntry {
 				entries = append(entries, savedTUIEntry{Role: role, Text: text})
 			}
 		case model.InputFunctionCall:
-			entries = append(entries, savedTUIEntry{Role: "tool", Text: fmt.Sprintf("%s(%s)", value.Name, value.Arguments)})
+			entries = append(entries, savedTUIEntry{Role: "tool", Text: value.Name + " · done"})
 		case model.InputFunctionCallOutput:
-			if text := toolOutputText(value.Output); text != "" {
-				entries = append(entries, savedTUIEntry{Role: "tool", Text: text})
-			}
+			// Tool output may contain file contents or command output. Keep the
+			// conversation transcript limited to the sanitized call lifecycle.
 		}
 	}
 	return entries
@@ -1661,17 +1682,19 @@ func compactTokens(tokens int64) string {
 func entryBadge(role string) (string, string) {
 	switch role {
 	case "you":
-		return "YOU", "6"
+		return "YOU", "8"
 	case "assistant":
-		return "LUNE", "10"
+		return "LUNE", "15"
 	case "tool":
-		return "TOOL", "5"
+		return "TOOL", "13"
 	case "queued":
-		return "QUEUED", "3"
+		return "QUEUED", "8"
 	case "permission":
 		return "PERMISSION", "3"
 	case "error":
 		return "ERROR", "9"
+	case "notice":
+		return "NOTE", "8"
 	default:
 		return strings.ToUpper(role), "8"
 	}
@@ -1703,13 +1726,13 @@ func renderTerminalMarkdown(markdown string) string {
 		}
 		switch {
 		case inCode:
-			rendered.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("  │ " + line))
+			rendered.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render("  │ " + line))
 		case strings.HasPrefix(trimmed, "### "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(strings.TrimPrefix(trimmed, "### ")))
+			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Render(strings.TrimPrefix(trimmed, "### ")))
 		case strings.HasPrefix(trimmed, "## "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(strings.TrimPrefix(trimmed, "## ")))
+			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Render(strings.TrimPrefix(trimmed, "## ")))
 		case strings.HasPrefix(trimmed, "# "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(strings.TrimPrefix(trimmed, "# ")))
+			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Render(strings.TrimPrefix(trimmed, "# ")))
 		case strings.HasPrefix(trimmed, "> "):
 			rendered.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("│ " + strings.TrimPrefix(trimmed, "> ")))
 		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
@@ -1743,6 +1766,7 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 			m.activities[index] = activity
 		} else {
 			m.activities = append(m.activities, activity)
+			index = len(m.activities) - 1
 		}
 	} else {
 		if index < 0 {
@@ -1760,6 +1784,29 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 		default:
 			activity.status = "done"
 		}
+	}
+
+	activity := m.activities[index]
+	entryText := activity.name + " · " + activity.status
+	if activity.status != "running" && activity.duration > 0 {
+		entryText += " · " + activity.duration.Round(time.Millisecond).String()
+	}
+	entryIndex := -1
+	if event.CallID != "" {
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].activityID == event.CallID {
+				entryIndex = i
+				break
+			}
+		}
+	}
+	if entryIndex >= 0 {
+		m.entries[entryIndex].text = entryText
+		m.entries[entryIndex].err = activity.status == "failed"
+	} else {
+		m.entries = append(m.entries, tuiEntry{
+			role: "tool", text: entryText, err: activity.status == "failed", activityID: event.CallID,
+		})
 	}
 	if len(m.activities) > 200 {
 		m.activities = append([]tuiActivity(nil), m.activities[len(m.activities)-200:]...)
@@ -1790,6 +1837,10 @@ func (m *tuiModel) refreshPanels() {
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true)
 		if entry.err {
 			style = style.Foreground(lipgloss.Color("9"))
+		}
+		if entry.role == "tool" {
+			messages.WriteString(style.Render("  ↳ " + entry.text))
+			continue
 		}
 		messages.WriteString(style.Render(badge))
 		messages.WriteByte('\n')
@@ -1822,7 +1873,7 @@ func (m *tuiModel) refreshPanels() {
 		}
 		activities.WriteString(line)
 	}
-	activities.WriteString("\n\nModel usage · input / output / reasoning / cached")
+	activities.WriteString("\n\nModel usage · input / output / reasoning / total / cached")
 	if len(m.usageRequests) == 0 {
 		activities.WriteString("\nNo model requests yet.")
 	} else {
@@ -1852,38 +1903,17 @@ func (m *tuiModel) updateLayout() {
 	if m.height <= 0 {
 		m.height = 24
 	}
-	innerWidth := max(1, m.width-2)
-	m.input.SetWidth(innerWidth)
+	contentWidth := max(1, m.width)
+	m.input.SetWidth(contentWidth)
 
-	bodyHeight := max(6, m.height-m.input.Height()-10-m.commandSuggestionHeight())
-	if m.width >= 100 {
-		if m.showSidebar {
-			activityPanelWidth := min(44, max(40, m.width/3))
-			chatPanelWidth := max(20, m.width-activityPanelWidth-1)
-			m.chat.SetWidth(max(1, chatPanelWidth-2))
-			m.activity.SetWidth(max(1, activityPanelWidth-2))
-			m.chat.SetHeight(max(1, bodyHeight-3))
-			m.activity.SetHeight(max(1, bodyHeight-3))
-		} else {
-			m.chat.SetWidth(max(1, m.width-4))
-			m.chat.SetHeight(max(1, bodyHeight-3))
-			m.activity.SetWidth(1)
-			m.activity.SetHeight(1)
-		}
-		return
-	}
-	innerWidth = max(1, m.width-2)
-	if m.showSidebar {
-		m.activity.SetWidth(innerWidth)
-		m.activity.SetHeight(max(1, bodyHeight-3))
-		m.chat.SetWidth(1)
-		m.chat.SetHeight(1)
-	} else {
-		m.chat.SetWidth(innerWidth)
-		m.chat.SetHeight(max(1, bodyHeight-3))
-		m.activity.SetWidth(1)
-		m.activity.SetHeight(1)
-	}
+	// The layout is a single transcript column with a bottom composer and a
+	// two-line status footer. Reserve room for pickers/suggestions only while
+	// they are visible.
+	bodyHeight := max(1, m.height-1-1-m.input.Height()-m.commandSuggestionHeight()-2)
+	m.chat.SetWidth(contentWidth)
+	m.chat.SetHeight(bodyHeight)
+	m.activity.SetWidth(max(1, contentWidth-2))
+	m.activity.SetHeight(max(1, bodyHeight-4))
 }
 
 func (m *tuiModel) commandSuggestionHeight() int {
@@ -1906,48 +1936,17 @@ func (m *tuiModel) commandSuggestionHeight() int {
 }
 
 func (m *tuiModel) View() tea.View {
-	width := max(40, m.width)
-	headerText := " " + m.rabbitSprite() + " Lune Agent"
+	width := max(1, m.width)
+	headerText := "☾ Lune Agent"
 	if m.sessionID != "" {
-		headerText += " · session " + m.sessionID[:min(8, len(m.sessionID))]
+		headerText += "  ·  " + m.sessionID[:min(8, len(m.sessionID))]
 	}
-	if m.pending {
-		headerText += " · paused task: /continue"
-	}
-	if m.planMode {
-		headerText += " · PLAN"
-	} else {
-		headerText += " · BUILD"
-	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(headerText)
+	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Render(headerText)
 	body := m.renderBody(width)
-	inputLabelText := " Input · Enter sends · Ctrl+O newline · Shift+Tab Plan/Build · Ctrl+B panel"
-	if m.vimMode {
-		if m.vimNormal {
-			inputLabelText += " · VIM NORMAL"
-		} else {
-			inputLabelText += " · VIM INSERT"
-		}
-	}
-	if m.running {
-		inputLabelText += fmt.Sprintf(" · %d queued", len(m.queued))
-	}
-	inputLabel := lipgloss.NewStyle().Bold(true).Render(inputLabelText)
-	inputPanel := lipgloss.NewStyle().Width(max(1, width-2)).Border(lipgloss.RoundedBorder()).Render(m.input.View())
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(strings.Repeat("─", width))
 	suggestions := m.renderCommandSuggestions()
-	status := m.status
-	if m.running {
-		status = "Working… Press Esc to interrupt."
-	}
-	if m.pendingApproval != nil {
-		status = "Permission required: Y approve once · N deny · Esc interrupt task."
-	}
-	footerText := status + "\n/new  /resume  /continue  /queue  /discard  /compact  /permissions  /vim  /exit · Ctrl+B panel"
-	if m.running {
-		footerText = status + "\nEnter queues · /queue edits · Ctrl+Enter interrupts and sends · Esc pauses"
-	}
-	footer := lipgloss.NewStyle().Width(max(1, width-2)).Foreground(lipgloss.Color("8")).Render(footerText)
-	parts := []string{header, body, inputLabel, inputPanel}
+	footer := m.renderFooter(width)
+	parts := []string{header, body, divider, m.input.View()}
 	if m.sessionPicker {
 		parts = append(parts, m.renderSessionPicker())
 	} else if m.queuePicker {
@@ -1965,24 +1964,65 @@ func (m *tuiModel) View() tea.View {
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	if cursor := m.input.Cursor(); cursor != nil && !m.sessionPicker && !m.queuePicker && !m.permissionMenu {
-		cursor.X++
-		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(inputLabel) + 1
+		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
 		view.Cursor = cursor
 	}
 	return view
 }
 
-func (m *tuiModel) rabbitSprite() string {
-	switch {
-	case m.running:
-		return "☾ ᕱᗜᕱ"
-	case m.pending:
-		return "☾ ᕱ•ᕱ"
-	case strings.Contains(strings.ToLower(m.status), "failed"):
-		return "☾ ᕱ︵ᕱ"
-	default:
-		return "☾ ᕱ⑅ᕱ"
+func (m *tuiModel) renderFooter(width int) string {
+	mode := "BUILD"
+	if m.planMode {
+		mode = "PLAN"
 	}
+	metrics := mode
+	if m.permissions != nil {
+		metrics += " · " + permissionModeLabel(m.permissions.PermissionMode())
+	}
+	if m.taskUsage.requests > 0 {
+		metrics += fmt.Sprintf(" · in %d · out %d · reason %d · cache %s",
+			m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning,
+			cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
+	} else {
+		metrics += " · tokens — · cache —"
+	}
+	status := m.status
+	switch {
+	case m.detailsOpen:
+		status = "Activity & usage · ↑/↓ scroll · Ctrl+B or Esc close"
+	case m.pendingApproval != nil:
+		status = "Approval required · Y allow once · N deny · Esc pause"
+	case m.running:
+		status = fmt.Sprintf("Working · %d queued · Esc pause · Ctrl+Enter interrupt/send", len(m.queued))
+	case m.pending:
+		status = "Paused task · /continue to resume"
+	case m.status == "Ready":
+		status = "/ commands · Enter send · Ctrl+O newline · Shift+Tab mode · Ctrl+B activity"
+	}
+	if m.vimMode {
+		vimState := "VIM INSERT"
+		if m.vimNormal {
+			vimState = "VIM NORMAL"
+		}
+		status = vimState + " · " + status
+	}
+	status = fitTerminalText(status, width)
+	metrics = fitTerminalText(metrics, width)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(metrics),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(status),
+	)
+}
+
+func fitTerminalText(value string, width int) string {
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width(string(runes)+"…") > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
 }
 
 func (m *tuiModel) renderQueuePicker() string {
@@ -2080,26 +2120,18 @@ func (m *tuiModel) renderPermissionMenu() string {
 }
 
 func (m *tuiModel) renderBody(width int) string {
-	if width >= 100 && m.showSidebar {
-		activityWidth := min(44, max(40, width/3))
-		chatWidth := max(20, width-activityWidth-1)
-		panelHeight := max(3, m.height-m.input.Height()-10-m.commandSuggestionHeight())
-		chatPanel := renderTUIPanel("Conversation", m.chat.View(), chatWidth, panelHeight)
-		activityPanel := renderTUIPanel("Activity & usage", m.activity.View(), activityWidth, panelHeight)
-		return lipgloss.JoinHorizontal(lipgloss.Top, chatPanel, activityPanel)
+	if !m.detailsOpen {
+		return m.chat.View()
 	}
-	bodyHeight := max(6, m.height-m.input.Height()-10-m.commandSuggestionHeight())
-	if m.showSidebar {
-		return renderTUIPanel("Activity & usage", m.activity.View(), width, bodyHeight)
+	bodyHeight := max(1, m.chat.Height())
+	if bodyHeight < 5 {
+		return m.activity.View()
 	}
-	return renderTUIPanel("Conversation", m.chat.View(), width, bodyHeight)
-}
-
-func renderTUIPanel(title, content string, width, height int) string {
-	innerWidth := max(1, width-2)
-	innerHeight := max(1, height-2)
-	body := lipgloss.JoinVertical(lipgloss.Left, lipgloss.NewStyle().Bold(true).Render(title), content)
-	return lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).Border(lipgloss.RoundedBorder()).Render(body)
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Render("Activity & usage")
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("↑/↓ scroll · Ctrl+B or Esc close")
+	content := lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
+	return lipgloss.NewStyle().Width(max(1, width-2)).Height(bodyHeight - 2).
+		Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("13")).Render(content)
 }
 
 func responseDisplayText(response *model.Response) (string, error) {

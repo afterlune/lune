@@ -96,6 +96,21 @@ func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 	}
 }
 
+func TestTUIHistoryTranscriptHidesToolArgumentsAndOutput(t *testing.T) {
+	toolOutput := "secret tool output"
+	history := model.NewResponseInputItems(
+		model.InputFunctionCall{CallID: "call-1", Name: "read_file", Arguments: `{"path":"private.txt"}`},
+		model.InputFunctionCallOutput{CallID: "call-1", Output: model.ToolOutput{Text: &toolOutput}},
+	)
+	entries := transcriptFromHistory(history)
+	if len(entries) != 1 || entries[0].Text != "read_file · done" {
+		t.Fatalf("transcript entries = %#v, want one sanitized tool lifecycle", entries)
+	}
+	if strings.Contains(entries[0].Text, "private.txt") || strings.Contains(entries[0].Text, toolOutput) {
+		t.Fatalf("transcript exposes tool payload: %#v", entries[0])
+	}
+}
+
 func TestTUIResumeAndDiscardCommands(t *testing.T) {
 	client := &fakeResumableResponder{pending: true}
 	ui := newTUIModel(client, client, true)
@@ -221,9 +236,21 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 		t.Fatalf("task usage = %#v", ui.taskUsage)
 	}
 	view := ui.View().Content
-	for _, expected := range []string{"#1 100/40/12/140/25", "#2 50/10/0/60/5", "Task 150/50/12/200/30", "Session 150/50/12/200/30", "20.0%"} {
+	for _, expected := range []string{"in 150", "out 50", "reason 12", "20.0%"} {
 		if !strings.Contains(view, expected) {
-			t.Errorf("view missing %q: %q", expected, view)
+			t.Errorf("compact footer missing %q: %q", expected, view)
+		}
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
+	view = ui.View().Content
+	for _, expected := range []string{
+		"#1 · in 100 · out 40 · reason 12 · total 140 · cached 25",
+		"#2 · in 50 · out 10 · reason 0 · total 60 · cached 5",
+		"Task · in 150 · out 50 · reason 12 · total 200 · cache 30",
+		"Session · in 150 · out 50 · reason 12 · total 200 · cache 30",
+	} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("details overlay missing %q: %q", expected, view)
 		}
 	}
 
@@ -235,6 +262,7 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 		t.Fatalf("session usage = %#v, want three requests and two metered", ui.sessionUsage)
 	}
 
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	ui.input.SetValue("next task")
 	updated, command := ui.submit()
 	if command == nil {
@@ -260,7 +288,7 @@ func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
 }
 
 func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
-	for _, size := range []struct{ width, height int }{{width: 120, height: 30}, {width: 80, height: 24}} {
+	for _, size := range []struct{ width, height int }{{width: 120, height: 30}, {width: 100, height: 30}, {width: 80, height: 24}} {
 		ui := newTUIModel(&fakeResponder{}, nil, false)
 		ui.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
 		view := ui.View().Content
@@ -270,6 +298,17 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		if got := lipgloss.Height(view); got > size.height {
 			t.Errorf("layout height = %d, terminal height = %d", got, size.height)
 		}
+		ui.input.SetValue("cursor alignment")
+		ui.updateLayout()
+		cursorView := ui.View()
+		inputCursor := ui.input.Cursor()
+		if cursorView.Cursor == nil || inputCursor == nil {
+			t.Fatal("focused composer did not expose a terminal cursor")
+		}
+		if cursorView.Cursor.X != inputCursor.X || cursorView.Cursor.Y != inputCursor.Y+1+ui.chat.Height()+1 {
+			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
+				inputCursor.X, inputCursor.Y+1+ui.chat.Height()+1)
+		}
 		ui.input.SetValue("/")
 		ui.updateCommandSuggestions()
 		ui.updateLayout()
@@ -277,5 +316,26 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		if got := lipgloss.Height(view); got > size.height {
 			t.Errorf("layout with command suggestions height = %d, terminal height = %d", got, size.height)
 		}
+	}
+}
+
+func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "call-1", Name: "read_file", Started: true}})
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
+	view := ui.View()
+	if !ui.detailsOpen || !strings.Contains(view.Content, "Activity & usage") {
+		t.Fatalf("Ctrl+B should open details overlay: open=%v view=%q", ui.detailsOpen, view.Content)
+	}
+	if got := lipgloss.Width(view.Content); got > 80 {
+		t.Errorf("overlay width = %d, terminal width = 80", got)
+	}
+	if got := lipgloss.Height(view.Content); got > 24 {
+		t.Errorf("overlay height = %d, terminal height = 24", got)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if ui.detailsOpen {
+		t.Fatal("Esc should close details overlay")
 	}
 }
