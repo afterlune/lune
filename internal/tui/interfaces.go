@@ -2,22 +2,26 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 
-	"github.com/afterlune/lune/internal/model"
+	"github.com/afterlune/lune/core"
 )
 
-// Responder is the model boundary needed by the TUI.
-type Responder interface {
-	Respond(context.Context, *model.ResponseInput) (*model.Response, error)
+type Client interface {
+	Workspace() string
+	SetEventHandler(core.EventHandler)
+	RunTask(context.Context, core.TaskRequest) (json.RawMessage, error)
+	ResumeTask(context.Context, string) (json.RawMessage, error)
+	HasPending(context.Context, string) (bool, error)
+	PendingHistory(context.Context, string) (json.RawMessage, error)
+	PendingPlanMode(context.Context, string) (bool, error)
+	DiscardTask(context.Context, string) (bool, error)
+	Compact(context.Context, string) (int, error)
+	CreateSession(context.Context, json.RawMessage) (core.Session, error)
+	LatestSession(context.Context) (core.Session, bool, error)
+	ListSessions(context.Context, int) ([]core.Session, error)
+	GetSession(context.Context, string) (core.Session, error)
+	PermissionMode() core.PermissionMode
+	SetPermissionMode(core.PermissionMode) error
+	ResolveApproval(string, bool) error
 }
-
-// ResumableResponder adds interrupted-task controls to a responder.
-type ResumableResponder interface {
-	Responder
-	HasPending() (bool, error)
-	Resume(context.Context) (*model.Response, error)
-	Discard(context.Context) (bool, error)
-}
-
-// legacyRunID is the checkpoint name used by releases predating session IDs.
-const legacyRunID = "lune-cli-active"

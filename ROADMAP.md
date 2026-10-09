@@ -8,7 +8,7 @@
 
 - 工具分类、四档权限、不可见工具的可操作提示已存在；I-1 的请求快照日志和回归测试已加入，运行期根因仍待当前版本日志确认。
 - 手动 /compact、用量统计、多模态输入结构和 ResponseStreamEvent 已有基础；自动压缩、流式请求和终端附件输入尚未完成。
-- TUI 主实现位于 internal/tui；cmd/tui.go 和 internal/loop/ 当前不存在。后续任务按当前结构规划，是否新建专用包列为架构决策。
+- TUI 主实现位于 internal/tui，并通过根目录 core 包使用 Agent 能力；cmd/ 负责装配和启动。Core 不保存 TUI transcript/activity 缓存，也不包含主题、角色图片或布局逻辑。
 
 ## M0 稳定性与安全
 
@@ -28,7 +28,8 @@
 
 **目标：** 固定包边界、任务状态和设置传递方式，供会话、流式和新工具复用。
 
-- [ ] [I] 按决策门确定包边界后拆分：internal/tui/ui.go 的 model/update/view、pickers、usage、render、vim；cmd/graph_runtime.go 的 responder、compaction、usage observer、history；让 cmd/ 只保留装配与入口。
+- [x] [I] 建立公开 core API，承接任务、状态、事件、会话、checkpoint、权限审批和用量；TUI 仅依赖 core API，cmd/ 仅装配 Core、TUI 或简单 CLI。
+- [ ] [I] 继续拆分 internal/tui/tui.go 内的 model/update/view、pickers、usage、render 与 vim 逻辑，保持 Core 不依赖 TUI 表现。
 - [ ] [I] 评估 internal/model 的 responses/client/network 边界，以及 internal/tool 的 read/write/exec/web/explore/ask 子包；保持 ToolExecutor 定义在 model 侧以避免循环依赖，迁移相关测试。
 - [ ] [A][E] 扩展 TaskOptions / State，持久化 Model、ReasoningEffort、Goal、ContextWindow、AutoCompact 等任务设置，使 Recover 可恢复原设置。
 - [ ] [A] 加入用户称呼与 persona 设置；用统一的 Instructions 合成器组合 Goal、称呼、persona 和 plan mode，保证 persona 不削弱系统权限约束。
@@ -101,7 +102,7 @@
 
 每项只阻塞依赖它的工作，不阻塞无关里程碑。
 
-- **架构与依赖（M1 前）：** 包路径与职责（internal/tui 或 internal/cli/tui；internal/app 或 internal/runtime）、是否创建 internal/loop、是否新增 cmd/<binary> 入口、是否引入依赖。
+- **架构与依赖（已决）：** Core 是根目录的公开 `core` 包；TUI 保留在 `internal/tui` 并只依赖 Core；cmd/ 负责装配和入口；不新增 app/loop 层或架构依赖。
 - **模型与 persona（M1/M3 前）：** 模型清单来源、DeepSeek 模型名、effort 取值和窗口默认值；称呼命令名与粒度；persona 是会话级还是全局、多套配置、是否作用于 subagent/摘要及其 TUI 身份影响；Instructions 合成顺序。
 - **上下文策略（M0/M4 前）：** 服务器 usage.InputTokens 与本地启发式的优先级/回退；压缩在图内任务中还是任务间；/context 窗口按模型还是全局；结果瘦身保留范围、决策权分层、scratchpad 存储和窄 footer 取舍。
 - **提问（M1/M3 前）：** ask_user 工具还是结束回合等用户下一条消息；选项/默认值/多问；headless 行为、超时与取消；是否计入 token 和工具轮数；subagent 内失败还是上抛。plan mode 允许提问是既定要求。

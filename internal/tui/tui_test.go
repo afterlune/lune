@@ -14,34 +14,24 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 
-	"github.com/afterlune/lune/internal/model"
-	"github.com/afterlune/lune/internal/tool"
+	"github.com/afterlune/lune/core"
 )
 
 type fakeTUICompactor struct {
-	fakeResumableResponder
+	fakeResponder
 	compactedTurns int
 	compactErr     error
 	compactCalls   int
 }
 
-type planModeResponder struct {
-	fakeResponder
-	planModes []bool
-}
-
-func (f *planModeResponder) SetPlanMode(enabled bool) {
-	f.planModes = append(f.planModes, enabled)
-}
-
-func (f *fakeTUICompactor) Compact(context.Context) (int, error) {
+func (f *fakeTUICompactor) Compact(context.Context, string) (int, error) {
 	f.compactCalls++
 	return f.compactedTurns, f.compactErr
 }
 
 func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, nil, false)
+	ui := newTUIModel(client, false)
 	input := "[\n  {\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"inspect\"},{\"type\":\"input_video\",\"video_url\":\"clip\"}]}\n]"
 	ui.input.SetValue(input)
 	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -53,15 +43,11 @@ func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 		t.Fatalf("model type = %T, want *tuiModel", updated)
 	}
 	finished.Update(command())
-	if len(client.inputs) != 1 || len(client.inputs[0].Items) != 1 {
+	if len(client.inputs) != 1 {
 		t.Fatalf("inputs = %#v, want one input item", client.inputs)
 	}
-	encoded, err := json.Marshal(client.inputs[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `"type":"input_video"`) {
-		t.Fatalf("unknown modality was not preserved: %s", encoded)
+	if !strings.Contains(string(client.inputs[0].Input.Raw), `"type":"input_video"`) {
+		t.Fatalf("unknown modality was not preserved: %s", client.inputs[0].Input.Raw)
 	}
 	if !strings.Contains(finished.View().Content, "reply") {
 		t.Fatalf("view = %q, want assistant response", finished.View().Content)
@@ -69,7 +55,7 @@ func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 }
 
 func TestTUICtrlOInsertsNewline(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.input.SetValue("first")
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
 	if !strings.Contains(ui.input.Value(), "\n") {
@@ -78,8 +64,8 @@ func TestTUICtrlOInsertsNewline(t *testing.T) {
 }
 
 func TestTUIEscapeCancelsActiveTask(t *testing.T) {
-	client := &blockingResponder{started: make(chan struct{})}
-	ui := newTUIModel(client, nil, false)
+	client := &blockingResponder{fakeResponder: &fakeResponder{}, started: make(chan struct{})}
+	ui := newTUIModel(client, false)
 	ui.input.SetValue("long task")
 	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	finished, ok := updated.(*tuiModel)
@@ -97,9 +83,9 @@ func TestTUIEscapeCancelsActiveTask(t *testing.T) {
 }
 
 func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, nil, false)
-	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "internal-call-id", Name: "read_file", Started: true}})
-	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "internal-call-id", Name: "read_file", Duration: 25, Failed: true}})
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Started: true}})
+	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Duration: 25, Failed: true}})
 	view := ui.View().Content
 	if !strings.Contains(view, "Reading a workspace file") || !strings.Contains(view, "failed") {
 		t.Fatalf("view = %q, want humanized tool and failure status", view)
@@ -111,10 +97,7 @@ func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 
 func TestTUIHistoryTranscriptHidesToolArgumentsAndOutput(t *testing.T) {
 	toolOutput := "secret tool output"
-	history := model.NewResponseInputItems(
-		model.InputFunctionCall{CallID: "call-1", Name: "read_file", Arguments: `{"path":"private.txt"}`},
-		model.InputFunctionCallOutput{CallID: "call-1", Output: model.ToolOutput{Text: &toolOutput}},
-	)
+	history := json.RawMessage(`[{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"private.txt\"}"},{"type":"function_call_output","call_id":"call-1","output":"` + toolOutput + `"}]`)
 	entries := transcriptFromHistory(history)
 	if len(entries) != 1 || entries[0].Text != "Reading private.txt · done" {
 		t.Fatalf("transcript entries = %#v, want one sanitized tool lifecycle", entries)
@@ -125,21 +108,18 @@ func TestTUIHistoryTranscriptHidesToolArgumentsAndOutput(t *testing.T) {
 }
 
 func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, nil, false)
-	ui.restoreSessionState(savedTUISession{
-		Entries:    []savedTUIEntry{{Role: "tool", Text: "read_file · done"}},
-		Activities: []savedActivity{{Name: "read_file", Status: "done"}},
-	})
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.restoreSessionState(core.Session{History: json.RawMessage(`[{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"private.txt\"}"}]`)})
 	ui.refreshPanels()
 	view := ui.View().Content
-	if strings.Contains(view, "read_file") || !strings.Contains(view, "Reading a workspace file") {
+	if strings.Contains(view, "read_file") || !strings.Contains(view, "Reading private.txt") {
 		t.Fatalf("legacy transcript exposes internal tool name: %q", view)
 	}
 }
 
 func TestTUIResumeAndDiscardCommands(t *testing.T) {
 	client := &fakeResumableResponder{pending: true}
-	ui := newTUIModel(client, client, true)
+	ui := newTUIModel(client, true)
 	ui.input.SetValue("/resume")
 	updated, command := ui.submit()
 	finished := updated.(*tuiModel)
@@ -160,11 +140,11 @@ func TestTUIResumeAndDiscardCommands(t *testing.T) {
 
 func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, nil, false)
+	ui := newTUIModel(client, false)
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if len(ui.commandSuggestions) != 7 {
-		t.Fatalf("suggestions = %#v, want all seven legacy commands", ui.commandSuggestions)
+	if len(ui.commandSuggestions) != len(tuiCommands) {
+		t.Fatalf("suggestions = %#v, want all available commands", ui.commandSuggestions)
 	}
 	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") {
 		t.Fatalf("suggestions = %#v, want /plan", ui.commandSuggestions)
@@ -177,8 +157,8 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 		t.Fatalf("selected suggestion = %d, want index 1", ui.suggestionIndex)
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
-	if ui.input.Value() != "/discard" {
-		t.Fatalf("Tab completion = %q, want /discard", ui.input.Value())
+	if ui.input.Value() != "/continue" {
+		t.Fatalf("Tab completion = %q, want /continue", ui.input.Value())
 	}
 
 	ui.input.SetValue("/not-a-command")
@@ -193,25 +173,21 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 }
 
 func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
-	registry, err := tool.NewDefaultRegistry(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ui := newTUIModel(&fakeResponder{}, nil, false)
-	ui.permissions = registry
-	if registry.PermissionMode() != tool.PermissionModeWorkspace {
-		t.Fatalf("initial mode = %q, want workspace", registry.PermissionMode())
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	if client.PermissionMode() != core.PermissionWorkspace {
+		t.Fatalf("initial mode = %q, want workspace", client.PermissionMode())
 	}
 	ui.input.SetValue("keep this draft")
 
-	for _, mode := range []tool.PermissionMode{
-		tool.PermissionModeAsk,
-		tool.PermissionModeFullAccess,
-		tool.PermissionModeReadOnly,
-		tool.PermissionModeWorkspace,
+	for _, mode := range []core.PermissionMode{
+		core.PermissionAsk,
+		core.PermissionFullAccess,
+		core.PermissionReadOnly,
+		core.PermissionWorkspace,
 	} {
 		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-		if got := registry.PermissionMode(); got != mode {
+		if got := client.PermissionMode(); got != mode {
 			t.Fatalf("mode = %q, want %q", got, mode)
 		}
 		if ui.input.Value() != "keep this draft" {
@@ -224,20 +200,15 @@ func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
 
 	ui.running = true
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if registry.PermissionMode() != tool.PermissionModeWorkspace {
-		t.Fatalf("mode changed while task was running: %q", registry.PermissionMode())
+	if client.PermissionMode() != core.PermissionWorkspace {
+		t.Fatalf("mode changed while task was running: %q", client.PermissionMode())
 	}
 }
 
 func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
-	client := &planModeResponder{}
-	registry, err := tool.NewDefaultRegistry(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ui := newTUIModel(client, nil, false)
-	ui.permissions = registry
-	initialPermissionMode := registry.PermissionMode()
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	initialPermissionMode := client.PermissionMode()
 
 	ui.input.SetValue("/plan")
 	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -245,11 +216,11 @@ func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
 		t.Fatal("/plan should toggle locally without starting a model request")
 	}
 	finished := updated.(*tuiModel)
-	if !finished.planMode || len(client.planModes) != 1 || !client.planModes[0] {
-		t.Fatalf("plan mode=%v updates=%v, want enabled", finished.planMode, client.planModes)
+	if !finished.planMode {
+		t.Fatalf("plan mode=%v, want enabled", finished.planMode)
 	}
-	if registry.PermissionMode() != initialPermissionMode {
-		t.Fatalf("/plan changed permission mode to %q", registry.PermissionMode())
+	if client.PermissionMode() != initialPermissionMode {
+		t.Fatalf("/plan changed permission mode to %q", client.PermissionMode())
 	}
 	if finished.input.Value() != "" {
 		t.Fatalf("/plan input = %q, want cleared", finished.input.Value())
@@ -257,15 +228,15 @@ func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
 
 	finished.input.SetValue("/plan")
 	finished.submit()
-	if finished.planMode || len(client.planModes) != 2 || client.planModes[1] {
-		t.Fatalf("second /plan should return to build mode: plan=%v updates=%v", finished.planMode, client.planModes)
+	if finished.planMode {
+		t.Fatalf("second /plan should return to build mode: plan=%v", finished.planMode)
 	}
 }
 
 func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 	t.Run("runs default highlighted command", func(t *testing.T) {
 		client := &fakeTUICompactor{compactedTurns: 2}
-		ui := newTUIModel(client, client, false)
+		ui := newTUIModel(client, false)
 		ui.input.SetValue("/")
 		ui.updateCommandSuggestions()
 
@@ -282,9 +253,10 @@ func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 
 	t.Run("runs command selected with arrows", func(t *testing.T) {
 		client := &fakeResumableResponder{pending: true}
-		ui := newTUIModel(client, client, true)
+		ui := newTUIModel(client, true)
 		ui.input.SetValue("/")
 		ui.updateCommandSuggestions()
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 
 		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -296,7 +268,7 @@ func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 
 func TestTUICompactCommandAndPendingGuard(t *testing.T) {
 	client := &fakeTUICompactor{compactedTurns: 2}
-	ui := newTUIModel(client, client, false)
+	ui := newTUIModel(client, false)
 	ui.input.SetValue("/compact")
 	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	finished := updated.(*tuiModel)
@@ -317,17 +289,17 @@ func TestTUICompactCommandAndPendingGuard(t *testing.T) {
 }
 
 func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, nil, false)
-	ui.Update(modelUsageMsg{usage: model.ResponseUsage{
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.Update(modelUsageMsg{usage: core.Usage{
 		InputTokens:         100,
-		InputTokensDetails:  model.TokenInputDetails{CachedTokens: 25},
+		InputTokensDetails:  core.TokenInputDetails{CachedTokens: 25},
 		OutputTokens:        40,
 		TotalTokens:         140,
-		OutputTokensDetails: model.TokenOutputDetails{ReasoningTokens: 12},
+		OutputTokensDetails: core.TokenOutputDetails{ReasoningTokens: 12},
 	}})
-	ui.Update(modelUsageMsg{usage: model.ResponseUsage{
+	ui.Update(modelUsageMsg{usage: core.Usage{
 		InputTokens:        50,
-		InputTokensDetails: model.TokenInputDetails{CachedTokens: 5},
+		InputTokensDetails: core.TokenInputDetails{CachedTokens: 5},
 		OutputTokens:       10,
 		TotalTokens:        60,
 	}})
@@ -388,7 +360,7 @@ func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
 
 func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{width: 120, height: 30}, {width: 100, height: 30}, {width: 80, height: 24}} {
-		ui := newTUIModel(&fakeResponder{}, nil, false)
+		ui := newTUIModel(&fakeResponder{}, false)
 		ui.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
 		view := ui.View().Content
 		if got := lipgloss.Width(view); got > size.width {
@@ -416,7 +388,7 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 			t.Errorf("layout with command suggestions height = %d, terminal height = %d", got, size.height)
 		}
 	}
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.preferences = uiPreferences{Theme: themeAnime, AnimeLayout: layoutFocus}
 	ui.colorProfile = colorprofile.TrueColor
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -433,9 +405,9 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 }
 
 func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	ui.Update(toolActivityMsg{event: tool.ToolEvent{CallID: "call-1", Name: "read_file", Started: true}})
+	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "call-1", Name: "read_file", Started: true}})
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
 	view := ui.View()
 	if !ui.detailsOpen || !strings.Contains(view.Content, "Activity & usage") {
@@ -478,7 +450,7 @@ func TestUIPreferencesLoadSaveAndFallback(t *testing.T) {
 
 func TestTUIThemeCommandPersistsAndKeepsAnimeCommandsHidden(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings", "ui.json")
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.preferencesPath = path
 	ui.input.SetValue("/theme")
 	ui.submit()
@@ -514,15 +486,15 @@ func TestTUIThemeCommandPersistsAndKeepsAnimeCommandsHidden(t *testing.T) {
 func TestTUIActivityUsesWorkspacePathsAndStudioShowsOnlyRealState(t *testing.T) {
 	workspace := t.TempDir()
 	file := filepath.ToSlash(filepath.Join(workspace, "internal", "tool", "html.go"))
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.workspace = workspace
 	ui.preferences = uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}
 	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	ui.Update(toolActivityMsg{event: tool.ToolEvent{
-		CallID: "call-1", Name: "read_file", DisplaySummary: "Reading internal/tool/html.go", Started: true,
+	ui.Update(toolActivityMsg{event: core.ToolCall{
+		ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`), Started: true,
 	}})
-	ui.Update(toolActivityMsg{event: tool.ToolEvent{
-		CallID: "call-1", Name: "read_file", DisplaySummary: "Reading internal/tool/html.go", Duration: 12,
+	ui.Update(toolActivityMsg{event: core.ToolCall{
+		ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`), Duration: 12,
 	}})
 	view := ui.View().Content
 	if len(ui.activities) != 1 || ui.activities[0].summary != "Reading "+file || !strings.Contains(view, "single agent") || !strings.Contains(view, "Model usage") {
@@ -547,13 +519,13 @@ func TestTUIActivityUsesWorkspacePathsAndStudioShowsOnlyRealState(t *testing.T) 
 
 func TestToolApprovalUsesHumanTextAndSafeCommandPreview(t *testing.T) {
 	workspace := t.TempDir()
-	read := formatToolApproval(tool.PermissionRequest{
+	read := formatToolApproval(core.ApprovalRequest{
 		Tool: "read_file", Arguments: json.RawMessage(`{"path":"notes.txt"}`),
 	}, workspace)
 	if !strings.Contains(read, "Reading "+filepath.ToSlash(filepath.Join(workspace, "notes.txt"))) || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
 		t.Fatalf("read approval = %q; want a human-readable path without internal payload", read)
 	}
-	command := formatToolApproval(tool.PermissionRequest{
+	command := formatToolApproval(core.ApprovalRequest{
 		Tool: "command", Arguments: json.RawMessage(`{"command":"echo hi\nrm file\u001b[31m"}`),
 	})
 	if !strings.Contains(command, `echo hi\nrm file[31m`) || !strings.Contains(command, "outside the workspace") {
@@ -574,7 +546,7 @@ func TestAnimeSpriteUsesHalfBlockCellsAndStateFallback(t *testing.T) {
 	if sprite := assistantSprite(stateThinking, 8, 4, colorsFor(themeAnime).Background); sprite == "" || lipgloss.Width(sprite) != 8 || lipgloss.Height(sprite) != 4 {
 		t.Fatalf("embedded sprite dimensions = %dx%d, want 8x4", lipgloss.Width(sprite), lipgloss.Height(sprite))
 	}
-	ui := newTUIModel(&fakeResponder{}, nil, false)
+	ui := newTUIModel(&fakeResponder{}, false)
 	ui.preferences.Theme = themeAnime
 	ui.colorProfile = colorprofile.TrueColor
 	t.Setenv("NO_COLOR", "1")
@@ -595,10 +567,7 @@ func TestAnimeSpriteUsesHalfBlockCellsAndStateFallback(t *testing.T) {
 }
 
 func TestResponseDisplayHidesRawToolCalls(t *testing.T) {
-	text, err := responseDisplayText(&model.Response{Output: []model.ResponseOutputItem{
-		model.OutputFunctionCall{CallID: "call-1", Name: "read_file", Arguments: `{"path":"secret.txt"}`},
-		model.OutputCustomToolCall{CallID: "call-2", Name: "internal_tool", Input: "secret input"},
-	}})
+	text, err := responseDisplayText(json.RawMessage(`{"output":[{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"secret.txt\"}"},{"type":"custom_tool_call","call_id":"call-2","name":"internal_tool","input":"secret input"}]}`))
 	if err != nil || text != "" {
 		t.Fatalf("tool response display = %q, %v; want no raw tool details", text, err)
 	}

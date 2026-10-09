@@ -24,7 +24,7 @@ Tool is not available in the current request.
 **证据**
 - `internal/agentgraph/agent.go` 和 `internal/model/model.go` 都会检查模型调用是否属于本轮可见工具集合；不属于时返回普通工具输出，而不是执行工具。
 - `unavailableToolMessage` 会在已知工具分类时提示调用 `select_tool_category`，并在无法归类时提示检查当前可用工具。
-- CLI/TUI 的生产请求经过 `cmd/graph_runtime.go` 中的 `agentgraph`；每轮请求日志现在记录请求序号、计划模式、所选分类和可见工具名，类别选择及不可见工具调用也有日志。
+- CLI/TUI 的生产请求经公开 `core` 包中的运行时进入 `agentgraph`；每轮请求日志记录请求序号、计划模式、所选分类和可见工具名，类别选择及不可见工具调用也有日志。
 - 图状态在类别选择后保留 `SelectedCategory`，下一轮据此重算可见工具；新增测试覆盖 SQLite 重开后恢复类别，以及新任务只看到类别选择器。
 - 旧提示 `Tool is not available in the current request.` 不在当前源码中；现有 `.luneagent/agent.log` 也没有该文本或类别快照，因此不能用它确认当前版本的运行期根因。
 

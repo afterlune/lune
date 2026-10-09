@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"context"
@@ -19,24 +19,20 @@ const (
 	compactKeepUserTurns = 4
 )
 
-type resumableResponder interface {
-	HasPending() (bool, error)
-	Resume(context.Context) (*model.Response, error)
-	Discard(context.Context) (bool, error)
-}
-
 type graphResponder struct {
-	agent        *agentgraph.Agent
-	store        graph.Store[agentgraph.State]
-	requester    *usageTrackingRequester
-	historyMu    sync.RWMutex
-	history      *model.ResponseInput
-	sessionID    string
-	planMode     bool
-	historySaver func(string, *model.ResponseInput) error
+	agent         *agentgraph.Agent
+	store         graph.Store[agentgraph.State]
+	requester     *usageTrackingRequester
+	historyMu     sync.RWMutex
+	history       *model.ResponseInput
+	sessionID     string
+	planMode      bool
+	maxToolRounds int
+	historySaver  func(string, *model.ResponseInput) error
 }
 
-func (r *graphResponder) SetPlanMode(enabled bool) { r.planMode = enabled }
+func (r *graphResponder) SetPlanMode(enabled bool)   { r.planMode = enabled }
+func (r *graphResponder) SetMaxToolRounds(limit int) { r.maxToolRounds = limit }
 
 func (r *graphResponder) SetHistorySaver(saver func(string, *model.ResponseInput) error) {
 	r.historyMu.Lock()
@@ -74,8 +70,8 @@ func (r *graphResponder) persistSessionHistory() error {
 	return saver(id, r.SessionHistory())
 }
 
-func (r *graphResponder) PendingHistory() (*model.ResponseInput, error) {
-	checkpoint, err := r.store.Load(context.Background(), r.runID())
+func (r *graphResponder) PendingHistoryFor(ctx context.Context, sessionID string) (*model.ResponseInput, error) {
+	checkpoint, err := r.store.Load(ctx, r.checkpointID(sessionID))
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +90,8 @@ func (r *graphResponder) PendingHistory() (*model.ResponseInput, error) {
 	return nil, nil
 }
 
-func (r *graphResponder) PendingPlanMode() (bool, error) {
-	checkpoint, err := r.store.Load(context.Background(), r.runID())
+func (r *graphResponder) PendingPlanModeFor(ctx context.Context, sessionID string) (bool, error) {
+	checkpoint, err := r.store.Load(ctx, r.checkpointID(sessionID))
 	if err != nil {
 		return false, err
 	}
@@ -113,10 +109,14 @@ func (r *graphResponder) PendingPlanMode() (bool, error) {
 }
 
 func (r *graphResponder) runID() string {
-	if r.sessionID == "" || r.sessionID == activeRunID {
+	return r.checkpointID(r.sessionID)
+}
+
+func (r *graphResponder) checkpointID(sessionID string) string {
+	if sessionID == "" || sessionID == activeRunID {
 		return activeRunID
 	}
-	return "lune-session-" + r.sessionID
+	return "lune-session-" + sessionID
 }
 
 type usageTrackingRequester struct {
@@ -158,7 +158,7 @@ func (r *graphResponder) Respond(ctx context.Context, input *model.ResponseInput
 	}
 	runID := r.runID()
 	history := r.SessionHistory()
-	result, err := r.agent.Start(ctx, runID, history, input, agentgraph.TaskOptions{PlanMode: r.planMode}, r.options())
+	result, err := r.agent.Start(ctx, runID, history, input, agentgraph.TaskOptions{PlanMode: r.planMode, MaxToolRounds: r.maxToolRounds}, r.options())
 	return r.finish(result, err)
 }
 
@@ -169,25 +169,17 @@ func (r *graphResponder) Resume(ctx context.Context) (*model.Response, error) {
 }
 
 func (r *graphResponder) HasPending() (bool, error) {
-	_, err := r.store.Load(context.Background(), r.runID())
-	if errors.Is(err, checkpoint.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return r.HasPendingFor(r.sessionID, context.Background())
 }
 
-func (r *graphResponder) Discard(ctx context.Context) (bool, error) {
-	err := r.store.Delete(ctx, r.runID())
+func (r *graphResponder) HasPendingFor(sessionID string, ctx context.Context) (bool, error) {
+	_, err := r.store.Load(ctx, r.checkpointID(sessionID))
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	slog.Warn("interrupted agent task discarded", "run_id", r.runID())
 	return true, nil
 }
 

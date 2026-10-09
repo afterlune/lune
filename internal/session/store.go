@@ -141,6 +141,23 @@ func (s *Store) Latest(ctx context.Context, workspace string) (*Snapshot, error)
 	return &rows[0], nil
 }
 
+func (s *Store) Get(ctx context.Context, id, workspace string) (*Snapshot, error) {
+	if id == "" || workspace == "" {
+		return nil, errors.New("session id and workspace are required")
+	}
+	rows, err := s.query(ctx, `
+		SELECT id, workspace, updated_at, data FROM sessions
+		WHERE id = ? AND workspace = ? LIMIT 1
+	`, id, workspace)
+	if err != nil || len(rows) == 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("session %q not found in workspace", id)
+	}
+	return &rows[0], nil
+}
+
 func (s *Store) List(ctx context.Context, workspace string, limit int) ([]Snapshot, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
@@ -149,6 +166,13 @@ func (s *Store) List(ctx context.Context, workspace string, limit int) ([]Snapsh
 		SELECT id, workspace, updated_at, data FROM sessions
 		WHERE workspace = ? ORDER BY updated_at DESC LIMIT ?
 	`, workspace, limit)
+}
+
+func (s *Store) All(ctx context.Context, workspace string) ([]Snapshot, error) {
+	return s.query(ctx, `
+		SELECT id, workspace, updated_at, data FROM sessions
+		WHERE workspace = ? ORDER BY updated_at DESC
+	`, workspace)
 }
 
 func (s *Store) query(ctx context.Context, statement string, args ...any) ([]Snapshot, error) {

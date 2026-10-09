@@ -2,10 +2,9 @@ package tui
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 
-	"github.com/afterlune/lune/internal/model"
-	"github.com/afterlune/lune/internal/session"
-	"github.com/afterlune/lune/internal/tool"
+	"github.com/afterlune/lune/core"
 )
 
 type tuiEntry struct {
@@ -31,50 +28,15 @@ type tuiEntry struct {
 	activityID string
 }
 
-type savedTUIEntry struct {
-	Role       string `json:"role"`
-	Text       string `json:"text"`
-	Error      bool   `json:"error,omitempty"`
-	ActivityID string `json:"activity_id,omitempty"`
-}
-
-type savedTUISession struct {
-	History       *model.ResponseInput `json:"history,omitempty"`
-	Entries       []savedTUIEntry      `json:"entries,omitempty"`
-	Activities    []savedActivity      `json:"activities,omitempty"`
-	UsageRequests []savedUsageRecord   `json:"usage_requests,omitempty"`
-	TaskUsage     savedUsageTotals     `json:"task_usage,omitempty"`
-	SessionUsage  savedUsageTotals     `json:"session_usage,omitempty"`
-}
-
-type savedActivity struct {
-	CallID   string `json:"call_id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Summary  string `json:"summary,omitempty"`
-	Status   string `json:"status"`
-	Duration int64  `json:"duration,omitempty"`
-}
-
-type savedUsageRecord struct {
-	Request   int                 `json:"request"`
-	Usage     model.ResponseUsage `json:"usage"`
-	Available bool                `json:"available"`
-}
-
-type savedUsageTotals struct {
-	Requests  int   `json:"requests"`
-	Measured  int   `json:"measured"`
-	Input     int64 `json:"input"`
-	Output    int64 `json:"output"`
-	Reasoning int64 `json:"reasoning"`
-	Total     int64 `json:"total"`
-	Cached    int64 `json:"cached"`
+type transcriptEntry struct {
+	Role string
+	Text string
 }
 
 type queuedInput struct {
 	text     string
 	display  string
-	input    *model.ResponseInput
+	input    core.TaskInput
 	planMode bool
 }
 
@@ -85,35 +47,32 @@ type tuiActivity struct {
 	duration time.Duration
 }
 
-type toolActivityMsg struct{ event tool.ToolEvent }
+type toolActivityMsg struct{ event core.ToolCall }
+type coreEventMsg struct{ event core.Event }
 
 type toolApprovalRequestMsg struct {
-	request  tool.PermissionRequest
-	response chan bool
+	request core.ApprovalRequest
 }
 
-type toolApprovalCancelledMsg struct{ response chan bool }
+type toolApprovalCancelledMsg struct{ requestID string }
 
 type taskFinishedMsg struct {
 	result taskResult
 }
 
 type taskResult struct {
-	response *model.Response
+	response json.RawMessage
 	notice   string
 	err      error
 }
 
 type tuiModel struct {
-	client      Responder
-	runtime     ResumableResponder
-	permissions *tool.Registry
-	sessions    *session.Store
-	sessionID   string
-	workspace   string
-	input       textarea.Model
-	chat        viewport.Model
-	activity    viewport.Model
+	client    Client
+	sessionID string
+	workspace string
+	input     textarea.Model
+	chat      viewport.Model
+	activity  viewport.Model
 
 	entries            []tuiEntry
 	activities         []tuiActivity
@@ -123,7 +82,7 @@ type tuiModel struct {
 	permissionIndex    int
 	pendingApproval    *toolApprovalRequestMsg
 	sessionPicker      bool
-	sessionList        []session.Snapshot
+	sessionList        []core.Session
 	sessionIndex       int
 	queued             []queuedInput
 	detailsOpen        bool
@@ -151,15 +110,11 @@ type tuiModel struct {
 	colorProfile       colorprofile.Profile
 }
 
-type compactionResponder interface {
-	Compact(context.Context) (int, error)
-}
-
-type modelUsageMsg struct{ usage model.ResponseUsage }
+type modelUsageMsg struct{ usage core.Usage }
 
 type tokenUsageRecord struct {
 	request   int
-	usage     model.ResponseUsage
+	usage     core.Usage
 	available bool
 }
 
@@ -174,19 +129,18 @@ type tokenUsageTotals struct {
 }
 
 var tuiCommands = []string{"/compact", "/continue", "/discard", "/exit", "/new", "/permissions", "/plan", "/queue", "/resume", "/theme", "/vim"}
-var legacyTUICommands = []string{"/compact", "/discard", "/exit", "/permissions", "/plan", "/resume", "/theme"}
 
 type tuiPermissionOption struct {
-	mode        tool.PermissionMode
+	mode        core.PermissionMode
 	label       string
 	description string
 }
 
 var tuiPermissionOptions = []tuiPermissionOption{
-	{mode: tool.PermissionModeReadOnly, label: "Read-only", description: "Read workspace files; ask before web; block writes and shell"},
-	{mode: tool.PermissionModeWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
-	{mode: tool.PermissionModeAsk, label: "Ask", description: "Ask before writes, shell, web, and other non-read tools"},
-	{mode: tool.PermissionModeFullAccess, label: "Full access", description: "Allow all tools; shell can access files outside the workspace"},
+	{mode: core.PermissionReadOnly, label: "Read-only", description: "Read workspace files; ask before web; block writes and shell"},
+	{mode: core.PermissionWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
+	{mode: core.PermissionAsk, label: "Ask", description: "Ask before writes, shell, web, and other non-read tools"},
+	{mode: core.PermissionFullAccess, label: "Full access", description: "Allow all tools; shell can access files outside the workspace"},
 }
 
 func UseTUI(stdin, stdout *os.File) bool {
@@ -201,82 +155,38 @@ func isTerminal(file *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func Run(client Responder, registry *tool.Registry) error {
-	runtime, _ := client.(ResumableResponder)
-	workspace, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get workspace for sessions: %w", err)
-	}
-	stateDir := filepath.Join(workspace, ".luneagent")
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
-		return fmt.Errorf("create session directory: %w", err)
-	}
-	sessions, err := session.Open(filepath.Join(stateDir, "sessions.db"))
-	if err != nil {
-		return err
-	}
-	defer sessions.Close()
-
-	latest, err := sessions.Latest(context.Background(), workspace)
+func Run(client Client) error {
+	workspace := client.Workspace()
+	ctx := context.Background()
+	saved, found, err := client.LatestSession(ctx)
 	if err != nil {
 		return fmt.Errorf("load latest session: %w", err)
 	}
-	sessionID := ""
-	var saved savedTUISession
-	if latest != nil {
-		sessionID = latest.ID
-		if err := json.Unmarshal(latest.Data, &saved); err != nil {
-			return fmt.Errorf("decode latest session: %w", err)
-		}
-	}
-	pending := false
-	if latest == nil && runtime != nil {
-		pending, err = runtime.HasPending()
+	if !found {
+		saved, err = client.CreateSession(ctx, json.RawMessage("null"))
 		if err != nil {
-			return fmt.Errorf("inspect interrupted task: %w", err)
+			return fmt.Errorf("create session: %w", err)
 		}
 	}
-	if sessionID == "" {
-		if pending {
-			// Adopt the original single-checkpoint id for upgrades from older builds.
-			sessionID = legacyRunID
-		} else if sessionID, err = newSessionID(); err != nil {
-			return err
-		}
+	pending, err := client.HasPending(ctx, saved.ID)
+	if err != nil {
+		return fmt.Errorf("inspect session task: %w", err)
 	}
-	if latest == nil && pending {
-		if historyLoader, ok := client.(interface {
-			PendingHistory() (*model.ResponseInput, error)
-		}); ok {
-			fullHistory, err := historyLoader.PendingHistory()
-			if err != nil {
-				return fmt.Errorf("restore interrupted session history: %w", err)
-			}
-			saved.Entries = transcriptFromHistory(fullHistory, workspace)
-			saved.History = historyBeforePendingTurn(fullHistory)
-		}
-	}
-	if setter, ok := client.(interface {
-		SetSession(string, *model.ResponseInput)
-	}); ok {
-		setter.SetSession(sessionID, saved.History)
-	}
-	if runtime != nil {
-		pending, err = runtime.HasPending()
+	var pendingHistory json.RawMessage
+	if pending {
+		pendingHistory, err = client.PendingHistory(ctx, saved.ID)
 		if err != nil {
-			return fmt.Errorf("inspect session task: %w", err)
+			return fmt.Errorf("restore interrupted session history: %w", err)
 		}
 	}
 	planMode := false
 	if pending {
-		if loader, ok := client.(interface{ PendingPlanMode() (bool, error) }); ok {
-			planMode, err = loader.PendingPlanMode()
-			if err != nil {
-				return fmt.Errorf("inspect paused task mode: %w", err)
-			}
+		planMode, err = client.PendingPlanMode(ctx, saved.ID)
+		if err != nil {
+			return fmt.Errorf("inspect paused task mode: %w", err)
 		}
 	}
-	ui := newTUIModel(client, runtime, pending)
+	ui := newTUIModel(client, pending)
 	preferences, preferencesPath, preferencesErr := loadUserPreferences()
 	ui.preferences = preferences
 	ui.preferencesPath = preferencesPath
@@ -284,64 +194,25 @@ func Run(client Responder, registry *tool.Registry) error {
 	if preferencesErr != nil {
 		ui.status = "UI preferences could not be loaded; using defaults."
 	}
-	ui.permissions = registry
-	ui.sessions = sessions
-	ui.sessionID = sessionID
+	ui.sessionID = saved.ID
 	ui.workspace = workspace
 	ui.planMode = planMode
-	ui.setRuntimePlanMode(planMode)
 	ui.restoreSessionState(saved)
+	if pending && len(pendingHistory) > 0 {
+		ui.entries = transcriptEntries(pendingHistory, workspace)
+	}
 	ui.updateLayout()
 	ui.refreshPanels()
-	ui.persistSession()
 	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
-	if saver, ok := client.(interface {
-		SetHistorySaver(func(string, *model.ResponseInput) error)
-	}); ok {
-		saver.SetHistorySaver(func(id string, history *model.ResponseInput) error {
-			data, err := json.Marshal(history)
-			if err != nil {
-				return fmt.Errorf("encode session history: %w", err)
-			}
-			return sessions.UpdateHistory(context.Background(), id, workspace, data)
-		})
-		defer saver.SetHistorySaver(nil)
-	}
-	if registry != nil {
-		registry.SetPermissionApprovalHandler(func(ctx context.Context, request tool.PermissionRequest) bool {
-			response := make(chan bool, 1)
-			program.Send(toolApprovalRequestMsg{request: request, response: response})
-			select {
-			case approved := <-response:
-				return approved
-			case <-ctx.Done():
-				program.Send(toolApprovalCancelledMsg{response: response})
-				return false
-			}
-		})
-		defer registry.SetPermissionApprovalHandler(nil)
-	}
-	if observer, ok := client.(interface {
-		SetUsageObserver(func(model.ResponseUsage))
-	}); ok {
-		observer.SetUsageObserver(func(usage model.ResponseUsage) {
-			program.Send(modelUsageMsg{usage: usage})
-		})
-		defer observer.SetUsageObserver(nil)
-	}
-	if registry != nil {
-		registry.SetToolEventObserver(func(event tool.ToolEvent) {
-			program.Send(toolActivityMsg{event: event})
-		})
-		defer registry.SetToolEventObserver(nil)
-	}
+	client.SetEventHandler(func(event core.Event) { program.Send(coreEventMsg{event: event}) })
+	defer client.SetEventHandler(nil)
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run TUI: %w", err)
 	}
 	return nil
 }
 
-func newTUIModel(client Responder, runtime ResumableResponder, pending bool) *tuiModel {
+func newTUIModel(client Client, pending bool) *tuiModel {
 	input := textarea.New()
 	input.Placeholder = "Ask anything, or paste ResponseInput JSON..."
 	input.Prompt = "┃ "
@@ -357,7 +228,6 @@ func newTUIModel(client Responder, runtime ResumableResponder, pending bool) *tu
 
 	model := &tuiModel{
 		client:      client,
-		runtime:     runtime,
 		input:       input,
 		chat:        viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 		activity:    viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
@@ -388,9 +258,29 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		m.refreshPanels()
 		return m, nil
+	case coreEventMsg:
+		switch message.event.Kind {
+		case core.EventToolStarted, core.EventToolFinished:
+			m.updateToolActivity(message.event.Tool)
+		case core.EventApprovalRequired:
+			if message.event.Approval != nil {
+				request := toolApprovalRequestMsg{request: *message.event.Approval}
+				m.pendingApproval = &request
+				m.status = "Permission required: press Y to approve once or N to deny."
+				m.addEntry("permission", formatToolApproval(request.request, m.workspace), true)
+			}
+		case core.EventApprovalCancelled:
+			if m.pendingApproval != nil && m.pendingApproval.request.ID == message.event.ApprovalID {
+				m.pendingApproval = nil
+				m.status = "Tool approval cancelled."
+			}
+		case core.EventUsage:
+			m.updateModelUsage(message.event.Usage)
+		}
+		m.refreshPanels()
+		return m, nil
 	case toolActivityMsg:
 		m.updateToolActivity(message.event)
-		m.persistSession()
 		m.refreshPanels()
 		return m, nil
 	case toolApprovalRequestMsg:
@@ -399,7 +289,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.addEntry("permission", formatToolApproval(message.request, m.workspace), true)
 		return m, nil
 	case toolApprovalCancelledMsg:
-		if m.pendingApproval != nil && m.pendingApproval.response == message.response {
+		if m.pendingApproval != nil && m.pendingApproval.request.ID == message.requestID {
 			m.pendingApproval = nil
 			m.status = "Tool approval cancelled."
 			m.refreshPanels()
@@ -407,7 +297,6 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case modelUsageMsg:
 		m.updateModelUsage(message.usage)
-		m.persistSession()
 		m.refreshPanels()
 		return m, nil
 	case taskFinishedMsg:
@@ -494,7 +383,6 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.planReview {
 				m.planReview = false
 				m.planMode = false
-				m.setRuntimePlanMode(false)
 				m.clearQueue()
 				m.status = "Plan cancelled."
 				m.updateLayout()
@@ -715,7 +603,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	m.resetInput()
 	m.cancelled = false
 	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.Respond(ctx, input)
+		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: m.planMode})
 		return taskResult{response: response, err: err}
 	}, true)
 }
@@ -813,12 +701,10 @@ func (m *tuiModel) editQueuedInput() (tea.Model, tea.Cmd) {
 	m.removeQueuedEntry(queued.display)
 	m.input.SetValue(queued.text)
 	m.planMode = queued.planMode
-	m.setRuntimePlanMode(queued.planMode)
 	m.queuePicker = false
 	m.status = "Editing a queued message; Enter resubmits it."
 	m.updateCommandSuggestions()
 	m.updateLayout()
-	m.persistSession()
 	m.refreshPanels()
 	return m, nil
 }
@@ -837,7 +723,6 @@ func (m *tuiModel) deleteQueuedInput() {
 		m.queueIndex = min(m.queueIndex, len(m.queued)-1)
 		m.status = fmt.Sprintf("%d message(s) remain queued.", len(m.queued))
 	}
-	m.persistSession()
 	m.refreshPanels()
 }
 
@@ -875,7 +760,7 @@ func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	} else if pending {
 		if m.abandonOnFinish {
-			if _, err := m.runtime.Discard(context.Background()); err != nil {
+			if _, err := m.client.DiscardTask(context.Background(), m.sessionID); err != nil {
 				m.addEntry("error", "Could not discard interrupted task: "+err.Error(), true)
 				return m, nil
 			}
@@ -892,13 +777,11 @@ func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
 			break
 		}
 	}
-	m.setRuntimePlanMode(queued.planMode)
 	m.planMode = queued.planMode
 	m.cancelled = false
-	m.persistSession()
 	m.resetInput()
 	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.Respond(ctx, queued.input)
+		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: queued.input, PlanMode: queued.planMode})
 		return taskResult{response: response, err: err}
 	}, true)
 }
@@ -906,20 +789,13 @@ func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
 func (m *tuiModel) acceptPlan() (tea.Model, tea.Cmd) {
 	m.planReview = false
 	m.planMode = false
-	m.setRuntimePlanMode(false)
 	m.addEntry("you", "Implement the approved plan.", false)
 	m.resetInput()
-	input := model.NewResponseInputText("Implement the approved plan.")
+	input, _ := core.NewTaskInput("Implement the approved plan.")
 	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.Respond(ctx, input)
+		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: false})
 		return taskResult{response: response, err: err}
 	}, true)
-}
-
-func (m *tuiModel) setRuntimePlanMode(enabled bool) {
-	if setter, ok := m.client.(interface{ SetPlanMode(bool) }); ok {
-		setter.SetPlanMode(enabled)
-	}
 }
 
 func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
@@ -929,7 +805,6 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.planMode = !m.planMode
-	m.setRuntimePlanMode(m.planMode)
 	if m.planMode {
 		m.status = "Plan mode · read-only tools are available."
 	} else {
@@ -1033,14 +908,14 @@ func (m *tuiModel) deleteCurrentLine() {
 }
 
 func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
-	if m.permissions == nil {
+	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
 	m.permissionIndex = 0
 	for index, option := range tuiPermissionOptions {
-		if option.mode == m.permissions.PermissionMode() {
+		if option.mode == m.client.PermissionMode() {
 			m.permissionIndex = index
 			break
 		}
@@ -1053,14 +928,14 @@ func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) cyclePermissionMode() (tea.Model, tea.Cmd) {
-	if m.permissions == nil {
+	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
 	currentIndex := -1
 	for index, option := range tuiPermissionOptions {
-		if option.mode == m.permissions.PermissionMode() {
+		if option.mode == m.client.PermissionMode() {
 			currentIndex = index
 			break
 		}
@@ -1088,20 +963,20 @@ func (m *tuiModel) setPermissionModeFromCommand(line string) (tea.Model, tea.Cmd
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	return m.applyPermissionMode(tool.PermissionMode(fields[1]))
+	return m.applyPermissionMode(core.PermissionMode(fields[1]))
 }
 
-func (m *tuiModel) applyPermissionMode(mode tool.PermissionMode) (tea.Model, tea.Cmd) {
+func (m *tuiModel) applyPermissionMode(mode core.PermissionMode) (tea.Model, tea.Cmd) {
 	return m.changePermissionMode(mode, true)
 }
 
-func (m *tuiModel) changePermissionMode(mode tool.PermissionMode, resetInput bool) (tea.Model, tea.Cmd) {
-	if m.permissions == nil {
+func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput bool) (tea.Model, tea.Cmd) {
+	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	if err := m.permissions.SetPermissionMode(mode); err != nil {
+	if err := m.client.SetPermissionMode(mode); err != nil {
 		m.status = err.Error()
 		m.addEntry("error", m.status, true)
 		return m, nil
@@ -1119,7 +994,7 @@ func (m *tuiModel) changePermissionMode(mode tool.PermissionMode, resetInput boo
 	return m, nil
 }
 
-func permissionModeLabel(mode tool.PermissionMode) string {
+func permissionModeLabel(mode core.PermissionMode) string {
 	for _, option := range tuiPermissionOptions {
 		if option.mode == mode {
 			return option.label
@@ -1128,8 +1003,19 @@ func permissionModeLabel(mode tool.PermissionMode) string {
 	return string(mode)
 }
 
-func permissionModeDescription(mode tool.PermissionMode) string {
-	return tool.PermissionModeDescription(mode)
+func permissionModeDescription(mode core.PermissionMode) string {
+	switch mode {
+	case core.PermissionReadOnly:
+		return "Read workspace files; ask before web; block writes and shell"
+	case core.PermissionWorkspace:
+		return "Workspace file operations; commands and web need approval"
+	case core.PermissionAsk:
+		return "Read workspace files; ask before every other tool"
+	case core.PermissionFullAccess:
+		return "Allow all tools; shell can access paths outside the workspace"
+	default:
+		return ""
+	}
 }
 
 func (m *tuiModel) resolveToolApproval(approved bool) {
@@ -1138,7 +1024,13 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 	}
 	request := m.pendingApproval
 	m.pendingApproval = nil
-	request.response <- approved
+	if m.client != nil {
+		if err := m.client.ResolveApproval(request.request.ID, approved); err != nil {
+			m.status = "Could not resolve tool approval: " + err.Error()
+			m.addEntry("error", m.status, true)
+			return
+		}
+	}
 	if approved {
 		m.status = "Tool call approved once."
 		m.addEntry("notice", "Approved this tool call once.", false)
@@ -1148,7 +1040,7 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 	}
 }
 
-func formatToolApproval(request tool.PermissionRequest, workspace ...string) string {
+func formatToolApproval(request core.ApprovalRequest, workspace ...string) string {
 	display := humanizedToolSummary(request.Tool, request.Arguments, workspace...)
 	warning := ""
 	details := ""
@@ -1164,10 +1056,7 @@ func formatToolApproval(request tool.PermissionRequest, workspace ...string) str
 }
 
 func (m *tuiModel) openSessionPicker() (tea.Model, tea.Cmd) {
-	if m.sessions == nil {
-		return m.continueTask()
-	}
-	sessions, err := m.sessions.List(context.Background(), m.workspace, 30)
+	sessions, err := m.client.ListSessions(context.Background(), 30)
 	if err != nil {
 		m.status = "Could not load sessions."
 		m.addEntry("error", err.Error(), true)
@@ -1200,24 +1089,11 @@ func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	saved := m.sessionList[m.sessionIndex]
-	var state savedTUISession
-	if err := json.Unmarshal(saved.Data, &state); err != nil {
-		m.sessionPicker = false
-		m.status = "Could not restore session."
-		m.addEntry("error", err.Error(), true)
-		return m, nil
-	}
-	if setter, ok := m.client.(interface {
-		SetSession(string, *model.ResponseInput)
-	}); ok {
-		setter.SetSession(saved.ID, state.History)
-	}
 	m.sessionID = saved.ID
 	m.clearQueue()
-	m.restoreSessionState(state)
+	m.restoreSessionState(saved)
 	m.planMode = false
 	m.planReview = false
-	m.setRuntimePlanMode(false)
 	m.pending = false
 	if pending, err := m.hasPending(); err != nil {
 		m.sessionPicker = false
@@ -1228,34 +1104,35 @@ func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
 		m.pending = pending
 	}
 	if m.pending {
-		if loader, ok := m.client.(interface{ PendingPlanMode() (bool, error) }); ok {
-			planMode, err := loader.PendingPlanMode()
-			if err != nil {
-				m.sessionPicker = false
-				m.status = "Could not inspect paused task mode."
-				m.addEntry("error", err.Error(), true)
-				return m, nil
-			}
-			m.planMode = planMode
-			m.setRuntimePlanMode(m.planMode)
+		planMode, err := m.client.PendingPlanMode(context.Background(), m.sessionID)
+		if err != nil {
+			m.sessionPicker = false
+			m.status = "Could not inspect paused task mode."
+			m.addEntry("error", err.Error(), true)
+			return m, nil
+		}
+		m.planMode = planMode
+	}
+	if m.pending {
+		if history, err := m.client.PendingHistory(context.Background(), m.sessionID); err == nil && len(history) > 0 {
+			m.entries = transcriptEntries(history, m.workspace)
 		}
 	}
 	m.sessionPicker = false
 	m.status = "Session restored."
 	m.resetInput()
-	m.persistSession()
 	m.refreshPanels()
 	m.updateLayout()
 	return m, nil
 }
 
 func (m *tuiModel) continueTask() (tea.Model, tea.Cmd) {
-	if m.runtime == nil {
+	if m.client == nil {
 		m.status = "Task recovery is unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	pending, err := m.runtime.HasPending()
+	pending, err := m.client.HasPending(context.Background(), m.sessionID)
 	if err != nil {
 		m.status = "Could not inspect interrupted task."
 		m.addEntry("error", err.Error(), true)
@@ -1269,38 +1146,30 @@ func (m *tuiModel) continueTask() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.pending = true
-	if loader, ok := m.client.(interface{ PendingPlanMode() (bool, error) }); ok {
-		planMode, err := loader.PendingPlanMode()
-		if err != nil {
-			m.status = "Could not inspect paused task mode."
-			m.addEntry("error", err.Error(), true)
-			return m, nil
-		}
-		m.planMode = planMode
-		m.setRuntimePlanMode(planMode)
+	planMode, err := m.client.PendingPlanMode(context.Background(), m.sessionID)
+	if err != nil {
+		m.status = "Could not inspect paused task mode."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
 	}
+	m.planMode = planMode
 	m.addEntry("notice", "Continuing the paused task; a model request or tool call may repeat.", true)
 	m.resetInput()
 	m.cancelled = false
 	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.runtime.Resume(ctx)
+		response, err := m.client.ResumeTask(ctx, m.sessionID)
 		return taskResult{response: response, err: err}
 	}, false)
 }
 
 func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
-	id, err := newSessionID()
+	saved, err := m.client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		m.status = "Could not create a session."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	if setter, ok := m.client.(interface {
-		SetSession(string, *model.ResponseInput)
-	}); ok {
-		setter.SetSession(id, nil)
-	}
-	m.sessionID = id
+	m.sessionID = saved.ID
 	m.clearQueue()
 	m.entries = nil
 	m.activities = nil
@@ -1309,241 +1178,185 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.sessionUsage = tokenUsageTotals{}
 	m.planMode = false
 	m.planReview = false
-	m.setRuntimePlanMode(false)
 	m.pending = false
 	m.status = "New session."
 	m.resetInput()
-	m.persistSession()
 	m.refreshPanels()
 	m.updateLayout()
 	return m, nil
 }
 
 func (m *tuiModel) branchPausedSession() error {
-	id, err := newSessionID()
+	saved, err := m.client.GetSession(context.Background(), m.sessionID)
 	if err != nil {
 		return err
 	}
-	var history *model.ResponseInput
-	if source, ok := m.client.(interface{ SessionHistory() *model.ResponseInput }); ok {
-		history = source.SessionHistory()
+	branch, err := m.client.CreateSession(context.Background(), saved.History)
+	if err != nil {
+		return err
 	}
-	if setter, ok := m.client.(interface {
-		SetSession(string, *model.ResponseInput)
-	}); ok {
-		setter.SetSession(id, history)
-	}
-	m.sessionID = id
+	m.sessionID = branch.ID
 	m.pending = false
 	m.status = "Started a new branch from the last completed turn."
 	m.addEntry("notice", "Started a new branch from completed history; the paused task remains in its original session.", false)
-	m.persistSession()
 	return nil
 }
 
-func (m *tuiModel) persistSession() {
-	if m.sessions == nil || m.sessionID == "" || m.workspace == "" {
-		return
+func (m *tuiModel) restoreSessionState(saved core.Session) {
+	m.entries = transcriptEntries(saved.History, m.workspace)
+	m.activities = nil
+	m.usageRequests = make([]tokenUsageRecord, 0, len(saved.UsageRequests))
+	for _, record := range saved.UsageRequests {
+		m.usageRequests = append(m.usageRequests, tokenUsageRecord{request: record.Request, usage: record.Usage, available: record.Available})
 	}
-	state := savedTUISession{}
-	if source, ok := m.client.(interface{ SessionHistory() *model.ResponseInput }); ok {
-		state.History = source.SessionHistory()
-	}
-	if len(m.entries) > 500 {
-		m.entries = append([]tuiEntry(nil), m.entries[len(m.entries)-500:]...)
-	}
-	state.Entries = make([]savedTUIEntry, 0, len(m.entries))
-	for _, entry := range m.entries {
-		if entry.role == "queued" {
+	m.taskUsage = loadUsageTotals(saved.TaskUsage)
+	m.sessionUsage = loadUsageTotals(saved.SessionUsage)
+}
+
+func loadUsageTotals(totals core.UsageTotals) tokenUsageTotals {
+	return tokenUsageTotals{requests: totals.Requests, measured: totals.Measured, input: totals.Input,
+		output: totals.Output, reasoning: totals.Reasoning, total: totals.Total, cached: totals.Cached}
+}
+
+func transcriptFromHistory(history json.RawMessage, workspace ...string) []transcriptEntry {
+	items := rawHistoryItems(history)
+	var entries []transcriptEntry
+	for _, item := range items {
+		var value struct {
+			Type      string          `json:"type"`
+			Role      string          `json:"role"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+			Content   json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(item, &value) != nil {
 			continue
 		}
-		state.Entries = append(state.Entries, savedTUIEntry{
-			Role: entry.role, Text: entry.text, Error: entry.err, ActivityID: entry.activityID,
-		})
-	}
-	state.Activities = make([]savedActivity, 0, len(m.activities))
-	for _, activity := range m.activities {
-		state.Activities = append(state.Activities, savedActivity{
-			CallID: activity.callID, Summary: activity.summary, Status: activity.status, Duration: int64(activity.duration),
-		})
-	}
-	state.UsageRequests = make([]savedUsageRecord, 0, len(m.usageRequests))
-	for _, record := range m.usageRequests {
-		state.UsageRequests = append(state.UsageRequests, savedUsageRecord{
-			Request: record.request, Usage: record.usage, Available: record.available,
-		})
-	}
-	state.TaskUsage = saveUsageTotals(m.taskUsage)
-	state.SessionUsage = saveUsageTotals(m.sessionUsage)
-	data, err := json.Marshal(state)
-	if err == nil {
-		err = m.sessions.Save(context.Background(), session.Snapshot{
-			ID: m.sessionID, Workspace: m.workspace, Data: data,
-		})
-	}
-	if err != nil {
-		m.status = "Session save failed: " + err.Error()
-	}
-}
-
-func (m *tuiModel) persistSessionHistory() {
-	if m.sessions == nil || m.sessionID == "" || m.workspace == "" {
-		return
-	}
-	source, ok := m.client.(interface{ SessionHistory() *model.ResponseInput })
-	if !ok {
-		return
-	}
-	data, err := json.Marshal(source.SessionHistory())
-	if err == nil {
-		err = m.sessions.UpdateHistory(context.Background(), m.sessionID, m.workspace, data)
-	}
-	if err != nil {
-		m.status = "Session history save failed: " + err.Error()
-	}
-}
-
-func (m *tuiModel) restoreSessionState(state savedTUISession) {
-	m.entries = make([]tuiEntry, 0, len(state.Entries))
-	for _, entry := range state.Entries {
-		text := entry.Text
-		if entry.Role == "tool" {
-			text = humanizeSavedToolEntry(text)
-		}
-		m.entries = append(m.entries, tuiEntry{
-			role: entry.Role, text: text, err: entry.Error, activityID: entry.ActivityID,
-		})
-	}
-	m.activities = make([]tuiActivity, 0, len(state.Activities))
-	for _, activity := range state.Activities {
-		summary := activity.Summary
-		if summary == "" {
-			summary = tool.DisplaySummary(activity.Name, nil)
-		}
-		summary = absoluteToolSummary(summary, m.workspace)
-		m.activities = append(m.activities, tuiActivity{
-			callID: activity.CallID, summary: summary, status: activity.Status, duration: time.Duration(activity.Duration),
-		})
-	}
-	m.usageRequests = make([]tokenUsageRecord, 0, len(state.UsageRequests))
-	for _, record := range state.UsageRequests {
-		m.usageRequests = append(m.usageRequests, tokenUsageRecord{
-			request: record.Request, usage: record.Usage, available: record.Available,
-		})
-	}
-	m.taskUsage = loadUsageTotals(state.TaskUsage)
-	m.sessionUsage = loadUsageTotals(state.SessionUsage)
-}
-
-func humanizeSavedToolEntry(text string) string {
-	name, status, found := strings.Cut(text, " · ")
-	if !found || !strings.Contains(name, "_") {
-		return text
-	}
-	return tool.DisplaySummary(name, nil) + " · " + status
-}
-
-func saveUsageTotals(totals tokenUsageTotals) savedUsageTotals {
-	return savedUsageTotals{
-		Requests: totals.requests, Measured: totals.measured, Input: totals.input,
-		Output: totals.output, Reasoning: totals.reasoning, Total: totals.total, Cached: totals.cached,
-	}
-}
-
-func loadUsageTotals(totals savedUsageTotals) tokenUsageTotals {
-	return tokenUsageTotals{
-		requests: totals.Requests, measured: totals.Measured, input: totals.Input,
-		output: totals.Output, reasoning: totals.Reasoning, total: totals.Total, cached: totals.Cached,
-	}
-}
-
-func newSessionID() (string, error) {
-	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("create session id: %w", err)
-	}
-	return hex.EncodeToString(random[:]), nil
-}
-
-func historyBeforePendingTurn(history *model.ResponseInput) *model.ResponseInput {
-	items := responseHistoryItems(history)
-	cut := len(items)
-	for index := len(items) - 1; index >= 0; index-- {
-		message, ok := items[index].(model.InputMessage)
-		if ok && message.Role == model.RoleUser {
-			cut = index
-			break
-		}
-	}
-	return model.NewResponseInputItems(items[:cut]...)
-}
-
-func transcriptFromHistory(history *model.ResponseInput, workspace ...string) []savedTUIEntry {
-	var entries []savedTUIEntry
-	for _, item := range responseHistoryItems(history) {
-		switch value := item.(type) {
-		case model.InputMessage:
+		switch value.Type {
+		case "message":
 			role := "notice"
-			switch value.Role {
-			case model.RoleUser:
+			if value.Role == "user" {
 				role = "you"
-			case model.RoleAssistant:
+			} else if value.Role == "assistant" {
 				role = "assistant"
 			}
 			if text := messageContentText(value.Content); text != "" {
-				entries = append(entries, savedTUIEntry{Role: role, Text: text})
+				entries = append(entries, transcriptEntry{Role: role, Text: text})
 			}
-		case model.InputFunctionCall:
-			entries = append(entries, savedTUIEntry{Role: "tool", Text: humanizedToolSummary(value.Name, json.RawMessage(value.Arguments), workspace...) + " · done"})
-		case model.InputFunctionCallOutput:
-			// Tool output may contain file contents or command output. Keep the
-			// conversation transcript limited to the sanitized call lifecycle.
+		case "function_call":
+			arguments := value.Arguments
+			if len(arguments) > 0 && arguments[0] == '"' {
+				var text string
+				_ = json.Unmarshal(arguments, &text)
+				arguments = json.RawMessage(text)
+			}
+			entries = append(entries, transcriptEntry{Role: "tool", Text: humanizedToolSummary(value.Name, arguments, workspace...) + " · done"})
 		}
 	}
 	return entries
 }
 
-func messageContentText(content model.MessageContent) string {
-	if content.Text != nil {
-		return *content.Text
+func transcriptEntries(history json.RawMessage, workspace ...string) []tuiEntry {
+	saved := transcriptFromHistory(history, workspace...)
+	entries := make([]tuiEntry, 0, len(saved))
+	for _, entry := range saved {
+		entries = append(entries, tuiEntry{role: entry.Role, text: entry.Text})
 	}
-	var text strings.Builder
-	for _, part := range content.Parts {
-		switch value := part.(type) {
-		case model.InputText:
-			text.WriteString(value.Text)
-		case model.OutputText:
-			text.WriteString(value.Text)
-		case model.InputImage:
-			text.WriteString("[image]")
-		case model.ReasoningText:
-			continue
-		default:
-			text.WriteString("[multimodal content]")
-		}
-	}
-	return text.String()
+	return entries
 }
 
-func inputTranscriptText(input *model.ResponseInput, fallback string) string {
-	if input == nil {
+func rawHistoryItems(history json.RawMessage) []json.RawMessage {
+	if len(history) == 0 || string(history) == "null" {
+		return nil
+	}
+	var text string
+	if json.Unmarshal(history, &text) == nil {
+		encoded, _ := json.Marshal(map[string]any{"type": "message", "role": "user", "content": text})
+		return []json.RawMessage{encoded}
+	}
+	var items []json.RawMessage
+	_ = json.Unmarshal(history, &items)
+	return items
+}
+
+func sessionPreview(history json.RawMessage) string {
+	for _, entry := range transcriptFromHistory(history) {
+		if entry.Role != "you" {
+			continue
+		}
+		preview := strings.Join(strings.Fields(entry.Text), " ")
+		if len([]rune(preview)) > 44 {
+			preview = string([]rune(preview)[:41]) + "..."
+		}
+		if preview != "" {
+			return preview
+		}
+	}
+	return "empty session"
+}
+
+func messageContentText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return text
+	}
+	var parts []json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return "[multimodal content]"
+	}
+	var out strings.Builder
+	for _, raw := range parts {
+		var part struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(raw, &part)
+		switch part.Type {
+		case "input_text", "output_text":
+			out.WriteString(part.Text)
+		case "input_image":
+			out.WriteString("[image]")
+		case "reasoning_text":
+		default:
+			out.WriteString("[multimodal content]")
+		}
+	}
+	return out.String()
+}
+
+func inputTranscriptText(input core.TaskInput, fallback string) string {
+	if len(input.Raw) == 0 {
 		return fallback
 	}
-	if input.Text != nil {
-		return *input.Text
+	var text string
+	if json.Unmarshal(input.Raw, &text) == nil {
+		return text
 	}
-	var parts []string
-	for _, item := range input.Items {
-		switch value := item.(type) {
-		case model.InputMessage:
-			if text := messageContentText(value.Content); text != "" {
-				parts = append(parts, text)
+	var items []json.RawMessage
+	if json.Unmarshal(input.Raw, &items) != nil {
+		return "[structured input]"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		var value struct {
+			Type    string          `json:"type"`
+			Role    string          `json:"role"`
+			Name    string          `json:"name"`
+			Content json.RawMessage `json:"content"`
+		}
+		_ = json.Unmarshal(item, &value)
+		if value.Type == "message" {
+			if content := messageContentText(value.Content); content != "" {
+				parts = append(parts, content)
 			} else {
 				parts = append(parts, "[multimodal content]")
 			}
-		case model.InputFunctionCall:
-			parts = append(parts, fmt.Sprintf("%s(%s)", value.Name, value.Arguments))
-		default:
+		} else if value.Type == "function_call" {
+			parts = append(parts, value.Name+"(tool call)")
+		} else {
 			parts = append(parts, "[structured input item]")
 		}
 	}
@@ -1553,25 +1366,8 @@ func inputTranscriptText(input *model.ResponseInput, fallback string) string {
 	return strings.Join(parts, "\n")
 }
 
-func toolOutputText(output model.ToolOutput) string {
-	if output.Text != nil {
-		return *output.Text
-	}
-	var text strings.Builder
-	for _, part := range output.Parts {
-		switch value := part.(type) {
-		case model.InputText:
-			text.WriteString(value.Text)
-		case model.OutputText:
-			text.WriteString(value.Text)
-		}
-	}
-	return text.String()
-}
-
 func (m *tuiModel) compact() (tea.Model, tea.Cmd) {
-	runtime, ok := m.client.(compactionResponder)
-	if !ok {
+	if m.client == nil {
 		m.status = "Conversation compaction is unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
@@ -1588,7 +1384,7 @@ func (m *tuiModel) compact() (tea.Model, tea.Cmd) {
 	}
 	m.resetInput()
 	return m.startTask(func(ctx context.Context) taskResult {
-		compactedTurns, err := runtime.Compact(ctx)
+		compactedTurns, err := m.client.Compact(ctx, m.sessionID)
 		if err != nil {
 			return taskResult{err: err}
 		}
@@ -1600,12 +1396,12 @@ func (m *tuiModel) compact() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
-	if m.runtime == nil {
+	if m.client == nil {
 		m.status = "Task recovery is unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	discarded, err := m.runtime.Discard(context.Background())
+	discarded, err := m.client.DiscardTask(context.Background(), m.sessionID)
 	if err != nil {
 		m.status = "Could not discard interrupted task."
 		m.addEntry("error", err.Error(), true)
@@ -1631,10 +1427,10 @@ func (m *tuiModel) resetInput() {
 }
 
 func (m *tuiModel) hasPending() (bool, error) {
-	if m.runtime == nil {
+	if m.client == nil {
 		return false, nil
 	}
-	pending, err := m.runtime.HasPending()
+	pending, err := m.client.HasPending(context.Background(), m.sessionID)
 	m.pending = pending
 	return pending, err
 }
@@ -1687,8 +1483,8 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.addEntry("error", "Could not inspect interrupted task: "+pendingErr.Error(), true)
 	}
 	if m.abandonOnFinish {
-		if pending && m.runtime != nil {
-			if _, err := m.runtime.Discard(context.Background()); err != nil {
+		if pending && m.client != nil {
+			if _, err := m.client.DiscardTask(context.Background(), m.sessionID); err != nil {
 				m.addEntry("error", "Could not discard interrupted task: "+err.Error(), true)
 			} else {
 				pending = false
@@ -1714,11 +1510,8 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.status = "Plan ready · Enter accepts · type feedback to revise · Esc cancels."
 	} else if m.taskPlanMode && result.err != nil {
 		m.planMode = false
-		m.setRuntimePlanMode(false)
 	}
 	m.cancelled = false
-	m.persistSession()
-	m.persistSessionHistory()
 }
 
 func (m *tuiModel) updateCommandSuggestions() {
@@ -1733,9 +1526,6 @@ func (m *tuiModel) updateCommandSuggestions() {
 		return
 	}
 	commands := tuiCommands
-	if m.sessions == nil {
-		commands = legacyTUICommands
-	}
 	for _, command := range commands {
 		if strings.HasPrefix(command, line) {
 			m.commandSuggestions = append(m.commandSuggestions, command)
@@ -1743,7 +1533,7 @@ func (m *tuiModel) updateCommandSuggestions() {
 	}
 }
 
-func (m *tuiModel) updateModelUsage(usage model.ResponseUsage) {
+func (m *tuiModel) updateModelUsage(usage core.Usage) {
 	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 ||
 		usage.TotalTokens != 0 || usage.InputTokensDetails.CachedTokens != 0
 	requestNumber := m.sessionUsage.requests + 1
@@ -1756,7 +1546,7 @@ func (m *tuiModel) updateModelUsage(usage model.ResponseUsage) {
 	}
 }
 
-func (totals *tokenUsageTotals) add(usage model.ResponseUsage, available bool) {
+func (totals *tokenUsageTotals) add(usage core.Usage, available bool) {
 	totals.requests++
 	if !available {
 		return
@@ -1885,21 +1675,17 @@ func cacheHitRate(inputTokens, cachedTokens int64) string {
 	return fmt.Sprintf("%.1f%%", float64(cachedTokens)*100/float64(inputTokens))
 }
 
-func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
-	summary := event.DisplaySummary
-	if summary == "" {
-		summary = tool.DisplaySummary(event.Name, nil)
-	}
-	summary = absoluteToolSummary(summary, m.workspace)
+func (m *tuiModel) updateToolActivity(event core.ToolCall) {
+	summary := humanizedToolSummary(event.Name, event.Arguments, m.workspace)
 	index := -1
 	for i := len(m.activities) - 1; i >= 0; i-- {
-		if event.CallID != "" && m.activities[i].callID == event.CallID {
+		if event.ID != "" && m.activities[i].callID == event.ID {
 			index = i
 			break
 		}
 	}
 	if event.Started {
-		activity := tuiActivity{callID: event.CallID, summary: summary, status: "running"}
+		activity := tuiActivity{callID: event.ID, summary: summary, status: "running"}
 		if index >= 0 {
 			m.activities[index] = activity
 		} else {
@@ -1908,7 +1694,7 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 		}
 	} else {
 		if index < 0 {
-			m.activities = append(m.activities, tuiActivity{callID: event.CallID, summary: summary})
+			m.activities = append(m.activities, tuiActivity{callID: event.ID, summary: summary})
 			index = len(m.activities) - 1
 		}
 		activity := &m.activities[index]
@@ -1932,9 +1718,9 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 		entryText += " · " + activity.duration.Round(time.Millisecond).String()
 	}
 	entryIndex := -1
-	if event.CallID != "" {
+	if event.ID != "" {
 		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].activityID == event.CallID {
+			if m.entries[i].activityID == event.ID {
 				entryIndex = i
 				break
 			}
@@ -1945,7 +1731,7 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 		m.entries[entryIndex].err = activity.status == "failed"
 	} else {
 		m.entries = append(m.entries, tuiEntry{
-			role: "tool", text: entryText, err: activity.status == "failed", activityID: event.CallID,
+			role: "tool", text: entryText, err: activity.status == "failed", activityID: event.ID,
 		})
 	}
 	if len(m.activities) > 200 {
@@ -1954,11 +1740,66 @@ func (m *tuiModel) updateToolActivity(event tool.ToolEvent) {
 }
 
 func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...string) string {
-	summary := tool.DisplaySummary(name, arguments)
+	var args struct {
+		Path string `json:"path"`
+		URL  string `json:"url"`
+	}
+	_ = json.Unmarshal(arguments, &args)
+	path := safeDisplayPath(args.Path)
+	summary := "Working on a tool request"
+	switch name {
+	case "read_file":
+		summary = summaryWithPath("Reading", path)
+	case "write_file":
+		summary = summaryWithPath("Writing", path)
+	case "edit_file":
+		summary = summaryWithPath("Editing", path)
+	case "list_dir":
+		summary = summaryWithPath("Listing", path)
+	case "glob":
+		summary = "Finding project files"
+	case "grep":
+		if path != "" {
+			summary = "Searching " + path
+		} else {
+			summary = "Searching project files"
+		}
+	case "web_search":
+		summary = "Searching the web"
+	case "web_fetch":
+		if parsed, err := url.Parse(args.URL); err == nil && parsed.Hostname() != "" {
+			summary = "Fetching " + parsed.Hostname()
+		} else {
+			summary = "Fetching a web page"
+		}
+	case "command":
+		summary = "Running a shell command"
+	case "html":
+		summary = "Processing web content"
+	}
 	if len(workspace) > 0 {
 		summary = absoluteToolSummary(summary, workspace[0])
 	}
 	return summary
+}
+
+func safeDisplayPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) {
+		return ""
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(clean)
+}
+
+func summaryWithPath(action, path string) string {
+	if path == "" {
+		return action + " a workspace file"
+	}
+	return action + " " + path
 }
 
 func absoluteToolSummary(summary, workspace string) string {
@@ -2004,7 +1845,6 @@ func (m *tuiModel) addEntry(role, text string, isError bool) {
 		}
 	}
 	m.entries = append(m.entries, tuiEntry{role: role, text: text, err: isError})
-	m.persistSession()
 	m.refreshPanels()
 }
 
@@ -2079,8 +1919,8 @@ func (m *tuiModel) refreshPanels() {
 	activities.WriteByte('\n')
 	activities.WriteString(m.sessionUsage.String("Session"))
 	activities.WriteString(fmt.Sprintf("\nMetered requests: task %d/%d · session %d/%d", m.taskUsage.measured, m.taskUsage.requests, m.sessionUsage.measured, m.sessionUsage.requests))
-	if m.permissions != nil {
-		activities.WriteString("\nPermissions: " + permissionModeLabel(m.permissions.PermissionMode()))
+	if m.client != nil {
+		activities.WriteString("\nPermissions: " + permissionModeLabel(m.client.PermissionMode()))
 	}
 	m.activity.SetContent(activities.String())
 	if activityAtBottom {
@@ -2307,8 +2147,8 @@ func (m *tuiModel) renderFooter(width int) string {
 	}
 	metrics := mode
 	metrics += " · " + string(m.preferences.Theme) + animeLayoutLabel(m.preferences)
-	if m.permissions != nil {
-		metrics += " · " + permissionModeLabel(m.permissions.PermissionMode())
+	if m.client != nil {
+		metrics += " · " + permissionModeLabel(m.client.PermissionMode())
 	}
 	if m.taskUsage.requests > 0 {
 		metrics += fmt.Sprintf(" · in %d · out %d · reason %d · cache %s",
@@ -2414,18 +2254,7 @@ func (m *tuiModel) renderSessionPicker() string {
 	}
 	for index, saved := range m.sessionList[start:end] {
 		index += start
-		var state savedTUISession
-		_ = json.Unmarshal(saved.Data, &state)
-		preview := "empty session"
-		for _, entry := range state.Entries {
-			if entry.Role == "you" {
-				preview = strings.Join(strings.Fields(entry.Text), " ")
-				if len([]rune(preview)) > 44 {
-					preview = string([]rune(preview)[:41]) + "..."
-				}
-				break
-			}
-		}
+		preview := sessionPreview(saved.History)
 		line := fmt.Sprintf("  %s  %s", saved.UpdatedAt.Local().Format("01-02 15:04"), preview)
 		if saved.ID == m.sessionID {
 			line += "  (current)"
@@ -2441,7 +2270,11 @@ func (m *tuiModel) renderSessionPicker() string {
 
 func (m *tuiModel) renderPermissionMenu() string {
 	colors := colorsFor(m.preferences.Theme)
-	lines := []string{"Permission mode · current: " + permissionModeLabel(m.permissions.PermissionMode())}
+	mode := core.PermissionReadOnly
+	if m.client != nil {
+		mode = m.client.PermissionMode()
+	}
+	lines := []string{"Permission mode · current: " + permissionModeLabel(mode)}
 	for index, option := range tuiPermissionOptions {
 		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
 		if index == m.permissionIndex {
@@ -2486,39 +2319,33 @@ func (m *tuiModel) renderBody(width int) string {
 	return m.chat.View()
 }
 
-func responseDisplayText(response *model.Response) (string, error) {
-	if response == nil {
+func responseDisplayText(response json.RawMessage) (string, error) {
+	if len(response) == 0 {
 		return "", nil
 	}
-	lines := make([]string, 0, len(response.Output))
-	for _, item := range response.Output {
-		message, ok := item.(model.OutputMessage)
-		if !ok {
-			if _, reasoning := item.(model.OutputReasoning); reasoning {
-				continue
-			}
-			if _, toolCall := item.(model.OutputFunctionCall); toolCall {
-				// Tool lifecycle events render a sanitized summary elsewhere.
-				continue
-			}
-			if _, toolCall := item.(model.OutputCustomToolCall); toolCall {
-				continue
-			}
-			encoded, err := json.Marshal(item)
-			if err != nil {
-				return "", fmt.Errorf("encode response output: %w", err)
-			}
-			lines = append(lines, string(encoded))
-			continue
+	var envelope struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	lines := make([]string, 0, len(envelope.Output))
+	for _, item := range envelope.Output {
+		var value struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
 		}
-		var messageText strings.Builder
-		for _, part := range message.Content {
-			if text, ok := part.(model.OutputText); ok {
-				messageText.WriteString(text.Text)
-			}
+		if err := json.Unmarshal(item, &value); err != nil {
+			return "", err
 		}
-		if messageText.Len() > 0 {
-			lines = append(lines, messageText.String())
+		switch value.Type {
+		case "message":
+			if text := messageContentText(value.Content); text != "" {
+				lines = append(lines, text)
+			}
+		case "reasoning", "function_call", "custom_tool_call":
+		default:
+			lines = append(lines, string(item))
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n")), nil
