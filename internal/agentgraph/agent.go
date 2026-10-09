@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/afterlune/lune/internal/model"
 	graph "github.com/afterlune/luneGraph"
@@ -248,9 +249,16 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 			Output: model.NewToolOutputText("Tool is not available in plan mode."),
 		}
 	case !contains(state.VisibleTools, call.Name):
+		expectedCategory := a.categoryForTool(call.Name)
+		slog.WarnContext(ctx, "tool call is not in the visible tool set",
+			"tool", call.Name,
+			"selected_category", state.SelectedCategory,
+			"visible_tools", state.VisibleTools,
+			"expected_category", expectedCategory,
+		)
 		output = model.InputFunctionCallOutput{
 			CallID: call.CallID,
-			Output: model.NewToolOutputText("Tool is not available in the current request."),
+			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
 	default:
 		output = a.tools.ExecuteCall(ctx, call)
@@ -303,6 +311,32 @@ func (a *Agent) readOnlyCategories() []model.ToolCategory {
 		}
 	}
 	return categories
+}
+
+func (a *Agent) categoryForTool(name string) string {
+	if a.categorized == nil {
+		return ""
+	}
+	for _, category := range a.categories {
+		for _, definition := range a.categorized.DefinitionsForCategory(category.Name) {
+			if function, ok := definition.(model.FunctionTool); ok && function.Name == name {
+				return category.Name
+			}
+		}
+	}
+	return ""
+}
+
+func unavailableToolMessage(name, category string, categorized bool) string {
+	if category != "" {
+		return fmt.Sprintf("Tool %q belongs to category %q, which is not visible in this request. Call %s with category %q, then retry the tool in the next request.",
+			name, category, model.CategorySelectorName, category)
+	}
+	if categorized {
+		return fmt.Sprintf("Tool %q is not registered in a discoverable category. Call %s to review available tools, then use a listed tool.",
+			name, model.CategorySelectorName)
+	}
+	return fmt.Sprintf("Tool %q is not available in this request. Only call tools listed in the current request.", name)
 }
 
 func readOnlyDefinitions(definitions []model.ResponseTool) []model.ResponseTool {

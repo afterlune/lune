@@ -268,9 +268,16 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 					Output: NewToolOutputText(output),
 				})
 			} else if _, visible := visibleToolNames[call.Name]; !visible {
+				expectedCategory := categoryForTool(categorized, categories, call.Name)
+				slog.Warn("tool call is not in the visible tool set",
+					"tool", call.Name,
+					"selected_category", selectedCategory,
+					"visible_tools", responseToolNameList(visibleTools),
+					"expected_category", expectedCategory,
+				)
 				history = append(history, InputFunctionCallOutput{
 					CallID: call.CallID,
-					Output: NewToolOutputText("Tool is not available in the current request."),
+					Output: NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, isCategorized)),
 				})
 			} else {
 				history = append(history, c.tools.ExecuteCall(ctx, call))
@@ -354,6 +361,42 @@ func responseToolNames(tools []ResponseTool) map[string]struct{} {
 		}
 	}
 	return names
+}
+
+func responseToolNameList(tools []ResponseTool) []string {
+	names := make([]string, 0, len(tools))
+	for _, definition := range tools {
+		if function, ok := definition.(FunctionTool); ok {
+			names = append(names, function.Name)
+		}
+	}
+	return names
+}
+
+func categoryForTool(categorized CategorizedToolExecutor, categories []ToolCategory, name string) string {
+	if categorized == nil {
+		return ""
+	}
+	for _, category := range categories {
+		for _, definition := range categorized.DefinitionsForCategory(category.Name) {
+			if function, ok := definition.(FunctionTool); ok && function.Name == name {
+				return category.Name
+			}
+		}
+	}
+	return ""
+}
+
+func unavailableToolMessage(name, category string, categorized bool) string {
+	if category != "" {
+		return fmt.Sprintf("Tool %q belongs to category %q, which is not visible in this request. Call %s with category %q, then retry the tool in the next request.",
+			name, category, CategorySelectorName, category)
+	}
+	if categorized {
+		return fmt.Sprintf("Tool %q is not registered in a discoverable category. Call %s to review available tools, then use a listed tool.",
+			name, CategorySelectorName)
+	}
+	return fmt.Sprintf("Tool %q is not available in this request. Only call tools listed in the current request.", name)
 }
 
 func appendSkippedToolCalls(history *[]InputItem, calls []OutputFunctionCall, reason string) {

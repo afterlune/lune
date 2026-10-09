@@ -1,9 +1,11 @@
 package agentgraph
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +206,79 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 		if !strings.Contains(string(encodedHistory), preserved) {
 			t.Errorf("recovered history lost %q: %s", preserved, encodedHistory)
 		}
+	}
+}
+
+func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
+	logBuffer := &bytes.Buffer{}
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	readFile := &namedRecordingTool{name: "read_file"}
+	webSearch := &namedRecordingTool{name: "web_search"}
+	registry, err := tool.NewCategorizedRegistry(
+		tool.ToolRegistration{Tool: readFile, Category: model.ToolCategory{Name: "files", Description: "Workspace files."}},
+		tool.ToolRegistration{Tool: webSearch, Category: model.ToolCategory{Name: "web", Description: "Web search."}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_files","name":"select_tool_category","arguments":"{\"category\":\"files\"}"},{"type":"function_call","call_id":"hidden_web","name":"web_search","arguments":"{\"query\":\"PRIVATE-ARGUMENTS\"}"},{"type":"function_call","call_id":"unknown_tool","name":"imaginary_tool","arguments":"{\"secret\":\"PRIVATE-ARGUMENTS\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_web","name":"select_tool_category","arguments":"{\"category\":\"web\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"web_call","name":"web_search","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	input, err := model.NewResponseInput("search the web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "hidden-tool-category", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || len(requester.requests) != 4 {
+		t.Fatalf("result status=%q requests=%d, want completed with four requests", result.Status, len(requester.requests))
+	}
+	if readFile.calls != 0 || webSearch.calls != 1 {
+		t.Fatalf("tool calls = read_file:%d web_search:%d, want only visible web_search", readFile.calls, webSearch.calls)
+	}
+	for requestIndex, want := range []string{
+		model.CategorySelectorName,
+		model.CategorySelectorName + ",read_file",
+		model.CategorySelectorName + ",web_search",
+		model.CategorySelectorName + ",web_search",
+	} {
+		got := strings.Join(toolNames(requester.requests[requestIndex].Tools), ",")
+		if got != want {
+			t.Errorf("request %d visible tools = %q, want %q", requestIndex+1, got, want)
+		}
+	}
+	encodedHistory, err := json.Marshal(requester.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"web_search", `category \"web\"`, model.CategorySelectorName, "next request", "imaginary_tool", "not registered in a discoverable category"} {
+		if !strings.Contains(string(encodedHistory), expected) {
+			t.Errorf("hidden tool history is missing %q: %s", expected, encodedHistory)
+		}
+	}
+	for _, expected := range []string{"tool call is not in the visible tool set", "tool=web_search", "selected_category=files", "visible_tools", "expected_category=web"} {
+		if !strings.Contains(logBuffer.String(), expected) {
+			t.Errorf("logs %q missing %q", logBuffer.String(), expected)
+		}
+	}
+	if strings.Contains(logBuffer.String(), "PRIVATE-ARGUMENTS") {
+		t.Fatalf("logs exposed tool arguments: %s", logBuffer.String())
 	}
 }
 
