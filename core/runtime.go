@@ -26,15 +26,13 @@ type graphResponder struct {
 	historyMu       sync.RWMutex
 	history         *model.ResponseInput
 	sessionID       string
-	planMode        bool
-	maxToolRounds   int
+	taskOptions     agentgraph.TaskOptions
 	modelName       string
 	reasoningEffort string
 	historySaver    func(string, *model.ResponseInput) error
 }
 
-func (r *graphResponder) SetPlanMode(enabled bool)   { r.planMode = enabled }
-func (r *graphResponder) SetMaxToolRounds(limit int) { r.maxToolRounds = limit }
+func (r *graphResponder) SetTaskOptions(options agentgraph.TaskOptions) { r.taskOptions = options }
 
 func (r *graphResponder) SetRunModel(agent *agentgraph.Agent, requester *usageTrackingRequester, modelName, reasoningEffort string) {
 	r.agent = agent
@@ -102,7 +100,15 @@ func (r *graphResponder) PendingPlanModeFor(ctx context.Context, sessionID strin
 }
 
 func (r *graphResponder) PendingStateFor(ctx context.Context, sessionID string) (agentgraph.State, bool, error) {
-	checkpoint, err := r.store.Load(ctx, r.checkpointID(sessionID))
+	return r.PendingStateForRunID(ctx, r.checkpointID(sessionID))
+}
+
+func (r *graphResponder) PendingStateForRunID(ctx context.Context, runID string) (agentgraph.State, bool, error) {
+	return pendingStateForRunID(ctx, r.store, runID)
+}
+
+func pendingStateForRunID(ctx context.Context, store graph.Store[agentgraph.State], runID string) (agentgraph.State, bool, error) {
+	checkpoint, err := store.Load(ctx, runID)
 	if err != nil {
 		return agentgraph.State{}, false, err
 	}
@@ -200,9 +206,7 @@ func (r *graphResponder) Respond(ctx context.Context, input *model.ResponseInput
 	}
 	runID := r.runID()
 	history := r.SessionHistory()
-	result, err := r.agent.Start(ctx, runID, history, input, agentgraph.TaskOptions{
-		PlanMode: r.planMode, MaxToolRounds: r.maxToolRounds, ReasoningEffort: r.reasoningEffort,
-	}, r.options())
+	result, err := r.agent.Start(ctx, runID, history, input, r.taskOptions, r.options())
 	return r.finish(result, err)
 }
 

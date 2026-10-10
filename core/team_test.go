@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -201,6 +202,9 @@ func TestCoreLoadsProviderCatalogFromWorkspaceConfig(t *testing.T) {
 	if core.models.DefaultModel() != "primary" || core.teamRuns == nil {
 		t.Fatalf("Core provider/team state not initialized: default=%q teamStore=%v", core.models.DefaultModel(), core.teamRuns != nil)
 	}
+	if core.taskDefaults.ContextWindow != 64000 || !core.taskDefaults.AutoCompact || core.taskDefaults.AutoCompactThreshold != projectconfig.DefaultAutoCompactThreshold {
+		t.Fatalf("Core task defaults = %#v", core.taskDefaults)
+	}
 	if err := core.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -227,6 +231,77 @@ func TestTeamStoreRejectsChangedAssignmentsOnResume(t *testing.T) {
 	changed := []agentgraph.TeamAssignment{{ID: "research", Model: "one", Task: "different task"}}
 	if _, _, err := store.GetOrCreate("parent", "call", changed, profiles); err == nil {
 		t.Fatal("changed assignments should not reuse a saved team checkpoint")
+	}
+}
+
+func TestTeamExecutorRejectsMemberCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
+	provider := &cancelOnceProvider{started: make(chan struct{})}
+	modelConfig := model.Config{
+		Providers: map[string]model.ProviderConfig{
+			model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: "https://deepseek.example", APIKey: "test-key"},
+		},
+		Models:       map[string]model.ModelProfile{"worker": {Provider: model.ProviderDeepSeek, Model: "deepseek-worker"}},
+		DefaultModel: "worker",
+	}
+	catalog, err := model.NewProviderCatalogWithProviders(modelConfig, map[string]model.Provider{model.ProviderDeepSeek: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := memory.New[agentgraph.State](graph.JSONClone[agentgraph.State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openTeamStore(filepath.Join(t.TempDir(), "team.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	team := &teamExecutor{
+		core: &Core{approvals: make(map[string]chan bool)}, models: catalog, tools: registry,
+		checkpoints: checkpoints, store: store,
+	}
+	assignments := []agentgraph.TeamAssignment{{ID: "worker", Model: "worker", Task: "inspect the code"}}
+	teamRun, _, err := store.GetOrCreate("parent-run", "call-1", assignments, catalog.Profiles())
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := teamRun.Members[0]
+	member.Status = "paused"
+	if err := store.UpdateMember(teamRun.ID, member); err != nil {
+		t.Fatal(err)
+	}
+	childRunID := teamRun.ID + ":" + member.ID
+	if err := checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
+		FormatVersion: graph.CheckpointFormatVersion,
+		RunID:         childRunID,
+		MachineID:     "lune-agent-v1",
+		Revision:      1,
+		NextID:        2,
+		Invocations: []graph.Invocation[agentgraph.State]{
+			{ID: "old-invocation", Node: "model_request", Status: graph.InvocationReady, State: agentgraph.State{RunID: childRunID}},
+		},
+	}); err != nil {
+		t.Fatalf("create old member checkpoint: %v", err)
+	}
+
+	_, err = team.runMember(context.Background(), teamRun.ID, member, agentgraph.TaskOptions{Goal: "must not inherit"})
+	if err == nil || !strings.Contains(err.Error(), "task settings version 0") {
+		t.Fatalf("runMember error = %v, want unsupported settings checkpoint error", err)
+	}
+	currentMember, err := store.Member(teamRun.ID, member.ID)
+	if err != nil || currentMember.Status != "paused" {
+		t.Fatalf("member after rejected resume = %#v, error=%v; want preserved paused status", currentMember, err)
+	}
+	checkpoint, err := checkpoints.Load(context.Background(), childRunID)
+	if err != nil || checkpoint.Invocations[0].State.TaskSettingsVersion != 0 {
+		t.Fatalf("member checkpoint after rejected resume = %#v, error=%v; want preserved checkpoint", checkpoint, err)
+	}
+	if calls := provider.calls.Load(); calls != 0 {
+		t.Fatalf("provider requests = %d, want 0 before rejecting old checkpoint", calls)
 	}
 }
 

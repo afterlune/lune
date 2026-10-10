@@ -78,6 +78,45 @@ func TestSessionTitleArchiveForkAndLatest(t *testing.T) {
 	}
 }
 
+func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, server.URL)
+	client := openSettingsCore(t, workspace, stateDir)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := client.runtime.checkpointID(saved.ID)
+	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
+		FormatVersion: graph.CheckpointFormatVersion,
+		RunID:         runID,
+		MachineID:     "lune-agent-v1",
+		Revision:      1,
+		NextID:        2,
+		Invocations: []graph.Invocation[agentgraph.State]{
+			{ID: "old-invocation", Node: "model_request", Status: graph.InvocationReady, State: agentgraph.State{RunID: runID}},
+		},
+	}); err != nil {
+		t.Fatalf("create old checkpoint: %v", err)
+	}
+
+	if _, err := client.ResumeTask(context.Background(), saved.ID); err == nil || !strings.Contains(err.Error(), "task settings version 0") {
+		t.Fatalf("ResumeTask error = %v, want unsupported settings checkpoint error", err)
+	}
+	if state := client.State(); state.Status != TaskIdle {
+		t.Fatalf("task state after rejected resume = %#v, want idle", state)
+	}
+	if pending, err := client.HasPending(context.Background(), saved.ID); err != nil || !pending {
+		t.Fatalf("checkpoint after rejected resume: pending=%v err=%v; want preserved", pending, err)
+	}
+	state, found, err := client.runtime.PendingStateFor(context.Background(), saved.ID)
+	if err != nil || !found || state.TaskSettingsVersion != 0 {
+		t.Fatalf("old checkpoint after rejection: found=%v state=%#v err=%v", found, state, err)
+	}
+}
+
 func TestRewindSessionPreservesWholeTurnsAndRejectsPausedTasks(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()

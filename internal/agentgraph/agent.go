@@ -21,6 +21,9 @@ const (
 	machineID = "lune-agent-v1"
 )
 
+// CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
+const CurrentTaskSettingsVersion = 1
+
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
 	CreateResponse(context.Context, model.ModelRequest) (*model.ModelResponse, error)
@@ -64,30 +67,41 @@ type AgentOptions struct {
 // custom JSON decoder so typed and unknown multimodal input items survive clone
 // and checkpoint round trips.
 type State struct {
-	RunID            string                     `json:"run_id,omitempty"`
-	AgentID          string                     `json:"agent_id,omitempty"`
-	AgentName        string                     `json:"agent_name,omitempty"`
-	Provider         string                     `json:"provider,omitempty"`
-	ModelProfile     string                     `json:"model_profile,omitempty"`
-	Model            string                     `json:"model,omitempty"`
-	ReasoningEffort  string                     `json:"reasoning_effort,omitempty"`
-	History          model.ResponseInput        `json:"history"`
-	PlanMode         bool                       `json:"plan_mode,omitempty"`
-	SelectedCategory string                     `json:"selected_category,omitempty"`
-	PendingCalls     []model.OutputFunctionCall `json:"pending_calls,omitempty"`
-	PendingIndex     int                        `json:"pending_index,omitempty"`
-	VisibleTools     []string                   `json:"visible_tools,omitempty"`
-	ToolRounds       int                        `json:"tool_rounds,omitempty"`
-	MaxToolRounds    int                        `json:"max_tool_rounds,omitempty"`
-	TaskError        string                     `json:"task_error,omitempty"`
-	FinalResponse    *model.Response            `json:"final_response,omitempty"`
+	RunID                string                     `json:"run_id,omitempty"`
+	AgentID              string                     `json:"agent_id,omitempty"`
+	AgentName            string                     `json:"agent_name,omitempty"`
+	Provider             string                     `json:"provider,omitempty"`
+	ModelProfile         string                     `json:"model_profile,omitempty"`
+	Model                string                     `json:"model,omitempty"`
+	ReasoningEffort      string                     `json:"reasoning_effort,omitempty"`
+	TaskSettingsVersion  int                        `json:"task_settings_version,omitempty"`
+	Goal                 string                     `json:"goal,omitempty"`
+	ContextWindow        int64                      `json:"context_window,omitempty"`
+	ReserveOutputTokens  int64                      `json:"reserve_output_tokens,omitempty"`
+	AutoCompact          bool                       `json:"auto_compact,omitempty"`
+	AutoCompactThreshold float64                    `json:"auto_compact_threshold,omitempty"`
+	History              model.ResponseInput        `json:"history"`
+	PlanMode             bool                       `json:"plan_mode,omitempty"`
+	SelectedCategory     string                     `json:"selected_category,omitempty"`
+	PendingCalls         []model.OutputFunctionCall `json:"pending_calls,omitempty"`
+	PendingIndex         int                        `json:"pending_index,omitempty"`
+	VisibleTools         []string                   `json:"visible_tools,omitempty"`
+	ToolRounds           int                        `json:"tool_rounds,omitempty"`
+	MaxToolRounds        int                        `json:"max_tool_rounds,omitempty"`
+	TaskError            string                     `json:"task_error,omitempty"`
+	FinalResponse        *model.Response            `json:"final_response,omitempty"`
 }
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
 type TaskOptions struct {
-	MaxToolRounds   int
-	PlanMode        bool
-	ReasoningEffort string
+	MaxToolRounds        int
+	PlanMode             bool
+	ReasoningEffort      string
+	Goal                 string
+	ContextWindow        int64
+	ReserveOutputTokens  int64
+	AutoCompact          bool
+	AutoCompactThreshold float64
 }
 
 // Agent runs one model request or one tool call per graph step.
@@ -178,6 +192,12 @@ func (a *Agent) Start(ctx context.Context, runID string, history, input *model.R
 	state.ReasoningEffort = taskOptions.ReasoningEffort
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.PlanMode = taskOptions.PlanMode
+	state.TaskSettingsVersion = CurrentTaskSettingsVersion
+	state.Goal = taskOptions.Goal
+	state.ContextWindow = taskOptions.ContextWindow
+	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
+	state.AutoCompact = taskOptions.AutoCompact
+	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
 	return a.runner.Start(ctx, runID, state, options)
 }
 

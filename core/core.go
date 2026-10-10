@@ -150,11 +150,24 @@ type UsageTotals struct {
 	CacheCreation int64 `json:"cache_creation,omitempty"`
 }
 
-// SessionSettings are the defaults applied to new tasks in a session. A task
-// already in progress keeps the settings recorded in its checkpoint.
+// SessionSettings contains per-session overrides. Nil context settings inherit
+// the project defaults; a running task keeps its resolved values in checkpoint.
 type SessionSettings struct {
-	ModelProfile    string `json:"model_profile"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ModelProfile         string   `json:"model_profile"`
+	ReasoningEffort      string   `json:"reasoning_effort,omitempty"`
+	Goal                 string   `json:"goal,omitempty"`
+	ContextWindow        *int64   `json:"context_window,omitempty"`
+	ReserveOutputTokens  *int64   `json:"reserve_output_tokens,omitempty"`
+	AutoCompact          *bool    `json:"auto_compact,omitempty"`
+	AutoCompactThreshold *float64 `json:"auto_compact_threshold,omitempty"`
+}
+
+type taskSettings struct {
+	Goal                 string
+	ContextWindow        int64
+	ReserveOutputTokens  int64
+	AutoCompact          bool
+	AutoCompactThreshold float64
 }
 
 // ModelOption is a model profile exposed to clients without leaking the
@@ -230,14 +243,15 @@ type Config struct {
 }
 
 type Core struct {
-	workspace   string
-	registry    *tool.Registry
-	models      *model.ProviderCatalog
-	teamRuns    *teamStore
-	team        *teamExecutor
-	runtime     *graphResponder
-	checkpoints *sqlite.Store[agentgraph.State]
-	sessions    *session.Store
+	workspace    string
+	registry     *tool.Registry
+	models       *model.ProviderCatalog
+	taskDefaults taskSettings
+	teamRuns     *teamStore
+	team         *teamExecutor
+	runtime      *graphResponder
+	checkpoints  *sqlite.Store[agentgraph.State]
+	sessions     *session.Store
 
 	mu              sync.RWMutex
 	usageMu         sync.Mutex
@@ -314,9 +328,13 @@ func New(config Config) (_ *Core, err error) {
 		}
 	}()
 	c := &Core{
-		workspace:   workspace,
-		registry:    registry,
-		models:      models,
+		workspace: workspace,
+		registry:  registry,
+		models:    models,
+		taskDefaults: taskSettings{
+			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
+			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
+		},
 		teamRuns:    teamRuns,
 		checkpoints: checkpoints,
 		sessions:    sessions,
@@ -435,8 +453,8 @@ func (c *Core) ListModelProfiles() []ModelOption {
 	return options
 }
 
-// SetSessionSettings replaces the defaults used by future tasks in a session.
-// A paused task continues with the profile and effort saved in its checkpoint.
+// SetSessionSettings replaces the per-session overrides used by future tasks.
+// A paused task continues with the settings saved in its checkpoint.
 func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, settings SessionSettings) error {
 	if c == nil || ctx == nil || sessionID == "" {
 		return errors.New("core, context, and session id are required")
@@ -458,7 +476,7 @@ func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, setting
 	return c.saveSession(ctx, saved)
 }
 
-func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettings, error) {
+func (c *Core) normalizeSessionModelSettings(settings SessionSettings) (SessionSettings, error) {
 	if settings.ModelProfile == "" {
 		settings.ModelProfile = c.models.DefaultModel()
 	}
@@ -477,6 +495,72 @@ func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettin
 	}
 	settings.ReasoningEffort = effort
 	return settings, nil
+}
+
+func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettings, error) {
+	settings, err := c.normalizeSessionModelSettings(settings)
+	if err != nil {
+		return SessionSettings{}, err
+	}
+	settings.Goal = strings.TrimSpace(settings.Goal)
+	if settings.ContextWindow != nil && *settings.ContextWindow < 0 {
+		return SessionSettings{}, errors.New("contextWindow override must not be negative")
+	}
+	if settings.ReserveOutputTokens != nil && *settings.ReserveOutputTokens < 0 {
+		return SessionSettings{}, errors.New("reserveOutputTokens override must not be negative")
+	}
+	if settings.AutoCompactThreshold != nil && (*settings.AutoCompactThreshold <= 0 || *settings.AutoCompactThreshold > 1) {
+		return SessionSettings{}, errors.New("autoCompactThreshold override must be greater than 0 and at most 1")
+	}
+	if _, err := c.resolveTaskSettings(settings); err != nil {
+		return SessionSettings{}, err
+	}
+	return settings, nil
+}
+
+func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, error) {
+	effective := c.taskDefaults
+	effective.Goal = strings.TrimSpace(settings.Goal)
+	if settings.ContextWindow != nil {
+		effective.ContextWindow = *settings.ContextWindow
+	}
+	if settings.ReserveOutputTokens != nil {
+		effective.ReserveOutputTokens = *settings.ReserveOutputTokens
+	}
+	if settings.AutoCompact != nil {
+		effective.AutoCompact = *settings.AutoCompact
+	}
+	if settings.AutoCompactThreshold != nil {
+		effective.AutoCompactThreshold = *settings.AutoCompactThreshold
+	}
+	if effective.AutoCompact && effective.AutoCompactThreshold == 0 {
+		effective.AutoCompactThreshold = projectconfig.DefaultAutoCompactThreshold
+	}
+	if effective.ContextWindow < 0 {
+		return taskSettings{}, errors.New("contextWindow must not be negative")
+	}
+	if effective.ReserveOutputTokens < 0 {
+		return taskSettings{}, errors.New("reserveOutputTokens must not be negative")
+	}
+	if effective.ContextWindow > 0 && effective.ReserveOutputTokens >= effective.ContextWindow {
+		return taskSettings{}, errors.New("reserveOutputTokens must be smaller than contextWindow")
+	}
+	if effective.AutoCompactThreshold < 0 || effective.AutoCompactThreshold > 1 {
+		return taskSettings{}, errors.New("autoCompactThreshold must be between 0 and 1")
+	}
+	return effective, nil
+}
+
+func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
+	return agentgraph.TaskOptions{
+		PlanMode: state.PlanMode, MaxToolRounds: state.MaxToolRounds, ReasoningEffort: state.ReasoningEffort,
+		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
+		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
+	}
+}
+
+func checkpointSettingsVersionError(version int) error {
+	return fmt.Errorf("cannot resume task checkpoint with task settings version %d (current version %d); discard it and start a new task", version, agentgraph.CurrentTaskSettingsVersion)
 }
 
 func (c *Core) PermissionMode() PermissionMode {
@@ -540,9 +624,6 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		return nil, err
 	}
 	settings := saved.Settings
-	if settings.ModelProfile == "" {
-		settings.ModelProfile = c.models.DefaultModel()
-	}
 	var pendingState agentgraph.State
 	if resume {
 		var ok bool
@@ -552,6 +633,9 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		if !ok {
 			return nil, errors.New("no paused task exists in this session")
+		}
+		if pendingState.TaskSettingsVersion != agentgraph.CurrentTaskSettingsVersion {
+			return nil, checkpointSettingsVersionError(pendingState.TaskSettingsVersion)
 		}
 		if pendingState.ModelProfile != "" {
 			settings.ModelProfile = pendingState.ModelProfile
@@ -567,11 +651,32 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		(pendingState.Model != "" && pendingState.Model != profile.Model)) {
 		return nil, fmt.Errorf("paused task model profile %q changed in config; it remains pinned to provider %q and model %q", settings.ModelProfile, pendingState.Provider, pendingState.Model)
 	}
-	settings, err = c.normalizeSessionSettings(settings)
+	if resume {
+		settings, err = c.normalizeSessionModelSettings(settings)
+	} else {
+		settings, err = c.normalizeSessionSettings(settings)
+	}
 	if err != nil {
 		return nil, err
 	}
 	profile, _ = c.models.Profile(settings.ModelProfile)
+	var taskOptions agentgraph.TaskOptions
+	if resume {
+		taskOptions = taskOptionsFromState(pendingState)
+		planMode = taskOptions.PlanMode
+		maxRounds = taskOptions.MaxToolRounds
+	} else {
+		effective, resolveErr := c.resolveTaskSettings(settings)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		taskOptions = agentgraph.TaskOptions{
+			PlanMode: planMode, MaxToolRounds: maxRounds, ReasoningEffort: settings.ReasoningEffort,
+			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
+			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
+			AutoCompactThreshold: effective.AutoCompactThreshold,
+		}
+	}
 	var history *model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var decoded model.ResponseInput
@@ -595,8 +700,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 	}
 	c.runtime.SetSession(sessionID, history)
-	c.runtime.SetPlanMode(planMode)
-	c.runtime.SetMaxToolRounds(maxRounds)
+	c.runtime.SetTaskOptions(taskOptions)
 	c.runtime.SetHistorySaver(func(id string, history *model.ResponseInput) error {
 		encoded, err := json.Marshal(history)
 		if err != nil {

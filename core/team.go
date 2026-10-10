@@ -101,6 +101,20 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		return result, err
 	}
 	childRunID := teamRunID + ":" + member.ID
+	if member.Status == "paused" || member.Status == "running" {
+		state, found, stateErr := pendingStateForRunID(ctx, t.checkpoints, childRunID)
+		if stateErr != nil && !errors.Is(stateErr, checkpoint.ErrNotFound) {
+			return result, fmt.Errorf("inspect team member checkpoint: %w", stateErr)
+		}
+		if stateErr == nil {
+			if !found {
+				return result, checkpointSettingsVersionError(0)
+			}
+			if state.TaskSettingsVersion != agentgraph.CurrentTaskSettingsVersion {
+				return result, checkpointSettingsVersionError(state.TaskSettingsVersion)
+			}
+		}
+	}
 	graphOptions := graph.Options[agentgraph.State]{Store: t.checkpoints, Observer: graph.ObserverFunc(logGraphEvent)}
 	updated := member
 	updated.Status = "running"

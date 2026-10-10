@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	FileName                    = "config.json"
-	defaultAutoCompactThreshold = 0.8
+	FileName = "config.json"
+	// DefaultAutoCompactThreshold is used when auto compaction is enabled and no threshold is configured.
+	DefaultAutoCompactThreshold = 0.8
 )
 
 // Config is the project configuration. Its JSON shape stays flat so existing
@@ -114,7 +115,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 // Validate checks project settings and the model catalog.
 func (c *Config) applyDefaults() {
 	if c.AutoCompact && c.AutoCompactThreshold == 0 {
-		c.AutoCompactThreshold = defaultAutoCompactThreshold
+		c.AutoCompactThreshold = DefaultAutoCompactThreshold
 	}
 }
 

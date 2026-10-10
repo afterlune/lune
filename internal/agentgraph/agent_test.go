@@ -317,6 +317,8 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	}
 	result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
 		PlanMode: true, MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
+		Goal: "parent goal", ContextWindow: 64000, ReserveOutputTokens: 2048,
+		AutoCompact: true, AutoCompactThreshold: 0.75,
 	}, graph.Options[State]{Store: store})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -329,6 +331,9 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	}
 	if len(team.options) != 1 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("worker options = %#v", team.options)
+	}
+	if team.options[0].Goal != "" || team.options[0].ContextWindow != 0 || team.options[0].ReserveOutputTokens != 0 || team.options[0].AutoCompact || team.options[0].AutoCompactThreshold != 0 {
+		t.Fatalf("new task settings unexpectedly inherited by team member: %#v", team.options[0])
 	}
 	if len(requester.requests) != 2 {
 		t.Fatalf("model requests = %d, want dispatch plus synthesis", len(requester.requests))

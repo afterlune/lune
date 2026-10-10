@@ -35,7 +35,7 @@
 - [ ] [I] 继续拆分 internal/tui/tui.go 内的 model/update/view、pickers、usage、render 与 vim 逻辑，保持 Core 不依赖 TUI 表现。
 - [ ] [I] 评估 internal/model 的 responses/client/network 边界，以及 internal/tool 的 read/write/exec/web/explore/ask 子包；保持 ToolExecutor 定义在 model 侧以避免循环依赖，迁移相关测试。
 - [x] [A] Core Session 保存 model profile 与 reasoning effort；任务启动时固定设置并写入 checkpoint，恢复任务继续使用 checkpoint 中的设置。
-- [ ] [A][E] 将 Goal、ContextWindow、AutoCompact 等设置加入 TaskOptions / State 并持久化，使 Recover 可恢复原设置。
+- [x] [A][E] 将 session Goal 与项目/会话上下文设置传入 TaskOptions / State 并持久化；缺少设置快照版本的旧暂停 checkpoint 拒绝恢复。
 - [ ] [A] 加入用户称呼与 persona 设置；用统一的 Instructions 合成器组合 Goal、称呼、persona 和 plan mode，保证 persona 不削弱系统权限约束。
 - [x] [A] Core 根据会话 profile 构造主 Agent；requestModel() 将 reasoning effort 映射到 Reasoning；暂停恢复从 checkpoint 读取原 profile 和 effort。
 - [ ] [A] 在 requestModel() 合成 Goal、称呼、persona 与 plan mode 的 Instructions；其设置需经 checkpoint/session 恢复。
