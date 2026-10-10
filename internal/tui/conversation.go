@@ -15,6 +15,9 @@ const (
 	messageCollapseRunes   = 600
 	wideConversationWidth  = 112
 	wideConversationHeight = 24
+	wideSidebarUsageRows   = 6
+	wideSidebarDividerRows = 1
+	wideSidebarMinActivity = 2
 )
 
 func (m *tuiModel) modernConversation() bool {
@@ -22,7 +25,17 @@ func (m *tuiModel) modernConversation() bool {
 }
 
 func (m *tuiModel) wideConversation() bool {
-	return m.modernConversation() && m.width >= wideConversationWidth && m.height >= wideConversationHeight
+	if !m.modernConversation() || m.width < wideConversationWidth || m.height < wideConversationHeight {
+		return false
+	}
+	width := max(1, m.width)
+	footerHeight := 1
+	bodyHeight := m.height - lipgloss.Height(m.renderHeader(width)) - 1 - m.input.Height() - m.commandSuggestionHeight() - footerHeight
+	if m.keymapOpen {
+		bodyHeight -= m.keymapEditorHeight()
+	}
+	minBodyHeight := wideSidebarUsageRows + wideSidebarDividerRows + wideSidebarMinActivity
+	return bodyHeight >= minBodyHeight
 }
 
 func (m *tuiModel) ensureMessageCollapseKeys() {
@@ -308,29 +321,81 @@ func (m *tuiModel) compactActivitySummary() string {
 
 func (m *tuiModel) activitySidebarContent() string {
 	colors := colorsFor(m.preferences.Theme)
-	lines := []string{"Activity"}
+	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Activity")}
 	if len(m.activities) == 0 {
 		lines = append(lines, "No tool activity yet.")
 	} else {
-		start := max(0, len(m.activities)-5)
-		for _, activity := range m.activities[start:] {
+		for _, activity := range m.activities {
 			icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(activityBadge(activity.status))
 			lines = append(lines, icon+" "+activity.summary+" · "+activity.status)
 		}
 	}
-	lines = append(lines, "", "Usage")
-	if m.sessionUsage.requests == 0 {
-		lines = append(lines, "No model requests yet.")
-	} else if m.sessionUsage.measured == 0 {
-		lines = append(lines, "Usage unavailable")
-	} else {
-		lines = append(lines,
-			"Input      "+compactTokens(m.sessionUsage.input),
-			"Output     "+compactTokens(m.sessionUsage.output),
-			"Reasoning  "+compactTokens(m.sessionUsage.reasoning),
-			"Total      "+compactTokens(m.sessionUsage.total),
-			"Cached     "+compactTokens(m.sessionUsage.cached),
-		)
-	}
 	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) activitySidebarView() string {
+	width, height := m.activity.Width(), m.activity.Height()
+	if width <= 0 || height <= 0 {
+		return m.activity.View()
+	}
+	colors := colorsFor(m.preferences.Theme)
+	content := strings.TrimSuffix(m.activity.View(), "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+
+	totalLines := m.activity.TotalLineCount()
+	hasOverflow := totalLines > height
+	thumbHeight := height
+	thumbStart := 0
+	if hasOverflow {
+		thumbHeight = max(1, height*height/totalLines)
+		thumbStart = int(float64(height-thumbHeight) * m.activity.ScrollPercent())
+	}
+	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
+	rendered := make([]string, 0, height)
+	for row, line := range lines {
+		padding := max(0, width-lipgloss.Width(line))
+		scrollbar := " "
+		if hasOverflow {
+			scrollbar = trackStyle.Render("│")
+			if row >= thumbStart && row < thumbStart+thumbHeight {
+				scrollbar = thumbStyle.Render("█")
+			}
+		}
+		rendered = append(rendered, line+strings.Repeat(" ", padding)+scrollbar)
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func (m *tuiModel) usageSidebarContent(width int) string {
+	colors := colorsFor(m.preferences.Theme)
+	width = max(1, width)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Usage")
+	labels := []string{"Input", "Output", "Reasoning", "Total", "Cached"}
+	values := []string{"—", "—", "—", "—", "—"}
+	if m.sessionUsage.measured > 0 {
+		values = []string{
+			compactTokens(m.sessionUsage.input),
+			compactTokens(m.sessionUsage.output),
+			compactTokens(m.sessionUsage.reasoning),
+			compactTokens(m.sessionUsage.total),
+			compactTokens(m.sessionUsage.cached),
+		}
+	}
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
+	lines := []string{title}
+	for index, label := range labels {
+		styledLabel := labelStyle.Render(label)
+		styledValue := valueStyle.Render(values[index])
+		gap := max(1, width-lipgloss.Width(styledLabel)-lipgloss.Width(styledValue))
+		lines = append(lines, styledLabel+strings.Repeat(" ", gap)+styledValue)
+	}
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 }

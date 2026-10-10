@@ -2554,8 +2554,8 @@ func (m *tuiModel) updateLayout() {
 			gutter := 3
 			m.chat.SetWidth(max(1, contentWidth-sidebarWidth-gutter))
 			m.chat.SetHeight(bodyHeight)
-			m.activity.SetWidth(sidebarWidth)
-			m.activity.SetHeight(bodyHeight)
+			m.activity.SetWidth(sidebarWidth - 1)
+			m.activity.SetHeight(bodyHeight - wideSidebarUsageRows - wideSidebarDividerRows)
 			return
 		}
 		compactActivityHeight := 0
@@ -3067,7 +3067,21 @@ func (m *tuiModel) renderBody(width int) string {
 			return lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
 		}
 		if m.wideConversation() {
-			return lipgloss.JoinHorizontal(lipgloss.Top, m.chat.View(), strings.Repeat(" ", 3), m.activity.View())
+			sidebarWidth := m.activity.Width() + 1
+			colors := colorsFor(m.preferences.Theme)
+			divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", sidebarWidth))
+			sidebar := lipgloss.JoinVertical(
+				lipgloss.Left,
+				m.activitySidebarView(),
+				divider,
+				m.usageSidebarContent(sidebarWidth),
+			)
+			sidebar = lipgloss.NewStyle().Width(sidebarWidth).Height(m.chat.Height()).Render(sidebar)
+			chat := lipgloss.NewStyle().Width(m.chat.Width()).Height(m.chat.Height()).Render(m.chat.View())
+			separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(
+				strings.TrimSuffix(strings.Repeat("│\n", max(1, m.chat.Height())), "\n"),
+			)
+			return lipgloss.JoinHorizontal(lipgloss.Top, chat, " ", separator, " ", sidebar)
 		}
 		if m.compactActivityVisible {
 			activity := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.compactActivitySummary())
