@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -60,6 +62,137 @@ func TestTUICtrlOInsertsNewline(t *testing.T) {
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
 	if !strings.Contains(ui.input.Value(), "\n") {
 		t.Fatalf("input = %q, Ctrl+O should insert a newline", ui.input.Value())
+	}
+}
+
+func TestTUIInputSupportsSelectAllUndoRedoAndCopy(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.input.SetValue("first\nsecond")
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Mod: tea.ModCtrl}))
+	if !ui.input.HasSelection() || ui.input.SelectedText() != "first\nsecond" {
+		t.Fatalf("selection = %q, want entire multiline input", ui.input.SelectedText())
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	if ui.input.Value() != "x" {
+		t.Fatalf("input after replacing selection = %q, want x", ui.input.Value())
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
+	if ui.input.Value() != "first\nsecond" {
+		t.Fatalf("input after undo = %q, want original multiline text", ui.input.Value())
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Mod: tea.ModCtrl}))
+	if ui.input.Value() != "x" {
+		t.Fatalf("input after redo = %q, want x", ui.input.Value())
+	}
+
+	ui.input.SetValue("copy me")
+	ui.input.SelectAll()
+	originalWriter := writeClipboard
+	t.Cleanup(func() { writeClipboard = originalWriter })
+	var copied string
+	writeClipboard = func(value string) error {
+		copied = value
+		return nil
+	}
+	_, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl}))
+	if command != nil || copied != "copy me" || ui.input.Value() != "copy me" {
+		t.Fatalf("Ctrl+C copy: command=%v copied=%q input=%q", command != nil, copied, ui.input.Value())
+	}
+}
+
+func TestTUIInputCutOnlyDeletesAfterClipboardWrite(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.input.SetValue("keep until clipboard works")
+	ui.input.SelectAll()
+	originalWriter := writeClipboard
+	t.Cleanup(func() { writeClipboard = originalWriter })
+	writeClipboard = func(string) error { return errors.New("clipboard unavailable") }
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	if ui.input.Value() != "keep until clipboard works" {
+		t.Fatalf("cut removed input after clipboard failure: %q", ui.input.Value())
+	}
+	writeClipboard = func(string) error { return nil }
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	if ui.input.Value() != "" {
+		t.Fatalf("input after successful cut = %q, want empty", ui.input.Value())
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'z', Mod: tea.ModCtrl}))
+	if ui.input.Value() != "keep until clipboard works" {
+		t.Fatalf("input after undoing cut = %q", ui.input.Value())
+	}
+}
+
+func TestTUIKeymapEditorCapturesPersistsAndResetsBindings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings", "ui.json")
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferencesPath = path
+	ui.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	ui.input.SetValue("/keymap")
+	ui.submit()
+	if !ui.keymapOpen || !strings.Contains(ui.View().Content, "Key bindings") {
+		t.Fatal("/keymap did not open the key binding editor")
+	}
+	if height := lipgloss.Height(ui.View().Content); height > 24 {
+		t.Fatalf("keymap editor height = %d, want it to fit in 24 rows", height)
+	}
+
+	ui.keymapIndex = keymapActionIndex("toggle_activity")
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Mod: tea.ModCtrl}))
+	if ui.keymapCapture != "" || ui.keymapDraft["toggle_activity"] != "ctrl+g" {
+		t.Fatalf("captured binding = %q, capture=%q", ui.keymapDraft["toggle_activity"], ui.keymapCapture)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if ui.keymapOpen || ui.preferences.Keymap["toggle_activity"] != "ctrl+g" {
+		t.Fatalf("keymap was not applied on close: open=%v binding=%q", ui.keymapOpen, ui.preferences.Keymap["toggle_activity"])
+	}
+	loaded, err := loadUIPreferences(path)
+	if err != nil || loaded.Keymap["toggle_activity"] != "ctrl+g" {
+		t.Fatalf("persisted keymap = %#v, %v", loaded.Keymap, err)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Mod: tea.ModCtrl}))
+	if !ui.detailsOpen {
+		t.Fatal("custom activity-panel binding was not active")
+	}
+
+	ui.input.SetValue("/keymap reset")
+	ui.submit()
+	if ui.preferences.Keymap["toggle_activity"] != "ctrl+b" {
+		t.Fatalf("reset keymap binding = %q, want ctrl+b", ui.preferences.Keymap["toggle_activity"])
+	}
+	loaded, err = loadUIPreferences(path)
+	if err != nil || loaded.Keymap["toggle_activity"] != "ctrl+b" {
+		t.Fatalf("reset keymap was not persisted: %#v, %v", loaded.Keymap, err)
+	}
+}
+
+func TestTUIKeymapRejectsOverlappingAndAllowsExclusiveContexts(t *testing.T) {
+	bindings := defaultKeymap()
+	bindings["input_select_all"] = "ctrl+x"
+	if _, err := normalizeKeymap(bindings); err == nil {
+		t.Fatal("overlapping select-all and cut bindings should conflict")
+	}
+	bindings = defaultKeymap()
+	bindings["input_cut"] = "shift+x"
+	if _, err := normalizeKeymap(bindings); err == nil {
+		t.Fatal("printable input keys should require Ctrl/Alt or a non-text key")
+	}
+
+	bindings = defaultKeymap()
+	bindings["vim_append"] = "q"
+	bindings["session_archive"] = "q"
+	if _, err := normalizeKeymap(bindings); err != nil {
+		t.Fatalf("mutually exclusive Vim/session contexts should allow a shared binding: %v", err)
+	}
+
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.keymapOpen = true
+	ui.keymapDraft = defaultKeymap()
+	ui.keymapIndex = keymapActionIndex("input_select_all")
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Mod: tea.ModCtrl}))
+	if ui.keymapCapture != "input_select_all" || ui.keymapDraft["input_select_all"] != "ctrl+a" {
+		t.Fatalf("conflicting capture changed binding: capture=%q key=%q", ui.keymapCapture, ui.keymapDraft["input_select_all"])
 	}
 }
 
@@ -621,23 +754,43 @@ func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
 func TestUIPreferencesLoadSaveAndFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ui.json")
 	prefs, err := loadUIPreferences(path)
-	if err != nil || prefs != defaultUIPreferences() {
+	if err != nil || !reflect.DeepEqual(prefs, defaultUIPreferences()) {
 		t.Fatalf("missing preferences = %#v, %v; want defaults", prefs, err)
 	}
-	want := uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}
+	want := defaultUIPreferences()
+	want.Theme, want.AnimeLayout = themeAnime, layoutStudio
 	if err := saveUIPreferences(path, want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := loadUIPreferences(path)
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("loaded preferences = %#v, %v; want %#v", got, err, want)
 	}
 	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	got, err = loadUIPreferences(path)
-	if err == nil || got != defaultUIPreferences() {
+	if err == nil || !reflect.DeepEqual(got, defaultUIPreferences()) {
 		t.Fatalf("invalid preferences = %#v, %v; want defaults and an error", got, err)
+	}
+}
+
+func TestUIPreferencesDefaultsLegacyKeymapAndFallsBackOnInvalidBindings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ui.json")
+	if err := os.WriteFile(path, []byte(`{"theme":"light","anime_layout":"studio"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := loadUIPreferences(path)
+	if err != nil || prefs.Theme != themeLight || prefs.AnimeLayout != layoutStudio || !reflect.DeepEqual(prefs.Keymap, defaultKeymap()) {
+		t.Fatalf("legacy preferences = %#v, %v; want theme/layout preserved and default keymap", prefs, err)
+	}
+
+	if err := os.WriteFile(path, []byte(`{"theme":"light","keymap":{"input_select_all":"ctrl+x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err = loadUIPreferences(path)
+	if err == nil || prefs.Theme != themeLight || !reflect.DeepEqual(prefs.Keymap, defaultKeymap()) {
+		t.Fatalf("invalid keymap fallback = %#v, %v; want default bindings and preserved theme", prefs, err)
 	}
 }
 
@@ -652,11 +805,13 @@ func TestTUIThemeCommandPersistsAndKeepsAnimeCommandsHidden(t *testing.T) {
 	}
 	ui.input.SetValue("/theme anime studio")
 	ui.submit()
-	if ui.preferences != (uiPreferences{Theme: themeAnime, AnimeLayout: layoutStudio}) {
+	want := defaultUIPreferences()
+	want.Theme, want.AnimeLayout = themeAnime, layoutStudio
+	if !reflect.DeepEqual(ui.preferences, want) {
 		t.Fatalf("preferences = %#v, want anime studio", ui.preferences)
 	}
 	loaded, err := loadUIPreferences(path)
-	if err != nil || loaded != ui.preferences {
+	if err != nil || !reflect.DeepEqual(loaded, ui.preferences) {
 		t.Fatalf("persisted preferences = %#v, %v", loaded, err)
 	}
 	ui.input.SetValue("/")

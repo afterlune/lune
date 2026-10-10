@@ -20,12 +20,13 @@ const (
 )
 
 type uiPreferences struct {
-	Theme       themeName   `json:"theme"`
-	AnimeLayout animeLayout `json:"anime_layout"`
+	Theme       themeName         `json:"theme"`
+	AnimeLayout animeLayout       `json:"anime_layout"`
+	Keymap      map[string]string `json:"keymap"`
 }
 
 func defaultUIPreferences() uiPreferences {
-	return uiPreferences{Theme: themeDark, AnimeLayout: layoutFocus}
+	return uiPreferences{Theme: themeDark, AnimeLayout: layoutFocus, Keymap: defaultKeymap()}
 }
 
 func userPreferencesPath() (string, error) {
@@ -64,12 +65,28 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 	if stored.AnimeLayout == layoutFocus || stored.AnimeLayout == layoutStudio {
 		prefs.AnimeLayout = stored.AnimeLayout
 	}
+	if stored.Keymap != nil {
+		bindings, err := normalizeKeymap(stored.Keymap)
+		if err != nil {
+			return prefs, err
+		}
+		prefs.Keymap = bindings
+	}
 	return prefs, nil
 }
 
 func saveUIPreferences(path string, prefs uiPreferences) error {
 	if path == "" {
 		return errors.New("user preferences path is unavailable")
+	}
+	if prefs.Keymap == nil {
+		prefs.Keymap = defaultKeymap()
+	} else {
+		bindings, err := normalizeKeymap(prefs.Keymap)
+		if err != nil {
+			return err
+		}
+		prefs.Keymap = bindings
 	}
 	data, err := json.MarshalIndent(prefs, "", "  ")
 	if err != nil {

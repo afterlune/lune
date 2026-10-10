@@ -12,7 +12,6 @@ import (
 	"time"
 	"unicode"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -79,6 +78,12 @@ type tuiModel struct {
 	activities         []tuiActivity
 	commandSuggestions []string
 	suggestionIndex    int
+	keymapOpen         bool
+	keymapIndex        int
+	keymapCapture      string
+	keymapDraft        map[string]string
+	undoStack          []string
+	redoStack          []string
 	permissionMenu     bool
 	permissionIndex    int
 	modelPicker        bool
@@ -140,7 +145,7 @@ type tokenUsageTotals struct {
 
 const defaultInputPlaceholder = "Ask anything, or paste ResponseInput JSON..."
 
-var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/fork", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/rewind", "/theme", "/vim"}
+var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/fork", "/keymap", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/rewind", "/theme", "/vim"}
 
 var reasoningEffortOptions = []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
@@ -205,8 +210,9 @@ func Run(client Client) error {
 	ui.preferences = preferences
 	ui.preferencesPath = preferencesPath
 	applyTextareaTheme(&ui.input, preferences.Theme)
+	ui.applyKeymap()
 	if preferencesErr != nil {
-		ui.status = "UI preferences could not be loaded; using defaults."
+		ui.status = "Some UI preferences were invalid; defaults were used where needed."
 	}
 	ui.sessionID = saved.ID
 	ui.workspace = workspace
@@ -237,7 +243,6 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 	input.MaxContentHeight = 10000
 	input.SetVirtualCursor(false)
 	input.Focus()
-	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "newline"))
 	applyTextareaTheme(&input, themeDark)
 
 	model := &tuiModel{
@@ -253,6 +258,7 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 	}
 	model.chat.SoftWrap = true
 	model.activity.SoftWrap = true
+	model.applyKeymap()
 	model.updateLayout()
 	model.refreshPanels()
 	return model
@@ -280,8 +286,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if message.event.Approval != nil {
 				request := toolApprovalRequestMsg{request: *message.event.Approval}
 				m.pendingApproval = &request
-				m.status = "Permission required: press Y to approve once or N to deny."
-				m.addEntry("permission", formatToolApproval(request.request, m.workspace), true)
+				m.status = "Permission required: " + m.keyLabel("approve_tool") + " approve, " + m.keyLabel("deny_tool") + " deny."
+				m.addEntry("permission", formatToolApprovalWithKeys(request.request, m.workspace, m.keyLabel("approve_tool"), m.keyLabel("deny_tool")), true)
 			}
 		case core.EventApprovalCancelled:
 			if m.pendingApproval != nil && m.pendingApproval.request.ID == message.event.ApprovalID {
@@ -299,8 +305,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case toolApprovalRequestMsg:
 		m.pendingApproval = &message
-		m.status = "Permission required: press Y to approve once or N to deny."
-		m.addEntry("permission", formatToolApproval(message.request, m.workspace), true)
+		m.status = "Permission required: " + m.keyLabel("approve_tool") + " approve, " + m.keyLabel("deny_tool") + " deny."
+		m.addEntry("permission", formatToolApprovalWithKeys(message.request, m.workspace, m.keyLabel("approve_tool"), m.keyLabel("deny_tool")), true)
 		return m, nil
 	case toolApprovalCancelledMsg:
 		if m.pendingApproval != nil && m.pendingApproval.request.ID == message.requestID {
@@ -330,23 +336,34 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.keymapOpen {
+			return m.handleKeymapKey(message)
+		}
 		if m.detailsOpen {
-			switch message.String() {
-			case "ctrl+c":
+			switch {
+			case m.matchesKey("interrupt_or_copy", message):
+				if m.input.HasSelection() {
+					if err := writeClipboard(m.input.SelectedText()); err != nil {
+						m.status = "Selection could not be copied."
+					} else {
+						m.status = "Selection copied."
+					}
+					return m, nil
+				}
 				if m.running {
 					m.detailsOpen = false
 					m.interrupt()
 					return m, nil
 				}
 				return m, tea.Quit
-			case "esc", "ctrl+b":
+			case message.String() == "esc", m.matchesKey("toggle_activity", message):
 				m.detailsOpen = false
 				m.updateLayout()
 				return m, nil
-			case "pgup", "up", "ctrl+up":
+			case m.matchesKey("chat_scroll_up", message), m.matchesKey("activity_scroll_up", message), m.matchesKey("details_scroll_up", message):
 				m.activity.HalfPageUp()
 				return m, nil
-			case "pgdown", "down", "ctrl+down":
+			case m.matchesKey("chat_scroll_down", message), m.matchesKey("activity_scroll_down", message), m.matchesKey("details_scroll_down", message):
 				m.activity.HalfPageDown()
 				return m, nil
 			default:
@@ -359,8 +376,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, command
 			}
 		}
-		switch message.String() {
-		case "enter":
+		if m.matchesKey("send", message) {
 			if m.queuePicker {
 				return m.editQueuedInput()
 			}
@@ -393,10 +409,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(m.commandSuggestions) > 0 {
 				index := min(m.suggestionIndex, len(m.commandSuggestions)-1)
-				m.input.SetValue(m.commandSuggestions[index])
+				m.setInputValue(m.commandSuggestions[index])
 			}
 			return m.submit()
-		case "esc":
+		}
+		if message.String() == "esc" {
 			if m.queuePicker {
 				m.queuePicker = false
 				m.status = "Queue selection closed."
@@ -451,22 +468,34 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.interrupt()
 			return m, nil
-		case "ctrl+c":
+		}
+		if m.matchesKey("interrupt_or_copy", message) {
+			if m.input.HasSelection() && (!m.sessionPicker || m.renamingSession) {
+				if err := writeClipboard(m.input.SelectedText()); err != nil {
+					m.status = "Selection could not be copied."
+				} else {
+					m.status = "Selection copied."
+				}
+				return m, nil
+			}
 			if m.running {
 				m.interrupt()
 				return m, nil
 			}
 			return m, tea.Quit
-		case "ctrl+b":
+		}
+		if m.matchesKey("toggle_activity", message) {
 			m.detailsOpen = true
 			m.updateLayout()
 			return m, nil
-		case "shift+tab":
+		}
+		if m.matchesKey("cycle_permissions", message) {
 			if !m.running && !m.permissionMenu && !m.sessionPicker && !m.queuePicker && !m.modelPicker && !m.effortPicker && !m.detailsOpen {
 				return m.cyclePermissionMode()
 			}
 			return m, nil
-		case "ctrl+enter":
+		}
+		if m.matchesKey("interrupt_send", message) {
 			if m.running {
 				if strings.TrimSpace(m.input.Value()) != "" {
 					queuedBefore := len(m.queued)
@@ -481,26 +510,30 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.submit()
-		case "pgup":
+		}
+		if m.matchesKey("chat_scroll_up", message) {
 			m.chat.HalfPageUp()
 			return m, nil
-		case "pgdown":
+		}
+		if m.matchesKey("chat_scroll_down", message) {
 			m.chat.HalfPageDown()
 			return m, nil
-		case "ctrl+up":
+		}
+		if m.matchesKey("activity_scroll_up", message) {
 			m.activity.HalfPageUp()
 			return m, nil
-		case "ctrl+down":
+		}
+		if m.matchesKey("activity_scroll_down", message) {
 			m.activity.HalfPageDown()
 			return m, nil
 		}
 		if m.permissionMenu {
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("picker_previous", message):
 				if m.permissionIndex > 0 {
 					m.permissionIndex--
 				}
-			case "down":
+			case m.matchesKey("picker_next", message):
 				if m.permissionIndex+1 < len(tuiPermissionOptions) {
 					m.permissionIndex++
 				}
@@ -509,32 +542,35 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.sessionPicker {
 			if m.renamingSession {
-				var command tea.Cmd
-				m.input, command = m.input.Update(message)
+				if handled, command := m.handleInputEdit(message); handled {
+					m.updateLayout()
+					return m, command
+				}
+				command := m.updateInput(message)
 				m.updateLayout()
 				return m, command
 			}
 			if m.deleteConfirm {
-				switch strings.ToLower(message.String()) {
-				case "y":
+				switch {
+				case m.matchesKey("session_confirm_delete", message):
 					return m.deleteSelectedSession()
-				case "n":
+				case m.matchesKey("session_cancel_delete", message):
 					m.deleteConfirm = false
 					m.status = "Session deletion cancelled."
 					m.updateLayout()
 				}
 				return m, nil
 			}
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("picker_previous", message):
 				if m.sessionIndex > 0 {
 					m.sessionIndex--
 				}
-			case "down":
+			case m.matchesKey("picker_next", message):
 				if m.sessionIndex+1 < len(m.sessionList) {
 					m.sessionIndex++
 				}
-			case "tab":
+			case m.matchesKey("session_toggle_archived", message):
 				m.showArchived = !m.showArchived
 				if err := m.reloadSessionList(m.sessionID); err != nil {
 					m.showArchived = !m.showArchived
@@ -543,46 +579,46 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.showArchived {
-					m.status = "Showing archived sessions; Tab hides them."
+					m.status = "Showing archived sessions; " + m.keyLabel("session_toggle_archived") + " hides them."
 				} else {
-					m.status = "Showing active sessions; Tab shows archived sessions."
+					m.status = "Showing active sessions; " + m.keyLabel("session_toggle_archived") + " shows archived sessions."
 				}
-			case "a":
+			case m.matchesKey("session_archive", message):
 				return m.toggleSelectedArchive()
-			case "r":
+			case m.matchesKey("session_rename", message):
 				return m.beginSessionRename()
-			case "d":
+			case m.matchesKey("session_delete", message):
 				if m.sessionIndex >= 0 && m.sessionIndex < len(m.sessionList) {
 					m.deleteConfirm = true
-					m.status = "Delete this session and all saved task state? Press Y to confirm or N/Esc to cancel."
+					m.status = "Delete this session and all saved task state? Press " + m.keyLabel("session_confirm_delete") + " to confirm or " + m.keyLabel("session_cancel_delete") + "/Esc to cancel."
 				}
 			}
 			m.updateLayout()
 			return m, nil
 		}
 		if m.queuePicker {
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("picker_previous", message):
 				if m.queueIndex > 0 {
 					m.queueIndex--
 				}
-			case "down":
+			case m.matchesKey("picker_next", message):
 				if m.queueIndex+1 < len(m.queued) {
 					m.queueIndex++
 				}
-			case "delete", "backspace":
+			case m.matchesKey("queue_remove", message):
 				m.deleteQueuedInput()
 			}
 			m.updateLayout()
 			return m, nil
 		}
 		if m.modelPicker {
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("picker_previous", message):
 				if m.modelIndex > 0 {
 					m.modelIndex--
 				}
-			case "down":
+			case m.matchesKey("picker_next", message):
 				if m.modelIndex+1 < len(m.modelOptions) {
 					m.modelIndex++
 				}
@@ -591,12 +627,12 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.effortPicker {
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("picker_previous", message):
 				if m.effortIndex > 0 {
 					m.effortIndex--
 				}
-			case "down":
+			case m.matchesKey("picker_next", message):
 				if m.effortIndex+1 < len(reasoningEffortOptions) {
 					m.effortIndex++
 				}
@@ -605,41 +641,44 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.pendingApproval != nil && m.running {
-			switch strings.ToLower(message.String()) {
-			case "y":
+			switch {
+			case m.matchesKey("approve_tool", message):
 				m.resolveToolApproval(true)
-			case "n":
+			case m.matchesKey("deny_tool", message):
 				m.resolveToolApproval(false)
 			}
 			return m, nil
 		}
 		if len(m.commandSuggestions) > 0 {
-			switch message.String() {
-			case "up":
+			switch {
+			case m.matchesKey("suggestion_previous", message):
 				if m.suggestionIndex > 0 {
 					m.suggestionIndex--
 				}
 				return m, nil
-			case "down":
+			case m.matchesKey("suggestion_next", message):
 				if m.suggestionIndex+1 < len(m.commandSuggestions) {
 					m.suggestionIndex++
 				}
 				return m, nil
-			case "tab":
-				m.input.SetValue(m.commandSuggestions[m.suggestionIndex])
+			case m.matchesKey("suggestion_complete", message):
+				m.setInputValue(m.commandSuggestions[m.suggestionIndex])
 				m.updateCommandSuggestions()
 				m.updateLayout()
 				return m, nil
 			}
 		}
-		var command tea.Cmd
-		m.input, command = m.input.Update(message)
+		if handled, command := m.handleInputEdit(message); handled {
+			m.updateCommandSuggestions()
+			m.updateLayout()
+			return m, command
+		}
+		command := m.updateInput(message)
 		m.updateCommandSuggestions()
 		m.updateLayout()
 		return m, command
 	default:
-		var command tea.Cmd
-		m.input, command = m.input.Update(message)
+		command := m.updateInput(message)
 		m.updateCommandSuggestions()
 		m.updateLayout()
 		return m, command
@@ -689,9 +728,13 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("Current theme: %s%s.",
 			m.preferences.Theme, animeLayoutLabel(m.preferences))
 		return m, nil
+	case "/keymap":
+		return m.openKeymapEditor()
+	case "/keymap reset":
+		return m.resetKeymap()
 	case "/":
 		m.updateCommandSuggestions()
-		m.status = "Choose a command; use ↑/↓ to select and Enter to run."
+		m.status = "Choose a command; use " + m.keyLabel("suggestion_previous") + "/" + m.keyLabel("suggestion_next") + " to select and " + m.keyLabel("send") + " to run."
 		m.updateLayout()
 		return m, nil
 	}
@@ -709,6 +752,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/theme ") || strings.HasPrefix(line, "/theme\t") {
 		return m.setThemeFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/keymap ") || strings.HasPrefix(line, "/keymap\t") {
+		m.status = "Use /keymap to edit bindings or /keymap reset to restore defaults."
+		return m, nil
 	}
 	if strings.HasPrefix(line, "/") {
 		m.status = "Unknown command."
@@ -762,7 +809,7 @@ func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
 	}
 	m.modelPicker = true
 	m.resetInput()
-	m.status = "Choose a model profile; ↑/↓ select, Enter apply, Esc cancel."
+	m.status = "Choose a model profile; " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select, " + m.keyLabel("send") + " apply, Esc cancel."
 	m.updateLayout()
 	return m, nil
 }
@@ -777,7 +824,7 @@ func (m *tuiModel) openEffortPicker() (tea.Model, tea.Cmd) {
 	}
 	m.effortPicker = true
 	m.resetInput()
-	m.status = "Choose reasoning effort; ↑/↓ select, Enter apply, Esc cancel."
+	m.status = "Choose reasoning effort; " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select, " + m.keyLabel("send") + " apply, Esc cancel."
 	m.updateLayout()
 	return m, nil
 }
@@ -965,7 +1012,7 @@ func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
 	display := inputTranscriptText(input, raw)
 	m.queued = append(m.queued, queuedInput{text: raw, display: display, input: input, planMode: m.planMode})
 	m.addEntry("queued", display, false)
-	m.status = fmt.Sprintf("Queued %d message(s). Enter adds another · Ctrl+Enter interrupts and sends.", len(m.queued))
+	m.status = fmt.Sprintf("Queued %d message(s). %s adds another · %s interrupts and sends.", len(m.queued), m.keyLabel("send"), m.keyLabel("interrupt_send"))
 	m.resetInput()
 	return m, nil
 }
@@ -978,7 +1025,7 @@ func (m *tuiModel) openQueuePicker() (tea.Model, tea.Cmd) {
 	}
 	m.queuePicker = true
 	m.queueIndex = min(m.queueIndex, len(m.queued)-1)
-	m.status = "Queue · ↑/↓ select · Enter edit · Delete removes · Esc closes."
+	m.status = "Queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " edit · " + m.keyLabel("queue_remove") + " removes · Esc closes."
 	m.resetInput()
 	return m, nil
 }
@@ -991,7 +1038,7 @@ func (m *tuiModel) editQueuedInput() (tea.Model, tea.Cmd) {
 	queued := m.queued[m.queueIndex]
 	m.queued = append(m.queued[:m.queueIndex], m.queued[m.queueIndex+1:]...)
 	m.removeQueuedEntry(queued.display)
-	m.input.SetValue(queued.text)
+	m.setInputValue(queued.text)
 	m.planMode = queued.planMode
 	m.queuePicker = false
 	m.status = "Editing a queued message; Enter resubmits it."
@@ -1112,7 +1159,7 @@ func (m *tuiModel) toggleVimMode() (tea.Model, tea.Cmd) {
 	m.vimNormal = false
 	m.vimPendingDelete = false
 	if m.vimMode {
-		m.status = "Vim mode · insert mode (Esc normal, i insert, h/j/k/l move)."
+		m.status = "Vim mode · insert (Esc normal, " + m.keyLabel("vim_insert") + " insert, " + m.keyLabel("vim_left") + "/" + m.keyLabel("vim_down") + "/" + m.keyLabel("vim_up") + "/" + m.keyLabel("vim_right") + " move)."
 	} else {
 		m.status = "Vim mode disabled."
 	}
@@ -1133,41 +1180,39 @@ func (m *tuiModel) handleVimKey(message tea.KeyPressMsg) (bool, tea.Cmd) {
 	}
 	if !m.vimNormal && keyName == "esc" {
 		m.vimNormal = true
-		m.status = "Vim normal mode · i insert · h/j/k/l move · Enter sends."
+		m.status = "Vim normal mode · " + m.keyLabel("vim_insert") + " insert · " + m.keyLabel("vim_left") + "/" + m.keyLabel("vim_down") + "/" + m.keyLabel("vim_up") + "/" + m.keyLabel("vim_right") + " move · " + m.keyLabel("send") + " sends."
 		return true, nil
 	}
 	if !m.vimNormal {
 		return false, nil
 	}
-	switch keyName {
-	case "i":
+	switch {
+	case m.matchesKey("vim_insert", message):
 		m.vimNormal = false
 		m.vimPendingDelete = false
 		m.status = "Vim insert mode."
 		return true, nil
-	case "a":
-		var command tea.Cmd
-		m.input, command = m.input.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	case m.matchesKey("vim_append", message):
+		command := m.updateInput(tea.KeyPressMsg{Code: tea.KeyRight})
 		m.vimNormal = false
 		m.status = "Vim insert mode."
 		return true, command
-	case "h":
-		var command tea.Cmd
-		m.input, command = m.input.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	case m.matchesKey("vim_left", message):
+		command := m.updateInput(tea.KeyPressMsg{Code: tea.KeyLeft})
 		return true, command
-	case "j":
+	case m.matchesKey("vim_down", message):
 		m.input.CursorDown()
 		return true, nil
-	case "k":
+	case m.matchesKey("vim_up", message):
 		m.input.CursorUp()
 		return true, nil
-	case "0":
+	case m.matchesKey("vim_line_start", message):
 		m.input.CursorStart()
 		return true, nil
-	case "$":
+	case m.matchesKey("vim_line_end", message):
 		m.input.CursorEnd()
 		return true, nil
-	case "d":
+	case m.matchesKey("vim_delete_line", message):
 		if m.vimPendingDelete {
 			m.deleteCurrentLine()
 			m.vimPendingDelete = false
@@ -1175,7 +1220,7 @@ func (m *tuiModel) handleVimKey(message tea.KeyPressMsg) (bool, tea.Cmd) {
 			m.vimPendingDelete = true
 		}
 		return true, nil
-	case "esc":
+	case keyName == "esc":
 		m.vimPendingDelete = false
 		return true, nil
 	}
@@ -1193,10 +1238,12 @@ func (m *tuiModel) deleteCurrentLine() {
 	lines := strings.Split(m.input.Value(), "\n")
 	line := min(max(cursor.Y, 0), len(lines)-1)
 	lines = append(lines[:line], lines[line+1:]...)
-	m.input.SetValue(strings.Join(lines, "\n"))
+	before := m.input.Value()
+	m.setInputValue(strings.Join(lines, "\n"))
 	if m.input.Value() == "" {
-		m.input.SetValue("")
+		m.setInputValue("")
 	}
+	m.recordInputChange(before, m.input.Value())
 }
 
 func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
@@ -1338,7 +1385,15 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 }
 
 func formatToolApproval(request core.ApprovalRequest, workspace ...string) string {
-	display := humanizedToolSummary(request.Tool, request.Arguments, workspace...)
+	root := ""
+	if len(workspace) > 0 {
+		root = workspace[0]
+	}
+	return formatToolApprovalWithKeys(request, root, "Y", "N")
+}
+
+func formatToolApprovalWithKeys(request core.ApprovalRequest, workspace, approveKey, denyKey string) string {
+	display := humanizedToolSummary(request.Tool, request.Arguments, workspace)
 	warning := ""
 	details := ""
 	if request.Tool == "command" {
@@ -1349,7 +1404,7 @@ func formatToolApproval(request core.ApprovalRequest, workspace ...string) strin
 		details = "\nCommand: " + cleanInlineText(args.Command)
 		warning = "\nApproved shell commands run as your user and can access files outside the workspace."
 	}
-	return fmt.Sprintf("Allow %s once?%s%s\nPress Y to approve once, N to deny, or Esc to interrupt the task.", display, details, warning)
+	return fmt.Sprintf("Allow %s once?%s%s\nPress %s to approve once, %s to deny, or Esc to interrupt the task.", display, details, warning, approveKey, denyKey)
 }
 
 func (m *tuiModel) openSessionPicker() (tea.Model, tea.Cmd) {
@@ -1361,13 +1416,13 @@ func (m *tuiModel) openSessionPicker() (tea.Model, tea.Cmd) {
 	}
 	if len(m.sessionList) == 0 {
 		m.sessionPicker = true
-		m.status = "No active sessions; press Tab to show archived sessions."
+		m.status = "No active sessions; press " + m.keyLabel("session_toggle_archived") + " to show archived sessions."
 		m.resetInput()
 		m.updateLayout()
 		return m, nil
 	}
 	m.sessionPicker = true
-	m.status = "Choose a session · ↑/↓ select · Enter restore · a archive · r rename · d delete · Tab archived."
+	m.status = "Choose a session · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " restore · " + m.keyLabel("session_archive") + " archive · " + m.keyLabel("session_rename") + " rename · " + m.keyLabel("session_delete") + " delete · " + m.keyLabel("session_toggle_archived") + " archived."
 	m.resetInput()
 	m.updateLayout()
 	return m, nil
@@ -1449,7 +1504,7 @@ func (m *tuiModel) beginSessionRename() (tea.Model, tea.Cmd) {
 	}
 	m.renamingSession = true
 	m.input.Placeholder = "Session title · empty clears"
-	m.input.SetValue(m.sessionList[m.sessionIndex].Title)
+	m.setInputValue(m.sessionList[m.sessionIndex].Title)
 	m.status = "Edit title · Enter save · empty clears · Esc cancel."
 	m.updateLayout()
 	return m, nil
@@ -1897,6 +1952,8 @@ func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) resetInput() {
 	m.input.Reset()
+	m.undoStack = nil
+	m.redoStack = nil
 	m.updateCommandSuggestions()
 	m.updateLayout()
 }
@@ -2474,6 +2531,9 @@ func (m *tuiModel) updateLayout() {
 	contentWidth := max(1, m.width)
 	m.input.SetWidth(contentWidth)
 	bodyHeight := max(1, m.height-lipgloss.Height(m.renderHeader(contentWidth))-1-m.input.Height()-m.commandSuggestionHeight()-2)
+	if m.keymapOpen {
+		bodyHeight = max(1, bodyHeight-m.keymapEditorHeight())
+	}
 	if m.detailsOpen {
 		m.chat.SetWidth(contentWidth)
 		m.chat.SetHeight(bodyHeight)
@@ -2580,7 +2640,9 @@ func (m *tuiModel) View() tea.View {
 	suggestions := m.renderCommandSuggestions()
 	footer := m.renderFooter(width)
 	parts := []string{header, body, divider, m.input.View()}
-	if m.sessionPicker {
+	if m.keymapOpen {
+		parts = append(parts, m.renderKeymapEditor())
+	} else if m.sessionPicker {
 		parts = append(parts, m.renderSessionPicker())
 	} else if m.modelPicker {
 		parts = append(parts, m.renderModelPicker())
@@ -2602,7 +2664,7 @@ func (m *tuiModel) View() tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if cursor := m.input.Cursor(); cursor != nil && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.input.Cursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
 		view.Cursor = cursor
 	}
@@ -2660,15 +2722,15 @@ func (m *tuiModel) renderFooter(width int) string {
 	status := m.status
 	switch {
 	case m.detailsOpen:
-		status = "Activity & usage · ↑/↓ scroll · Ctrl+B or Esc close"
+		status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
 	case m.pendingApproval != nil:
-		status = "Approval required · Y allow once · N deny · Esc pause"
+		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
 	case m.running:
-		status = fmt.Sprintf("Working · %d queued · Esc pause · Ctrl+Enter interrupt/send", len(m.queued))
+		status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt/send", len(m.queued), m.keyLabel("interrupt_send"))
 	case m.pending:
 		status = "Paused task · /continue to resume"
 	case m.status == "Ready":
-		status = "/ commands · Enter send · Shift+Tab permissions · /plan planning · Ctrl+B activity"
+		status = fmt.Sprintf("/ commands · %s send · %s permissions · /plan planning · %s activity", m.keyLabel("send"), m.keyLabel("cycle_permissions"), m.keyLabel("toggle_activity"))
 	}
 	if m.vimMode {
 		vimState := "VIM INSERT"
@@ -2698,7 +2760,7 @@ func fitTerminalText(value string, width int) string {
 
 func (m *tuiModel) renderQueuePicker() string {
 	colors := colorsFor(m.preferences.Theme)
-	lines := []string{"Queued messages · ↑/↓ select · Enter edit · Delete removes · Esc closes"}
+	lines := []string{"Queued messages · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " edit · " + m.keyLabel("queue_remove") + " removes · Esc closes"}
 	start := max(0, m.queueIndex-4)
 	end := min(len(m.queued), start+8)
 	if end == len(m.queued) {
@@ -2740,8 +2802,52 @@ func (m *tuiModel) renderCommandSuggestions() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "  ↑/↓ select · Enter run")
+	lines = append(lines, "  "+m.keyLabel("suggestion_previous")+"/"+m.keyLabel("suggestion_next")+" select · "+m.keyLabel("send")+" run")
 	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderKeymapEditor() string {
+	colors := colorsFor(m.preferences.Theme)
+	count := len(keymapActions) + 1
+	rows := m.keymapEditorRows()
+	start := max(0, m.keymapIndex-rows/2)
+	end := min(count, start+rows)
+	if end == count {
+		start = max(0, end-rows)
+	}
+	heading := "Key bindings · ↑/↓ choose · Enter change · Esc apply and close"
+	if m.keymapCapture != "" {
+		heading = "Recording a binding · press one key combination · Esc cancels capture"
+	}
+	lines := []string{heading}
+	for index := start; index < end; index++ {
+		var label, chord string
+		if index == len(keymapActions) {
+			label, chord = "Restore defaults", ""
+		} else {
+			action := keymapActions[index]
+			label = action.label
+			chord = m.keymapDraft[action.id]
+		}
+		line := fmt.Sprintf("  %-38s %s", label, chord)
+		if index == m.keymapIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if m.keymapCapture == "" {
+		lines = append(lines, "Esc is reserved for cancel/close · bindings apply when this menu closes")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) keymapEditorRows() int {
+	return min(9, max(1, m.height-10))
+}
+
+func (m *tuiModel) keymapEditorHeight() int {
+	return m.keymapEditorRows() + 2
 }
 
 func (m *tuiModel) renderSessionPicker() string {
@@ -2753,22 +2859,22 @@ func (m *tuiModel) renderSessionPicker() string {
 		if m.sessionIndex >= 0 && m.sessionIndex < len(m.sessionList) {
 			return strings.Join([]string{
 				"Delete “" + sessionDisplayTitle(m.sessionList[m.sessionIndex]) + "” and all saved task state?",
-				"Y confirm · N/Esc cancel",
+				m.keyLabel("session_confirm_delete") + " confirm · " + m.keyLabel("session_cancel_delete") + "/Esc cancel",
 			}, "\n")
 		}
-		return "Y confirm · N/Esc cancel"
+		return m.keyLabel("session_confirm_delete") + " confirm · " + m.keyLabel("session_cancel_delete") + "/Esc cancel"
 	}
 	if len(m.sessionList) == 0 {
 		if m.showArchived {
-			return "No saved sessions · Tab toggle · Esc cancel"
+			return "No saved sessions · " + m.keyLabel("session_toggle_archived") + " toggle · Esc cancel"
 		}
-		return "No active sessions · Tab show archived · Esc cancel"
+		return "No active sessions · " + m.keyLabel("session_toggle_archived") + " show archived · Esc cancel"
 	}
 	viewKind := "active"
 	if m.showArchived {
 		viewKind = "active + archived"
 	}
-	lines := []string{"Sessions · " + viewKind + " · ↑/↓ select · Enter restore · a archive · r rename · d delete · Tab toggle"}
+	lines := []string{"Sessions · " + viewKind + " · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " restore · " + m.keyLabel("session_archive") + " archive · " + m.keyLabel("session_rename") + " rename · " + m.keyLabel("session_delete") + " delete · " + m.keyLabel("session_toggle_archived") + " toggle"}
 	start := max(0, m.sessionIndex-4)
 	end := min(len(m.sessionList), start+8)
 	if end == len(m.sessionList) {
@@ -2817,7 +2923,7 @@ func (m *tuiModel) renderModelPicker() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -2832,7 +2938,7 @@ func (m *tuiModel) renderEffortPicker() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -2854,7 +2960,7 @@ func (m *tuiModel) renderPermissionMenu() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
 	return strings.Join(lines, "\n")
 }
 
@@ -2866,7 +2972,7 @@ func (m *tuiModel) renderBody(width int) string {
 			return m.activity.View()
 		}
 		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
-		hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("↑/↓ scroll · Ctrl+B or Esc close")
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close")
 		content := lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
 		return lipgloss.NewStyle().Width(max(1, width-2)).Height(bodyHeight - 2).
 			Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colors.Accent)).Render(content)
