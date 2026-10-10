@@ -406,8 +406,12 @@ func TestTUIModelAndEffortPickerCommandsPersistSessionSettings(t *testing.T) {
 	if ui.effortPicker || ui.sessionSettings.ReasoningEffort != "" {
 		t.Fatalf("default effort selection = %#v, picker open=%v", ui.sessionSettings, ui.effortPicker)
 	}
-	if !strings.Contains(ui.renderFooter(120), "effort default") || !strings.Contains(ui.renderFooter(120), "review") {
-		t.Fatalf("footer does not show current settings: %q", ui.renderFooter(120))
+	if saved := client.sessions[ui.sessionID].Settings; saved.ModelProfile != "review" || saved.ReasoningEffort != "" {
+		t.Fatalf("persisted default effort settings = %#v", saved)
+	}
+	footer := ui.renderFooter(120)
+	if !strings.Contains(footer, "tokens — · cache —") || !strings.Contains(footer, "Reasoning effort set to Default") || strings.Contains(footer, "review") {
+		t.Fatalf("compact footer should show usage and transient status without persistent settings: %q", footer)
 	}
 }
 
@@ -576,12 +580,15 @@ func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
 	ui.planMode = true
 
 	footer := ui.renderFooter(200)
-	if !strings.Contains(footer, "PLAN · read-only tools") || !strings.Contains(footer, "Workspace") {
-		t.Fatalf("footer should show Plan's read-only cap and active permission: %q", footer)
+	if !ui.planMode || client.PermissionMode() != core.PermissionWorkspace {
+		t.Fatalf("Plan and permission state = %v/%q, want Plan with Workspace", ui.planMode, client.PermissionMode())
+	}
+	if !strings.Contains(footer, "/plan") || !strings.Contains(footer, "permissions") {
+		t.Fatalf("compact footer should retain Plan and permission shortcuts: %q", footer)
 	}
 	ui.permissionMenu = true
 	menu := ui.renderPermissionMenu()
-	if !strings.Contains(menu, "Plan caps tools at read-only") || !strings.Contains(menu, "approval for visible tools") {
+	if !strings.Contains(menu, "Permission mode · current: Workspace") || !strings.Contains(menu, "Plan caps tools at read-only") || !strings.Contains(menu, "approval for visible tools") {
 		t.Fatalf("Plan permission menu should explain the effective tool cap: %q", menu)
 	}
 	if got, want := ui.commandSuggestionHeight(), len(tuiPermissionOptions)+3; got != want {
