@@ -391,6 +391,41 @@ func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
 	}
 }
 
+func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	ui.planMode = true
+
+	footer := ui.renderFooter(200)
+	if !strings.Contains(footer, "PLAN · read-only tools") || !strings.Contains(footer, "Workspace") {
+		t.Fatalf("footer should show Plan's read-only cap and active permission: %q", footer)
+	}
+	ui.permissionMenu = true
+	menu := ui.renderPermissionMenu()
+	if !strings.Contains(menu, "Plan caps tools at read-only") || !strings.Contains(menu, "approval for visible tools") {
+		t.Fatalf("Plan permission menu should explain the effective tool cap: %q", menu)
+	}
+	if got, want := ui.commandSuggestionHeight(), len(tuiPermissionOptions)+3; got != want {
+		t.Fatalf("permission menu height = %d, want %d with Plan hint", got, want)
+	}
+
+	ui.permissionMenu = false
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	if !ui.planMode || client.PermissionMode() != core.PermissionAsk {
+		t.Fatalf("Plan/permission state after Shift+Tab: plan=%v permission=%q", ui.planMode, client.PermissionMode())
+	}
+	if !strings.Contains(ui.status, "Plan still caps tools at read-only") {
+		t.Fatalf("permission status should explain Plan's tool cap: %q", ui.status)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	if !ui.planMode || client.PermissionMode() != core.PermissionFullAccess {
+		t.Fatalf("full-access selection should preserve Plan mode: plan=%v permission=%q", ui.planMode, client.PermissionMode())
+	}
+	if !strings.Contains(ui.status, "Plan still caps tools at read-only") {
+		t.Fatalf("full-access status should explain Plan's tool cap: %q", ui.status)
+	}
+}
+
 func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 	t.Run("runs default highlighted command", func(t *testing.T) {
 		client := &fakeTUICompactor{compactedTurns: 2}

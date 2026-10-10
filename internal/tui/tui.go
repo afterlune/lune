@@ -1098,7 +1098,7 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 	}
 	m.planMode = !m.planMode
 	if m.planMode {
-		m.status = "Plan mode · read-only tools are available."
+		m.status = "Plan mode · read-only tools only; permission still controls approval for visible tools."
 	} else {
 		m.status = "Build mode."
 	}
@@ -1281,7 +1281,12 @@ func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput boo
 		m.updateLayout()
 	}
 	m.status = fmt.Sprintf("Permission mode: %s.", permissionModeLabel(mode))
-	m.addEntry("notice", fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode)), false)
+	notice := fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode))
+	if m.planMode {
+		m.status += " Plan still caps tools at read-only."
+		notice += " Plan mode only exposes read-only tools; this setting controls approval for visible tools such as web."
+	}
+	m.addEntry("notice", notice, false)
 	m.refreshPanels()
 	return m, nil
 }
@@ -2554,7 +2559,11 @@ func (m *tuiModel) commandSuggestionHeight() int {
 		return len(reasoningEffortOptions) + 2
 	}
 	if m.permissionMenu {
-		return len(tuiPermissionOptions) + 2
+		extraLines := 0
+		if m.planMode {
+			extraLines = 1
+		}
+		return len(tuiPermissionOptions) + 2 + extraLines
 	}
 	if len(m.commandSuggestions) == 0 {
 		return 0
@@ -2626,7 +2635,7 @@ func (m *tuiModel) renderFooter(width int) string {
 	colors := colorsFor(m.preferences.Theme)
 	mode := "BUILD"
 	if m.planMode {
-		mode = "PLAN"
+		mode = "PLAN · read-only tools"
 	}
 	metrics := mode
 	metrics += " · " + string(m.preferences.Theme) + animeLayoutLabel(m.preferences)
@@ -2834,6 +2843,9 @@ func (m *tuiModel) renderPermissionMenu() string {
 		mode = m.client.PermissionMode()
 	}
 	lines := []string{"Permission mode · current: " + permissionModeLabel(mode)}
+	if m.planMode {
+		lines = append(lines, "Plan caps tools at read-only; permission controls approval for visible tools such as web.")
+	}
 	for index, option := range tuiPermissionOptions {
 		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
 		if index == m.permissionIndex {
