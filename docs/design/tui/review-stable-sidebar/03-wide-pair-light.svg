@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="960" viewBox="0 0 1800 960">
+  <style>
+    .canvas { fill: #f3f5f7; }
+    .screen { fill: #ffffff; stroke: #d1d8e0; stroke-width: 2; }
+    .rule { stroke: #d1d8e0; stroke-width: 2; }
+    .main { fill: #202b39; font: 18px "Cascadia Mono", "Consolas", monospace; }
+    .small { fill: #667386; font: 15px "Cascadia Mono", "Consolas", monospace; }
+    .label { fill: #117e9c; font: bold 19px "Cascadia Mono", "Consolas", monospace; }
+    .activity { fill: #202b39; font: 15px "Cascadia Mono", "Consolas", monospace; }
+    .scrollTrack { fill: #d8dee6; }
+    .scrollThumb { fill: #117e9c; }
+    .dot { fill: #117e9c; }
+  </style>
+  <rect class="canvas" x="0" y="0" width="1800" height="960"/>
+
+  <text class="label" x="36" y="48">SHORT OUTPUT</text>
+  <text class="label" x="926" y="48">LONG OUTPUT</text>
+
+  <g transform="translate(36,0)">
+    <rect class="screen" x="0" y="76" width="838" height="824" rx="8"/>
+    <text class="main" x="26" y="112">Agent workspace · Ready</text>
+    <text class="small" x="620" y="112">D:/work/project</text>
+    <line class="rule" x1="0" y1="145" x2="838" y2="145"/>
+    <line class="rule" x1="572" y1="145" x2="572" y2="790"/>
+    <text class="label" x="594" y="178">Activity</text>
+
+    <circle class="dot" cx="603" cy="211" r="5"/>
+    <text class="activity" x="620" y="216">Read config · done</text>
+    <circle class="dot" cx="603" cy="253" r="5"/>
+    <text class="activity" x="620" y="258">Scan overrides · done</text>
+    <circle class="dot" cx="603" cy="295" r="5"/>
+    <text class="activity" x="620" y="300">Check models · running</text>
+    <circle class="dot" cx="603" cy="337" r="5"/>
+    <text class="activity" x="620" y="342">Check defaults · done</text>
+    <circle class="dot" cx="603" cy="379" r="5"/>
+    <text class="activity" x="620" y="384">Ready</text>
+    <rect class="scrollTrack" x="829" y="188" width="5" height="390" rx="3"/>
+    <rect class="scrollThumb" x="828" y="191" width="7" height="88" rx="3"/>
+    <text class="small" x="790" y="600">2/8</text>
+
+    <line class="rule" x1="590" y1="620" x2="820" y2="620"/>
+    <text class="label" x="594" y="642">Usage</text>
+    <text class="small" x="594" y="672">Input</text><text class="main" x="790" y="672">1.2k</text>
+    <text class="small" x="594" y="696">Output</text><text class="main" x="790" y="696">0.3k</text>
+    <text class="small" x="594" y="720">Reasoning</text><text class="main" x="790" y="720">0.6k</text>
+    <text class="small" x="594" y="744">Total</text><text class="main" x="790" y="744">2.1k</text>
+    <text class="small" x="594" y="768">Cached</text><text class="main" x="790" y="768">0.4k</text>
+
+    <text class="label" x="28" y="187">YOU</text>
+    <text class="main" x="28" y="224">Please review the config loading.</text>
+    <text class="main" x="28" y="286">The merge order is clear and predictable.</text>
+
+    <line class="rule" x1="0" y1="790" x2="838" y2="790"/>
+    <text class="small" x="28" y="829">›  Ask anything...</text>
+    <text class="small" x="28" y="872">Enter send · Ctrl+0 newline · Shift+Tab permissions · /plan</text>
+  </g>
+
+  <g transform="translate(926,0)">
+    <rect class="screen" x="0" y="76" width="838" height="824" rx="8"/>
+    <text class="main" x="26" y="112">Agent workspace · Ready</text>
+    <text class="small" x="620" y="112">D:/work/project</text>
+    <line class="rule" x1="0" y1="145" x2="838" y2="145"/>
+    <line class="rule" x1="572" y1="145" x2="572" y2="790"/>
+    <text class="label" x="594" y="178">Activity</text>
+
+    <circle class="dot" cx="603" cy="211" r="5"/>
+    <text class="activity" x="620" y="216">Read config · done</text>
+    <circle class="dot" cx="603" cy="253" r="5"/>
+    <text class="activity" x="620" y="258">Scan overrides · done</text>
+    <circle class="dot" cx="603" cy="295" r="5"/>
+    <text class="activity" x="620" y="300">Check models · running</text>
+    <circle class="dot" cx="603" cy="337" r="5"/>
+    <text class="activity" x="620" y="342">Check defaults · done</text>
+    <circle class="dot" cx="603" cy="379" r="5"/>
+    <text class="activity" x="620" y="384">Ready</text>
+    <rect class="scrollTrack" x="829" y="188" width="5" height="390" rx="3"/>
+    <rect class="scrollThumb" x="828" y="191" width="7" height="88" rx="3"/>
+    <text class="small" x="790" y="600">2/8</text>
+
+    <line class="rule" x1="590" y1="620" x2="820" y2="620"/>
+    <text class="label" x="594" y="642">Usage</text>
+    <text class="small" x="594" y="672">Input</text><text class="main" x="790" y="672">1.2k</text>
+    <text class="small" x="594" y="696">Output</text><text class="main" x="790" y="696">0.3k</text>
+    <text class="small" x="594" y="720">Reasoning</text><text class="main" x="790" y="720">0.6k</text>
+    <text class="small" x="594" y="744">Total</text><text class="main" x="790" y="744">2.1k</text>
+    <text class="small" x="594" y="768">Cached</text><text class="main" x="790" y="768">0.4k</text>
+
+    <text class="label" x="28" y="187">YOU</text>
+    <text class="main" x="28" y="224">Please review the config loading.</text>
+    <text class="main" x="28" y="286">I reviewed the config flow and traced defaults.</text>
+    <text class="main" x="28" y="316">Project settings and environment overrides</text>
+    <text class="main" x="28" y="346">merge in a predictable order before model</text>
+    <text class="main" x="28" y="376">profiles are used.</text>
+    <text class="main" x="28" y="430">Provider fields and optional settings are</text>
+    <text class="main" x="28" y="460">validated at load time.</text>
+    <text class="main" x="28" y="514">The longer response fills the chat viewport;</text>
+    <text class="main" x="28" y="544">the right Activity and Usage regions keep</text>
+    <text class="main" x="28" y="574">the same bounds and positions.</text>
+
+    <line class="rule" x1="0" y1="790" x2="838" y2="790"/>
+    <text class="small" x="28" y="829">›  Ask anything...</text>
+    <text class="small" x="28" y="872">Enter send · Ctrl+0 newline · Shift+Tab permissions · /plan</text>
+  </g>
+</svg>
