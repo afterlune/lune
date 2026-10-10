@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/afterlune/lune/internal/agentgraph"
 	"github.com/afterlune/lune/internal/model"
@@ -168,6 +169,8 @@ type Session struct {
 	ID            string          `json:"id"`
 	Workspace     string          `json:"workspace"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	Title         string          `json:"title"`
+	Archived      bool            `json:"archived"`
 	Settings      SessionSettings `json:"settings"`
 	History       json.RawMessage `json:"history,omitempty"`
 	UsageRequests []UsageRecord   `json:"usage_requests,omitempty"`
@@ -324,9 +327,6 @@ func New(config Config) (_ *Core, err error) {
 	c.runtime = &graphResponder{store: checkpoints}
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
-	if err := c.migrateSessionRecords(context.Background()); err != nil {
-		return nil, err
-	}
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
 	}
@@ -579,7 +579,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		history = &decoded
 	}
-	if _, err := c.beginTask(sessionID, planMode, settings, profile); err != nil {
+	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, saved.UpdatedAt); err != nil {
 		return nil, err
 	}
 	defer c.endTask()
@@ -639,7 +639,10 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, expectedUpdatedAt time.Time) (string, error) {
+	if ctx == nil {
+		return "", errors.New("context is nil")
+	}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -648,6 +651,15 @@ func (c *Core) beginTask(sessionID string, planMode bool, settings SessionSettin
 	if c.active.Status == TaskRunning {
 		c.mu.Unlock()
 		return "", errors.New("a task is already running")
+	}
+	snapshot, err := c.sessions.Get(ctx, sessionID, c.workspace)
+	if err != nil {
+		c.mu.Unlock()
+		return "", err
+	}
+	if !snapshot.UpdatedAt.Equal(expectedUpdatedAt) {
+		c.mu.Unlock()
+		return "", errors.New("session changed while preparing the task; retry with the latest session state")
 	}
 	id, err := newID()
 	if err != nil {
@@ -783,6 +795,10 @@ func (c *Core) CreateSession(ctx context.Context, history json.RawMessage) (Sess
 	if c == nil || ctx == nil {
 		return Session{}, errors.New("core and context are required")
 	}
+	return c.createSession(ctx, history, SessionSettings{ModelProfile: c.models.DefaultModel()})
+}
+
+func (c *Core) createSession(ctx context.Context, history json.RawMessage, settings SessionSettings) (Session, error) {
 	if len(history) == 0 {
 		history = json.RawMessage("null")
 	}
@@ -795,13 +811,34 @@ func (c *Core) CreateSession(ctx context.Context, history json.RawMessage) (Sess
 	}
 	saved := Session{
 		ID: id, Workspace: c.workspace, UpdatedAt: time.Now(),
-		Settings: SessionSettings{ModelProfile: c.models.DefaultModel()},
+		Settings: settings,
 		History:  append(json.RawMessage(nil), history...),
 	}
 	if err := c.saveSession(ctx, saved); err != nil {
 		return Session{}, err
 	}
 	return saved, nil
+}
+
+func (c *Core) ForkSession(ctx context.Context, sessionID string) (Session, error) {
+	if c == nil || ctx == nil || sessionID == "" {
+		return Session{}, errors.New("core, context, and session id are required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return Session{}, errors.New("core is closed")
+	}
+	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+		return Session{}, errors.New("cannot fork a session while its task is running")
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	saved, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	return c.createSession(ctx, saved.History, saved.Settings)
 }
 
 func (c *Core) LatestSession(ctx context.Context) (Session, bool, error) {
@@ -816,11 +853,11 @@ func (c *Core) LatestSession(ctx context.Context) (Session, bool, error) {
 	return saved, err == nil, err
 }
 
-func (c *Core) ListSessions(ctx context.Context, limit int) ([]Session, error) {
+func (c *Core) ListSessions(ctx context.Context, limit int, includeArchived bool) ([]Session, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
-	snapshots, err := c.sessions.List(ctx, c.workspace, limit)
+	snapshots, err := c.sessions.List(ctx, c.workspace, limit, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -833,6 +870,123 @@ func (c *Core) ListSessions(ctx context.Context, limit int) ([]Session, error) {
 		sessions = append(sessions, saved)
 	}
 	return sessions, nil
+}
+
+func (c *Core) SetSessionTitle(ctx context.Context, sessionID, title string) error {
+	if c == nil || ctx == nil || sessionID == "" {
+		return errors.New("core, context, and session id are required")
+	}
+	title = strings.TrimSpace(title)
+	if utf8.RuneCountInString(title) > 120 {
+		return errors.New("session title must be at most 120 characters")
+	}
+	return c.sessions.UpdateTitle(ctx, sessionID, c.workspace, title)
+}
+
+func (c *Core) SetSessionArchived(ctx context.Context, sessionID string, archived bool) error {
+	if c == nil || ctx == nil || sessionID == "" {
+		return errors.New("core, context, and session id are required")
+	}
+	return c.sessions.SetArchived(ctx, sessionID, c.workspace, archived)
+}
+
+func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
+	if c == nil || ctx == nil || sessionID == "" {
+		return errors.New("core, context, and session id are required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return errors.New("core is closed")
+	}
+	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+		return errors.New("cannot delete a session while its task is running")
+	}
+	// Save-based usage/settings updates must not recreate a session after its
+	// row has been deleted. The session row is removed last for retry safety.
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	if _, err := c.GetSession(ctx, sessionID); err != nil {
+		return err
+	}
+	parentID := c.runtime.checkpointID(sessionID)
+	childCheckpoints, err := c.teamRuns.CheckpointIDs(parentID)
+	if err != nil {
+		return fmt.Errorf("list team checkpoints for session %q: %w", sessionID, err)
+	}
+	if err := c.checkpoints.Delete(ctx, parentID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
+		return fmt.Errorf("delete task checkpoint for session %q: %w", sessionID, err)
+	}
+	for _, childID := range childCheckpoints {
+		if err := c.checkpoints.Delete(ctx, childID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
+			return fmt.Errorf("delete team member checkpoint for session %q: %w", sessionID, err)
+		}
+	}
+	if err := c.teamRuns.DeleteParent(parentID); err != nil {
+		return err
+	}
+	deleted, err := c.sessions.Delete(ctx, sessionID, c.workspace)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return fmt.Errorf("session %q does not exist in workspace", sessionID)
+	}
+	return nil
+}
+
+func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns int) (int, error) {
+	if c == nil || ctx == nil || sessionID == "" {
+		return 0, errors.New("core, context, and session id are required")
+	}
+	if userTurns <= 0 {
+		return 0, errors.New("rewind count must be greater than zero")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, errors.New("core is closed")
+	}
+	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+		return 0, errors.New("cannot rewind a session while its task is running")
+	}
+	pending, err := c.HasPending(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if pending {
+		return 0, errors.New("cannot rewind a session while a task is paused")
+	}
+	saved, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	var history model.ResponseInput
+	if len(saved.History) > 0 && string(saved.History) != "null" {
+		if err := json.Unmarshal(saved.History, &history); err != nil {
+			return 0, fmt.Errorf("decode session history: %w", err)
+		}
+	}
+	items := responseHistoryItems(&history)
+	var starts []int
+	for index, item := range items {
+		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser {
+			starts = append(starts, index)
+		}
+	}
+	if len(starts) == 0 {
+		return 0, nil
+	}
+	removed := min(userTurns, len(starts))
+	cut := starts[len(starts)-removed]
+	encoded, err := json.Marshal(model.NewResponseInputItems(items[:cut]...))
+	if err != nil {
+		return 0, fmt.Errorf("encode rewound history: %w", err)
+	}
+	if err := c.SetSessionHistory(ctx, sessionID, encoded); err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
 func (c *Core) GetSession(ctx context.Context, id string) (Session, error) {
@@ -925,7 +1079,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		return 0, err
 	}
 	profile, _ := c.models.Profile(settings.ModelProfile)
-	if _, err := c.beginTask(sessionID, false, settings, profile); err != nil {
+	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, saved.UpdatedAt); err != nil {
 		return 0, err
 	}
 	defer c.endTask()
@@ -1084,23 +1238,6 @@ func (c *Core) migrateLegacySession(ctx context.Context) error {
 		Settings: SessionSettings{ModelProfile: c.models.DefaultModel()}, History: encoded,
 	}
 	return c.saveSession(ctx, saved)
-}
-
-func (c *Core) migrateSessionRecords(ctx context.Context) error {
-	snapshots, err := c.sessions.All(ctx, c.workspace)
-	if err != nil {
-		return err
-	}
-	for _, snapshot := range snapshots {
-		saved, err := c.decodeSession(snapshot)
-		if err != nil {
-			return err
-		}
-		if err := c.saveSession(ctx, saved); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func newID() (string, error) {

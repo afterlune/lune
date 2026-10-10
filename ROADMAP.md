@@ -19,8 +19,8 @@
 - [x] 注册工具时统一声明 category、权限类别和只读属性；移除 permissions.go、agentgraph 和默认 Registry 的重复硬编码。
 - [x] 修复 workspace 模式下未知工具无需批准的安全缺口，并为四档权限与自定义工具补充覆盖测试。
 - [ ] 为 config.json 增加结构化加载与校验，覆盖 models、mcpServers、contextWindow、autoCompact、autoCompactThreshold、reserveOutputTokens 和附件限制。
-- [ ] 为会话数据增加版本与迁移策略；明确 sessions.db 和 checkpoints.db 的删除级联规则。
-- [ ] 增加 internal/session/store_test.go；按上下文策略决策门确定 token 计数口径并补测试。
+- [x] 为会话数据增加 SQLite user_version 迁移；明确 sessions.db、checkpoints.db 与团队成员 checkpoint 的删除级联规则。
+- [x] 增加 internal/session/store_test.go，覆盖迁移、元数据并发更新、归档筛选和删除；token 计量仍由上下文策略决策门确定。
 - [ ] 为 .luneagent/agent.log 增加日志轮转。
 
 **完成条件：** 权限矩阵和未知工具路径有测试；配置错误可诊断；旧会话迁移与删除关系有测试；I-1 有根因证据或明确保留为待运行期取证。
@@ -49,10 +49,10 @@
 
 **目标：** 完成会话生命周期和可恢复的历史操作。
 
-- [ ] [C] session.Store 支持按工作区删除、设置标题、归档/取消归档；列表支持包含已归档会话，优先用 JSON1 过滤避免 schema 迁移。
-- [ ] [C] Snapshot 与 savedTUISession 保存 Title / Archived，upsert 不覆盖既有值。
-- [ ] [B] /fork 复制历史并切换到新会话；/rewind 按 user turn 回退，不切开 function call/output 配对，paused task 时禁用并提示。
-- [ ] 为删除、归档、标题、过滤、fork、rewind 和中断恢复补充存储与行为测试。
+- [x] [C] session.Store 支持按 workspace 删除、设置标题、归档/取消归档；列表在 limit 前用 JSON1 筛选已归档会话。
+- [x] [C] Core Session 持久化 Title / Archived；history、设置和用量更新不会覆盖元数据。
+- [x] [B] `/fork` 复制历史与模型设置并切换到新会话；`/rewind <n>` 按 user turn 回退，保留工具调用配对并拒绝 paused task。
+- [x] 为删除级联、归档、标题、过滤、fork、rewind 和中断任务清理补充存储与行为测试。
 
 **完成条件：** 会话状态重开后保持；归档过滤和删除范围正确；历史操作不会破坏工具调用配对或 paused task。
 

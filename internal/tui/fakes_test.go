@@ -93,12 +93,23 @@ func (f *fakeResponder) CreateSession(_ context.Context, history json.RawMessage
 
 func (f *fakeResponder) LatestSession(context.Context) (core.Session, bool, error) {
 	saved, ok := f.sessions[f.last]
-	return saved, ok, nil
+	if ok && !saved.Archived {
+		return saved, true, nil
+	}
+	for _, candidate := range f.sessions {
+		if !candidate.Archived {
+			return candidate, true, nil
+		}
+	}
+	return core.Session{}, false, nil
 }
 
-func (f *fakeResponder) ListSessions(context.Context, int) ([]core.Session, error) {
+func (f *fakeResponder) ListSessions(_ context.Context, _ int, includeArchived bool) ([]core.Session, error) {
 	sessions := make([]core.Session, 0, len(f.sessions))
 	for _, saved := range f.sessions {
+		if saved.Archived && !includeArchived {
+			continue
+		}
 		sessions = append(sessions, saved)
 	}
 	return sessions, nil
@@ -111,6 +122,53 @@ func (f *fakeResponder) GetSession(_ context.Context, id string) (core.Session, 
 	}
 	return saved, nil
 }
+
+func (f *fakeResponder) ForkSession(ctx context.Context, id string) (core.Session, error) {
+	source, err := f.GetSession(ctx, id)
+	if err != nil {
+		return core.Session{}, err
+	}
+	branch, err := f.CreateSession(ctx, source.History)
+	if err != nil {
+		return core.Session{}, err
+	}
+	branch.Settings = source.Settings
+	f.sessions[branch.ID] = branch
+	return branch, nil
+}
+
+func (f *fakeResponder) SetSessionTitle(_ context.Context, id, title string) error {
+	saved, ok := f.sessions[id]
+	if !ok {
+		return fmt.Errorf("unknown session %q", id)
+	}
+	saved.Title = title
+	f.sessions[id] = saved
+	return nil
+}
+
+func (f *fakeResponder) SetSessionArchived(_ context.Context, id string, archived bool) error {
+	saved, ok := f.sessions[id]
+	if !ok {
+		return fmt.Errorf("unknown session %q", id)
+	}
+	saved.Archived = archived
+	f.sessions[id] = saved
+	return nil
+}
+
+func (f *fakeResponder) DeleteSession(_ context.Context, id string) error {
+	if _, ok := f.sessions[id]; !ok {
+		return fmt.Errorf("unknown session %q", id)
+	}
+	delete(f.sessions, id)
+	if f.last == id {
+		f.last = ""
+	}
+	return nil
+}
+
+func (f *fakeResponder) RewindSession(context.Context, string, int) (int, error) { return 0, nil }
 
 func (f *fakeResponder) ListModelProfiles() []core.ModelOption {
 	return []core.ModelOption{

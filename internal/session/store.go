@@ -14,6 +14,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const currentSchemaVersion = 1
+
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
 type Snapshot struct {
@@ -44,18 +46,55 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open session database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read session database version: %w", err)
+	}
+	if version > currentSchemaVersion {
+		_ = db.Close()
+		return nil, fmt.Errorf("session database version %d is newer than supported version %d", version, currentSchemaVersion)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("begin session database migration: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
 			workspace TEXT NOT NULL,
 			updated_at INTEGER NOT NULL,
 			data BLOB NOT NULL
 		)`); err != nil {
+		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize session database: %w", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS sessions_workspace_updated ON sessions(workspace, updated_at DESC)`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS sessions_workspace_updated ON sessions(workspace, updated_at DESC)`); err != nil {
+		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize session index: %w", err)
+	}
+	if version < 1 {
+		if _, err := tx.Exec(`UPDATE sessions
+			SET data = CAST(json_set(
+				CAST(data AS TEXT),
+				'$.title', coalesce(json_extract(CAST(data AS TEXT), '$.title'), ''),
+			'$.archived', json('false')
+			) AS BLOB)`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate session metadata: %w", err)
+		}
+		if _, err := tx.Exec(`PRAGMA user_version = 1`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("set session database version: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("commit session database migration: %w", err)
 	}
 	if err := os.Chmod(absolute, 0600); err != nil {
 		_ = db.Close()
@@ -93,13 +132,74 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 			data = CAST(json_set(
 				CAST(excluded.data AS TEXT),
 				'$.history',
-				json(coalesce(json_extract(CAST(sessions.data AS TEXT), '$.history'), 'null'))
+				json(coalesce(json_extract(CAST(sessions.data AS TEXT), '$.history'), 'null')),
+				'$.title', coalesce(json_extract(CAST(sessions.data AS TEXT), '$.title'), ''),
+				'$.archived', json(CASE json_type(CAST(sessions.data AS TEXT), '$.archived')
+					WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE 'false' END)
 			) AS BLOB)
 	`, snapshot.ID, snapshot.Workspace, updatedAt.UnixNano(), []byte(snapshot.Data))
 	if err != nil {
 		return fmt.Errorf("save session %q: %w", snapshot.ID, err)
 	}
 	return nil
+}
+
+func (s *Store) UpdateTitle(ctx context.Context, id, workspace, title string) error {
+	return s.updateMetadata(ctx, id, workspace, "title", title)
+}
+
+func (s *Store) SetArchived(ctx context.Context, id, workspace string, archived bool) error {
+	return s.updateMetadata(ctx, id, workspace, "archived", archived)
+}
+
+func (s *Store) updateMetadata(ctx context.Context, id, workspace, key string, value any) error {
+	if s == nil || s.db == nil {
+		return errors.New("session store is not open")
+	}
+	if id == "" || workspace == "" {
+		return errors.New("session id and workspace are required")
+	}
+	if key != "title" && key != "archived" {
+		return fmt.Errorf("unsupported session metadata field %q", key)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode session %s: %w", key, err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET data = CAST(json_set(CAST(data AS TEXT), ?, json(?)) AS BLOB), updated_at = ?
+		WHERE id = ? AND workspace = ?
+	`, "$."+key, string(encoded), time.Now().UnixNano(), id, workspace)
+	if err != nil {
+		return fmt.Errorf("update session %s for %q: %w", key, id, err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check session metadata update: %w", err)
+	}
+	if updated == 0 {
+		return fmt.Errorf("session %q does not exist in workspace", id)
+	}
+	return nil
+}
+
+func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("session store is not open")
+	}
+	if id == "" || workspace == "" {
+		return false, errors.New("session id and workspace are required")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND workspace = ?`, id, workspace)
+	if err != nil {
+		return false, fmt.Errorf("delete session %q: %w", id, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("check session deletion: %w", err)
+	}
+	return deleted > 0, nil
 }
 
 // UpdateHistory replaces only the conversation history in a session payload.
@@ -133,7 +233,8 @@ func (s *Store) UpdateHistory(ctx context.Context, id, workspace string, history
 func (s *Store) Latest(ctx context.Context, workspace string) (*Snapshot, error) {
 	rows, err := s.query(ctx, `
 		SELECT id, workspace, updated_at, data FROM sessions
-		WHERE workspace = ? ORDER BY updated_at DESC LIMIT 1
+		WHERE workspace = ? AND coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0
+		ORDER BY updated_at DESC LIMIT 1
 	`, workspace)
 	if err != nil || len(rows) == 0 {
 		return nil, err
@@ -158,21 +259,15 @@ func (s *Store) Get(ctx context.Context, id, workspace string) (*Snapshot, error
 	return &rows[0], nil
 }
 
-func (s *Store) List(ctx context.Context, workspace string, limit int) ([]Snapshot, error) {
+func (s *Store) List(ctx context.Context, workspace string, limit int, includeArchived bool) ([]Snapshot, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
 	return s.query(ctx, `
 		SELECT id, workspace, updated_at, data FROM sessions
-		WHERE workspace = ? ORDER BY updated_at DESC LIMIT ?
-	`, workspace, limit)
-}
-
-func (s *Store) All(ctx context.Context, workspace string) ([]Snapshot, error) {
-	return s.query(ctx, `
-		SELECT id, workspace, updated_at, data FROM sessions
-		WHERE workspace = ? ORDER BY updated_at DESC
-	`, workspace)
+		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
+		ORDER BY updated_at DESC LIMIT ?
+	`, workspace, includeArchived, limit)
 }
 
 func (s *Store) query(ctx context.Context, statement string, args ...any) ([]Snapshot, error) {

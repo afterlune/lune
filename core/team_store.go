@@ -171,6 +171,37 @@ func (s *teamStore) DeleteParent(parentID string) error {
 	return nil
 }
 
+func (s *teamStore) CheckpointIDs(parentID string) ([]string, error) {
+	if s == nil || s.db == nil || parentID == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT data FROM team_runs WHERE parent_id = ?`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("list team runs for %q: %w", parentID, err)
+	}
+	defer rows.Close()
+	var checkpoints []string
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, fmt.Errorf("read team run for %q: %w", parentID, err)
+		}
+		var record teamRunRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, fmt.Errorf("decode team run for %q: %w", parentID, err)
+		}
+		for _, member := range record.Members {
+			checkpoints = append(checkpoints, record.ID+":"+member.ID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read team runs for %q: %w", parentID, err)
+	}
+	return checkpoints, nil
+}
+
 func (s *teamStore) load(ctx context.Context, id string) (teamRunRecord, bool, error) {
 	var data []byte
 	err := s.db.QueryRowContext(ctx, `SELECT data FROM team_runs WHERE run_id = ?`, id).Scan(&data)

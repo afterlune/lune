@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -88,6 +89,9 @@ type tuiModel struct {
 	sessionSettings    core.SessionSettings
 	pendingApproval    *toolApprovalRequestMsg
 	sessionPicker      bool
+	showArchived       bool
+	deleteConfirm      bool
+	renamingSession    bool
 	sessionList        []core.Session
 	sessionIndex       int
 	queued             []queuedInput
@@ -134,7 +138,9 @@ type tokenUsageTotals struct {
 	cached    int64
 }
 
-var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/theme", "/vim"}
+const defaultInputPlaceholder = "Ask anything, or paste ResponseInput JSON..."
+
+var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/fork", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/rewind", "/theme", "/vim"}
 
 var reasoningEffortOptions = []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
@@ -222,7 +228,7 @@ func Run(client Client) error {
 
 func newTUIModel(client Client, pending bool) *tuiModel {
 	input := textarea.New()
-	input.Placeholder = "Ask anything, or paste ResponseInput JSON..."
+	input.Placeholder = defaultInputPlaceholder
 	input.Prompt = "┃ "
 	input.ShowLineNumbers = false
 	input.DynamicHeight = true
@@ -347,7 +353,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if !(m.running && message.String() == "esc") {
+		if !(m.running && message.String() == "esc") && !m.sessionPicker && !m.modelPicker && !m.effortPicker && !m.queuePicker && !m.permissionMenu {
 			if handled, command := m.handleVimKey(message); handled {
 				m.updateLayout()
 				return m, command
@@ -365,6 +371,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m.enqueueInput()
 			}
 			if m.sessionPicker {
+				if m.deleteConfirm {
+					return m, nil
+				}
 				return m.selectSession()
 			}
 			if m.permissionMenu {
@@ -403,6 +412,20 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.sessionPicker {
+				if m.renamingSession {
+					m.renamingSession = false
+					m.input.Placeholder = defaultInputPlaceholder
+					m.status = "Session rename cancelled."
+					m.resetInput()
+					m.updateLayout()
+					return m, nil
+				}
+				if m.deleteConfirm {
+					m.deleteConfirm = false
+					m.status = "Session deletion cancelled."
+					m.updateLayout()
+					return m, nil
+				}
 				m.sessionPicker = false
 				m.status = "Session selection cancelled."
 				m.updateLayout()
@@ -485,6 +508,23 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.sessionPicker {
+			if m.renamingSession {
+				var command tea.Cmd
+				m.input, command = m.input.Update(message)
+				m.updateLayout()
+				return m, command
+			}
+			if m.deleteConfirm {
+				switch strings.ToLower(message.String()) {
+				case "y":
+					return m.deleteSelectedSession()
+				case "n":
+					m.deleteConfirm = false
+					m.status = "Session deletion cancelled."
+					m.updateLayout()
+				}
+				return m, nil
+			}
 			switch message.String() {
 			case "up":
 				if m.sessionIndex > 0 {
@@ -493,6 +533,28 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			case "down":
 				if m.sessionIndex+1 < len(m.sessionList) {
 					m.sessionIndex++
+				}
+			case "tab":
+				m.showArchived = !m.showArchived
+				if err := m.reloadSessionList(m.sessionID); err != nil {
+					m.showArchived = !m.showArchived
+					m.status = "Could not update the session list."
+					m.addEntry("error", err.Error(), true)
+					return m, nil
+				}
+				if m.showArchived {
+					m.status = "Showing archived sessions; Tab hides them."
+				} else {
+					m.status = "Showing active sessions; Tab shows archived sessions."
+				}
+			case "a":
+				return m.toggleSelectedArchive()
+			case "r":
+				return m.beginSessionRename()
+			case "d":
+				if m.sessionIndex >= 0 && m.sessionIndex < len(m.sessionList) {
+					m.deleteConfirm = true
+					m.status = "Delete this session and all saved task state? Press Y to confirm or N/Esc to cancel."
 				}
 			}
 			m.updateLayout()
@@ -598,6 +660,11 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "/resume":
 		return m.openSessionPicker()
+	case "/fork":
+		return m.forkSession()
+	case "/rewind":
+		m.status = "Use /rewind <n> to remove the latest n user turns."
+		return m, nil
 	case "/queue":
 		return m.openQueuePicker()
 	case "/continue":
@@ -636,6 +703,9 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/effort ") || strings.HasPrefix(line, "/effort\t") {
 		return m.setEffortFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/rewind ") || strings.HasPrefix(line, "/rewind\t") {
+		return m.rewindSession(line)
 	}
 	if strings.HasPrefix(line, "/theme ") || strings.HasPrefix(line, "/theme\t") {
 		return m.setThemeFromCommand(line)
@@ -1278,34 +1348,54 @@ func formatToolApproval(request core.ApprovalRequest, workspace ...string) strin
 }
 
 func (m *tuiModel) openSessionPicker() (tea.Model, tea.Cmd) {
-	sessions, err := m.client.ListSessions(context.Background(), 30)
-	if err != nil {
+	m.showArchived = false
+	if err := m.reloadSessionList(m.sessionID); err != nil {
 		m.status = "Could not load sessions."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	if len(sessions) == 0 {
-		m.status = "No saved sessions yet."
-		m.addEntry("notice", m.status, false)
+	if len(m.sessionList) == 0 {
+		m.sessionPicker = true
+		m.status = "No active sessions; press Tab to show archived sessions."
 		m.resetInput()
+		m.updateLayout()
 		return m, nil
 	}
-	m.sessionList = sessions
-	m.sessionIndex = 0
-	for index, saved := range sessions {
-		if saved.ID == m.sessionID {
-			m.sessionIndex = index
-			break
-		}
-	}
 	m.sessionPicker = true
-	m.status = "Choose a session to restore; Enter selects, Esc cancels."
+	m.status = "Choose a session · ↑/↓ select · Enter restore · a archive · r rename · d delete · Tab archived."
 	m.resetInput()
 	m.updateLayout()
 	return m, nil
 }
 
+func (m *tuiModel) reloadSessionList(preferredID string) error {
+	sessions, err := m.client.ListSessions(context.Background(), 30, m.showArchived)
+	if err != nil {
+		return err
+	}
+	m.sessionList = sessions
+	if len(sessions) == 0 {
+		m.sessionIndex = 0
+		return nil
+	}
+	m.sessionIndex = min(max(m.sessionIndex, 0), len(sessions)-1)
+	for index, saved := range sessions {
+		if saved.ID == preferredID {
+			m.sessionIndex = index
+			return nil
+		}
+	}
+	return nil
+}
+
 func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
+	if m.renamingSession {
+		return m.saveSessionRename()
+	}
+	if len(m.sessionList) == 0 {
+		m.status = "No session to restore; press Tab to show archived sessions."
+		return m, nil
+	}
 	if m.sessionIndex < 0 || m.sessionIndex >= len(m.sessionList) {
 		m.sessionPicker = false
 		return m, nil
@@ -1344,6 +1434,114 @@ func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
 	m.status = "Session restored."
 	m.resetInput()
 	m.refreshPanels()
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) beginSessionRename() (tea.Model, tea.Cmd) {
+	if m.sessionIndex < 0 || m.sessionIndex >= len(m.sessionList) {
+		return m, nil
+	}
+	m.renamingSession = true
+	m.input.Placeholder = "Session title · empty clears"
+	m.input.SetValue(m.sessionList[m.sessionIndex].Title)
+	m.status = "Edit title · Enter save · empty clears · Esc cancel."
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) saveSessionRename() (tea.Model, tea.Cmd) {
+	if m.sessionIndex < 0 || m.sessionIndex >= len(m.sessionList) {
+		m.renamingSession = false
+		return m, nil
+	}
+	saved := m.sessionList[m.sessionIndex]
+	title := m.input.Value()
+	if err := m.client.SetSessionTitle(context.Background(), saved.ID, title); err != nil {
+		m.status = "Session title could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.renamingSession = false
+	m.input.Placeholder = defaultInputPlaceholder
+	m.resetInput()
+	if err := m.reloadSessionList(saved.ID); err != nil {
+		m.status = "Title saved, but the session list could not be refreshed."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.status = "Session title saved."
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) toggleSelectedArchive() (tea.Model, tea.Cmd) {
+	if m.sessionIndex < 0 || m.sessionIndex >= len(m.sessionList) {
+		return m, nil
+	}
+	saved := m.sessionList[m.sessionIndex]
+	archived := !saved.Archived
+	if err := m.client.SetSessionArchived(context.Background(), saved.ID, archived); err != nil {
+		m.status = "Session archive state could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	if err := m.reloadSessionList(saved.ID); err != nil {
+		m.status = "Archive state saved, but the session list could not be refreshed."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	if archived {
+		m.status = "Session archived."
+	} else {
+		m.status = "Session unarchived."
+	}
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) deleteSelectedSession() (tea.Model, tea.Cmd) {
+	if m.sessionIndex < 0 || m.sessionIndex >= len(m.sessionList) {
+		m.deleteConfirm = false
+		return m, nil
+	}
+	saved := m.sessionList[m.sessionIndex]
+	if err := m.client.DeleteSession(context.Background(), saved.ID); err != nil {
+		m.status = "Session could not be deleted."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.deleteConfirm = false
+	if saved.ID == m.sessionID {
+		m.sessionPicker = false
+		updated, command := m.newSession()
+		if finished, ok := updated.(*tuiModel); ok {
+			if finished.sessionID == saved.ID {
+				finished.sessionID = ""
+				finished.showArchived = false
+				finished.sessionPicker = true
+				if err := finished.reloadSessionList(""); err != nil {
+					finished.addEntry("error", err.Error(), true)
+				}
+				finished.status = "Session deleted, but a new session could not be created."
+				finished.updateLayout()
+			} else {
+				finished.status = "Current session deleted; started a new session."
+			}
+		}
+		return updated, command
+	}
+	if err := m.reloadSessionList(m.sessionID); err != nil {
+		m.status = "Session deleted, but the session list could not be refreshed."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	if len(m.sessionList) == 0 {
+		m.sessionPicker = false
+		m.status = "Session deleted."
+	} else {
+		m.status = "Session deleted."
+	}
 	m.updateLayout()
 	return m, nil
 }
@@ -1409,20 +1607,64 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) branchPausedSession() error {
+func (m *tuiModel) forkSession() (tea.Model, tea.Cmd) {
+	branch, err := m.client.ForkSession(context.Background(), m.sessionID)
+	if err != nil {
+		m.status = "Could not fork this session."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionID = branch.ID
+	m.restoreSessionState(branch)
+	m.clearQueue()
+	m.planMode = false
+	m.planReview = false
+	m.pending = false
+	m.status = "Forked session history into a new session."
+	m.resetInput()
+	m.refreshPanels()
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		m.status = "Use /rewind <n> to remove the latest n user turns."
+		return m, nil
+	}
+	turns, err := strconv.Atoi(fields[1])
+	if err != nil || turns <= 0 {
+		m.status = "Rewind count must be a positive integer."
+		return m, nil
+	}
+	removed, err := m.client.RewindSession(context.Background(), m.sessionID, turns)
+	if err != nil {
+		m.status = "Could not rewind this session."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
 	saved, err := m.client.GetSession(context.Background(), m.sessionID)
 	if err != nil {
-		return err
+		m.status = "History was rewound, but the session could not be reloaded."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
 	}
-	branch, err := m.client.CreateSession(context.Background(), saved.History)
+	m.restoreSessionState(saved)
+	m.status = fmt.Sprintf("Rewound %d user turn(s).", removed)
+	m.resetInput()
+	m.refreshPanels()
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) branchPausedSession() error {
+	branch, err := m.client.ForkSession(context.Background(), m.sessionID)
 	if err != nil {
-		return err
-	}
-	if err := m.client.SetSessionSettings(context.Background(), branch.ID, saved.Settings); err != nil {
 		return err
 	}
 	m.sessionID = branch.ID
-	m.sessionSettings = saved.Settings
+	m.restoreSessionState(branch)
 	m.pending = false
 	m.status = "Started a new branch from the last completed turn."
 	m.addEntry("notice", "Started a new branch from completed history; the paused task remains in its original session.", false)
@@ -2300,7 +2542,10 @@ func (m *tuiModel) commandSuggestionHeight() int {
 		return min(len(m.queued), 8) + 1
 	}
 	if m.sessionPicker {
-		return min(len(m.sessionList), 8) + 1
+		if m.renamingSession || m.deleteConfirm {
+			return 2
+		}
+		return min(len(m.sessionList), 8) + 2
 	}
 	if m.modelPicker {
 		return min(len(m.modelOptions), 8) + 2
@@ -2348,7 +2593,7 @@ func (m *tuiModel) View() tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if cursor := m.input.Cursor(); cursor != nil && !m.sessionPicker && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.input.Cursor(); cursor != nil && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
 		view.Cursor = cursor
 	}
@@ -2492,7 +2737,29 @@ func (m *tuiModel) renderCommandSuggestions() string {
 
 func (m *tuiModel) renderSessionPicker() string {
 	colors := colorsFor(m.preferences.Theme)
-	lines := []string{"Saved sessions · ↑/↓ select · Enter restore · Esc cancel"}
+	if m.renamingSession {
+		return strings.Join([]string{"Rename session · Enter save · empty clears · Esc cancel", "Title is limited to 120 characters."}, "\n")
+	}
+	if m.deleteConfirm {
+		if m.sessionIndex >= 0 && m.sessionIndex < len(m.sessionList) {
+			return strings.Join([]string{
+				"Delete “" + sessionDisplayTitle(m.sessionList[m.sessionIndex]) + "” and all saved task state?",
+				"Y confirm · N/Esc cancel",
+			}, "\n")
+		}
+		return "Y confirm · N/Esc cancel"
+	}
+	if len(m.sessionList) == 0 {
+		if m.showArchived {
+			return "No saved sessions · Tab toggle · Esc cancel"
+		}
+		return "No active sessions · Tab show archived · Esc cancel"
+	}
+	viewKind := "active"
+	if m.showArchived {
+		viewKind = "active + archived"
+	}
+	lines := []string{"Sessions · " + viewKind + " · ↑/↓ select · Enter restore · a archive · r rename · d delete · Tab toggle"}
 	start := max(0, m.sessionIndex-4)
 	end := min(len(m.sessionList), start+8)
 	if end == len(m.sessionList) {
@@ -2500,8 +2767,11 @@ func (m *tuiModel) renderSessionPicker() string {
 	}
 	for index, saved := range m.sessionList[start:end] {
 		index += start
-		preview := sessionPreview(saved.History)
+		preview := sessionDisplayTitle(saved)
 		line := fmt.Sprintf("  %s  %s", saved.UpdatedAt.Local().Format("01-02 15:04"), preview)
+		if saved.Archived {
+			line += "  [archived]"
+		}
 		if saved.ID == m.sessionID {
 			line += "  (current)"
 		}
@@ -2512,6 +2782,13 @@ func (m *tuiModel) renderSessionPicker() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func sessionDisplayTitle(saved core.Session) string {
+	if title := strings.TrimSpace(saved.Title); title != "" {
+		return title
+	}
+	return sessionPreview(saved.History)
 }
 
 func (m *tuiModel) renderModelPicker() string {

@@ -246,6 +246,90 @@ func TestPausedSessionBranchCopiesModelSettings(t *testing.T) {
 	}
 }
 
+func TestSessionPickerArchivesRenamesAndDeletesCurrentSession(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"current": {ID: "current", Title: "Review", Settings: core.SessionSettings{ModelProfile: "lead"}},
+		"other":   {ID: "other", Title: "Other", Settings: core.SessionSettings{ModelProfile: "lead"}},
+	}, last: "current"}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "current"
+	ui.openSessionPicker()
+	if len(ui.sessionList) != 2 || !strings.Contains(ui.View().Content, "Review") {
+		t.Fatalf("initial session picker = %#v, view=%q", ui.sessionList, ui.View().Content)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'a'}))
+	if !client.sessions["current"].Archived || len(ui.sessionList) != 1 {
+		t.Fatalf("archive toggle did not hide current session: sessions=%#v list=%#v", client.sessions, ui.sessionList)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if !ui.showArchived || len(ui.sessionList) != 2 || !strings.Contains(ui.View().Content, "[archived]") {
+		t.Fatalf("archived list = %#v, view=%q", ui.sessionList, ui.View().Content)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'r'}))
+	if !ui.renamingSession || ui.input.Value() != "Review" {
+		t.Fatalf("rename state=%v input=%q", ui.renamingSession, ui.input.Value())
+	}
+	ui.input.SetValue("Renamed review")
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if client.sessions["current"].Title != "Renamed review" || ui.renamingSession {
+		t.Fatalf("renamed session = %#v, editing=%v", client.sessions["current"], ui.renamingSession)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'd'}))
+	if !ui.deleteConfirm {
+		t.Fatal("d should request delete confirmation")
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'y'}))
+	if _, exists := client.sessions["current"]; exists {
+		t.Fatal("confirmed delete left the current session in storage")
+	}
+	if ui.sessionID == "current" || ui.sessionPicker {
+		t.Fatalf("current session was not replaced after deletion: id=%q picker=%v", ui.sessionID, ui.sessionPicker)
+	}
+}
+
+func TestSessionPickerCanOpenArchivedOnlySessionWithoutUnarchiving(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"archived": {ID: "archived", Title: "Old work", Archived: true, Settings: core.SessionSettings{ModelProfile: "lead"}},
+	}, last: "archived"}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "archived"
+	ui.openSessionPicker()
+	if !ui.sessionPicker || len(ui.sessionList) != 0 {
+		t.Fatalf("picker should remain open with no active sessions: open=%v list=%#v", ui.sessionPicker, ui.sessionList)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if !ui.showArchived || len(ui.sessionList) != 1 {
+		t.Fatalf("Tab did not expose archived session: show=%v list=%#v", ui.showArchived, ui.sessionList)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if ui.sessionID != "archived" || !client.sessions["archived"].Archived {
+		t.Fatalf("restoring archived session changed its archive state: id=%q session=%#v", ui.sessionID, client.sessions["archived"])
+	}
+}
+
+func TestTUIForkAndRewindCommandsAreSuggestedAndDispatched(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"session": {ID: "session", History: json.RawMessage(`[]`), Settings: core.SessionSettings{ModelProfile: "review", ReasoningEffort: "high"}},
+	}, last: "session"}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session"
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/fork") || !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/rewind") {
+		t.Fatalf("suggestions = %#v", ui.commandSuggestions)
+	}
+	ui.input.SetValue("/fork")
+	ui.submit()
+	if ui.sessionID == "session" || ui.sessionSettings.ModelProfile != "review" || ui.sessionSettings.ReasoningEffort != "high" {
+		t.Fatalf("fork state id=%q settings=%#v", ui.sessionID, ui.sessionSettings)
+	}
+	ui.input.SetValue("/rewind 2")
+	ui.submit()
+	if ui.status != "Rewound 0 user turn(s)." {
+		t.Fatalf("rewind status = %q", ui.status)
+	}
+}
+
 func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
 	client := &fakeResponder{}
 	ui := newTUIModel(client, false)

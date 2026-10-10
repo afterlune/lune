@@ -19,8 +19,13 @@ type Client interface {
 	Compact(context.Context, string) (int, error)
 	CreateSession(context.Context, json.RawMessage) (core.Session, error)
 	LatestSession(context.Context) (core.Session, bool, error)
-	ListSessions(context.Context, int) ([]core.Session, error)
+	ListSessions(context.Context, int, bool) ([]core.Session, error)
 	GetSession(context.Context, string) (core.Session, error)
+	ForkSession(context.Context, string) (core.Session, error)
+	SetSessionTitle(context.Context, string, string) error
+	SetSessionArchived(context.Context, string, bool) error
+	DeleteSession(context.Context, string) error
+	RewindSession(context.Context, string, int) (int, error)
 	ListModelProfiles() []core.ModelOption
 	SetSessionSettings(context.Context, string, core.SessionSettings) error
 	PermissionMode() core.PermissionMode
