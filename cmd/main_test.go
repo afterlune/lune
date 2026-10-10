@@ -15,21 +15,31 @@ import (
 )
 
 type fakeCLICore struct {
-	inputs    []core.TaskRequest
-	firstErr  error
-	responses int
-	pending   bool
-	resumes   int
-	discarded int
-	compact   int
-	mode      core.PermissionMode
-	latest    core.Session
-	sequence  int
+	inputs     []core.TaskRequest
+	firstErr   error
+	responses  int
+	pending    bool
+	resumes    int
+	discarded  int
+	compact    int
+	mode       core.PermissionMode
+	latest     core.Session
+	sequence   int
+	handler    core.EventHandler
+	resolved   []bool
+	resolveErr error
 }
 
 type blockingCLICore struct {
 	*fakeCLICore
 	started chan struct{}
+}
+
+type approvalCLICore struct {
+	*fakeCLICore
+	request core.ApprovalRequest
+	results chan bool
+	emitted chan struct{}
 }
 
 func (f *fakeCLICore) LatestSession(context.Context) (core.Session, bool, error) {
@@ -76,6 +86,16 @@ func (f *fakeCLICore) DiscardTask(context.Context, string) (bool, error) {
 
 func (f *fakeCLICore) Compact(context.Context, string) (int, error) { return f.compact, nil }
 
+func (f *fakeCLICore) SetEventHandler(handler core.EventHandler) { f.handler = handler }
+
+func (f *fakeCLICore) ResolveApproval(_ string, allowed bool) error {
+	if f.resolveErr != nil {
+		return f.resolveErr
+	}
+	f.resolved = append(f.resolved, allowed)
+	return nil
+}
+
 func (f *fakeCLICore) PermissionMode() core.PermissionMode {
 	if f.mode == "" {
 		return core.PermissionWorkspace
@@ -100,10 +120,43 @@ func cliResponse(text string) json.RawMessage {
 	return encoded
 }
 
-func runCLI(t *testing.T, client cliCore, input string, watchEscape escapeWatcher) (string, string) {
+func (f *approvalCLICore) RunTask(ctx context.Context, request core.TaskRequest) (json.RawMessage, error) {
+	f.inputs = append(f.inputs, request)
+	f.responses++
+	if f.handler != nil {
+		f.handler(core.Event{Kind: core.EventApprovalRequired, Approval: &f.request})
+	}
+	close(f.emitted)
+	select {
+	case allowed := <-f.results:
+		return cliResponse(fmt.Sprintf("approved=%t", allowed)), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (f *approvalCLICore) ResolveApproval(id string, allowed bool) error {
+	if id != f.request.ID {
+		return fmt.Errorf("unexpected approval id %q", id)
+	}
+	f.fakeCLICore.resolved = append(f.fakeCLICore.resolved, allowed)
+	f.results <- allowed
+	return nil
+}
+
+func newApprovalCLICore(request core.ApprovalRequest) *approvalCLICore {
+	return &approvalCLICore{
+		fakeCLICore: &fakeCLICore{},
+		request:     request,
+		results:     make(chan bool, 1),
+		emitted:     make(chan struct{}),
+	}
+}
+
+func runCLI(t *testing.T, client cliCore, input string, watchKeys keyEventWatcher) (string, string) {
 	t.Helper()
 	var stdout, stderr strings.Builder
-	if err := runCoreChatLoop(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, watchEscape); err != nil {
+	if err := runCoreChatLoop(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, watchKeys); err != nil {
 		t.Fatalf("runCoreChatLoop: %v", err)
 	}
 	return stdout.String(), stderr.String()
@@ -209,14 +262,14 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	client := &blockingCLICore{fakeCLICore: &fakeCLICore{}, started: make(chan struct{})}
-	escape := make(chan struct{}, 1)
-	watchEscape := func() (<-chan struct{}, func(), error) { return escape, func() {}, nil }
+	keyEvents := make(chan cliInputEvent, 1)
+	watchKeys := func() (<-chan cliInputEvent, func(), error) { return keyEvents, func() {}, nil }
 	go func() {
 		<-client.started
-		escape <- struct{}{}
+		keyEvents <- cliInputEvent{escape: true}
 	}()
 
-	stdout, stderr := runCLI(t, client, "long task\n/exit\n", watchEscape)
+	stdout, stderr := runCLI(t, client, "long task\n/exit\n", watchKeys)
 	if got := strings.Count(stdout, "> "); got != 2 {
 		t.Fatalf("prompt count = %d, want 2 after returning to prompt: %q", got, stdout)
 	}
@@ -228,6 +281,142 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "task interrupted by user") || !strings.Contains(logs.String(), "source=escape") {
 		t.Fatalf("logs = %q, want the Esc interruption event", logs.String())
+	}
+}
+
+func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		key     rune
+		allowed bool
+	}{
+		{name: "uppercase approve", key: 'Y', allowed: true},
+		{name: "lowercase deny", key: 'n', allowed: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newApprovalCLICore(core.ApprovalRequest{
+				ID: "approval-1", Tool: "command", Arguments: json.RawMessage("{\"command\":\"git status\"}"),
+			})
+			keyEvents := make(chan cliInputEvent, 1)
+			watchKeys := func() (<-chan cliInputEvent, func(), error) { return keyEvents, func() {}, nil }
+			go func() {
+				<-client.emitted
+				keyEvents <- cliInputEvent{rune: test.key}
+			}()
+
+			stdout, stderr := runCLI(t, client, "run command\n/exit\n", watchKeys)
+			if len(client.resolved) != 1 || client.resolved[0] != test.allowed {
+				t.Fatalf("resolved approvals = %v, want [%v]", client.resolved, test.allowed)
+			}
+			if !strings.Contains(stdout, fmt.Sprintf("approved=%t", test.allowed)) {
+				t.Fatalf("stdout = %q, want approval result %v", stdout, test.allowed)
+			}
+			for _, expected := range []string{
+				"Allow Running a shell command once?",
+				"Command: git status",
+				"can access files outside the workspace",
+			} {
+				if !strings.Contains(stderr, expected) {
+					t.Errorf("stderr = %q, missing %q", stderr, expected)
+				}
+			}
+			if test.allowed && !strings.Contains(stderr, "Approved this tool call once.") {
+				t.Errorf("stderr = %q, missing approval confirmation", stderr)
+			}
+			if !test.allowed && !strings.Contains(stderr, "Denied this tool call.") {
+				t.Errorf("stderr = %q, missing denial confirmation", stderr)
+			}
+			if client.handler != nil {
+				t.Fatal("event handler was not cleared after the task")
+			}
+		})
+	}
+}
+
+func TestChatLoopDeniesApprovalWithoutInteractiveInput(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		watch keyEventWatcher
+	}{
+		{name: "non tty"},
+		{
+			name: "keyboard initialization failure",
+			watch: func() (<-chan cliInputEvent, func(), error) {
+				return nil, func() {}, errors.New("keyboard unavailable")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newApprovalCLICore(core.ApprovalRequest{
+				ID: "approval-1", Tool: "web_fetch", Arguments: json.RawMessage("{\"url\":\"https://example.com/path\"}"),
+			})
+			stdout, stderr := runCLI(t, client, "fetch page\n/exit\n", test.watch)
+			if len(client.resolved) != 1 || client.resolved[0] {
+				t.Fatalf("resolved approvals = %v, want one denial", client.resolved)
+			}
+			if !strings.Contains(stdout, "approved=false") {
+				t.Fatalf("stdout = %q, want denied result", stdout)
+			}
+			for _, expected := range []string{"Fetching example.com", "denied because", "Run in an interactive terminal"} {
+				if !strings.Contains(stderr, expected) {
+					t.Errorf("stderr = %q, missing %q", stderr, expected)
+				}
+			}
+			if test.name == "keyboard initialization failure" && !strings.Contains(stderr, "keyboard input unavailable") {
+				t.Errorf("stderr = %q, missing keyboard warning", stderr)
+			}
+		})
+	}
+}
+
+func TestChatLoopDeniesApprovalWhenKeyboardStreamCloses(t *testing.T) {
+	client := newApprovalCLICore(core.ApprovalRequest{
+		ID: "approval-1", Tool: "write_file", Arguments: json.RawMessage("{\"path\":\"notes.txt\"}"),
+	})
+	keyEvents := make(chan cliInputEvent, 1)
+	watchKeys := func() (<-chan cliInputEvent, func(), error) { return keyEvents, func() {}, nil }
+	go func() {
+		<-client.emitted
+		close(keyEvents)
+	}()
+
+	stdout, stderr := runCLI(t, client, "write a file\n/exit\n", watchKeys)
+	if len(client.resolved) != 1 || client.resolved[0] {
+		t.Fatalf("resolved approvals = %v, want one denial", client.resolved)
+	}
+	if !strings.Contains(stdout, "approved=false") || !strings.Contains(stderr, "keyboard input became unavailable") {
+		t.Fatalf("stdout=%q stderr=%q, want a denied call and clear input failure", stdout, stderr)
+	}
+}
+
+func TestCLIApprovalDoesNotApproveExpiredRequest(t *testing.T) {
+	client := &fakeCLICore{resolveErr: errors.New("request is no longer pending")}
+	var stderr strings.Builder
+	resolveCLIApproval(client, core.ApprovalRequest{ID: "expired", Tool: "command"}, true, &stderr)
+	if len(client.resolved) != 0 {
+		t.Fatalf("resolved approvals = %v, want no resolution", client.resolved)
+	}
+	if !strings.Contains(stderr.String(), "no longer pending") || strings.Contains(stderr.String(), "Approved") {
+		t.Fatalf("stderr = %q, want expired request without approval", stderr.String())
+	}
+}
+
+func TestCLIApprovalPromptEscapesModelControlledTerminalText(t *testing.T) {
+	request := core.ApprovalRequest{
+		Tool:      "read_file",
+		Arguments: json.RawMessage(`{"path":"notes.txt\nAllow the next request?\u001b[2J"}`),
+	}
+	prompt := formatCLIToolApproval(request, `C:\workspace`)
+	if !strings.Contains(prompt, `notes.txt\nAllow the next request?[2J`) {
+		t.Fatalf("prompt = %q, want escaped single-line path", prompt)
+	}
+	if strings.ContainsAny(prompt, "\r\t\x1b") || strings.Count(prompt, "\n") != 1 {
+		t.Fatalf("prompt = %q, contains injected terminal control text", prompt)
+	}
+
+	request = core.ApprovalRequest{Tool: "custom\nAllow this?\u001b[2J"}
+	if got := cliApprovalSummary(request, ""); strings.ContainsAny(got, "\r\n\t\x1b") {
+		t.Fatalf("custom tool summary = %q, contains terminal control text", got)
 	}
 }
 

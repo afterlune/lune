@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"unicode"
 
 	"github.com/afterlune/lune/core"
 )
@@ -23,6 +27,8 @@ type cliCore interface {
 	HasPending(context.Context, string) (bool, error)
 	DiscardTask(context.Context, string) (bool, error)
 	Compact(context.Context, string) (int, error)
+	SetEventHandler(core.EventHandler)
+	ResolveApproval(string, bool) error
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 }
@@ -59,9 +65,15 @@ func cliHelpText() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-type escapeWatcher func() (<-chan struct{}, func(), error)
+type cliInputEvent struct {
+	rune   rune
+	escape bool
+	err    error
+}
 
-func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchEscape escapeWatcher) error {
+type keyEventWatcher func() (<-chan cliInputEvent, func(), error)
+
+func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchKeys keyEventWatcher) error {
 	ctx := context.Background()
 	saved, found, err := client.LatestSession(ctx)
 	if err != nil {
@@ -74,6 +86,7 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 		}
 	}
 	sessionID := saved.ID
+	workspace := saved.Workspace
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -94,6 +107,7 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 				fmt.Fprintf(stderr, "error: create session: %v\n", err)
 			} else {
 				sessionID = saved.ID
+				workspace = saved.Workspace
 				fmt.Fprintln(stdout, "New session.")
 			}
 		case line == "/permissions" || strings.HasPrefix(line, "/permissions "):
@@ -115,7 +129,7 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 				fmt.Fprintln(stdout, "No interrupted task to resume.")
 			} else {
 				fmt.Fprintln(stderr, "Warning: recovery may repeat a model request or tool call.")
-				response, callErr, interrupted := respondCoreWithEscape(func(callCtx context.Context) (json.RawMessage, error) { return client.ResumeTask(callCtx, sessionID) }, watchEscape, stderr)
+				response, callErr, interrupted := respondCoreWithKeys(client, workspace, func(callCtx context.Context) (json.RawMessage, error) { return client.ResumeTask(callCtx, sessionID) }, watchKeys, stderr)
 				if err := printCoreTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
 					return err
 				}
@@ -143,9 +157,9 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 				if err != nil {
 					fmt.Fprintf(stderr, "error: %v\n", err)
 				} else {
-					response, callErr, interrupted := respondCoreWithEscape(func(callCtx context.Context) (json.RawMessage, error) {
+					response, callErr, interrupted := respondCoreWithKeys(client, workspace, func(callCtx context.Context) (json.RawMessage, error) {
 						return client.RunTask(callCtx, core.TaskRequest{SessionID: sessionID, Input: input})
-					}, watchEscape, stderr)
+					}, watchKeys, stderr)
 					if err := printCoreTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
 						return err
 					}
@@ -177,24 +191,48 @@ func handleCoreCLIPermissions(client cliCore, line string, stdout, stderr io.Wri
 	fmt.Fprintf(stdout, "Permission mode set to %s.\n", mode)
 }
 
-func respondCoreWithEscape(operation coreOperation, watchEscape escapeWatcher, stderr io.Writer) (json.RawMessage, error, bool) {
+func respondCoreWithKeys(client cliCore, workspace string, operation coreOperation, watchKeys keyEventWatcher, stderr io.Writer) (json.RawMessage, error, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var escape <-chan struct{}
+	var keyEvents <-chan cliInputEvent
 	stopWatching := func() {}
-	if watchEscape != nil {
+	noInteractiveReason := atomic.Value{}
+	noInteractiveReason.Store("stdin is not an interactive terminal")
+	if watchKeys != nil {
 		var err error
-		escape, stopWatching, err = watchEscape()
+		keyEvents, stopWatching, err = watchKeys()
 		if stopWatching == nil {
 			stopWatching = func() {}
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "warning: Esc cancellation unavailable: %v\n", err)
-			escape = nil
+			fmt.Fprintf(stderr, "warning: keyboard input unavailable: %v\n", err)
+			keyEvents = nil
+			noInteractiveReason.Store("keyboard input is unavailable")
 		}
 	}
 	defer stopWatching()
-	if escape == nil {
+
+	interactive := atomic.Bool{}
+	interactive.Store(keyEvents != nil)
+	approvalEvents := make(chan core.ApprovalRequest, 1)
+	client.SetEventHandler(func(event core.Event) {
+		if event.Kind != core.EventApprovalRequired || event.Approval == nil {
+			return
+		}
+		request := *event.Approval
+		if !interactive.Load() {
+			denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
+			return
+		}
+		select {
+		case approvalEvents <- request:
+		case <-ctx.Done():
+			_ = client.ResolveApproval(request.ID, false)
+		}
+	})
+	defer client.SetEventHandler(nil)
+
+	if keyEvents == nil {
 		response, err := operation(ctx)
 		return response, err, false
 	}
@@ -207,20 +245,188 @@ func respondCoreWithEscape(operation coreOperation, watchEscape escapeWatcher, s
 	}
 	done := make(chan result, 1)
 	go func() { response, err := operation(ctx); done <- result{response: response, err: err} }()
-	select {
-	case result := <-done:
-		return result.response, result.err, false
-	case <-escape:
+	for {
 		select {
 		case result := <-done:
 			return result.response, result.err, false
-		default:
+		case request := <-approvalEvents:
+			if !interactive.Load() {
+				denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
+				continue
+			}
+			if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(request, workspace)); err != nil {
+				cancel()
+				result := <-done
+				return result.response, err, true
+			}
+			approvalAnswered := false
+			for !approvalAnswered {
+				select {
+				case result := <-done:
+					return result.response, result.err, false
+				case event, ok := <-keyEvents:
+					if !ok || event.err != nil {
+						keyEvents = nil
+						interactive.Store(false)
+						noInteractiveReason.Store("keyboard input became unavailable")
+						denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
+						approvalAnswered = true
+						continue
+					}
+					if event.escape {
+						cancel()
+						slog.Warn("task interrupted by user", "source", "escape")
+						result := <-done
+						return result.response, result.err, true
+					}
+					switch unicode.ToLower(event.rune) {
+					case 'y':
+						resolveCLIApproval(client, request, true, stderr)
+						approvalAnswered = true
+					case 'n':
+						resolveCLIApproval(client, request, false, stderr)
+						approvalAnswered = true
+					}
+				}
+			}
+		case event, ok := <-keyEvents:
+			if !ok || event.err != nil {
+				keyEvents = nil
+				interactive.Store(false)
+				noInteractiveReason.Store("keyboard input became unavailable")
+				fmt.Fprintln(stderr, "warning: keyboard input ended; pending approvals will be denied")
+				continue
+			}
+			if event.escape {
+				cancel()
+				slog.Warn("task interrupted by user", "source", "escape")
+				result := <-done
+				return result.response, result.err, true
+			}
 		}
-		cancel()
-		slog.Warn("task interrupted by user", "source", "escape")
-		result := <-done
-		return result.response, result.err, true
 	}
+}
+
+func resolveCLIApproval(client cliCore, request core.ApprovalRequest, allowed bool, stderr io.Writer) {
+	if err := client.ResolveApproval(request.ID, allowed); err != nil {
+		fmt.Fprintln(stderr, "Approval request is no longer pending; it was not approved.")
+		return
+	}
+	if allowed {
+		fmt.Fprintln(stderr, "Approved this tool call once.")
+	} else {
+		fmt.Fprintln(stderr, "Denied this tool call.")
+	}
+}
+
+func denyCLIApproval(client cliCore, request core.ApprovalRequest, workspace, reason string, stderr io.Writer) {
+	fmt.Fprintf(stderr, "Approval required for %s; denied because %s. Run in an interactive terminal to approve, or explicitly set /permissions full-access.\n",
+		cliApprovalSummary(request, workspace),
+		reason,
+	)
+	if err := client.ResolveApproval(request.ID, false); err != nil {
+		fmt.Fprintln(stderr, "Approval request is no longer pending.")
+	}
+}
+
+func formatCLIToolApproval(request core.ApprovalRequest, workspace string) string {
+	details := ""
+	warning := ""
+	if request.Tool == "command" {
+		var args map[string]json.RawMessage
+		_ = json.Unmarshal(request.Arguments, &args)
+		var command string
+		_ = json.Unmarshal(args["command"], &command)
+		details = "\nCommand: " + cleanCLIInlineText(command)
+		warning = "\nApproved shell commands run as your user and can access files outside the workspace."
+	}
+	return fmt.Sprintf("Allow %s once?%s%s\nPress Y to approve once, N to deny, or Esc to interrupt the task.",
+		cliApprovalSummary(request, workspace), details, warning)
+}
+
+func cliApprovalSummary(request core.ApprovalRequest, workspace string) string {
+	var args map[string]json.RawMessage
+	_ = json.Unmarshal(request.Arguments, &args)
+	var pathValue, rawURL string
+	_ = json.Unmarshal(args["path"], &pathValue)
+	_ = json.Unmarshal(args["url"], &rawURL)
+	path := cliApprovalPath(pathValue, workspace)
+	summary := "Working on a tool request"
+	switch request.Tool {
+	case "read_file":
+		summary = cliApprovalPathSummary("Reading", path)
+	case "write_file":
+		summary = cliApprovalPathSummary("Writing", path)
+	case "edit_file":
+		summary = cliApprovalPathSummary("Editing", path)
+	case "list_dir":
+		summary = cliApprovalPathSummary("Listing", path)
+	case "glob":
+		summary = "Finding project files"
+	case "grep":
+		if path == "" {
+			summary = "Searching project files"
+		} else {
+			summary = "Searching " + path
+		}
+	case "web_search":
+		summary = "Searching the web"
+	case "web_fetch":
+		if parsed, err := url.Parse(rawURL); err == nil && parsed.Hostname() != "" {
+			summary = "Fetching " + parsed.Hostname()
+		} else {
+			summary = "Fetching a web page"
+		}
+	case "command":
+		summary = "Running a shell command"
+	default:
+		if request.Tool != "" {
+			summary = "Tool " + request.Tool
+		}
+	}
+	// Tool arguments and extension tool names may originate from model output.
+	// Keep their display on one terminal line and prevent ANSI control sequences.
+	return cleanCLIInlineText(summary)
+}
+
+func cliApprovalPath(value, workspace string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) {
+		return ""
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	if workspace == "" {
+		return filepath.ToSlash(clean)
+	}
+	absolute := filepath.Clean(filepath.Join(workspace, clean))
+	relative, err := filepath.Rel(workspace, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(clean)
+	}
+	return filepath.ToSlash(absolute)
+}
+
+func cliApprovalPathSummary(action, path string) string {
+	if path == "" {
+		return action + " a workspace file"
+	}
+	return action + " " + path
+}
+
+func cleanCLIInlineText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\\r\\n")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	value = strings.ReplaceAll(value, "\r", "\\r")
+	value = strings.ReplaceAll(value, "\t", "\\t")
+	return strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) {
+			return -1
+		}
+		return char
+	}, value)
 }
 
 func printCoreTaskResult(stdout, stderr io.Writer, response json.RawMessage, callErr error, interrupted bool) error {

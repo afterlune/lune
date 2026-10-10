@@ -44,10 +44,10 @@ func run() (runErr error) {
 		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
 		return tui.Run(client)
 	}
-	return runCoreChatLoop(client, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardEscapeWatcher)
+	return runCoreChatLoop(client, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardInputWatcher)
 }
 
-func startKeyboardEscapeWatcher() (<-chan struct{}, func(), error) {
+func startKeyboardInputWatcher() (<-chan cliInputEvent, func(), error) {
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("inspect stdin: %w", err)
@@ -60,13 +60,24 @@ func startKeyboardEscapeWatcher() (<-chan struct{}, func(), error) {
 		return nil, func() {}, err
 	}
 
-	escape := make(chan struct{}, 1)
+	inputEvents := make(chan cliInputEvent, 16)
+	stopRequested := make(chan struct{})
 	watcherDone := make(chan struct{})
 	go func() {
 		defer close(watcherDone)
+		defer close(inputEvents)
 		for event := range keys {
-			if event.Key == keyboard.KeyEsc {
-				escape <- struct{}{}
+			if event.Err == nil && event.Key != keyboard.KeyEsc && event.Rune == 0 {
+				continue
+			}
+			input := cliInputEvent{
+				rune:   event.Rune,
+				escape: event.Key == keyboard.KeyEsc,
+				err:    event.Err,
+			}
+			select {
+			case inputEvents <- input:
+			case <-stopRequested:
 				return
 			}
 		}
@@ -75,9 +86,10 @@ func startKeyboardEscapeWatcher() (<-chan struct{}, func(), error) {
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
+			close(stopRequested)
 			_ = keyboard.Close()
 			<-watcherDone
 		})
 	}
-	return escape, stop, nil
+	return inputEvents, stop, nil
 }
