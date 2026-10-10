@@ -22,10 +22,11 @@ import (
 )
 
 type tuiEntry struct {
-	role       string
-	text       string
-	err        bool
-	activityID string
+	role        string
+	text        string
+	err         bool
+	activityID  string
+	collapseKey string
 }
 
 type transcriptEntry struct {
@@ -74,55 +75,58 @@ type tuiModel struct {
 	chat      viewport.Model
 	activity  viewport.Model
 
-	entries            []tuiEntry
-	activities         []tuiActivity
-	commandSuggestions []string
-	suggestionIndex    int
-	keymapOpen         bool
-	keymapIndex        int
-	keymapCapture      string
-	keymapDraft        map[string]string
-	undoStack          []string
-	redoStack          []string
-	permissionMenu     bool
-	permissionIndex    int
-	modelPicker        bool
-	modelOptions       []core.ModelOption
-	modelIndex         int
-	effortPicker       bool
-	effortIndex        int
-	sessionSettings    core.SessionSettings
-	pendingApproval    *toolApprovalRequestMsg
-	sessionPicker      bool
-	showArchived       bool
-	deleteConfirm      bool
-	renamingSession    bool
-	sessionList        []core.Session
-	sessionIndex       int
-	queued             []queuedInput
-	detailsOpen        bool
-	planMode           bool
-	planReview         bool
-	taskPlanMode       bool
-	vimMode            bool
-	vimNormal          bool
-	vimPendingDelete   bool
-	queuePicker        bool
-	queueIndex         int
-	taskUsage          tokenUsageTotals
-	sessionUsage       tokenUsageTotals
-	usageRequests      []tokenUsageRecord
-	width              int
-	height             int
-	pending            bool
-	running            bool
-	cancel             context.CancelFunc
-	cancelled          bool
-	abandonOnFinish    bool
-	status             string
-	preferences        uiPreferences
-	preferencesPath    string
-	colorProfile       colorprofile.Profile
+	entries                []tuiEntry
+	activities             []tuiActivity
+	chatClickTargets       map[int]string
+	foldableMessages       []string
+	compactActivityVisible bool
+	commandSuggestions     []string
+	suggestionIndex        int
+	keymapOpen             bool
+	keymapIndex            int
+	keymapCapture          string
+	keymapDraft            map[string]string
+	undoStack              []string
+	redoStack              []string
+	permissionMenu         bool
+	permissionIndex        int
+	modelPicker            bool
+	modelOptions           []core.ModelOption
+	modelIndex             int
+	effortPicker           bool
+	effortIndex            int
+	sessionSettings        core.SessionSettings
+	pendingApproval        *toolApprovalRequestMsg
+	sessionPicker          bool
+	showArchived           bool
+	deleteConfirm          bool
+	renamingSession        bool
+	sessionList            []core.Session
+	sessionIndex           int
+	queued                 []queuedInput
+	detailsOpen            bool
+	planMode               bool
+	planReview             bool
+	taskPlanMode           bool
+	vimMode                bool
+	vimNormal              bool
+	vimPendingDelete       bool
+	queuePicker            bool
+	queueIndex             int
+	taskUsage              tokenUsageTotals
+	sessionUsage           tokenUsageTotals
+	usageRequests          []tokenUsageRecord
+	width                  int
+	height                 int
+	pending                bool
+	running                bool
+	cancel                 context.CancelFunc
+	cancelled              bool
+	abandonOnFinish        bool
+	status                 string
+	preferences            uiPreferences
+	preferencesPath        string
+	colorProfile           colorprofile.Profile
 }
 
 type modelUsageMsg struct{ usage core.Usage }
@@ -334,6 +338,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
+		if m.handleConversationClick(message) {
+			return m, nil
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.keymapOpen {
@@ -358,6 +365,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case message.String() == "esc", m.matchesKey("toggle_activity", message):
 				m.detailsOpen = false
+				m.refreshPanels()
 				m.updateLayout()
 				return m, nil
 			case m.matchesKey("chat_scroll_up", message), m.matchesKey("activity_scroll_up", message), m.matchesKey("details_scroll_up", message):
@@ -369,6 +377,16 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				return m, nil
 			}
+		}
+		if m.matchesKey("input_toggle_message_fold", message) && !m.sessionPicker && !m.modelPicker &&
+			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
+			m.toggleLatestLongMessage()
+			return m, nil
+		}
+		if m.matchesKey("jump_chat_bottom", message) && !m.sessionPicker && !m.modelPicker &&
+			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
+			m.chat.GotoBottom()
+			return m, nil
 		}
 		if !(m.running && message.String() == "esc") && !m.sessionPicker && !m.modelPicker && !m.effortPicker && !m.queuePicker && !m.permissionMenu {
 			if handled, command := m.handleVimKey(message); handled {
@@ -486,6 +504,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.matchesKey("toggle_activity", message) {
 			m.detailsOpen = true
+			m.refreshPanels()
 			m.updateLayout()
 			return m, nil
 		}
@@ -520,11 +539,19 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.matchesKey("activity_scroll_up", message) {
-			m.activity.HalfPageUp()
+			if m.modernConversation() && !m.wideConversation() {
+				m.chat.HalfPageUp()
+			} else {
+				m.activity.HalfPageUp()
+			}
 			return m, nil
 		}
 		if m.matchesKey("activity_scroll_down", message) {
-			m.activity.HalfPageDown()
+			if m.modernConversation() && !m.wideConversation() {
+				m.chat.HalfPageDown()
+			} else {
+				m.activity.HalfPageDown()
+			}
 			return m, nil
 		}
 		if m.permissionMenu {
@@ -1571,6 +1598,7 @@ func (m *tuiModel) deleteSelectedSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
+	m.forgetExpandedMessages(saved.ID)
 	m.deleteConfirm = false
 	if saved.ID == m.sessionID {
 		m.sessionPicker = false
@@ -2134,27 +2162,6 @@ func compactTokens(tokens int64) string {
 	return fmt.Sprint(tokens)
 }
 
-func entryBadge(role string) string {
-	switch role {
-	case "you":
-		return "YOU"
-	case "assistant":
-		return "LUNE"
-	case "tool":
-		return "TOOL"
-	case "queued":
-		return "QUEUED"
-	case "permission":
-		return "PERMISSION"
-	case "error":
-		return "ERROR"
-	case "notice":
-		return "NOTE"
-	default:
-		return strings.ToUpper(role)
-	}
-}
-
 func activityBadge(status string) string {
 	switch status {
 	case "running":
@@ -2168,36 +2175,6 @@ func activityBadge(status string) string {
 	default:
 		return "·"
 	}
-}
-
-func renderTerminalMarkdown(markdown string, colors themeColors) string {
-	var rendered strings.Builder
-	inCode := false
-	for _, line := range strings.Split(markdown, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
-			inCode = !inCode
-			continue
-		}
-		switch {
-		case inCode:
-			rendered.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Code)).Render("  │ " + line))
-		case strings.HasPrefix(trimmed, "### "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render(strings.TrimPrefix(trimmed, "### ")))
-		case strings.HasPrefix(trimmed, "## "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render(strings.TrimPrefix(trimmed, "## ")))
-		case strings.HasPrefix(trimmed, "# "):
-			rendered.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render(strings.TrimPrefix(trimmed, "# ")))
-		case strings.HasPrefix(trimmed, "> "):
-			rendered.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│ " + strings.TrimPrefix(trimmed, "> ")))
-		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
-			rendered.WriteString("• " + trimmed[2:])
-		default:
-			rendered.WriteString(line)
-		}
-		rendered.WriteByte('\n')
-	}
-	return strings.TrimSuffix(rendered.String(), "\n")
 }
 
 func cacheHitRate(inputTokens, cachedTokens int64) string {
@@ -2383,37 +2360,34 @@ func (m *tuiModel) addEntry(role, text string, isError bool) {
 func (m *tuiModel) refreshPanels() {
 	chatAtBottom := m.chat.AtBottom()
 	activityAtBottom := m.activity.AtBottom()
-	colors := colorsFor(m.preferences.Theme)
-	var messages strings.Builder
-	for i, entry := range m.entries {
-		if i > 0 {
-			messages.WriteString("\n\n")
-		}
-		badge := entryBadge(entry.role)
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(m.entryColor(entry.role, colors))).Bold(true)
-		if entry.err {
-			style = style.Foreground(lipgloss.Color(colors.Error))
-		}
-		if entry.role == "tool" {
-			messages.WriteString(style.Render("  ↳ " + entry.text))
-			continue
-		}
-		messages.WriteString(style.Render(badge))
-		messages.WriteByte('\n')
-		if entry.role == "assistant" {
-			messages.WriteString(renderTerminalMarkdown(entry.text, colors))
-		} else {
-			messages.WriteString(entry.text)
-		}
+	m.ensureMessageCollapseKeys()
+	conversation, clickTargets, foldable := m.renderConversation()
+	m.chat.SoftWrap = false // Conversation lines are wrapped before they reach the viewport.
+	m.chat.SetContent(conversation)
+	m.chatClickTargets = clickTargets
+	m.foldableMessages = foldable
+	activityContent := m.activityDetailsContent()
+	if m.modernConversation() && !m.detailsOpen {
+		activityContent = m.activitySidebarContent()
 	}
-	if messages.Len() == 0 {
-		messages.WriteString("Start a task, or use /resume to browse saved sessions.")
+	m.activity.SetContent(activityContent)
+	if m.modernConversation() {
+		m.updateLayout()
 	}
-	m.chat.SetContent(messages.String())
 	if chatAtBottom {
 		m.chat.GotoBottom()
+	} else {
+		m.chat.SetYOffset(m.chat.YOffset())
 	}
+	if activityAtBottom {
+		m.activity.GotoBottom()
+	} else {
+		m.activity.SetYOffset(m.activity.YOffset())
+	}
+}
 
+func (m *tuiModel) activityDetailsContent() string {
+	colors := colorsFor(m.preferences.Theme)
 	var activities strings.Builder
 	if len(m.activities) == 0 {
 		activities.WriteString("No tool activity yet.")
@@ -2454,29 +2428,7 @@ func (m *tuiModel) refreshPanels() {
 	if m.client != nil {
 		activities.WriteString("\nPermissions: " + permissionModeLabel(m.client.PermissionMode()))
 	}
-	m.activity.SetContent(activities.String())
-	if activityAtBottom {
-		m.activity.GotoBottom()
-	}
-}
-
-func (m *tuiModel) entryColor(role string, colors themeColors) string {
-	switch role {
-	case "you":
-		return colors.User
-	case "assistant":
-		return colors.Assistant
-	case "tool":
-		return colors.Tool
-	case "permission":
-		return colors.Warning
-	case "error":
-		return colors.Error
-	case "queued":
-		return colors.Secondary
-	default:
-		return colors.Muted
-	}
+	return activities.String()
 }
 
 func activityColor(status string, colors themeColors) string {
@@ -2530,10 +2482,45 @@ func (m *tuiModel) updateLayout() {
 	}
 	contentWidth := max(1, m.width)
 	m.input.SetWidth(contentWidth)
-	bodyHeight := max(1, m.height-lipgloss.Height(m.renderHeader(contentWidth))-1-m.input.Height()-m.commandSuggestionHeight()-2)
+	footerHeight := 2
+	if m.wideConversation() {
+		footerHeight = 1
+	}
+	bodyHeight := max(1, m.height-lipgloss.Height(m.renderHeader(contentWidth))-1-m.input.Height()-m.commandSuggestionHeight()-footerHeight)
 	if m.keymapOpen {
 		bodyHeight = max(1, bodyHeight-m.keymapEditorHeight())
 	}
+	if m.modernConversation() {
+		m.chat.SoftWrap = false
+		m.compactActivityVisible = false
+		if m.detailsOpen {
+			m.chat.SetWidth(contentWidth)
+			m.chat.SetHeight(bodyHeight)
+			m.activity.SetWidth(max(1, contentWidth-2))
+			m.activity.SetHeight(max(1, bodyHeight-2))
+			return
+		}
+		if m.wideConversation() {
+			sidebarWidth := min(42, max(32, contentWidth/4))
+			gutter := 3
+			m.chat.SetWidth(max(1, contentWidth-sidebarWidth-gutter))
+			m.chat.SetHeight(bodyHeight)
+			m.activity.SetWidth(sidebarWidth)
+			m.activity.SetHeight(bodyHeight)
+			return
+		}
+		compactActivityHeight := 0
+		if bodyHeight >= 2 && m.compactActivitySummary() != "" {
+			compactActivityHeight = 1
+			m.compactActivityVisible = true
+		}
+		m.chat.SetWidth(contentWidth)
+		m.chat.SetHeight(max(1, bodyHeight-compactActivityHeight))
+		m.activity.SetWidth(contentWidth)
+		m.activity.SetHeight(bodyHeight)
+		return
+	}
+	m.compactActivityVisible = false
 	if m.detailsOpen {
 		m.chat.SetWidth(contentWidth)
 		m.chat.SetHeight(bodyHeight)
@@ -2673,6 +2660,24 @@ func (m *tuiModel) View() tea.View {
 
 func (m *tuiModel) renderHeader(width int) string {
 	colors := colorsFor(m.preferences.Theme)
+	if m.modernConversation() {
+		state := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(stateName(m.visualState()))
+		left := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true).Render("Agent workspace") + " · " + state
+		right := filepath.ToSlash(m.workspace)
+		maxRight := max(0, width-lipgloss.Width(left)-4)
+		if maxRight == 0 {
+			right = ""
+		} else if lipgloss.Width(filepath.Base(right)) <= maxRight && lipgloss.Width(right) > maxRight {
+			right = filepath.Base(right)
+		} else {
+			right = fitTerminalText(right, maxRight)
+		}
+		if right == "" {
+			return left
+		}
+		gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
+		return left + strings.Repeat(" ", gap) + lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(right)
+	}
 	headerText := "☾ Lune Agent"
 	if m.preferences.Theme == themeAnime {
 		headerText += " · Anime / " + string(m.preferences.AnimeLayout)
@@ -2695,6 +2700,46 @@ func (m *tuiModel) renderHeader(width int) string {
 
 func (m *tuiModel) renderFooter(width int) string {
 	colors := colorsFor(m.preferences.Theme)
+	if m.modernConversation() {
+		metrics := ""
+		if !m.wideConversation() {
+			if m.taskUsage.requests > 0 {
+				metrics = fmt.Sprintf("in %d · out %d · reason %d · cache %s",
+					m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning,
+					cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
+			} else {
+				metrics = "tokens — · cache —"
+			}
+		}
+		status := m.status
+		switch {
+		case m.detailsOpen:
+			status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
+		case m.pendingApproval != nil:
+			status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
+		case m.running:
+			status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt/send", len(m.queued), m.keyLabel("interrupt_send"))
+		case m.pending:
+			status = "Paused task · /continue to resume"
+		case m.status == "Ready":
+			status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + m.keyLabel("cycle_permissions") + " permissions · /plan · " + m.keyLabel("toggle_activity") + " activity"
+		}
+		if len(m.foldableMessages) > 0 && !m.detailsOpen {
+			status += " · " + m.keyLabel("input_toggle_message_fold") + " fold latest long message"
+		}
+		if !m.chat.AtBottom() && !m.detailsOpen {
+			status += " · " + m.keyLabel("jump_chat_bottom") + " back to latest"
+		}
+		status = fitTerminalText(status, width)
+		if metrics == "" {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status)
+		}
+		metrics = fitTerminalText(metrics, width)
+		return lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(metrics),
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status),
+		)
+	}
 	mode := "BUILD"
 	if m.planMode {
 		mode = "PLAN · read-only tools"
@@ -2966,6 +3011,21 @@ func (m *tuiModel) renderPermissionMenu() string {
 
 func (m *tuiModel) renderBody(width int) string {
 	colors := colorsFor(m.preferences.Theme)
+	if m.modernConversation() {
+		if m.detailsOpen {
+			title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
+			hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close")
+			return lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
+		}
+		if m.wideConversation() {
+			return lipgloss.JoinHorizontal(lipgloss.Top, m.chat.View(), strings.Repeat(" ", 3), m.activity.View())
+		}
+		if m.compactActivityVisible {
+			activity := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.compactActivitySummary())
+			return lipgloss.JoinVertical(lipgloss.Left, m.chat.View(), activity)
+		}
+		return m.chat.View()
+	}
 	if m.detailsOpen {
 		bodyHeight := max(1, m.chat.Height())
 		if bodyHeight < 5 {

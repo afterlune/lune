@@ -29,6 +29,7 @@ var keymapActions = []keymapAction{
 	{id: "chat_scroll_down", label: "Scroll chat down", defaultKey: "pgdown", contexts: allKeymapContexts()},
 	{id: "activity_scroll_up", label: "Scroll activity up", defaultKey: "ctrl+up", contexts: allKeymapContexts()},
 	{id: "activity_scroll_down", label: "Scroll activity down", defaultKey: "ctrl+down", contexts: allKeymapContexts()},
+	{id: "jump_chat_bottom", label: "Return to latest message", defaultKey: "alt+end", contexts: []string{"main", "input", "suggestions", "vim_normal", "plan_review", "running"}},
 	{id: "details_scroll_up", label: "Scroll activity panel up", defaultKey: "up", contexts: []string{"details"}},
 	{id: "details_scroll_down", label: "Scroll activity panel down", defaultKey: "down", contexts: []string{"details"}},
 	{id: "picker_previous", label: "Previous option", defaultKey: "up", contexts: []string{"session_picker", "permission_menu", "model_picker", "effort_picker", "queue_picker"}},
@@ -77,6 +78,7 @@ var keymapActions = []keymapAction{
 	{id: "input_lowercase_word", label: "Lowercase next word", defaultKey: "alt+l", contexts: []string{"input", "session_rename"}},
 	{id: "input_capitalize_word", label: "Capitalize next word", defaultKey: "alt+c", contexts: []string{"input", "session_rename"}},
 	{id: "input_transpose_character", label: "Transpose characters", defaultKey: "ctrl+t", contexts: []string{"input", "session_rename"}},
+	{id: "input_toggle_message_fold", label: "Toggle latest long message", defaultKey: "alt+m", contexts: []string{"input", "suggestions", "vim_normal", "plan_review", "running"}},
 	{id: "input_newline", label: "Insert newline", defaultKey: "ctrl+o", contexts: []string{"input", "session_rename"}},
 	{id: "vim_insert", label: "Vim: insert mode", defaultKey: "i", contexts: []string{"vim_normal"}},
 	{id: "vim_append", label: "Vim: append mode", defaultKey: "a", contexts: []string{"vim_normal"}},
@@ -92,7 +94,7 @@ var keymapActions = []keymapAction{
 func allKeymapContexts() []string {
 	return []string{
 		"main", "input", "suggestions", "vim_normal", "session_picker", "session_rename",
-		"permission_menu", "model_picker", "effort_picker", "queue_picker", "delete_confirm", "plan_review", "approval", "details",
+		"permission_menu", "model_picker", "effort_picker", "queue_picker", "delete_confirm", "plan_review", "approval", "details", "running",
 	}
 }
 

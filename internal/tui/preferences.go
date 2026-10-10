@@ -20,9 +20,10 @@ const (
 )
 
 type uiPreferences struct {
-	Theme       themeName         `json:"theme"`
-	AnimeLayout animeLayout       `json:"anime_layout"`
-	Keymap      map[string]string `json:"keymap"`
+	Theme            themeName         `json:"theme"`
+	AnimeLayout      animeLayout       `json:"anime_layout"`
+	Keymap           map[string]string `json:"keymap"`
+	ExpandedMessages map[string]bool   `json:"expanded_messages,omitempty"`
 }
 
 func defaultUIPreferences() uiPreferences {
@@ -64,6 +65,9 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 	}
 	if stored.AnimeLayout == layoutFocus || stored.AnimeLayout == layoutStudio {
 		prefs.AnimeLayout = stored.AnimeLayout
+	}
+	if stored.ExpandedMessages != nil {
+		prefs.ExpandedMessages = stored.ExpandedMessages
 	}
 	if stored.Keymap != nil {
 		bindings, err := normalizeKeymap(stored.Keymap)

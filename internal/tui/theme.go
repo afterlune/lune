@@ -35,10 +35,10 @@ func colorsFor(theme themeName) themeColors {
 		}
 	default:
 		return themeColors{
-			Background: "#111318", Foreground: "#e7e9ed", Muted: "#8c929d",
-			Accent: "#8ab4f8", Secondary: "#c4a7e7", Success: "#78c99e",
-			Warning: "#e8bd6d", Error: "#ef7d87", User: "#a9b0bb",
-			Assistant: "#e7e9ed", Tool: "#c4a7e7", Code: "#d2d8df",
+			Background: "#171a1e", Foreground: "#f0f1f2", Muted: "#9aa3ad",
+			Accent: "#78aaa2", Secondary: "#c6a56e", Success: "#73ae8a",
+			Warning: "#c6a56e", Error: "#c77a7a", User: "#a7b1ba",
+			Assistant: "#f0f1f2", Tool: "#92a0a9", Code: "#cbd3db",
 		}
 	}
 }
