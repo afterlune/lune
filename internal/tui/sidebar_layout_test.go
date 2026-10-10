@@ -1,15 +1,8 @@
 package tui
 
 import (
-	"bytes"
-	"flag"
 	"fmt"
-	"html"
-	"os"
-	"path/filepath"
 	"reflect"
-	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -17,10 +10,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 )
-
-var updateTUISidebarScreenshots = flag.Bool("update-tui-screenshots", false, "update TUI sidebar SVG screenshots")
-
-var tuiScreenshotANSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func TestTUIWideSidebarDoesNotMoveWithConversationLength(t *testing.T) {
 	for _, theme := range []themeName{themeDark, themeLight} {
@@ -101,18 +90,6 @@ func TestTUIUsageSidebarAlwaysHasFixedRows(t *testing.T) {
 }
 
 func TestTUISidebarSVGsMatchDeterministicFixtures(t *testing.T) {
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not locate screenshot test source")
-	}
-	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	screenshotDirectory := filepath.Join(repositoryRoot, "docs", "design", "tui", "verification")
-	if *updateTUISidebarScreenshots {
-		if err := os.MkdirAll(screenshotDirectory, 0755); err != nil {
-			t.Fatalf("create screenshot directory: %v", err)
-		}
-	}
-
 	scenarios := []string{"empty", "short", "long", "activity-top", "activity-bottom", "narrow"}
 	for _, theme := range []themeName{themeDark, themeLight} {
 		for _, scenario := range scenarios {
@@ -120,20 +97,7 @@ func TestTUISidebarSVGsMatchDeterministicFixtures(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				ui := newSidebarFixture(theme, scenario)
 				got := renderTUIScreenshotSVG(ui.View().Content, ui.width, ui.height, theme)
-				path := filepath.Join(screenshotDirectory, name)
-				if *updateTUISidebarScreenshots {
-					if err := os.WriteFile(path, []byte(got), 0644); err != nil {
-						t.Fatalf("write screenshot %s: %v", path, err)
-					}
-					return
-				}
-				want, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatalf("read screenshot %s: %v; refresh with go test ./internal/tui -run TestTUISidebarSVGsMatchDeterministicFixtures -args -update-tui-screenshots", path, err)
-				}
-				if !bytes.Equal([]byte(got), want) {
-					t.Fatalf("screenshot %s differs; refresh with go test ./internal/tui -run TestTUISidebarSVGsMatchDeterministicFixtures -args -update-tui-screenshots", path)
-				}
+				assertTUIScreenshotSVG(t, name, got)
 			})
 		}
 	}
@@ -271,29 +235,4 @@ func terminalCellSlice(line string, start, width int) string {
 		column += characterWidth
 	}
 	return strings.TrimRight(output.String(), " ")
-}
-
-func renderTUIScreenshotSVG(content string, width, height int, theme themeName) string {
-	background, foreground := "#111417", "#e6edf3"
-	if theme == themeLight {
-		background, foreground = "#ffffff", "#202b39"
-	}
-	plain := tuiScreenshotANSI.ReplaceAllString(content, "")
-	lines := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-	const cellWidth, lineHeight, margin = 9, 18, 12
-	pixelWidth := width*cellWidth + 2*margin
-	pixelHeight := height*lineHeight + 2*margin
-	var svg strings.Builder
-	fmt.Fprintf(&svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\">", pixelWidth, pixelHeight, pixelWidth, pixelHeight)
-	fmt.Fprintf(&svg, "<rect width=\"100%%\" height=\"100%%\" fill=\"%s\"/>", background)
-	fmt.Fprintf(&svg, "<g fill=\"%s\" font-family=\"Cascadia Mono, Consolas, monospace\" font-size=\"14\" style=\"white-space:pre\">", foreground)
-	for row := 0; row < height; row++ {
-		line := ""
-		if row < len(lines) {
-			line = lines[row]
-		}
-		fmt.Fprintf(&svg, "<text xml:space=\"preserve\" x=\"%d\" y=\"%d\">%s</text>", margin, margin+(row+1)*lineHeight-3, html.EscapeString(line))
-	}
-	svg.WriteString("</g></svg>\n")
-	return svg.String()
 }
