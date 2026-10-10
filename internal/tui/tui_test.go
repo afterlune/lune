@@ -118,13 +118,24 @@ func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
 }
 
 func TestTUIResumeAndDiscardCommands(t *testing.T) {
-	client := &fakeResumableResponder{pending: true}
+	client := &fakeResumableResponder{
+		pending:  true,
+		sessions: map[string]core.Session{"session-1": {ID: "session-1", Settings: core.SessionSettings{ModelProfile: "lead"}}},
+		last:     "session-1",
+	}
 	ui := newTUIModel(client, true)
+	ui.sessionID = "session-1"
 	ui.input.SetValue("/resume")
 	updated, command := ui.submit()
 	finished := updated.(*tuiModel)
+	if command != nil || !finished.sessionPicker {
+		t.Fatal("/resume should open the session picker")
+	}
+	finished.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	finished.input.SetValue("/continue")
+	_, command = finished.submit()
 	if command == nil {
-		t.Fatal("/resume did not start the task")
+		t.Fatal("/continue did not start the paused task")
 	}
 	finished.Update(command())
 	if client.resumes != 1 || client.pending {
@@ -169,6 +180,69 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(ui.entries[len(ui.entries)-1].text, "Unknown command") {
 		t.Fatalf("last entry = %#v, want unknown-command error", ui.entries[len(ui.entries)-1])
+	}
+}
+
+func TestTUIModelAndEffortPickerCommandsPersistSessionSettings(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"session-1": {ID: "session-1", Settings: core.SessionSettings{ModelProfile: "lead"}},
+	}, last: "session-1"}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session-1"
+	ui.sessionSettings = core.SessionSettings{ModelProfile: "lead"}
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/model") || !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/effort") {
+		t.Fatalf("suggestions = %#v, want model and effort commands", ui.commandSuggestions)
+	}
+
+	ui.input.SetValue("/model")
+	ui.submit()
+	if !ui.modelPicker || !strings.Contains(ui.View().Content, "review-model") {
+		t.Fatalf("model picker did not show configured profiles: %q", ui.View().Content)
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if ui.modelPicker || ui.sessionSettings.ModelProfile != "review" {
+		t.Fatalf("model selection = %#v, picker open=%v", ui.sessionSettings, ui.modelPicker)
+	}
+	if saved := client.sessions[ui.sessionID]; saved.Settings.ModelProfile != "review" {
+		t.Fatalf("persisted model profile = %#v", saved.Settings)
+	}
+
+	ui.input.SetValue("/effort high")
+	ui.submit()
+	if ui.sessionSettings.ReasoningEffort != "high" {
+		t.Fatalf("direct effort command settings = %#v", ui.sessionSettings)
+	}
+	ui.input.SetValue("/effort")
+	ui.submit()
+	if !ui.effortPicker {
+		t.Fatal("bare /effort should open the effort picker")
+	}
+	for ui.effortIndex > 0 {
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if ui.effortPicker || ui.sessionSettings.ReasoningEffort != "" {
+		t.Fatalf("default effort selection = %#v, picker open=%v", ui.sessionSettings, ui.effortPicker)
+	}
+	if !strings.Contains(ui.renderFooter(120), "effort default") || !strings.Contains(ui.renderFooter(120), "review") {
+		t.Fatalf("footer does not show current settings: %q", ui.renderFooter(120))
+	}
+}
+
+func TestPausedSessionBranchCopiesModelSettings(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"paused": {ID: "paused", History: json.RawMessage("null"), Settings: core.SessionSettings{ModelProfile: "review", ReasoningEffort: "high"}},
+	}, last: "paused"}
+	ui := newTUIModel(client, true)
+	ui.sessionID = "paused"
+	if err := ui.branchPausedSession(); err != nil {
+		t.Fatalf("branchPausedSession: %v", err)
+	}
+	if got := client.sessions[ui.sessionID].Settings; got.ModelProfile != "review" || got.ReasoningEffort != "high" {
+		t.Fatalf("branch settings = %#v", got)
 	}
 }
 

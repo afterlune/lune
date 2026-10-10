@@ -80,6 +80,12 @@ type tuiModel struct {
 	suggestionIndex    int
 	permissionMenu     bool
 	permissionIndex    int
+	modelPicker        bool
+	modelOptions       []core.ModelOption
+	modelIndex         int
+	effortPicker       bool
+	effortIndex        int
+	sessionSettings    core.SessionSettings
 	pendingApproval    *toolApprovalRequestMsg
 	sessionPicker      bool
 	sessionList        []core.Session
@@ -128,7 +134,9 @@ type tokenUsageTotals struct {
 	cached    int64
 }
 
-var tuiCommands = []string{"/compact", "/continue", "/discard", "/exit", "/new", "/permissions", "/plan", "/queue", "/resume", "/theme", "/vim"}
+var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/theme", "/vim"}
+
+var reasoningEffortOptions = []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 type tuiPermissionOption struct {
 	mode        core.PermissionMode
@@ -362,6 +370,12 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.permissionMenu {
 				return m.selectPermissionMode()
 			}
+			if m.modelPicker {
+				return m.selectModelProfile()
+			}
+			if m.effortPicker {
+				return m.selectReasoningEffort()
+			}
 			if m.pendingApproval != nil {
 				return m, nil
 			}
@@ -400,6 +414,18 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
+			if m.modelPicker {
+				m.modelPicker = false
+				m.status = "Model selection cancelled."
+				m.updateLayout()
+				return m, nil
+			}
+			if m.effortPicker {
+				m.effortPicker = false
+				m.status = "Effort selection cancelled."
+				m.updateLayout()
+				return m, nil
+			}
 			m.interrupt()
 			return m, nil
 		case "ctrl+c":
@@ -413,7 +439,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		case "shift+tab":
-			if !m.running && !m.permissionMenu && !m.sessionPicker && !m.queuePicker && !m.detailsOpen {
+			if !m.running && !m.permissionMenu && !m.sessionPicker && !m.queuePicker && !m.modelPicker && !m.effortPicker && !m.detailsOpen {
 				return m.cyclePermissionMode()
 			}
 			return m, nil
@@ -488,6 +514,34 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if m.modelPicker {
+			switch message.String() {
+			case "up":
+				if m.modelIndex > 0 {
+					m.modelIndex--
+				}
+			case "down":
+				if m.modelIndex+1 < len(m.modelOptions) {
+					m.modelIndex++
+				}
+			}
+			m.updateLayout()
+			return m, nil
+		}
+		if m.effortPicker {
+			switch message.String() {
+			case "up":
+				if m.effortIndex > 0 {
+					m.effortIndex--
+				}
+			case "down":
+				if m.effortIndex+1 < len(reasoningEffortOptions) {
+					m.effortIndex++
+				}
+			}
+			m.updateLayout()
+			return m, nil
+		}
 		if m.pendingApproval != nil && m.running {
 			switch strings.ToLower(message.String()) {
 			case "y":
@@ -556,6 +610,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.compact()
 	case "/permissions":
 		return m.openPermissionMenu()
+	case "/model":
+		return m.openModelPicker()
+	case "/effort":
+		return m.openEffortPicker()
 	case "/plan":
 		return m.togglePlanMode()
 	case "/vim":
@@ -572,6 +630,12 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/permissions ") || strings.HasPrefix(line, "/permissions\t") {
 		return m.setPermissionModeFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/model ") || strings.HasPrefix(line, "/model\t") {
+		return m.setModelFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/effort ") || strings.HasPrefix(line, "/effort\t") {
+		return m.setEffortFromCommand(line)
 	}
 	if strings.HasPrefix(line, "/theme ") || strings.HasPrefix(line, "/theme\t") {
 		return m.setThemeFromCommand(line)
@@ -606,6 +670,164 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: m.planMode})
 		return taskResult{response: response, err: err}
 	}, true)
+}
+
+func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
+	if m.client == nil {
+		m.status = "Model selection is unavailable."
+		return m, nil
+	}
+	options := m.client.ListModelProfiles()
+	if len(options) == 0 {
+		m.status = "No model profiles are configured."
+		return m, nil
+	}
+	m.modelOptions = options
+	m.modelIndex = 0
+	for index, option := range options {
+		if option.Profile == m.sessionSettings.ModelProfile {
+			m.modelIndex = index
+			break
+		}
+	}
+	m.modelPicker = true
+	m.resetInput()
+	m.status = "Choose a model profile; ↑/↓ select, Enter apply, Esc cancel."
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) openEffortPicker() (tea.Model, tea.Cmd) {
+	m.effortIndex = 0
+	for index, value := range reasoningEffortOptions {
+		if value == m.sessionSettings.ReasoningEffort {
+			m.effortIndex = index
+			break
+		}
+	}
+	m.effortPicker = true
+	m.resetInput()
+	m.status = "Choose reasoning effort; ↑/↓ select, Enter apply, Esc cancel."
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) selectModelProfile() (tea.Model, tea.Cmd) {
+	if m.modelIndex < 0 || m.modelIndex >= len(m.modelOptions) {
+		m.modelPicker = false
+		return m, nil
+	}
+	settings := m.sessionSettings
+	settings.ModelProfile = m.modelOptions[m.modelIndex].Profile
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Model profile could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	m.modelPicker = false
+	m.status = "Model profile set to " + settings.ModelProfile + "; it applies to future tasks."
+	if m.pending {
+		m.status += " /continue keeps the paused task's original model."
+	}
+	m.resetInput()
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) selectReasoningEffort() (tea.Model, tea.Cmd) {
+	if m.effortIndex < 0 || m.effortIndex >= len(reasoningEffortOptions) {
+		m.effortPicker = false
+		return m, nil
+	}
+	settings := m.sessionSettings
+	settings.ReasoningEffort = reasoningEffortOptions[m.effortIndex]
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Reasoning effort could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	m.effortPicker = false
+	m.status = "Reasoning effort set to " + reasoningEffortLabel(settings.ReasoningEffort) + "; it applies to future tasks."
+	if m.pending {
+		m.status += " /continue keeps the paused task's original effort."
+	}
+	m.resetInput()
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) setModelFromCommand(line string) (tea.Model, tea.Cmd) {
+	profile := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "/model"), "\t"))
+	profile = strings.TrimSpace(strings.TrimPrefix(profile, " "))
+	for _, option := range m.client.ListModelProfiles() {
+		if option.Profile != profile {
+			continue
+		}
+		settings := m.sessionSettings
+		settings.ModelProfile = profile
+		if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+			m.status = "Model profile could not be saved."
+			m.addEntry("error", err.Error(), true)
+			return m, nil
+		}
+		m.sessionSettings = settings
+		m.status = "Model profile set to " + profile + "; it applies to future tasks."
+		if m.pending {
+			m.status += " /continue keeps the paused task's original model."
+		}
+		m.resetInput()
+		return m, nil
+	}
+	m.status = "Unknown model profile. Use /model to list profiles."
+	m.addEntry("error", m.status, true)
+	return m, nil
+}
+
+func (m *tuiModel) setEffortFromCommand(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		m.status = "Use /effort <default|none|minimal|low|medium|high|xhigh|max>."
+		return m, nil
+	}
+	effort := strings.ToLower(fields[1])
+	if effort == "default" {
+		effort = ""
+	}
+	valid := false
+	for _, option := range reasoningEffortOptions {
+		if option == effort {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		m.status = "Unknown reasoning effort. Use /effort to list values."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	settings := m.sessionSettings
+	settings.ReasoningEffort = effort
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Reasoning effort could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	m.status = "Reasoning effort set to " + reasoningEffortLabel(effort) + "; it applies to future tasks."
+	if m.pending {
+		m.status += " /continue keeps the paused task's original effort."
+	}
+	m.resetInput()
+	return m, nil
+}
+
+func reasoningEffortLabel(value string) string {
+	if value == "" {
+		return "Default"
+	}
+	return value
 }
 
 func (m *tuiModel) setThemeFromCommand(line string) (tea.Model, tea.Cmd) {
@@ -1170,6 +1392,7 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.sessionID = saved.ID
+	m.sessionSettings = saved.Settings
 	m.clearQueue()
 	m.entries = nil
 	m.activities = nil
@@ -1195,7 +1418,11 @@ func (m *tuiModel) branchPausedSession() error {
 	if err != nil {
 		return err
 	}
+	if err := m.client.SetSessionSettings(context.Background(), branch.ID, saved.Settings); err != nil {
+		return err
+	}
 	m.sessionID = branch.ID
+	m.sessionSettings = saved.Settings
 	m.pending = false
 	m.status = "Started a new branch from the last completed turn."
 	m.addEntry("notice", "Started a new branch from completed history; the paused task remains in its original session.", false)
@@ -1203,6 +1430,7 @@ func (m *tuiModel) branchPausedSession() error {
 }
 
 func (m *tuiModel) restoreSessionState(saved core.Session) {
+	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
 	m.activities = nil
 	m.usageRequests = make([]tokenUsageRecord, 0, len(saved.UsageRequests))
@@ -2074,6 +2302,12 @@ func (m *tuiModel) commandSuggestionHeight() int {
 	if m.sessionPicker {
 		return min(len(m.sessionList), 8) + 1
 	}
+	if m.modelPicker {
+		return min(len(m.modelOptions), 8) + 2
+	}
+	if m.effortPicker {
+		return len(reasoningEffortOptions) + 2
+	}
 	if m.permissionMenu {
 		return len(tuiPermissionOptions) + 2
 	}
@@ -2094,6 +2328,10 @@ func (m *tuiModel) View() tea.View {
 	parts := []string{header, body, divider, m.input.View()}
 	if m.sessionPicker {
 		parts = append(parts, m.renderSessionPicker())
+	} else if m.modelPicker {
+		parts = append(parts, m.renderModelPicker())
+	} else if m.effortPicker {
+		parts = append(parts, m.renderEffortPicker())
 	} else if m.queuePicker {
 		parts = append(parts, m.renderQueuePicker())
 	} else if m.planReview {
@@ -2110,7 +2348,7 @@ func (m *tuiModel) View() tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if cursor := m.input.Cursor(); cursor != nil && !m.sessionPicker && !m.queuePicker && !m.permissionMenu {
+	if cursor := m.input.Cursor(); cursor != nil && !m.sessionPicker && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
 		view.Cursor = cursor
 	}
@@ -2149,6 +2387,14 @@ func (m *tuiModel) renderFooter(width int) string {
 	metrics += " · " + string(m.preferences.Theme) + animeLayoutLabel(m.preferences)
 	if m.client != nil {
 		metrics += " · " + permissionModeLabel(m.client.PermissionMode())
+	}
+	if m.sessionSettings.ModelProfile != "" {
+		metrics += " · " + m.sessionSettings.ModelProfile
+	}
+	if m.sessionSettings.ReasoningEffort == "" {
+		metrics += " · effort default"
+	} else {
+		metrics += " · effort " + m.sessionSettings.ReasoningEffort
 	}
 	if m.taskUsage.requests > 0 {
 		metrics += fmt.Sprintf(" · in %d · out %d · reason %d · cache %s",
@@ -2265,6 +2511,42 @@ func (m *tuiModel) renderSessionPicker() string {
 		}
 		lines = append(lines, line)
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderModelPicker() string {
+	colors := colorsFor(m.preferences.Theme)
+	lines := []string{"Model profile · current: " + m.sessionSettings.ModelProfile}
+	start := max(0, m.modelIndex-4)
+	end := min(len(m.modelOptions), start+8)
+	if end == len(m.modelOptions) {
+		start = max(0, end-8)
+	}
+	for index, option := range m.modelOptions[start:end] {
+		index += start
+		line := fmt.Sprintf("  %-20s %s / %s", option.Profile, option.Provider, option.Model)
+		if index == m.modelIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderEffortPicker() string {
+	colors := colorsFor(m.preferences.Theme)
+	lines := []string{"Reasoning effort · current: " + reasoningEffortLabel(m.sessionSettings.ReasoningEffort)}
+	for index, value := range reasoningEffortOptions {
+		line := "  " + reasoningEffortLabel(value)
+		if index == m.effortIndex {
+			line = "› " + reasoningEffortLabel(value)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  ↑/↓ select · Enter apply · Esc cancel")
 	return strings.Join(lines, "\n")
 }
 

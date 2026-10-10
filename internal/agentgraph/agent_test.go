@@ -315,7 +315,9 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{PlanMode: true, MaxToolRounds: 7}, graph.Options[State]{Store: store})
+	result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
+		PlanMode: true, MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
+	}, graph.Options[State]{Store: store})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -325,11 +327,14 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	if len(team.assignments) != 2 || team.assignments[0].Model != "research" || team.assignments[1].Model != "lead" {
 		t.Fatalf("team assignments = %#v", team.assignments)
 	}
-	if len(team.options) != 1 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 {
+	if len(team.options) != 1 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("worker options = %#v", team.options)
 	}
 	if len(requester.requests) != 2 {
 		t.Fatalf("model requests = %d, want dispatch plus synthesis", len(requester.requests))
+	}
+	if requester.requests[0].Reasoning == nil || requester.requests[0].Reasoning.Effort != model.ReasoningEffortHigh {
+		t.Fatalf("main request reasoning = %#v, want high effort", requester.requests[0].Reasoning)
 	}
 	var teamTool bool
 	for _, definition := range requester.requests[0].Tools {

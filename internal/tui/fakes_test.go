@@ -79,7 +79,10 @@ func (f *fakeResponder) Compact(context.Context, string) (int, error) {
 func (f *fakeResponder) CreateSession(_ context.Context, history json.RawMessage) (core.Session, error) {
 	f.sequence++
 	id := fmt.Sprintf("session-%d", f.sequence)
-	saved := core.Session{ID: id, Workspace: f.Workspace(), History: append(json.RawMessage(nil), history...)}
+	saved := core.Session{
+		ID: id, Workspace: f.Workspace(), History: append(json.RawMessage(nil), history...),
+		Settings: core.SessionSettings{ModelProfile: "lead"},
+	}
 	if f.sessions == nil {
 		f.sessions = make(map[string]core.Session)
 	}
@@ -107,6 +110,23 @@ func (f *fakeResponder) GetSession(_ context.Context, id string) (core.Session, 
 		return core.Session{}, fmt.Errorf("unknown session %q", id)
 	}
 	return saved, nil
+}
+
+func (f *fakeResponder) ListModelProfiles() []core.ModelOption {
+	return []core.ModelOption{
+		{Profile: "lead", Provider: "test", Model: "lead-model"},
+		{Profile: "review", Provider: "test", Model: "review-model"},
+	}
+}
+
+func (f *fakeResponder) SetSessionSettings(_ context.Context, id string, settings core.SessionSettings) error {
+	saved, ok := f.sessions[id]
+	if !ok {
+		return fmt.Errorf("unknown session %q", id)
+	}
+	saved.Settings = settings
+	f.sessions[id] = saved
+	return nil
 }
 
 func (f *fakeResponder) PermissionMode() core.PermissionMode {

@@ -70,6 +70,7 @@ type State struct {
 	Provider         string                     `json:"provider,omitempty"`
 	ModelProfile     string                     `json:"model_profile,omitempty"`
 	Model            string                     `json:"model,omitempty"`
+	ReasoningEffort  string                     `json:"reasoning_effort,omitempty"`
 	History          model.ResponseInput        `json:"history"`
 	PlanMode         bool                       `json:"plan_mode,omitempty"`
 	SelectedCategory string                     `json:"selected_category,omitempty"`
@@ -84,8 +85,9 @@ type State struct {
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
 type TaskOptions struct {
-	MaxToolRounds int
-	PlanMode      bool
+	MaxToolRounds   int
+	PlanMode        bool
+	ReasoningEffort string
 }
 
 // Agent runs one model request or one tool call per graph step.
@@ -173,6 +175,7 @@ func (a *Agent) Start(ctx context.Context, runID string, history, input *model.R
 	state.Provider = a.options.Provider
 	state.ModelProfile = a.options.Profile
 	state.Model = a.options.Model
+	state.ReasoningEffort = taskOptions.ReasoningEffort
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.PlanMode = taskOptions.PlanMode
 	return a.runner.Start(ctx, runID, state, options)
@@ -246,6 +249,9 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		Model: state.Model,
 		Input: model.NewResponseInputItems(state.History.Items...),
 		Tools: visibleTools,
+	}
+	if state.ReasoningEffort != "" {
+		request.Reasoning = &model.ReasoningConfig{Effort: state.ReasoningEffort}
 	}
 	if request.Model == "" {
 		request.Model = a.options.Model
@@ -335,7 +341,7 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
 		} else {
 			results, err := a.options.Team.Run(ctx, state.RunID+":"+call.CallID, assignments, TaskOptions{
-				MaxToolRounds: state.MaxToolRounds, PlanMode: state.PlanMode,
+				MaxToolRounds: state.MaxToolRounds, PlanMode: state.PlanMode, ReasoningEffort: state.ReasoningEffort,
 			})
 			if err != nil {
 				return graph.Transition[State]{}, err

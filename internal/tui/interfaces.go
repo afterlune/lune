@@ -21,6 +21,8 @@ type Client interface {
 	LatestSession(context.Context) (core.Session, bool, error)
 	ListSessions(context.Context, int) ([]core.Session, error)
 	GetSession(context.Context, string) (core.Session, error)
+	ListModelProfiles() []core.ModelOption
+	SetSessionSettings(context.Context, string, core.SessionSettings) error
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 	ResolveApproval(string, bool) error

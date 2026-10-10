@@ -34,9 +34,11 @@
 - [ ] [M] 为 model profile 声明输入/输出模态范围；团队分配子任务时根据任务所需模态动态选择兼容 profile。当前先使用已配置 profile，不提前加入能力范围字段。
 - [ ] [I] 继续拆分 internal/tui/tui.go 内的 model/update/view、pickers、usage、render 与 vim 逻辑，保持 Core 不依赖 TUI 表现。
 - [ ] [I] 评估 internal/model 的 responses/client/network 边界，以及 internal/tool 的 read/write/exec/web/explore/ask 子包；保持 ToolExecutor 定义在 model 侧以避免循环依赖，迁移相关测试。
-- [ ] [A][E] 扩展 TaskOptions / State，持久化 Model、ReasoningEffort、Goal、ContextWindow、AutoCompact 等任务设置，使 Recover 可恢复原设置。
+- [x] [A] Core Session 保存 model profile 与 reasoning effort；任务启动时固定设置并写入 checkpoint，恢复任务继续使用 checkpoint 中的设置。
+- [ ] [A][E] 将 Goal、ContextWindow、AutoCompact 等设置加入 TaskOptions / State 并持久化，使 Recover 可恢复原设置。
 - [ ] [A] 加入用户称呼与 persona 设置；用统一的 Instructions 合成器组合 Goal、称呼、persona 和 plan mode，保证 persona 不削弱系统权限约束。
-- [ ] [A][E] 在 requestModel() 应用模型默认值、effort 到 Reasoning 的映射及 Instructions 合成；为 graphResponder 增加并发安全的设置接口，保存并恢复到 savedTUISession。
+- [x] [A] Core 根据会话 profile 构造主 Agent；requestModel() 将 reasoning effort 映射到 Reasoning；暂停恢复从 checkpoint 读取原 profile 和 effort。
+- [ ] [A] 在 requestModel() 合成 Goal、称呼、persona 与 plan mode 的 Instructions；其设置需经 checkpoint/session 恢复。
 - [ ] [A] 为非 TUI 的 model.Client 增加 SetModel。
 - [ ] [H] 为流式扩展准备请求接口，保持现有 CreateResponse 调用兼容。
 - [ ] [Q] 把权限批准的 TUI 消息与 channel 等待抽成通用 SetUserPromptHandler，供 ask_user 复用。
@@ -63,7 +65,8 @@
 - [ ] **P1 · 输入与命令发现：** 保留现有 textarea、多行输入及命令预测交互；补 `/help`、命令说明/用法提示和按当前界面变化的快捷键提示。键位按简单的界面上下文处理，暂不新增可配置 keymap 系统。
 - [ ] **P1 · 对话阅读：** 增加长用户消息折叠、滚离底部时的新消息提示和明确的回到底部操作；继续保留当前滚动位置与底部自动跟随行为，并覆盖窄终端及折叠状态。
 - [ ] **依赖边界：** 会话删除、重命名、归档及历史操作跟随 M2；流式文本和工具参数展示跟随 M4。当前脱敏工具摘要、权限确认、任务中断/恢复作为已有基线保留，不在本轮重复造一套交互。
-- [ ] 完善 /goal（查看/设置/清除）、/effort（选择）、/model（菜单或名称）、/user 或 /callme（查看/设置/清除称呼）、/persona（多行查看/设置/清除）、/context（查看/设置窗口、预留、reset）、/autocompact（查看/on/off/threshold）；更新 tuiCommands、命令预测和 footer，并记录 model/effort。
+- [x] 增加 /model 与 /effort 选择器及直接参数设置；支持命令预测、会话保存、footer 展示和恢复。
+- [ ] 完善 /goal（查看/设置/清除）、/user 或 /callme（查看/设置/清除称呼）、/persona（多行查看/设置/清除）、/context（查看/设置窗口、预留、reset）、/autocompact（查看/on/off/threshold）；更新 footer。
 - [ ] [C] 在会话面板用 d 删除（Y/N 确认）、r 重命名、a 归档、Tab 显示已归档；优先显示 title，删除当前会话后切到新会话。
 - [ ] [Q] 在 internal/tool 注册 ask_user 工具与 ask 类别，通过区别于权限 Y/N 的文本提问界面等待回答；把回答持久化为 function_call_output 并继续任务。该工具不触发批准，且不得绕过 workspace 权限规则。
 - [ ] [Q] plan mode 允许提问；Esc/Ctrl+C 可中断并走 checkpoint/continue。按决策门确定 headless 行为、选项/默认值、超时、预算计数及 subagent 内提问的失败/上抛方式。

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -147,11 +148,27 @@ type UsageTotals struct {
 	CacheCreation int64 `json:"cache_creation,omitempty"`
 }
 
+// SessionSettings are the defaults applied to new tasks in a session. A task
+// already in progress keeps the settings recorded in its checkpoint.
+type SessionSettings struct {
+	ModelProfile    string `json:"model_profile"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+// ModelOption is a model profile exposed to clients without leaking the
+// internal model package through Core's public API.
+type ModelOption struct {
+	Profile  string `json:"profile"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 // Session contains durable conversation state, not TUI transcript caches.
 type Session struct {
 	ID            string          `json:"id"`
 	Workspace     string          `json:"workspace"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	Settings      SessionSettings `json:"settings"`
 	History       json.RawMessage `json:"history,omitempty"`
 	UsageRequests []UsageRecord   `json:"usage_requests,omitempty"`
 	TaskUsage     UsageTotals     `json:"task_usage,omitempty"`
@@ -193,10 +210,14 @@ type TaskRequest struct {
 }
 
 type TaskState struct {
-	Status    TaskStatus
-	SessionID string
-	TaskID    string
-	PlanMode  bool
+	Status          TaskStatus
+	SessionID       string
+	TaskID          string
+	PlanMode        bool
+	ModelProfile    string
+	Provider        string
+	Model           string
+	ReasoningEffort string
 }
 
 type Config struct {
@@ -210,7 +231,6 @@ type Core struct {
 	models      *model.ProviderCatalog
 	teamRuns    *teamStore
 	team        *teamExecutor
-	requester   *usageTrackingRequester
 	runtime     *graphResponder
 	checkpoints *sqlite.Store[agentgraph.State]
 	sessions    *session.Store
@@ -289,10 +309,6 @@ func New(config Config) (_ *Core, err error) {
 			_ = teamRuns.Close()
 		}
 	}()
-	client, err := models.NewClient(models.DefaultModel(), registry)
-	if err != nil {
-		return nil, err
-	}
 	c := &Core{
 		workspace:   workspace,
 		registry:    registry,
@@ -305,24 +321,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	team := &teamExecutor{core: c, models: models, tools: registry, checkpoints: checkpoints, store: teamRuns}
 	c.team = team
-	profile, _ := models.Profile(models.DefaultModel())
-	requester := &usageTrackingRequester{
-		inner: client, agentID: "lead", profile: models.DefaultModel(),
-		providerName: profile.Provider, modelName: profile.Model,
-		observer: c.onAgentUsage,
-	}
-	agent, err := agentgraph.NewWithOptions(requester, registry, agentgraph.AgentOptions{
-		ID: "lead", Name: "Lead", Profile: models.DefaultModel(), Provider: profile.Provider, Model: profile.Model,
-		Team: team,
-		StreamObserver: func(event model.ModelStreamEvent) {
-			c.onModelStream("lead", "Lead", models.DefaultModel(), profile.Provider, profile.Model, event)
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	c.requester = requester
-	c.runtime = &graphResponder{agent: agent, store: checkpoints, requester: requester}
+	c.runtime = &graphResponder{store: checkpoints}
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
 	if err := c.migrateSessionRecords(context.Background()); err != nil {
@@ -333,6 +332,42 @@ func New(config Config) (_ *Core, err error) {
 	}
 	closeCheckpoints, closeSessions, closeTeamRuns = false, false, false
 	return c, nil
+}
+
+func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRequester, model.ModelProfile, error) {
+	profile, ok := c.models.Profile(profileID)
+	if !ok {
+		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown model profile %q", profileID)
+	}
+	client, err := c.models.NewClient(profileID, c.registry)
+	if err != nil {
+		return nil, nil, model.ModelProfile{}, err
+	}
+	requester := &usageTrackingRequester{
+		inner: client, agentID: "lead", profile: profileID,
+		providerName: profile.Provider, modelName: profile.Model,
+		observer: c.onAgentUsage,
+	}
+	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
+		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
+		Team: c.team,
+		StreamObserver: func(event model.ModelStreamEvent) {
+			c.onModelStream("lead", "Lead", profileID, profile.Provider, profile.Model, event)
+		},
+	})
+	if err != nil {
+		return nil, nil, model.ModelProfile{}, err
+	}
+	return agent, requester, profile, nil
+}
+
+func (c *Core) configureRuntime(profileID, reasoningEffort string) (model.ModelProfile, error) {
+	agent, requester, profile, err := c.buildAgent(profileID)
+	if err != nil {
+		return model.ModelProfile{}, err
+	}
+	c.runtime.SetRunModel(agent, requester, profile.Model, reasoningEffort)
+	return profile, nil
 }
 
 func (c *Core) Close() error {
@@ -385,6 +420,64 @@ func (c *Core) Workspace() string {
 	return c.workspace
 }
 
+// ListModelProfiles returns configured profiles in stable name order.
+func (c *Core) ListModelProfiles() []ModelOption {
+	if c == nil || c.models == nil {
+		return nil
+	}
+	profiles := c.models.Profiles()
+	options := make([]ModelOption, 0, len(profiles))
+	for id, profile := range profiles {
+		options = append(options, ModelOption{Profile: id, Provider: profile.Provider, Model: profile.Model})
+	}
+	sort.Slice(options, func(i, j int) bool { return options[i].Profile < options[j].Profile })
+	return options
+}
+
+// SetSessionSettings replaces the defaults used by future tasks in a session.
+// A paused task continues with the profile and effort saved in its checkpoint.
+func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, settings SessionSettings) error {
+	if c == nil || ctx == nil || sessionID == "" {
+		return errors.New("core, context, and session id are required")
+	}
+	settings, err := c.normalizeSessionSettings(settings)
+	if err != nil {
+		return err
+	}
+	// Usage writes and settings writes both replace the JSON session snapshot.
+	// Serialize them so neither update can overwrite the other's fields.
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	saved, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	saved.Settings = settings
+	saved.UpdatedAt = time.Now()
+	return c.saveSession(ctx, saved)
+}
+
+func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettings, error) {
+	if settings.ModelProfile == "" {
+		settings.ModelProfile = c.models.DefaultModel()
+	}
+	if _, ok := c.models.Profile(settings.ModelProfile); !ok {
+		return SessionSettings{}, fmt.Errorf("unknown model profile %q", settings.ModelProfile)
+	}
+	effort := strings.TrimSpace(settings.ReasoningEffort)
+	if effort == "default" {
+		effort = ""
+	}
+	switch effort {
+	case "", model.ReasoningEffortNone, model.ReasoningEffortMinimal, model.ReasoningEffortLow,
+		model.ReasoningEffortMedium, model.ReasoningEffortHigh, model.ReasoningEffortXHigh, model.ReasoningEffortMax:
+	default:
+		return SessionSettings{}, fmt.Errorf("unsupported reasoning effort %q", settings.ReasoningEffort)
+	}
+	settings.ReasoningEffort = effort
+	return settings, nil
+}
+
 func (c *Core) PermissionMode() PermissionMode {
 	if c == nil {
 		return ""
@@ -428,11 +521,7 @@ func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessag
 }
 
 func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessage, error) {
-	planMode, err := c.PendingPlanMode(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return c.run(ctx, sessionID, planMode, 0, true, nil)
+	return c.run(ctx, sessionID, false, 0, true, nil)
 }
 
 func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, resume bool, input *model.ResponseInput) (json.RawMessage, error) {
@@ -449,6 +538,39 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if err != nil {
 		return nil, err
 	}
+	settings := saved.Settings
+	if settings.ModelProfile == "" {
+		settings.ModelProfile = c.models.DefaultModel()
+	}
+	var pendingState agentgraph.State
+	if resume {
+		var ok bool
+		pendingState, ok, err = c.runtime.PendingStateFor(ctx, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("inspect paused task settings: %w", err)
+		}
+		if !ok {
+			return nil, errors.New("no paused task exists in this session")
+		}
+		if pendingState.ModelProfile != "" {
+			settings.ModelProfile = pendingState.ModelProfile
+		}
+		settings.ReasoningEffort = pendingState.ReasoningEffort
+		planMode = pendingState.PlanMode
+	}
+	profile, ok := c.models.Profile(settings.ModelProfile)
+	if !ok {
+		return nil, fmt.Errorf("session model profile %q is not configured", settings.ModelProfile)
+	}
+	if resume && ((pendingState.Provider != "" && pendingState.Provider != profile.Provider) ||
+		(pendingState.Model != "" && pendingState.Model != profile.Model)) {
+		return nil, fmt.Errorf("paused task model profile %q changed in config; it remains pinned to provider %q and model %q", settings.ModelProfile, pendingState.Provider, pendingState.Model)
+	}
+	settings, err = c.normalizeSessionSettings(settings)
+	if err != nil {
+		return nil, err
+	}
+	profile, _ = c.models.Profile(settings.ModelProfile)
 	var history *model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var decoded model.ResponseInput
@@ -457,10 +579,14 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		history = &decoded
 	}
-	if _, err := c.beginTask(sessionID, planMode); err != nil {
+	if _, err := c.beginTask(sessionID, planMode, settings, profile); err != nil {
 		return nil, err
 	}
 	defer c.endTask()
+	if _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort); err != nil {
+		c.finishTaskState(sessionID, TaskFailed, err)
+		return nil, err
+	}
 	if !resume {
 		if err := c.resetTaskUsage(ctx, sessionID); err != nil {
 			c.finishTaskState(sessionID, TaskFailed, err)
@@ -513,7 +639,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(sessionID string, planMode bool) (string, error) {
+func (c *Core) beginTask(sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile) (string, error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -528,9 +654,14 @@ func (c *Core) beginTask(sessionID string, planMode bool) (string, error) {
 		c.mu.Unlock()
 		return "", err
 	}
-	c.active = TaskState{Status: TaskRunning, SessionID: sessionID, TaskID: id, PlanMode: planMode}
+	c.active = TaskState{
+		Status: TaskRunning, SessionID: sessionID, TaskID: id, PlanMode: planMode,
+		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: profile.Model,
+		ReasoningEffort: settings.ReasoningEffort,
+	}
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventTaskStarted, TaskID: id, SessionID: sessionID, Status: TaskRunning})
+	c.emit(Event{Kind: EventTaskStarted, TaskID: id, SessionID: sessionID, Status: TaskRunning,
+		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: profile.Model})
 	return id, nil
 }
 
@@ -551,7 +682,8 @@ func (c *Core) setTaskStatus(status TaskStatus) {
 func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	c.setTaskStatus(status)
 	state := c.State()
-	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, SessionID: sessionID, Status: status, Err: errorString(err)})
+	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, SessionID: sessionID, Status: status, Err: errorString(err),
+		ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model})
 }
 
 func (c *Core) emit(event Event) {
@@ -661,7 +793,11 @@ func (c *Core) CreateSession(ctx context.Context, history json.RawMessage) (Sess
 	if err != nil {
 		return Session{}, err
 	}
-	saved := Session{ID: id, Workspace: c.workspace, UpdatedAt: time.Now(), History: append(json.RawMessage(nil), history...)}
+	saved := Session{
+		ID: id, Workspace: c.workspace, UpdatedAt: time.Now(),
+		Settings: SessionSettings{ModelProfile: c.models.DefaultModel()},
+		History:  append(json.RawMessage(nil), history...),
+	}
 	if err := c.saveSession(ctx, saved); err != nil {
 		return Session{}, err
 	}
@@ -676,7 +812,7 @@ func (c *Core) LatestSession(ctx context.Context) (Session, bool, error) {
 	if err != nil || snapshot == nil {
 		return Session{}, false, err
 	}
-	saved, err := decodeSession(*snapshot)
+	saved, err := c.decodeSession(*snapshot)
 	return saved, err == nil, err
 }
 
@@ -690,7 +826,7 @@ func (c *Core) ListSessions(ctx context.Context, limit int) ([]Session, error) {
 	}
 	sessions := make([]Session, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		saved, err := decodeSession(snapshot)
+		saved, err := c.decodeSession(snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -707,7 +843,7 @@ func (c *Core) GetSession(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return decodeSession(*snapshot)
+	return c.decodeSession(*snapshot)
 }
 
 func (c *Core) SetSessionHistory(ctx context.Context, id string, history json.RawMessage) error {
@@ -784,10 +920,19 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		}
 		history = &decoded
 	}
-	if _, err := c.beginTask(sessionID, false); err != nil {
+	settings, err := c.normalizeSessionSettings(saved.Settings)
+	if err != nil {
+		return 0, err
+	}
+	profile, _ := c.models.Profile(settings.ModelProfile)
+	if _, err := c.beginTask(sessionID, false, settings, profile); err != nil {
 		return 0, err
 	}
 	defer c.endTask()
+	if _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort); err != nil {
+		c.finishTaskState(sessionID, TaskFailed, err)
+		return 0, err
+	}
 	if err := c.resetTaskUsage(ctx, sessionID); err != nil {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return 0, err
@@ -812,6 +957,8 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 }
 
 func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
@@ -885,7 +1032,7 @@ func (c *Core) saveSession(ctx context.Context, saved Session) error {
 	return c.sessions.Save(ctx, session.Snapshot{ID: saved.ID, Workspace: c.workspace, UpdatedAt: saved.UpdatedAt, Data: data})
 }
 
-func decodeSession(snapshot session.Snapshot) (Session, error) {
+func (c *Core) decodeSession(snapshot session.Snapshot) (Session, error) {
 	var saved Session
 	if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
 		return Session{}, fmt.Errorf("decode session %q: %w", snapshot.ID, err)
@@ -893,6 +1040,9 @@ func decodeSession(snapshot session.Snapshot) (Session, error) {
 	saved.ID, saved.Workspace, saved.UpdatedAt = snapshot.ID, snapshot.Workspace, snapshot.UpdatedAt
 	if len(saved.History) == 0 {
 		saved.History = json.RawMessage("null")
+	}
+	if saved.Settings.ModelProfile == "" {
+		saved.Settings.ModelProfile = c.models.DefaultModel()
 	}
 	return saved, nil
 }
@@ -929,7 +1079,10 @@ func (c *Core) migrateLegacySession(ctx context.Context) error {
 			return err
 		}
 	}
-	saved := Session{ID: legacyRunID, Workspace: c.workspace, UpdatedAt: time.Now(), History: encoded}
+	saved := Session{
+		ID: legacyRunID, Workspace: c.workspace, UpdatedAt: time.Now(),
+		Settings: SessionSettings{ModelProfile: c.models.DefaultModel()}, History: encoded,
+	}
 	return c.saveSession(ctx, saved)
 }
 
@@ -939,7 +1092,7 @@ func (c *Core) migrateSessionRecords(ctx context.Context) error {
 		return err
 	}
 	for _, snapshot := range snapshots {
-		saved, err := decodeSession(snapshot)
+		saved, err := c.decodeSession(snapshot)
 		if err != nil {
 			return err
 		}
