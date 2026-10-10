@@ -21,7 +21,7 @@
 - [x] 为 config.json 增加结构化加载与校验，覆盖模型目录、contextWindow、autoCompact、autoCompactThreshold、reserveOutputTokens 和附件限制；mcpServers 字段留到 M5 决策传输与鉴权后确定。
 - [x] 为会话数据增加 SQLite user_version 迁移；明确 sessions.db、checkpoints.db 与团队成员 checkpoint 的删除级联规则。
 - [x] 增加 internal/session/store_test.go，覆盖迁移、元数据并发更新、归档筛选和删除；token 计量仍由上下文策略决策门确定。
-- [ ] 为 .luneagent/agent.log 增加日志轮转。
+- [x] 为 .luneagent/agent.log 增加日志轮转（10 MiB 单文件，保留 3 个未压缩备份）。
 
 **完成条件：** 权限矩阵和未知工具路径有测试；配置错误可诊断；旧会话迁移与删除关系有测试；I-1 有根因证据或明确保留为待运行期取证。
 

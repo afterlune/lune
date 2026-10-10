@@ -34,7 +34,7 @@ func run() (runErr error) {
 	defer func() { runErr = errors.Join(runErr, client.Close()) }()
 	if tui.UseTUI(os.Stdin, os.Stdout) {
 		logPath := filepath.Join(workspace, ".luneagent", "agent.log")
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		logFile, err := newRotatingLogWriter(logPath, tuiLogMaxBytes, tuiLogBackupCount)
 		if err != nil {
 			return fmt.Errorf("open TUI log: %w", err)
 		}
