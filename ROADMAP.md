@@ -18,7 +18,7 @@
 - [ ] 用当前版本复现 I-1；结合请求快照日志定位类别或可见工具集合变化。未取得证据前保持问题开放，不猜测根因。
 - [x] 注册工具时统一声明 category、权限类别和只读属性；移除 permissions.go、agentgraph 和默认 Registry 的重复硬编码。
 - [x] 修复 workspace 模式下未知工具无需批准的安全缺口，并为四档权限与自定义工具补充覆盖测试。
-- [ ] 为 config.json 增加结构化加载与校验，覆盖 models、mcpServers、contextWindow、autoCompact、autoCompactThreshold、reserveOutputTokens 和附件限制。
+- [x] 为 config.json 增加结构化加载与校验，覆盖模型目录、contextWindow、autoCompact、autoCompactThreshold、reserveOutputTokens 和附件限制；mcpServers 字段留到 M5 决策传输与鉴权后确定。
 - [x] 为会话数据增加 SQLite user_version 迁移；明确 sessions.db、checkpoints.db 与团队成员 checkpoint 的删除级联规则。
 - [x] 增加 internal/session/store_test.go，覆盖迁移、元数据并发更新、归档筛选和删除；token 计量仍由上下文策略决策门确定。
 - [ ] 为 .luneagent/agent.log 增加日志轮转。
@@ -125,7 +125,7 @@
 - **上下文策略（M0/M4 前）：** 服务器 usage.InputTokens 与本地启发式的优先级/回退；压缩在图内任务中还是任务间；/context 窗口按模型还是全局；结果瘦身保留范围、决策权分层、scratchpad 存储和窄 footer 取舍。
 - **提问（M1/M3 前）：** ask_user 工具还是结束回合等用户下一条消息；选项/默认值/多问；headless 行为、超时与取消；是否计入 token 和工具轮数；subagent 内失败还是上抛。plan mode 允许提问是既定要求。
 - **TUI 与附件（M3/M4 前）：** Codex 交互差距清单和当前版本参考方式；长输入折叠行数/保留行数/适用角色/键位、回到底部键及提示；图片还是扩展到音频/PDF；剪贴板方案（如 atotto/clipboard 或各平台命令）、大小与压缩、session DB 限额、占位或 kitty/iTerm2 图形协议及 plan mode 下附件输入。
-- **流式与扩展（M4/M5 前）：** 流式默认值和 reasoning 是否显示；MCP 传输与鉴权；团队成员的 Goal/plan/model/effort 继承、递归委派边界；/review 语义和 CLI/TUI 命令差异。
+- **流式与扩展（M4/M5 前）：** 流式默认值和 reasoning 是否显示；MCP 配置结构、传输与鉴权；团队成员的 Goal/plan/model/effort 继承、递归委派边界；/review 语义和 CLI/TUI 命令差异。
 
 ## 依赖顺序
 

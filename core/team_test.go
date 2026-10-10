@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/afterlune/lune/internal/agentgraph"
+	projectconfig "github.com/afterlune/lune/internal/config"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/tool"
 	graph "github.com/afterlune/luneGraph"
@@ -189,8 +190,8 @@ func TestTeamExecutorRunsPinnedProviderProfilesConcurrently(t *testing.T) {
 
 func TestCoreLoadsProviderCatalogFromWorkspaceConfig(t *testing.T) {
 	workspace := t.TempDir()
-	config := `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://deepseek.example","apiKey":"test-key"}},"models":{"primary":{"provider":"deepseek","model":"deepseek-flash"}},"defaultModel":"primary"}`
-	if err := os.WriteFile(filepath.Join(workspace, model.ConfigFileName), []byte(config), 0600); err != nil {
+	config := `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://deepseek.example","apiKey":"test-key"}},"models":{"primary":{"provider":"deepseek","model":"deepseek-flash"}},"defaultModel":"primary","contextWindow":64000,"autoCompact":true,"attachments":{"maxFiles":3}}`
+	if err := os.WriteFile(filepath.Join(workspace, projectconfig.FileName), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
 	core, err := New(Config{Workspace: workspace, StateDir: filepath.Join(workspace, ".state")})

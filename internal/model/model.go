@@ -16,7 +16,6 @@ import (
 
 const (
 	DeepSeekFlashModel   = "deepseek-flash"
-	configFile           = "config.json"
 	requestTimeout       = 2 * time.Minute
 	maxResponseBodyBytes = 8 * 1024 * 1024
 )
@@ -111,23 +110,6 @@ func NewResponseInput[T any](value T) (*ResponseInput, error) {
 		return nil, errors.New("input must be a string or an item list")
 	}
 	return &input, nil
-}
-
-// NewClient loads the configured default model from config.json in the current
-// working directory.
-func NewClient(tools ToolExecutor) (*Client, error) {
-	if tools == nil {
-		return nil, errors.New("tool executor is required")
-	}
-	config, err := LoadConfig(configFile)
-	if err != nil {
-		return nil, err
-	}
-	catalog, err := NewProviderCatalog(config)
-	if err != nil {
-		return nil, err
-	}
-	return catalog.NewClient(catalog.DefaultModel(), tools)
 }
 
 // CreateResponse sends one normalized agent request through the configured

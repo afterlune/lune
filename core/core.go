@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/afterlune/lune/internal/agentgraph"
+	projectconfig "github.com/afterlune/lune/internal/config"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/session"
 	"github.com/afterlune/lune/internal/tool"
@@ -274,11 +275,11 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	modelConfig, err := model.LoadConfig(filepath.Join(workspace, model.ConfigFileName))
+	projectConfig, err := projectconfig.Load(filepath.Join(workspace, projectconfig.FileName))
 	if err != nil {
 		return nil, err
 	}
-	models, err := model.NewProviderCatalog(modelConfig)
+	models, err := model.NewProviderCatalog(projectConfig.ModelConfig())
 	if err != nil {
 		return nil, err
 	}

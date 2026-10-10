@@ -23,5 +23,14 @@
     }
   },
   "defaultModel": "deepseek-flash",
-  "maxParallelAgents": 4
+  "maxParallelAgents": 4,
+  "contextWindow": 0,
+  "autoCompact": false,
+  "autoCompactThreshold": 0.8,
+  "reserveOutputTokens": 0,
+  "attachments": {
+    "maxFiles": 0,
+    "maxFileBytes": 0,
+    "maxTotalBytes": 0
+  }
 }

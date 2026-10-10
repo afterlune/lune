@@ -1,13 +1,9 @@
 package model
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"strings"
 )
 
@@ -18,7 +14,6 @@ const (
 	ProtocolAnthropicMessages = "anthropic-messages"
 	DeepSeekResponsesBaseURL  = "https://api.deepseek.com"
 	DefaultMaxParallelAgents  = 4
-	ConfigFileName            = "config.json"
 )
 
 // ProviderConfig selects an API format independently from the provider name.
@@ -37,83 +32,12 @@ type ModelProfile struct {
 	MaxOutputTokens int64  `json:"maxOutputTokens,omitempty"`
 }
 
-// Config is the validated model catalog loaded from config.json.
+// Config contains the model catalog settings consumed by ProviderCatalog.
 type Config struct {
 	Providers         map[string]ProviderConfig `json:"providers"`
 	Models            map[string]ModelProfile   `json:"models"`
 	DefaultModel      string                    `json:"defaultModel"`
 	MaxParallelAgents int                       `json:"maxParallelAgents,omitempty"`
-
-	legacyAPIKey string
-}
-
-func LoadConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	var config Config
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("decode %s: %w", path, err)
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return Config{}, fmt.Errorf("decode %s: expected one JSON object", path)
-	}
-	if config.legacyAPIKey != "" {
-		if len(config.Providers) != 0 || len(config.Models) != 0 || config.DefaultModel != "" {
-			return Config{}, fmt.Errorf("%s: legacy apikey cannot be combined with providers or models", path)
-		}
-		config.Providers = map[string]ProviderConfig{ProviderDeepSeek: {
-			Protocol: ProtocolResponses, BaseURL: DeepSeekResponsesBaseURL, APIKey: config.legacyAPIKey,
-		}}
-		config.Models = map[string]ModelProfile{
-			DeepSeekFlashModel: {Provider: ProviderDeepSeek, Model: DeepSeekFlashModel},
-		}
-		config.DefaultModel = DeepSeekFlashModel
-	}
-	if err := config.Validate(); err != nil {
-		return Config{}, fmt.Errorf("validate %s: %w", path, err)
-	}
-	return config, nil
-}
-
-// UnmarshalJSON accepts the old single-provider apikey file as a one-time
-// migration input while rejecting all other unknown fields.
-func (c *Config) UnmarshalJSON(data []byte) error {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	legacyAPIKey := ""
-	if raw, exists := fields["apikey"]; exists {
-		if err := json.Unmarshal(raw, &legacyAPIKey); err != nil {
-			return fmt.Errorf("apikey must be a string: %w", err)
-		}
-		delete(fields, "apikey")
-	}
-	for key := range fields {
-		switch key {
-		case "providers", "models", "defaultModel", "maxParallelAgents":
-		default:
-			return fmt.Errorf("unknown config field %q", key)
-		}
-	}
-	cleaned, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-	type plain Config
-	var decoded plain
-	decoder := json.NewDecoder(bytes.NewReader(cleaned))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&decoded); err != nil {
-		return err
-	}
-	*c = Config(decoded)
-	c.legacyAPIKey = legacyAPIKey
-	return nil
 }
 
 func (c Config) Validate() error {

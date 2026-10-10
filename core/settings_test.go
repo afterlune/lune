@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	projectconfig "github.com/afterlune/lune/internal/config"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/session"
 )
@@ -34,7 +35,7 @@ func writeSettingsConfig(t *testing.T, workspace, endpoint string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, model.ConfigFileName), data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(workspace, projectconfig.FileName), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 }
