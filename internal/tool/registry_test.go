@@ -99,6 +99,35 @@ func TestExecuteCallPublishesSanitizedLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestAgentIdentityFlowsThroughSharedToolAndApprovalHandlers(t *testing.T) {
+	registry, err := NewRegistry(ToolRegistration{
+		Tool: loggingTestTool{},
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeAsk); err != nil {
+		t.Fatal(err)
+	}
+	var approvedAgent string
+	registry.SetPermissionApprovalHandler(func(_ context.Context, request PermissionRequest) bool {
+		approvedAgent = request.AgentID
+		return true
+	})
+	var events []ToolEvent
+	registry.SetToolEventObserver(func(event ToolEvent) { events = append(events, event) })
+	registry.ExecuteCall(model.WithAgentID(context.Background(), "reviewer"), model.OutputFunctionCall{
+		CallID: "call-agent", Name: "private_tool", Arguments: `{}`,
+	})
+	if approvedAgent != "reviewer" {
+		t.Fatalf("approval agent ID = %q, want reviewer", approvedAgent)
+	}
+	if len(events) != 2 || events[0].AgentID != "reviewer" || events[1].AgentID != "reviewer" {
+		t.Fatalf("tool events = %#v, want both attributed to reviewer", events)
+	}
+}
+
 func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	registry, err := NewDefaultRegistry(t.TempDir())
 	if err != nil {

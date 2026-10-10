@@ -120,25 +120,56 @@ func (r *graphResponder) checkpointID(sessionID string) string {
 }
 
 type usageTrackingRequester struct {
-	inner    agentgraph.Requester
-	mu       sync.RWMutex
-	observer func(model.ResponseUsage)
+	inner        agentgraph.Requester
+	mu           sync.RWMutex
+	observer     func(model.ResponseUsage, string, string, string, string)
+	agentID      string
+	profile      string
+	providerName string
+	modelName    string
 }
 
-func (r *usageTrackingRequester) CreateResponse(ctx context.Context, request model.ResponseRequest) (*model.Response, error) {
+func (r *usageTrackingRequester) CreateResponse(ctx context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
 	response, err := r.inner.CreateResponse(ctx, request)
 	if response != nil {
 		r.mu.RLock()
 		observer := r.observer
 		r.mu.RUnlock()
 		if observer != nil {
-			observer(response.Usage)
+			observer(response.Usage, r.agentID, r.profile, r.providerName, r.modelName)
+		}
+	}
+	return response, err
+}
+
+func (r *usageTrackingRequester) StreamResponse(ctx context.Context, request model.ModelRequest, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
+	streaming, ok := r.inner.(agentgraph.StreamingRequester)
+	if !ok {
+		return r.CreateResponse(ctx, request)
+	}
+	response, err := streaming.StreamResponse(ctx, request, emit)
+	if response != nil {
+		r.mu.RLock()
+		observer := r.observer
+		r.mu.RUnlock()
+		if observer != nil {
+			observer(response.Usage, r.agentID, r.profile, r.providerName, r.modelName)
 		}
 	}
 	return response, err
 }
 
 func (r *usageTrackingRequester) SetUsageObserver(observer func(model.ResponseUsage)) {
+	if observer == nil {
+		r.SetAgentUsageObserver(nil)
+		return
+	}
+	r.SetAgentUsageObserver(func(usage model.ResponseUsage, _ string, _ string, _ string, _ string) {
+		observer(usage)
+	})
+}
+
+func (r *usageTrackingRequester) SetAgentUsageObserver(observer func(model.ResponseUsage, string, string, string, string)) {
 	r.mu.Lock()
 	r.observer = observer
 	r.mu.Unlock()

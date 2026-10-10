@@ -25,6 +25,24 @@ type scriptedRequester struct {
 	next      int
 }
 
+type scriptedTeamExecutor struct {
+	profiles    map[string]model.ModelProfile
+	limit       int
+	assignments []TeamAssignment
+	options     []TaskOptions
+}
+
+func (t *scriptedTeamExecutor) Profiles() map[string]model.ModelProfile { return t.profiles }
+func (t *scriptedTeamExecutor) MaxParallelAgents() int                  { return t.limit }
+func (t *scriptedTeamExecutor) Run(_ context.Context, _ string, assignments []TeamAssignment, options TaskOptions) ([]TeamMemberResult, error) {
+	t.assignments = append([]TeamAssignment(nil), assignments...)
+	t.options = append(t.options, options)
+	return []TeamMemberResult{
+		{ID: "research", Model: "claude-test", Provider: model.ProviderAnthropic, Text: "Found the relevant behavior."},
+		{ID: "review", Model: "deepseek-test", Provider: model.ProviderDeepSeek, Error: "review provider unavailable"},
+	}, nil
+}
+
 func (r *scriptedRequester) CreateResponse(_ context.Context, request model.ResponseRequest) (*model.Response, error) {
 	encoded, err := json.Marshal(request)
 	if err != nil {
@@ -264,6 +282,76 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 			t.Errorf("recovered history lost %q: %s", preserved, encodedHistory)
 		}
 	}
+}
+
+func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &scriptedTeamExecutor{
+		limit: 3,
+		profiles: map[string]model.ModelProfile{
+			"lead":     {Provider: model.ProviderDeepSeek, Model: "deepseek-test"},
+			"research": {Provider: model.ProviderAnthropic, Model: "claude-test", MaxOutputTokens: 1024},
+		},
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"team-1","name":"delegate_team","arguments":"{\"tasks\":[{\"id\":\"research\",\"model\":\"research\",\"task\":\"inspect input handling\"},{\"id\":\"review\",\"model\":\"lead\",\"task\":\"review permission boundaries\"}]}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Combined result."}]}]}`),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
+		Model: "deepseek-test", Team: team,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	input, err := model.NewResponseInput("inspect the project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{PlanMode: true, MaxToolRounds: 7}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(team.assignments) != 2 || team.assignments[0].Model != "research" || team.assignments[1].Model != "lead" {
+		t.Fatalf("team assignments = %#v", team.assignments)
+	}
+	if len(team.options) != 1 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 {
+		t.Fatalf("worker options = %#v", team.options)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("model requests = %d, want dispatch plus synthesis", len(requester.requests))
+	}
+	var teamTool bool
+	for _, definition := range requester.requests[0].Tools {
+		if function, ok := definition.(model.FunctionTool); ok && function.Name == teamDispatchToolName {
+			teamTool = true
+			if !strings.Contains(string(function.Parameters), `"enum":["lead","research"]`) {
+				t.Errorf("team tool profile choices = %s", function.Parameters)
+			}
+		}
+	}
+	if !teamTool {
+		t.Fatal("lead request does not include delegate_team")
+	}
+	if !strings.Contains(teamResponseHistoryText(requester.requests[1].Input), "Found the relevant behavior") ||
+		!strings.Contains(teamResponseHistoryText(requester.requests[1].Input), "review provider unavailable") {
+		t.Fatalf("synthesis history lacks successful and failed member results: %#v", requester.requests[1].Input)
+	}
+}
+
+func teamResponseHistoryText(input *model.ResponseInput) string {
+	encoded, _ := json.Marshal(input)
+	return string(encoded)
 }
 
 func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) {

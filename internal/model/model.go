@@ -1,7 +1,6 @@
 package model
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,12 +15,10 @@ import (
 )
 
 const (
-	DeepSeekFlashModel = "deepseek-flash"
-
-	deepSeekResponsesEndpoint = "https://api.deepseek.com/responses"
-	configFile                = "config.json"
-	requestTimeout            = 2 * time.Minute
-	maxResponseBodyBytes      = 8 * 1024 * 1024
+	DeepSeekFlashModel   = "deepseek-flash"
+	configFile           = "config.json"
+	requestTimeout       = 2 * time.Minute
+	maxResponseBodyBytes = 8 * 1024 * 1024
 )
 
 var ErrToolCallLimit = errors.New("maximum tool-call rounds reached")
@@ -91,16 +88,12 @@ type CategorizedToolExecutor interface {
 const CategorySelectorName = "select_tool_category"
 
 type Client struct {
-	mu         sync.Mutex
-	apiKey     string
-	endpoint   string
-	httpClient *http.Client
-	tools      ToolExecutor
-	history    []InputItem
-}
-
-type clientConfig struct {
-	APIKey string `json:"apikey"`
+	mu        sync.Mutex
+	provider  Provider
+	profileID string
+	profile   ModelProfile
+	tools     ToolExecutor
+	history   []InputItem
 }
 
 // NewResponseInput encodes any JSON-serializable Responses input value. Pass a
@@ -120,45 +113,67 @@ func NewResponseInput[T any](value T) (*ResponseInput, error) {
 	return &input, nil
 }
 
-// NewClient reads apikey from config.json in the current working directory.
+// NewClient loads the configured default model from config.json in the current
+// working directory.
 func NewClient(tools ToolExecutor) (*Client, error) {
 	if tools == nil {
 		return nil, errors.New("tool executor is required")
 	}
-	apiKey, err := readAPIKey(configFile)
+	config, err := LoadConfig(configFile)
 	if err != nil {
 		return nil, err
 	}
-	return newClient(apiKey, deepSeekResponsesEndpoint, &http.Client{Timeout: requestTimeout}, tools), nil
+	catalog, err := NewProviderCatalog(config)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.NewClient(catalog.DefaultModel(), tools)
 }
 
-// CreateResponse sends one request to DeepSeek without managing conversation
-// history or executing returned tool calls. Callers may use it to manage those
-// steps in an external workflow runtime.
-func (c *Client) CreateResponse(ctx context.Context, request ResponseRequest) (*Response, error) {
+// CreateResponse sends one normalized agent request through the configured
+// provider without managing history or executing returned tool calls.
+func (c *Client) CreateResponse(ctx context.Context, request ModelRequest) (*ModelResponse, error) {
 	if c == nil {
 		return nil, errors.New("model client is nil")
 	}
 	if ctx == nil {
 		return nil, errors.New("context is nil")
 	}
-	if c.httpClient == nil {
-		return nil, errors.New("HTTP client is required")
+	if c.provider == nil {
+		return nil, errors.New("model provider is required")
 	}
 	if request.Model == "" {
-		request.Model = DeepSeekFlashModel
+		request.Model = c.profile.Model
 	}
-	return c.createResponse(ctx, request)
+	return c.provider.CreateResponse(ctx, request, c.profile)
 }
 
-// Respond sends input to DeepSeek and runs any returned function calls without
+// StreamResponse streams normalized model events and returns the final
+// response. A nil event callback discards incremental events.
+func (c *Client) StreamResponse(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (*ModelResponse, error) {
+	if c == nil {
+		return nil, errors.New("model client is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	if c.provider == nil {
+		return nil, errors.New("model provider is required")
+	}
+	if request.Model == "" {
+		request.Model = c.profile.Model
+	}
+	return c.provider.StreamResponse(ctx, request, c.profile, emit)
+}
+
+// Respond sends input through the configured provider and runs returned function calls without
 // imposing a tool-call round limit. It keeps conversation history on this
 // Client, so use one Client per conversation.
 func (c *Client) Respond(ctx context.Context, input *ResponseInput) (*Response, error) {
 	return c.RespondWithOptions(ctx, input, RespondOptions{})
 }
 
-// RespondWithOptions sends input to DeepSeek with per-call execution options.
+// RespondWithOptions sends input through the configured provider with per-call execution options.
 // A positive MaxToolRounds limits batches of tool calls; zero means unlimited.
 func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, options RespondOptions) (*Response, error) {
 	if c == nil {
@@ -191,6 +206,8 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		isCategorized = false
 	}
 	selectedCategory := ""
+	providerName := c.provider.Name()
+	modelName := c.profile.Model
 
 	toolRounds := 0
 	requestNumber := 0
@@ -198,7 +215,8 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		requestNumber++
 		requestStarted := time.Now()
 		slog.Info("model request started",
-			"model", DeepSeekFlashModel,
+			"provider", providerName,
+			"model", modelName,
 			"request", requestNumber,
 			"tool_rounds_completed", toolRounds,
 		)
@@ -216,14 +234,15 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			visibleTools = c.tools.Definitions()
 		}
 		request := ResponseRequest{
-			Model: DeepSeekFlashModel,
+			Model: modelName,
 			Input: NewResponseInputItems(history...),
 			Tools: visibleTools,
 		}
 		response, err := c.CreateResponse(ctx, request)
 		if err != nil {
 			slog.Warn("model request failed",
-				"model", DeepSeekFlashModel,
+				"provider", providerName,
+				"model", modelName,
 				"request", requestNumber,
 				"duration", time.Since(requestStarted),
 				"canceled", ctx.Err() != nil,
@@ -237,18 +256,19 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		}
 		calls := functionCalls(response.Output)
 		slog.Info("model response received",
-			"model", DeepSeekFlashModel,
+			"provider", providerName,
+			"model", modelName,
 			"request", requestNumber,
 			"duration", time.Since(requestStarted),
 			"status", response.Status,
 			"tool_calls", len(calls),
 		)
 		if response.Status == "failed" {
-			slog.Warn("model response failed", "model", DeepSeekFlashModel, "request", requestNumber)
+			slog.Warn("model response failed", "provider", providerName, "model", modelName, "request", requestNumber)
 			if response.Error != nil {
-				return response, fmt.Errorf("DeepSeek response failed (%s): %s", response.Error.Code, response.Error.Message)
+				return response, fmt.Errorf("%s response failed (%s): %s", providerName, response.Error.Code, response.Error.Message)
 			}
-			return response, errors.New("DeepSeek response failed")
+			return response, fmt.Errorf("%s response failed", providerName)
 		}
 
 		if len(calls) == 0 {
@@ -260,7 +280,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			return response, nil
 		}
 
-		// DeepSeek Responses is stateless, so append the whole assistant response
+		// Model APIs are called statelessly, so append the whole assistant response
 		// and tool outputs to input and resend that history on the next request.
 		history, err = appendResponseHistory(history, response.Output)
 		if err != nil {
@@ -453,10 +473,10 @@ func (c *Client) saveInterruptedHistory(history []InputItem, message string) {
 
 func newClient(apiKey, endpoint string, httpClient *http.Client, tools ToolExecutor) *Client {
 	return &Client{
-		apiKey:     apiKey,
-		endpoint:   endpoint,
-		httpClient: httpClient,
-		tools:      tools,
+		provider:  newResponsesProvider(ProviderDeepSeek, apiKey, endpoint, httpClient),
+		profileID: DeepSeekFlashModel,
+		profile:   ModelProfile{Provider: ProviderDeepSeek, Model: DeepSeekFlashModel},
+		tools:     tools,
 	}
 }
 
@@ -465,7 +485,9 @@ func readAPIKey(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	var config clientConfig
+	var config struct {
+		APIKey string `json:"apikey"`
+	}
 	if err := json.Unmarshal(data, &config); err != nil {
 		return "", fmt.Errorf("decode %s: %w", path, err)
 	}
@@ -474,46 +496,6 @@ func readAPIKey(path string) (string, error) {
 		return "", fmt.Errorf("%s must contain a non-empty apikey", path)
 	}
 	return apiKey, nil
-}
-
-func (c *Client) createResponse(ctx context.Context, requestBody ResponseRequest) (*Response, error) {
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("encode Responses request: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create Responses request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+c.apiKey)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("call DeepSeek Responses API: %w", err)
-	}
-	defer response.Body.Close()
-
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBodyBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read DeepSeek response: %w", err)
-	}
-	if len(responseBody) > maxResponseBodyBytes {
-		return nil, fmt.Errorf("DeepSeek response exceeds %d bytes", maxResponseBodyBytes)
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		message := strings.TrimSpace(string(responseBody))
-		if message == "" {
-			message = response.Status
-		}
-		return nil, fmt.Errorf("DeepSeek Responses API returned %s: %s", response.Status, message)
-	}
-	var decoded Response
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return nil, fmt.Errorf("decode DeepSeek response: %w", err)
-	}
-	return &decoded, nil
 }
 
 func initialInputHistory(input *ResponseInput) ([]InputItem, error) {

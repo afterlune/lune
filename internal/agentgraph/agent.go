@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"sort"
+	"strings"
 
 	"github.com/afterlune/lune/internal/model"
 	graph "github.com/afterlune/luneGraph"
@@ -20,13 +23,53 @@ const (
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
-	CreateResponse(context.Context, model.ResponseRequest) (*model.Response, error)
+	CreateResponse(context.Context, model.ModelRequest) (*model.ModelResponse, error)
+}
+
+type StreamingRequester interface {
+	StreamResponse(context.Context, model.ModelRequest, func(model.ModelStreamEvent) error) (*model.ModelResponse, error)
+}
+
+type TeamAssignment struct {
+	ID    string `json:"id"`
+	Model string `json:"model"`
+	Task  string `json:"task"`
+}
+
+type TeamMemberResult struct {
+	ID       string
+	Model    string
+	Provider string
+	Text     string
+	Error    string
+}
+
+type TeamExecutor interface {
+	Profiles() map[string]model.ModelProfile
+	MaxParallelAgents() int
+	Run(context.Context, string, []TeamAssignment, TaskOptions) ([]TeamMemberResult, error)
+}
+
+type AgentOptions struct {
+	ID             string
+	Name           string
+	Profile        string
+	Provider       string
+	Model          string
+	Team           TeamExecutor
+	StreamObserver func(model.ModelStreamEvent)
 }
 
 // State is the resumable state for one agent task. History uses ResponseInput's
 // custom JSON decoder so typed and unknown multimodal input items survive clone
 // and checkpoint round trips.
 type State struct {
+	RunID            string                     `json:"run_id,omitempty"`
+	AgentID          string                     `json:"agent_id,omitempty"`
+	AgentName        string                     `json:"agent_name,omitempty"`
+	Provider         string                     `json:"provider,omitempty"`
+	ModelProfile     string                     `json:"model_profile,omitempty"`
+	Model            string                     `json:"model,omitempty"`
 	History          model.ResponseInput        `json:"history"`
 	PlanMode         bool                       `json:"plan_mode,omitempty"`
 	SelectedCategory string                     `json:"selected_category,omitempty"`
@@ -52,19 +95,39 @@ type Agent struct {
 	tools       model.ToolExecutor
 	categorized model.CategorizedToolExecutor
 	categories  []model.ToolCategory
+	options     AgentOptions
 }
 
 var _ Requester = (*model.Client)(nil)
 
 func New(requester Requester, tools model.ToolExecutor) (*Agent, error) {
+	return NewWithOptions(requester, tools, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: model.DeepSeekFlashModel,
+		Provider: model.ProviderDeepSeek, Model: model.DeepSeekFlashModel,
+	})
+}
+
+func NewWithOptions(requester Requester, tools model.ToolExecutor, options AgentOptions) (*Agent, error) {
 	if requester == nil {
 		return nil, errors.New("requester is required")
 	}
 	if tools == nil {
 		return nil, errors.New("tool executor is required")
 	}
+	if options.ID == "" {
+		options.ID = "lead"
+	}
+	if options.Name == "" {
+		options.Name = options.ID
+	}
+	if options.Model == "" {
+		options.Model = model.DeepSeekFlashModel
+	}
+	if options.Profile == "" {
+		options.Profile = options.Model
+	}
 
-	agent := &Agent{requester: requester, tools: tools}
+	agent := &Agent{requester: requester, tools: tools, options: options}
 	if categorized, ok := tools.(model.CategorizedToolExecutor); ok {
 		agent.categories = categorized.Categories()
 		if len(agent.categories) > 0 {
@@ -104,6 +167,12 @@ func (a *Agent) Start(ctx context.Context, runID string, history, input *model.R
 	if err != nil {
 		return graph.Result[State]{Status: graph.StatusFailed}, err
 	}
+	state.RunID = runID
+	state.AgentID = a.options.ID
+	state.AgentName = a.options.Name
+	state.Provider = a.options.Provider
+	state.ModelProfile = a.options.Profile
+	state.Model = a.options.Model
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.PlanMode = taskOptions.PlanMode
 	return a.runner.Start(ctx, runID, state, options)
@@ -163,32 +232,54 @@ func responseInputItems(input *model.ResponseInput) ([]model.InputItem, error) {
 }
 
 func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
+	if state.ModelProfile != "" && state.ModelProfile != a.options.Profile {
+		return failTask(state, fmt.Errorf("model profile changed from %q to %q; the paused task remains pinned to its original profile", state.ModelProfile, a.options.Profile))
+	}
+	if state.Provider != "" && state.Provider != a.options.Provider || state.Model != "" && state.Model != a.options.Model {
+		return failTask(state, errors.New("provider/model changed; the paused task remains pinned to its original profile"))
+	}
 	visibleTools, visibleNames, err := a.visibleTools(state.SelectedCategory, state.PlanMode)
 	if err != nil {
 		return failTask(state, err)
 	}
-	request := model.ResponseRequest{
-		Model: model.DeepSeekFlashModel,
+	request := model.ModelRequest{
+		Model: state.Model,
 		Input: model.NewResponseInputItems(state.History.Items...),
 		Tools: visibleTools,
+	}
+	if request.Model == "" {
+		request.Model = a.options.Model
 	}
 	if state.PlanMode {
 		request.Instructions = "You are in plan mode. Inspect and reason about the requested work, then present a concise implementation plan for user review. You may use read-only tools only. Do not claim to have made changes."
 	}
 	slog.InfoContext(ctx, "agent model request started",
-		"model", model.DeepSeekFlashModel,
+		"agent_id", state.AgentID,
+		"provider", state.Provider,
+		"model", request.Model,
 		"request", state.ToolRounds+1,
 		"tool_rounds_completed", state.ToolRounds,
 		"plan_mode", state.PlanMode,
 		"selected_category", state.SelectedCategory,
 		"visible_tools", visibleNames,
 	)
-	response, err := a.requester.CreateResponse(ctx, request)
-	if err != nil {
+	var response *model.Response
+	var responseErr error
+	if streaming, ok := a.requester.(StreamingRequester); ok {
+		response, responseErr = streaming.StreamResponse(ctx, request, func(event model.ModelStreamEvent) error {
+			if a.options.StreamObserver != nil {
+				a.options.StreamObserver(event)
+			}
+			return nil
+		})
+	} else {
+		response, responseErr = a.requester.CreateResponse(ctx, request)
+	}
+	if responseErr != nil {
 		if ctx.Err() != nil {
-			return graph.Transition[State]{}, err
+			return graph.Transition[State]{}, responseErr
 		}
-		return failTask(state, err)
+		return failTask(state, responseErr)
 	}
 	if response == nil {
 		return failTask(state, errors.New("requester returned a nil response"))
@@ -238,6 +329,19 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
 	switch {
+	case call.Name == teamDispatchToolName && a.options.Team != nil:
+		assignments, err := parseTeamAssignments(call.Arguments, a.options.Team)
+		if err != nil {
+			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
+		} else {
+			results, err := a.options.Team.Run(ctx, state.RunID+":"+call.CallID, assignments, TaskOptions{
+				MaxToolRounds: state.MaxToolRounds, PlanMode: state.PlanMode,
+			})
+			if err != nil {
+				return graph.Transition[State]{}, err
+			}
+			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))}
+		}
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
 		categories := a.categories
 		if state.PlanMode {
@@ -274,7 +378,8 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
 	default:
-		output = a.tools.ExecuteCall(ctx, call)
+		toolContext := model.WithAgentID(ctx, state.AgentID)
+		output = a.tools.ExecuteCall(toolContext, call)
 	}
 
 	state.History.Items = append(state.History.Items, output)
@@ -290,11 +395,18 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 }
 
 func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTool, []string, error) {
+	addTeamTool := func(definitions []model.ResponseTool) []model.ResponseTool {
+		if a.options.Team == nil || len(a.options.Team.Profiles()) == 0 || a.options.Team.MaxParallelAgents() < 1 {
+			return definitions
+		}
+		return append(definitions, teamDispatchDefinition(a.options.Team))
+	}
 	if a.categorized == nil {
 		definitions := a.tools.Definitions()
 		if planMode {
 			definitions = readOnlyDefinitions(a.tools, definitions)
 		}
+		definitions = addTeamTool(definitions)
 		return definitions, toolNames(definitions), nil
 	}
 	categories := a.categories
@@ -313,6 +425,7 @@ func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTo
 			definitions = append([]model.ResponseTool{selector}, definitions...)
 		}
 	}
+	definitions = addTeamTool(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
@@ -407,4 +520,103 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+const teamDispatchToolName = "delegate_team"
+
+type teamDispatchRequest struct {
+	Tasks []TeamAssignment `json:"tasks"`
+}
+
+func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
+	profiles := team.Profiles()
+	profileIDs := make([]string, 0, len(profiles))
+	for profileID := range profiles {
+		profileIDs = append(profileIDs, profileID)
+	}
+	sort.Strings(profileIDs)
+	parameters, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tasks": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": team.MaxParallelAgents(),
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":    map[string]any{"type": "string", "description": "Short unique name for this team member."},
+						"model": map[string]any{"type": "string", "enum": profileIDs},
+						"task":  map[string]any{"type": "string", "description": "A bounded, independent task for this member."},
+					},
+					"required":             []string{"id", "model", "task"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"tasks"},
+		"additionalProperties": false,
+	})
+	strict := true
+	return model.FunctionTool{
+		Name: teamDispatchToolName,
+		Description: "Delegate independent work to multiple team members at once. Choose each member's model profile from the listed catalog. " +
+			"Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Use this only when tasks can proceed independently.",
+		Parameters: parameters,
+		Strict:     &strict,
+	}
+}
+
+func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment, error) {
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.DisallowUnknownFields()
+	var request teamDispatchRequest
+	if err := decoder.Decode(&request); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, errors.New("expected one JSON object")
+	}
+	limit := team.MaxParallelAgents()
+	if len(request.Tasks) == 0 || len(request.Tasks) > limit {
+		return nil, fmt.Errorf("team task count must be between 1 and %d", limit)
+	}
+	profiles := team.Profiles()
+	seen := make(map[string]struct{}, len(request.Tasks))
+	for index := range request.Tasks {
+		task := &request.Tasks[index]
+		task.ID = strings.TrimSpace(task.ID)
+		task.Model = strings.TrimSpace(task.Model)
+		task.Task = strings.TrimSpace(task.Task)
+		if task.ID == "" || task.Task == "" {
+			return nil, errors.New("each team task requires a non-empty id and task")
+		}
+		if _, exists := seen[task.ID]; exists {
+			return nil, fmt.Errorf("team member id %q is repeated", task.ID)
+		}
+		seen[task.ID] = struct{}{}
+		if _, exists := profiles[task.Model]; !exists {
+			return nil, fmt.Errorf("unknown team model profile %q", task.Model)
+		}
+	}
+	return request.Tasks, nil
+}
+
+func formatTeamResults(results []TeamMemberResult) string {
+	var output strings.Builder
+	output.WriteString("Team results:")
+	for _, result := range results {
+		output.WriteString("\n\n## ")
+		output.WriteString(result.ID)
+		output.WriteString(" (model ")
+		output.WriteString(result.Model)
+		output.WriteString(")\n")
+		if result.Error != "" {
+			output.WriteString("Failed: ")
+			output.WriteString(result.Error)
+		} else {
+			output.WriteString(result.Text)
+		}
+	}
+	return output.String()
 }

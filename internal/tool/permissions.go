@@ -49,6 +49,7 @@ func PermissionModeDescription(mode PermissionMode) string {
 // PermissionRequest contains the exact tool input shown before one-time approval.
 type PermissionRequest struct {
 	Tool      string
+	AgentID   string
 	Arguments json.RawMessage
 	Metadata  model.ToolMetadata
 }

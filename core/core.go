@@ -54,24 +54,45 @@ const (
 	EventUsage             EventKind = "usage"
 	EventApprovalRequired  EventKind = "approval_required"
 	EventApprovalCancelled EventKind = "approval_cancelled"
+	EventAgentStarted      EventKind = "agent_started"
+	EventAgentFinished     EventKind = "agent_finished"
+	EventModelStream       EventKind = "model_stream"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind       EventKind
-	TaskID     string
-	SessionID  string
-	Status     TaskStatus
-	Tool       ToolCall
-	Usage      Usage
-	Approval   *ApprovalRequest
-	ApprovalID string
-	Err        string
+	Kind         EventKind
+	TaskID       string
+	SessionID    string
+	Status       TaskStatus
+	Tool         ToolCall
+	Usage        Usage
+	Approval     *ApprovalRequest
+	ApprovalID   string
+	Err          string
+	AgentID      string
+	AgentName    string
+	AgentRole    string
+	Provider     string
+	ModelProfile string
+	Model        string
+	Stream       *ModelStreamEvent
+}
+
+type ModelStreamEvent struct {
+	Type          string
+	ItemID        string
+	OutputIndex   *int
+	Delta         string
+	ToolCallID    string
+	ToolName      string
+	ToolArguments string
 }
 
 type ToolCall struct {
 	ID        string
+	AgentID   string
 	Name      string
 	Arguments json.RawMessage
 	Duration  time.Duration
@@ -82,6 +103,7 @@ type ToolCall struct {
 
 type ApprovalRequest struct {
 	ID        string
+	AgentID   string
 	Tool      string
 	Arguments json.RawMessage
 }
@@ -97,26 +119,32 @@ type Usage struct {
 }
 
 type TokenInputDetails struct {
-	CachedTokens int64 `json:"cached_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 }
 type TokenOutputDetails struct {
 	ReasoningTokens int64 `json:"reasoning_tokens"`
 }
 
 type UsageRecord struct {
-	Request   int   `json:"request"`
-	Usage     Usage `json:"usage"`
-	Available bool  `json:"available"`
+	Request      int    `json:"request"`
+	Usage        Usage  `json:"usage"`
+	Available    bool   `json:"available"`
+	AgentID      string `json:"agent_id,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	ModelProfile string `json:"model_profile,omitempty"`
+	Model        string `json:"model,omitempty"`
 }
 
 type UsageTotals struct {
-	Requests  int   `json:"requests"`
-	Measured  int   `json:"measured"`
-	Input     int64 `json:"input"`
-	Output    int64 `json:"output"`
-	Reasoning int64 `json:"reasoning"`
-	Total     int64 `json:"total"`
-	Cached    int64 `json:"cached"`
+	Requests      int   `json:"requests"`
+	Measured      int   `json:"measured"`
+	Input         int64 `json:"input"`
+	Output        int64 `json:"output"`
+	Reasoning     int64 `json:"reasoning"`
+	Total         int64 `json:"total"`
+	Cached        int64 `json:"cached"`
+	CacheCreation int64 `json:"cache_creation,omitempty"`
 }
 
 // Session contains durable conversation state, not TUI transcript caches.
@@ -179,16 +207,21 @@ type Config struct {
 type Core struct {
 	workspace   string
 	registry    *tool.Registry
+	models      *model.ProviderCatalog
+	teamRuns    *teamStore
+	team        *teamExecutor
 	requester   *usageTrackingRequester
 	runtime     *graphResponder
 	checkpoints *sqlite.Store[agentgraph.State]
 	sessions    *session.Store
 
-	mu        sync.RWMutex
-	active    TaskState
-	handler   EventHandler
-	approvals map[string]chan bool
-	closed    bool
+	mu              sync.RWMutex
+	usageMu         sync.Mutex
+	approvalQueueMu sync.Mutex
+	active          TaskState
+	handler         EventHandler
+	approvals       map[string]chan bool
+	closed          bool
 }
 
 func New(config Config) (_ *Core, err error) {
@@ -218,7 +251,11 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := model.NewClient(registry)
+	modelConfig, err := model.LoadConfig(filepath.Join(workspace, model.ConfigFileName))
+	if err != nil {
+		return nil, err
+	}
+	models, err := model.NewProviderCatalog(modelConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -242,31 +279,59 @@ func New(config Config) (_ *Core, err error) {
 			_ = sessions.Close()
 		}
 	}()
-	requester := &usageTrackingRequester{inner: client}
-	agent, err := agentgraph.New(requester, registry)
+	teamRuns, err := openTeamStore(filepath.Join(stateDir, "team_runs.db"))
+	if err != nil {
+		return nil, err
+	}
+	closeTeamRuns := true
+	defer func() {
+		if closeTeamRuns {
+			_ = teamRuns.Close()
+		}
+	}()
+	client, err := models.NewClient(models.DefaultModel(), registry)
 	if err != nil {
 		return nil, err
 	}
 	c := &Core{
 		workspace:   workspace,
 		registry:    registry,
-		requester:   requester,
-		runtime:     &graphResponder{agent: agent, store: checkpoints, requester: requester},
+		models:      models,
+		teamRuns:    teamRuns,
 		checkpoints: checkpoints,
 		sessions:    sessions,
 		active:      TaskState{Status: TaskIdle},
 		approvals:   make(map[string]chan bool),
 	}
+	team := &teamExecutor{core: c, models: models, tools: registry, checkpoints: checkpoints, store: teamRuns}
+	c.team = team
+	profile, _ := models.Profile(models.DefaultModel())
+	requester := &usageTrackingRequester{
+		inner: client, agentID: "lead", profile: models.DefaultModel(),
+		providerName: profile.Provider, modelName: profile.Model,
+		observer: c.onAgentUsage,
+	}
+	agent, err := agentgraph.NewWithOptions(requester, registry, agentgraph.AgentOptions{
+		ID: "lead", Name: "Lead", Profile: models.DefaultModel(), Provider: profile.Provider, Model: profile.Model,
+		Team: team,
+		StreamObserver: func(event model.ModelStreamEvent) {
+			c.onModelStream("lead", "Lead", models.DefaultModel(), profile.Provider, profile.Model, event)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.requester = requester
+	c.runtime = &graphResponder{agent: agent, store: checkpoints, requester: requester}
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
-	requester.SetUsageObserver(c.onUsage)
 	if err := c.migrateSessionRecords(context.Background()); err != nil {
 		return nil, err
 	}
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
 	}
-	closeCheckpoints, closeSessions = false, false
+	closeCheckpoints, closeSessions, closeTeamRuns = false, false, false
 	return c, nil
 }
 
@@ -292,7 +357,7 @@ func (c *Core) Close() error {
 		}
 	}
 	c.mu.Unlock()
-	return errors.Join(c.checkpoints.Close(), c.sessions.Close())
+	return errors.Join(c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close())
 }
 
 func (c *Core) SetEventHandler(handler EventHandler) {
@@ -433,6 +498,11 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		status = TaskPaused
 	}
 	c.finishTaskState(sessionID, status, err)
+	if status != TaskPaused && c.teamRuns != nil {
+		if cleanupErr := c.teamRuns.DeleteParent(c.runtime.runID()); cleanupErr != nil {
+			slog.Warn("delete completed team runs", "error", cleanupErr)
+		}
+	}
 	if response == nil {
 		return nil, err
 	}
@@ -505,24 +575,51 @@ func (c *Core) onToolEvent(event tool.ToolEvent) {
 		kind = EventToolStarted
 	}
 	c.emit(Event{Kind: kind, SessionID: c.State().SessionID, TaskID: c.State().TaskID, Tool: ToolCall{
-		ID: event.CallID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
+		ID: event.CallID, AgentID: event.AgentID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
 		Duration: event.Duration, Failed: event.Failed, Canceled: event.Canceled,
 	}})
 }
 
+func (c *Core) onModelStream(agentID, agentName, profile, provider, modelID string, event model.ModelStreamEvent) {
+	stream := &ModelStreamEvent{
+		Type: string(event.Type), ItemID: event.ItemID, OutputIndex: event.OutputIndex,
+		Delta: event.Delta,
+	}
+	if event.ToolCall != nil {
+		stream.ToolCallID, stream.ToolName, stream.ToolArguments = event.ToolCall.CallID, event.ToolCall.Name, event.ToolCall.Arguments
+	}
+	c.emit(Event{
+		Kind: EventModelStream, SessionID: c.State().SessionID, TaskID: c.State().TaskID,
+		AgentID: agentID, AgentName: agentName, ModelProfile: profile, Provider: provider, Model: modelID,
+		Stream: stream,
+	})
+}
+
 func (c *Core) onUsage(usage model.ResponseUsage) {
-	value := Usage{InputTokens: usage.InputTokens, InputTokensDetails: TokenInputDetails{CachedTokens: usage.InputTokensDetails.CachedTokens},
+	c.onAgentUsage(usage, "", "", "", "")
+}
+
+func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string) {
+	value := Usage{InputTokens: usage.InputTokens, InputTokensDetails: TokenInputDetails{
+		CachedTokens: usage.InputTokensDetails.CachedTokens, CacheCreationTokens: usage.InputTokensDetails.CacheCreationTokens,
+	},
 		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: usage.TotalTokens}
 	state := c.State()
 	if state.SessionID != "" {
-		if err := c.recordUsage(context.Background(), state.SessionID, value); err != nil {
+		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID); err != nil {
 			slog.Warn("persist token usage", "error", err)
 		}
 	}
-	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, Usage: value})
+	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, Usage: value,
+		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID})
 }
 
 func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
+	c.approvalQueueMu.Lock()
+	defer c.approvalQueueMu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
 	id, err := newID()
 	if err != nil {
 		return false
@@ -536,7 +633,8 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 	c.approvals[id] = response
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventApprovalRequired, SessionID: c.State().SessionID, TaskID: c.State().TaskID,
-		Approval: &ApprovalRequest{ID: id, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}})
+		AgentID:  request.AgentID,
+		Approval: &ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}})
 	select {
 	case allowed := <-response:
 		return allowed
@@ -736,12 +834,22 @@ func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string) error {
 }
 
 func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {
+	return c.recordUsageForAgent(ctx, id, usage, "", "", "", "")
+}
+
+func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string) error {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
 	saved, err := c.GetSession(ctx, id)
 	if err != nil {
 		return err
 	}
-	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 || usage.TotalTokens != 0 || usage.InputTokensDetails.CachedTokens != 0
-	record := UsageRecord{Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available}
+	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 || usage.TotalTokens != 0 ||
+		usage.InputTokensDetails.CachedTokens != 0 || usage.InputTokensDetails.CacheCreationTokens != 0
+	record := UsageRecord{
+		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
+		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID,
+	}
 	saved.UsageRequests = append(saved.UsageRequests, record)
 	if len(saved.UsageRequests) > 200 {
 		saved.UsageRequests = append([]UsageRecord(nil), saved.UsageRequests[len(saved.UsageRequests)-200:]...)
@@ -763,6 +871,7 @@ func addUsage(totals *UsageTotals, usage Usage, available bool) {
 	totals.Reasoning += usage.OutputTokensDetails.ReasoningTokens
 	totals.Total += usage.TotalTokens
 	totals.Cached += usage.InputTokensDetails.CachedTokens
+	totals.CacheCreation += usage.InputTokensDetails.CacheCreationTokens
 }
 
 func (c *Core) saveSession(ctx context.Context, saved Session) error {

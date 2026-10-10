@@ -1,3 +1,27 @@
 {
-  "apikey": ""
+  "providers": {
+    "deepseek": {
+      "protocol": "responses",
+      "baseURL": "https://api.deepseek.com",
+      "apiKey": ""
+    },
+    "anthropic": {
+      "protocol": "anthropic-messages",
+      "baseURL": "https://api.anthropic.com",
+      "apiKey": ""
+    }
+  },
+  "models": {
+    "deepseek-flash": {
+      "provider": "deepseek",
+      "model": "deepseek-flash"
+    },
+    "anthropic-model": {
+      "provider": "anthropic",
+      "model": "replace-with-model-id",
+      "maxOutputTokens": 8192
+    }
+  },
+  "defaultModel": "deepseek-flash",
+  "maxParallelAgents": 4
 }

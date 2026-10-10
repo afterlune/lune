@@ -31,8 +31,9 @@ type Registry struct {
 // a presentation appropriate to their interface; do not log or persist them.
 type ToolEvent struct {
 	CallID    string
+	AgentID   string
 	Name      string
-	Arguments json.RawMessage
+	Arguments json.RawMessage `json:"-"`
 	Started   bool
 	Duration  time.Duration
 	Failed    bool
@@ -266,7 +267,7 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		return nil, errors.New("unknown tool: " + name)
 	}
 	if err := permissions.authorize(ctx, PermissionRequest{
-		Tool: name, Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
+		Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
 	}); err != nil {
 		return nil, err
 	}
@@ -284,7 +285,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 		result = Result{Err: permissionErr}
 	} else {
 		slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
-		r.observeToolEvent(ToolEvent{CallID: call.CallID, Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
+		r.observeToolEvent(ToolEvent{CallID: call.CallID, AgentID: model.AgentIDFromContext(ctx), Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
 		result = registeredTool.Run(ctx, arguments)
 	}
 	duration := time.Since(started)
@@ -301,7 +302,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 		slog.Info("tool execution finished", attributes...)
 	}
 	r.observeToolEvent(ToolEvent{
-		CallID: call.CallID, Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration,
+		CallID: call.CallID, AgentID: model.AgentIDFromContext(ctx), Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration,
 		Failed:   result.Err != nil,
 		Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 	})

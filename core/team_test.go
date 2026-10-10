@@ -1,0 +1,293 @@
+package core
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/afterlune/lune/internal/agentgraph"
+	"github.com/afterlune/lune/internal/model"
+	"github.com/afterlune/lune/internal/tool"
+	graph "github.com/afterlune/luneGraph"
+	"github.com/afterlune/luneGraph/checkpoint/memory"
+)
+
+type parallelProbe struct {
+	active  atomic.Int32
+	maximum atomic.Int32
+	arrived atomic.Int32
+	allIn   chan struct{}
+	release chan struct{}
+}
+
+type parallelTestProvider struct {
+	name  string
+	probe *parallelProbe
+}
+
+type cancelOnceProvider struct {
+	started chan struct{}
+	calls   atomic.Int32
+}
+
+func (p *cancelOnceProvider) Name() string { return model.ProviderDeepSeek }
+func (p *cancelOnceProvider) CreateResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile) (*model.ModelResponse, error) {
+	return p.StreamResponse(ctx, request, profile, nil)
+}
+func (p *cancelOnceProvider) StreamResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	response := &model.ModelResponse{
+		Status: "completed", Model: profile.Model,
+		Output: []model.ResponseOutputItem{model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: "resumed result"}}}},
+	}
+	if emit != nil {
+		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamTextDelta, Delta: "resumed result"}); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
+}
+
+func (p *parallelTestProvider) Name() string { return p.name }
+func (p *parallelTestProvider) CreateResponse(ctx context.Context, request model.ResponseRequest, profile model.ModelProfile) (*model.Response, error) {
+	return p.respond(ctx, request, profile, nil)
+}
+func (p *parallelTestProvider) StreamResponse(ctx context.Context, request model.ResponseRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.Response, error) {
+	return p.respond(ctx, request, profile, emit)
+}
+func (p *parallelTestProvider) respond(ctx context.Context, request model.ResponseRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.Response, error) {
+	active := p.probe.active.Add(1)
+	defer p.probe.active.Add(-1)
+	for previous := p.probe.maximum.Load(); active > previous; previous = p.probe.maximum.Load() {
+		if p.probe.maximum.CompareAndSwap(previous, active) {
+			break
+		}
+	}
+	if p.probe.arrived.Add(1) == 2 {
+		close(p.probe.allIn)
+	}
+	select {
+	case <-p.probe.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	text := profile.Model + " completed " + responseInputText(request.Input)
+	if emit != nil {
+		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamTextDelta, Delta: text}); err != nil {
+			return nil, err
+		}
+	}
+	return &model.Response{
+		Status: "completed", Model: profile.Model,
+		Output: []model.ResponseOutputItem{model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: text}}}},
+		Usage:  model.ResponseUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
+	}, nil
+}
+
+func TestTeamExecutorRunsPinnedProviderProfilesConcurrently(t *testing.T) {
+	probe := &parallelProbe{allIn: make(chan struct{}), release: make(chan struct{})}
+	config := model.Config{
+		Providers: map[string]model.ProviderConfig{
+			model.ProviderDeepSeek:  {Protocol: model.ProtocolResponses, BaseURL: "https://deepseek.example", APIKey: "ds-test"},
+			model.ProviderAnthropic: {Protocol: model.ProtocolAnthropicMessages, BaseURL: "https://anthropic.example", APIKey: "anthropic-test"},
+		},
+		Models: map[string]model.ModelProfile{
+			"lead":   {Provider: model.ProviderDeepSeek, Model: "deepseek-test"},
+			"text":   {Provider: model.ProviderDeepSeek, Model: "deepseek-worker"},
+			"review": {Provider: model.ProviderAnthropic, Model: "claude-review", MaxOutputTokens: 1024},
+		},
+		DefaultModel: "lead", MaxParallelAgents: 2,
+	}
+	catalog, err := model.NewProviderCatalogWithProviders(config, map[string]model.Provider{
+		model.ProviderDeepSeek:  &parallelTestProvider{name: model.ProviderDeepSeek, probe: probe},
+		model.ProviderAnthropic: &parallelTestProvider{name: model.ProviderAnthropic, probe: probe},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := memory.New[agentgraph.State](graph.JSONClone[agentgraph.State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamStore, err := openTeamStore(filepath.Join(t.TempDir(), "team.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer teamStore.Close()
+	core := &Core{active: TaskState{Status: TaskRunning}, approvals: make(map[string]chan bool)}
+	var eventsMu sync.Mutex
+	var events []Event
+	core.handler = func(event Event) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		events = append(events, event)
+	}
+	team := &teamExecutor{core: core, models: catalog, tools: registry, checkpoints: checkpoints, store: teamStore}
+	assignments := []agentgraph.TeamAssignment{
+		{ID: "reader", Model: "text", Task: "inspect package layout"},
+		{ID: "reviewer", Model: "review", Task: "review permission flow"},
+	}
+	resultsCh := make(chan []agentgraph.TeamMemberResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		results, err := team.Run(context.Background(), "parent-task:team-call", assignments, agentgraph.TaskOptions{MaxToolRounds: 5})
+		resultsCh <- results
+		errCh <- err
+	}()
+	select {
+	case <-probe.allIn:
+	case <-time.After(5 * time.Second):
+		close(probe.release)
+		t.Fatal("team members did not reach the model concurrently")
+	}
+	if got := probe.maximum.Load(); got != 2 {
+		t.Errorf("simultaneous model requests = %d, want 2", got)
+	}
+	close(probe.release)
+	results := <-resultsCh
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Provider != model.ProviderDeepSeek || results[1].Provider != model.ProviderAnthropic {
+		t.Fatalf("team results = %#v", results)
+	}
+	if results[0].Model != "deepseek-worker" || results[1].Model != "claude-review" {
+		t.Fatalf("member models changed: %#v", results)
+	}
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	started, finished, usage := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, event := range events {
+		switch event.Kind {
+		case EventAgentStarted:
+			started[event.AgentID] = event.Provider != "" && event.Model != ""
+		case EventAgentFinished:
+			finished[event.AgentID] = event.Status == TaskCompleted
+		case EventUsage:
+			usage[event.AgentID] = event.Usage.TotalTokens == 5
+		}
+	}
+	for _, id := range []string{"reader", "reviewer"} {
+		if !started[id] || !finished[id] || !usage[id] {
+			t.Errorf("agent %q lifecycle/usage missing: started=%v finished=%v usage=%v", id, started[id], finished[id], usage[id])
+		}
+	}
+}
+
+func TestCoreLoadsProviderCatalogFromWorkspaceConfig(t *testing.T) {
+	workspace := t.TempDir()
+	config := `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://deepseek.example","apiKey":"test-key"}},"models":{"primary":{"provider":"deepseek","model":"deepseek-flash"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(workspace, model.ConfigFileName), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	core, err := New(Config{Workspace: workspace, StateDir: filepath.Join(workspace, ".state")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if core.models.DefaultModel() != "primary" || core.teamRuns == nil {
+		t.Fatalf("Core provider/team state not initialized: default=%q teamStore=%v", core.models.DefaultModel(), core.teamRuns != nil)
+	}
+	if err := core.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func responseInputText(input *model.ResponseInput) string {
+	if input == nil || input.Text == nil {
+		return "structured input"
+	}
+	return *input.Text
+}
+
+func TestTeamStoreRejectsChangedAssignmentsOnResume(t *testing.T) {
+	store, err := openTeamStore(filepath.Join(t.TempDir(), "team.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	profiles := map[string]model.ModelProfile{"one": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}}
+	first := []agentgraph.TeamAssignment{{ID: "research", Model: "one", Task: "look at input"}}
+	if _, _, err := store.GetOrCreate("parent", "call", first, profiles); err != nil {
+		t.Fatal(err)
+	}
+	changed := []agentgraph.TeamAssignment{{ID: "research", Model: "one", Task: "different task"}}
+	if _, _, err := store.GetOrCreate("parent", "call", changed, profiles); err == nil {
+		t.Fatal("changed assignments should not reuse a saved team checkpoint")
+	}
+}
+
+func TestTeamExecutorResumesPausedMemberWithoutChangingItsModel(t *testing.T) {
+	provider := &cancelOnceProvider{started: make(chan struct{})}
+	config := model.Config{
+		Providers: map[string]model.ProviderConfig{model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: "https://deepseek.example", APIKey: "test-key"}},
+		Models: map[string]model.ModelProfile{
+			"lead":   {Provider: model.ProviderDeepSeek, Model: "deepseek-lead"},
+			"worker": {Provider: model.ProviderDeepSeek, Model: "deepseek-worker"},
+		},
+		DefaultModel: "lead", MaxParallelAgents: 2,
+	}
+	catalog, err := model.NewProviderCatalogWithProviders(config, map[string]model.Provider{model.ProviderDeepSeek: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := memory.New[agentgraph.State](graph.JSONClone[agentgraph.State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openTeamStore(filepath.Join(t.TempDir(), "team.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	team := &teamExecutor{core: &Core{approvals: make(map[string]chan bool)}, models: catalog, tools: registry, checkpoints: checkpoints, store: store}
+	assignments := []agentgraph.TeamAssignment{{ID: "worker", Model: "worker", Task: "inspect the code"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, runErr := team.Run(ctx, "parent-task:team-call", assignments, agentgraph.TaskOptions{})
+		firstDone <- runErr
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("worker did not reach its model request")
+	}
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted team error = %v, want context canceled", err)
+	}
+	member, err := store.Member("parent-task:team-call", "worker")
+	if err != nil || member.Status != "paused" {
+		t.Fatalf("saved member state = %#v, error = %v; want paused", member, err)
+	}
+	results, err := team.Run(context.Background(), "parent-task:team-call", assignments, agentgraph.TaskOptions{})
+	if err != nil {
+		t.Fatalf("resume team: %v", err)
+	}
+	if len(results) != 1 || results[0].Text != "resumed result" || results[0].Model != "deepseek-worker" {
+		t.Fatalf("resumed results = %#v", results)
+	}
+	if got := provider.calls.Load(); got != 2 {
+		t.Fatalf("provider calls = %d, want interrupted call plus resumed call", got)
+	}
+}
+
+var _ model.Provider = (*parallelTestProvider)(nil)

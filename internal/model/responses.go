@@ -7,9 +7,9 @@ import (
 	"fmt"
 )
 
-// ResponseRequest is the request body for the OpenAI-compatible Responses API.
-// Its fields are limited to the subset documented by DeepSeek.
-type ResponseRequest struct {
+// ModelRequest is the shared agent-facing request passed to model providers.
+// Provider adapters translate it into their native wire format.
+type ModelRequest struct {
 	Model           string           `json:"model"`
 	Input           *ResponseInput   `json:"input,omitempty"`
 	Instructions    string           `json:"instructions,omitempty"`
@@ -27,8 +27,8 @@ type ResponseRequest struct {
 
 // UnmarshalJSON decodes tools as a tagged union while preserving unknown tool
 // definitions for callers that need to inspect or forward them.
-func (r *ResponseRequest) UnmarshalJSON(data []byte) error {
-	type requestAlias ResponseRequest
+func (r *ModelRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias ModelRequest
 	var wire struct {
 		*requestAlias
 		Tools []json.RawMessage `json:"tools"`
@@ -49,6 +49,10 @@ func (r *ResponseRequest) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
+
+// ResponseRequest remains an internal source alias for existing callers. Wire
+// providers use their own request type.
+type ResponseRequest = ModelRequest
 
 // ResponseInput represents either a plain text input or a list of input items.
 // Set exactly one of Text and Items. A nil pointer on ResponseRequest omits the
@@ -192,9 +196,10 @@ func (v InputCustomToolCallOutput) MarshalJSON() ([]byte, error) {
 }
 
 type InputReasoning struct {
-	ID      string          `json:"id,omitempty"`
-	Status  string          `json:"status,omitempty"`
-	Content []ReasoningText `json:"content"`
+	ID        string          `json:"id,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	Content   []ReasoningText `json:"content"`
+	Signature string          `json:"signature,omitempty"`
 }
 
 func (InputReasoning) isInputItem() {}
@@ -545,7 +550,7 @@ func (v *ToolChoice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type Response struct {
+type ModelResponse struct {
 	ID                 string               `json:"id"`
 	Object             string               `json:"object"`
 	CreatedAt          int64                `json:"created_at"`
@@ -560,8 +565,8 @@ type Response struct {
 	PreviousResponseID *string              `json:"previous_response_id"`
 }
 
-func (r *Response) UnmarshalJSON(data []byte) error {
-	type responseAlias Response
+func (r *ModelResponse) UnmarshalJSON(data []byte) error {
+	type responseAlias ModelResponse
 	var wire struct {
 		*responseAlias
 		Output []json.RawMessage `json:"output"`
@@ -583,6 +588,9 @@ func (r *Response) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Response is an internal alias used by the existing graph and history code.
+type Response = ModelResponse
+
 type ResponseError struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
@@ -601,7 +609,8 @@ type ResponseUsage struct {
 }
 
 type TokenInputDetails struct {
-	CachedTokens int64 `json:"cached_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 }
 
 type TokenOutputDetails struct {
@@ -653,6 +662,7 @@ type OutputReasoning struct {
 	Content          []ReasoningText        `json:"content,omitempty"`
 	Summary          []ReasoningSummaryText `json:"summary,omitempty"`
 	EncryptedContent string                 `json:"encrypted_content,omitempty"`
+	Signature        string                 `json:"signature,omitempty"`
 }
 
 func (OutputReasoning) isResponseOutputItem() {}
