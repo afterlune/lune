@@ -21,10 +21,10 @@ func colorsFor(theme themeName) themeColors {
 	switch theme {
 	case themeLight:
 		return themeColors{
-			Background: "#f4f6f8", Foreground: "#202a35", Muted: "#657384",
-			Accent: "#176b87", Secondary: "#b54e3c", Success: "#287a55",
-			Warning: "#986500", Error: "#b33843", User: "#4f6476",
-			Assistant: "#176b87", Tool: "#b54e3c", Code: "#344c60",
+			Background: "#f5f1e8", Foreground: "#2e3338", Muted: "#6a665f",
+			Accent: "#925526", Secondary: "#805232", Success: "#4f6f52",
+			Warning: "#895d22", Error: "#a3473e", User: "#8a4d25",
+			Assistant: "#2e3338", Tool: "#6a5e53", Code: "#7c532c",
 		}
 	case themeAnime:
 		return themeColors{
@@ -35,10 +35,10 @@ func colorsFor(theme themeName) themeColors {
 		}
 	default:
 		return themeColors{
-			Background: "#171a1e", Foreground: "#f0f1f2", Muted: "#9aa3ad",
-			Accent: "#78aaa2", Secondary: "#c6a56e", Success: "#73ae8a",
-			Warning: "#c6a56e", Error: "#c77a7a", User: "#a7b1ba",
-			Assistant: "#f0f1f2", Tool: "#92a0a9", Code: "#cbd3db",
+			Background: "#0b1117", Foreground: "#e7dfd3", Muted: "#948f88",
+			Accent: "#d29a5a", Secondary: "#b8793f", Success: "#9ab378",
+			Warning: "#e0ae60", Error: "#d17a6e", User: "#e2b987",
+			Assistant: "#e7dfd3", Tool: "#c7b39a", Code: "#d4ad7a",
 		}
 	}
 }

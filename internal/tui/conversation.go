@@ -13,11 +13,9 @@ const (
 	messageCollapseLines   = 6
 	messagePreviewLines    = 3
 	messageCollapseRunes   = 600
+	conversationRoleWidth  = 8
 	wideConversationWidth  = 112
 	wideConversationHeight = 24
-	wideSidebarUsageRows   = 6
-	wideSidebarDividerRows = 1
-	wideSidebarMinActivity = 2
 )
 
 func (m *tuiModel) modernConversation() bool {
@@ -25,17 +23,7 @@ func (m *tuiModel) modernConversation() bool {
 }
 
 func (m *tuiModel) wideConversation() bool {
-	if !m.modernConversation() || m.width < wideConversationWidth || m.height < wideConversationHeight {
-		return false
-	}
-	width := max(1, m.width)
-	footerHeight := 1
-	bodyHeight := m.height - lipgloss.Height(m.renderHeader(width)) - 1 - m.input.Height() - m.commandSuggestionHeight() - footerHeight
-	if m.keymapOpen {
-		bodyHeight -= m.keymapEditorHeight()
-	}
-	minBodyHeight := wideSidebarUsageRows + wideSidebarDividerRows + wideSidebarMinActivity
-	return bodyHeight >= minBodyHeight
+	return m.modernConversation() && m.width >= wideConversationWidth && m.height >= wideConversationHeight
 }
 
 func (m *tuiModel) ensureMessageCollapseKeys() {
@@ -112,6 +100,111 @@ func wrapConversationText(text string, width int) []string {
 }
 
 func (m *tuiModel) renderConversation() (string, map[int]string, []string) {
+	if m.modernConversation() {
+		return m.renderSessionTimeline()
+	}
+	return m.renderLegacyConversation()
+}
+
+func (m *tuiModel) renderSessionTimeline() (string, map[int]string, []string) {
+	width := max(1, m.chat.Width())
+	textIndent := conversationRoleWidth + 1
+	textWidth := max(1, width-textIndent)
+	colors := colorsFor(m.preferences.Theme)
+	lines := make([]string, 0, len(m.entries)*3)
+	clickTargets := make(map[int]string)
+	foldable := make([]string, 0)
+
+	appendLine := func(line, target string) {
+		if strings.ContainsAny(line, "\r\n") {
+			for _, part := range strings.Split(strings.ReplaceAll(line, "\r\n", "\n"), "\n") {
+				lines = append(lines, part)
+				if target != "" {
+					clickTargets[len(lines)-1] = target
+				}
+			}
+			return
+		}
+		lines = append(lines, line)
+		if target != "" {
+			clickTargets[len(lines)-1] = target
+		}
+	}
+	appendLabeled := func(label, color, text, target string) {
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+		labelWidth := lipgloss.Width(label)
+		prefix := labelStyle.Render(label) + strings.Repeat(" ", max(1, conversationRoleWidth-labelWidth)+1)
+		wrapped := wrapConversationText(text, textWidth)
+		if len(wrapped) == 0 {
+			wrapped = []string{""}
+		}
+		appendLine(prefix+wrapped[0], target)
+		for _, line := range wrapped[1:] {
+			appendLine(strings.Repeat(" ", textIndent)+line, "")
+		}
+	}
+
+	for _, entry := range m.entries {
+		if strings.TrimSpace(entry.text) == "" {
+			continue
+		}
+		if len(lines) > 0 && lines[len(lines)-1] != "" {
+			lines = append(lines, "")
+		}
+
+		text := plainConversationText(entry.text)
+		label, color := "Lune", colors.Accent
+		switch entry.role {
+		case "you":
+			label, color = "User", colors.User
+			wrapped := wrapConversationText(text, textWidth)
+			isFoldable := len(wrapped) > messageCollapseLines || len([]rune(text)) > messageCollapseRunes
+			if isFoldable {
+				foldable = append(foldable, entry.collapseKey)
+			}
+			expanded := isFoldable && m.preferences.ExpandedMessages[entry.collapseKey]
+			shown := wrapped
+			if isFoldable && !expanded {
+				shown = wrapped[:min(messagePreviewLines, len(wrapped))]
+			}
+			clickTarget := ""
+			if isFoldable {
+				clickTarget = entry.collapseKey
+			}
+			appendLabeled(label, color, strings.Join(shown[:1], ""), clickTarget)
+			for _, line := range shown[1:] {
+				appendLine(strings.Repeat(" ", textIndent)+line, "")
+			}
+			if isFoldable {
+				labelText := fmt.Sprintf("Show more · %d lines", len(wrapped))
+				if expanded {
+					labelText = "Show less"
+				}
+				labelText = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(labelText)
+				appendLine(strings.Repeat(" ", textIndent)+labelText, entry.collapseKey)
+			}
+			continue
+		case "tool":
+			label, color = "Tool", colors.Tool
+		case "notice":
+			label, color = "Note", colors.Muted
+		case "permission":
+			label, color = "Approval", colors.Warning
+		case "error":
+			label, color = "Error", colors.Error
+		case "queued":
+			label, color = "Queued", colors.Muted
+		}
+		appendLabeled(label, color, text, "")
+	}
+
+	if len(lines) == 0 {
+		appendLabeled("Lune", colors.Accent, "Start a task, or use /resume to browse saved sessions.", "")
+	}
+	return strings.Join(lines, "\n"), clickTargets, foldable
+}
+
+func (m *tuiModel) renderLegacyConversation() (string, map[int]string, []string) {
 	width := max(1, m.chat.Width())
 	colors := colorsFor(m.preferences.Theme)
 	lines := make([]string, 0, len(m.entries)*3)
@@ -292,12 +385,16 @@ func (m *tuiModel) handleConversationClick(message tea.MouseClickMsg) bool {
 		m.effortPicker || m.queuePicker || m.permissionMenu || m.renamingSession || message.Button != tea.MouseLeft {
 		return false
 	}
-	chatWidth := m.chat.Width()
-	if message.X >= chatWidth {
+	chatStartX, bodyStartY := 0, lipgloss.Height(m.renderHeader(max(1, m.width)))
+	if m.wideConversation() {
+		chatStartX = m.sessionRailWidth() + 1
+		bodyStartY++ // wide workspace header divider
+	}
+	localX := message.X - chatStartX
+	if localX < 0 || localX >= m.chat.Width() {
 		return false
 	}
-	headerHeight := lipgloss.Height(m.renderHeader(max(1, m.width)))
-	row := message.Y - headerHeight
+	row := message.Y - bodyStartY
 	if row < 0 || row >= m.chat.Height() {
 		return false
 	}
@@ -307,95 +404,4 @@ func (m *tuiModel) handleConversationClick(message tea.MouseClickMsg) bool {
 		return true
 	}
 	return false
-}
-
-func (m *tuiModel) compactActivitySummary() string {
-	if len(m.activities) == 0 {
-		return ""
-	}
-	activity := m.activities[len(m.activities)-1]
-	colors := colorsFor(m.preferences.Theme)
-	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(activityBadge(activity.status))
-	return fitTerminalText(icon+" "+activity.summary+" · "+activity.status, max(1, m.width))
-}
-
-func (m *tuiModel) activitySidebarContent() string {
-	colors := colorsFor(m.preferences.Theme)
-	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Activity")}
-	if len(m.activities) == 0 {
-		lines = append(lines, "No tool activity yet.")
-	} else {
-		for _, activity := range m.activities {
-			icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(activityBadge(activity.status))
-			lines = append(lines, icon+" "+activity.summary+" · "+activity.status)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *tuiModel) activitySidebarView() string {
-	width, height := m.activity.Width(), m.activity.Height()
-	if width <= 0 || height <= 0 {
-		return m.activity.View()
-	}
-	colors := colorsFor(m.preferences.Theme)
-	content := strings.TrimSuffix(m.activity.View(), "\n")
-	lines := strings.Split(content, "\n")
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-
-	totalLines := m.activity.TotalLineCount()
-	hasOverflow := totalLines > height
-	thumbHeight := height
-	thumbStart := 0
-	if hasOverflow {
-		thumbHeight = max(1, height*height/totalLines)
-		thumbStart = int(float64(height-thumbHeight) * m.activity.ScrollPercent())
-	}
-	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-	thumbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
-	rendered := make([]string, 0, height)
-	for row, line := range lines {
-		padding := max(0, width-lipgloss.Width(line))
-		scrollbar := " "
-		if hasOverflow {
-			scrollbar = trackStyle.Render("│")
-			if row >= thumbStart && row < thumbStart+thumbHeight {
-				scrollbar = thumbStyle.Render("█")
-			}
-		}
-		rendered = append(rendered, line+strings.Repeat(" ", padding)+scrollbar)
-	}
-	return strings.Join(rendered, "\n")
-}
-
-func (m *tuiModel) usageSidebarContent(width int) string {
-	colors := colorsFor(m.preferences.Theme)
-	width = max(1, width)
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Usage")
-	labels := []string{"Input", "Output", "Reasoning", "Total", "Cached"}
-	values := []string{"—", "—", "—", "—", "—"}
-	if m.sessionUsage.measured > 0 {
-		values = []string{
-			compactTokens(m.sessionUsage.input),
-			compactTokens(m.sessionUsage.output),
-			compactTokens(m.sessionUsage.reasoning),
-			compactTokens(m.sessionUsage.total),
-			compactTokens(m.sessionUsage.cached),
-		}
-	}
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
-	lines := []string{title}
-	for index, label := range labels {
-		styledLabel := labelStyle.Render(label)
-		styledValue := valueStyle.Render(values[index])
-		gap := max(1, width-lipgloss.Width(styledLabel)-lipgloss.Width(styledValue))
-		lines = append(lines, styledLabel+strings.Repeat(" ", gap)+styledValue)
-	}
-	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 }

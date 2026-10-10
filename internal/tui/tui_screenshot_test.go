@@ -23,8 +23,8 @@ func TestTUIScreenshotSVGPreservesForegroundAndBold(t *testing.T) {
 	content := "\x1b[38;2;167;177;186;1m▸ YOU\x1b[22m muted marker tail\x1b[39m <body>&\x1b[0m"
 	svg := renderTUIScreenshotSVG(content, 40, 2, themeDark)
 	for _, expected := range []string{
-		`fill="#171a1e"`,
-		`fill="#f0f1f2"`,
+		`fill="#0b1117"`,
+		`fill="#e7dfd3"`,
 		`<tspan fill="#a7b1ba" font-weight="bold">▸ YOU</tspan>`,
 		`<tspan fill="#a7b1ba"> muted marker tail</tspan>`,
 		`&lt;body&gt;&amp;`,
@@ -55,10 +55,10 @@ func assertTUIScreenshotSVG(t *testing.T, name, got string) {
 	}
 	want, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read screenshot %s: %v; refresh with go test ./internal/tui -run 'TestTUI(Sidebar|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path, err)
+		t.Fatalf("read screenshot %s: %v; refresh with go test ./internal/tui -run 'TestTUI(SessionWorkspace|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path, err)
 	}
 	if !bytes.Equal([]byte(got), want) {
-		t.Fatalf("screenshot %s differs; refresh with go test ./internal/tui -run 'TestTUI(Sidebar|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path)
+		t.Fatalf("screenshot %s differs; refresh with go test ./internal/tui -run 'TestTUI(SessionWorkspace|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path)
 	}
 }
 

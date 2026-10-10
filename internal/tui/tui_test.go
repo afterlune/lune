@@ -755,9 +755,15 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		if cursorView.Cursor == nil || inputCursor == nil {
 			t.Fatal("focused composer did not expose a terminal cursor")
 		}
-		if cursorView.Cursor.X != inputCursor.X || cursorView.Cursor.Y != inputCursor.Y+1+ui.chat.Height()+1 {
+		expectedX := inputCursor.X
+		expectedY := inputCursor.Y + lipgloss.Height(ui.renderHeader(size.width)) + lipgloss.Height(ui.renderBody(size.width)) + 1
+		if ui.wideConversation() {
+			expectedX += ui.sessionRailWidth() + 1
+			expectedY++ // header rule
+		}
+		if cursorView.Cursor.X != expectedX || cursorView.Cursor.Y != expectedY {
 			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
-				inputCursor.X, inputCursor.Y+1+ui.chat.Height()+1)
+				expectedX, expectedY)
 		}
 		ui.input.SetValue("/")
 		ui.updateCommandSuggestions()

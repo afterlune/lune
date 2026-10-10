@@ -31,30 +31,30 @@ func TestTUIConversationAlignmentStylesAndCollapse(t *testing.T) {
 			wide := newConversationFixture(theme, "short")
 			conversation, _, _ := wide.renderConversation()
 			lines := strings.Split(tuiScreenshotANSI.ReplaceAllString(conversation, ""), "\n")
-			if len(lines) < 4 || !strings.Contains(lines[0], "▸ YOU") {
-				t.Fatalf("wide transcript = %#v, want user marker, body, spacing, and assistant", lines)
+			if len(lines) < 3 || !strings.HasPrefix(lines[0], "User") || !strings.HasPrefix(lines[2], "Lune") {
+				t.Fatalf("wide timeline = %#v, want left-aligned User and Lune events", lines)
 			}
-			if lipgloss.Width(lines[0]) != wide.chat.Width() || lipgloss.Width(lines[1]) != wide.chat.Width() {
-				t.Fatalf("wide user marker/body widths = %d/%d, want chat width %d", lipgloss.Width(lines[0]), lipgloss.Width(lines[1]), wide.chat.Width())
+			if lipgloss.Width(lines[0]) > wide.chat.Width() || lipgloss.Width(lines[2]) > wide.chat.Width() {
+				t.Fatalf("wide event widths = %d/%d, exceed chat width %d", lipgloss.Width(lines[0]), lipgloss.Width(lines[2]), wide.chat.Width())
 			}
-			if !strings.HasSuffix(lines[1], "Please review the config loading.") {
-				t.Fatalf("wide user body is not aligned to the right edge: %q", lines[1])
+			if strings.Index(lines[0], "Please review") != conversationRoleWidth+1 {
+				t.Fatalf("user body does not begin after the role gutter: %q", lines[0])
 			}
-			if lines[3] != "The assistant response stays on the left." {
-				t.Fatalf("assistant line = %q, want left-aligned plain text", lines[3])
+			if !strings.HasSuffix(lines[2], "The assistant response stays on the left.") {
+				t.Fatalf("assistant event = %q, want left-aligned text", lines[2])
 			}
-			assertOnlyUserMarkerIsBold(t, conversation, theme)
+			assertModernConversationRoleStyles(t, conversation, theme)
 
 			narrow := newConversationFixture(theme, "narrow")
 			narrowText, _, _ := narrow.renderConversation()
 			narrowLines := strings.Split(tuiScreenshotANSI.ReplaceAllString(narrowText, ""), "\n")
-			if narrowLines[0] != "▸ YOU" || narrowLines[1] != "Please review the config loading." {
-				t.Fatalf("narrow user block should be left aligned: %#v", narrowLines)
+			if !strings.HasPrefix(narrowLines[0], "User") || !strings.HasSuffix(narrowLines[0], "Please review the config loading.") {
+				t.Fatalf("narrow event should keep its left role gutter: %#v", narrowLines)
 			}
 
 			collapsed, _, _ := newConversationFixture(theme, "long-collapsed").renderConversation()
 			collapsedLines := strings.Split(tuiScreenshotANSI.ReplaceAllString(collapsed, ""), "\n")
-			if len(collapsedLines) < 5 || !strings.Contains(collapsedLines[4], "Show more ·") {
+			if len(collapsedLines) < 4 || !strings.Contains(collapsedLines[3], "Show more ·") {
 				t.Fatalf("collapsed transcript should show three preview lines and Show more: %#v", collapsedLines)
 			}
 			expanded, _, _ := newConversationFixture(theme, "long-expanded").renderConversation()
@@ -94,7 +94,9 @@ func newConversationFixture(theme themeName, scenario string) *tuiModel {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.preferences.Theme = theme
 	ui.colorProfile = colorprofile.TrueColor
-	ui.sessionID = "conversation-snapshot"
+	ui.sessionID = "session-current"
+	ui.sessionList = workspaceFixtureSessions()
+	ui.sessionIndex = 0
 	applyTextareaTheme(&ui.input, theme)
 	ui.Update(tea.WindowSizeMsg{Width: width, Height: height})
 
@@ -119,26 +121,39 @@ func newConversationFixture(theme themeName, scenario string) *tuiModel {
 	return ui
 }
 
-func assertOnlyUserMarkerIsBold(t *testing.T, conversation string, theme themeName) {
+func assertModernConversationRoleStyles(t *testing.T, conversation string, theme themeName) {
 	t.Helper()
 	lines := parseTUIScreenshotLines(conversation, colorsFor(theme).Foreground)
-	foundMarker := false
+	colors := colorsFor(theme)
+	roleColors := map[string]string{
+		"User": colors.User, "Lune": colors.Accent, "Tool": colors.Tool,
+		"Note": colors.Muted, "Approval": colors.Warning, "Error": colors.Error, "Queued": colors.Muted,
+	}
+	foundUser := false
 	for _, line := range lines {
 		for _, run := range line {
-			if !run.bold {
-				continue
+			if run.bold {
+				t.Fatalf("modern timeline should keep role labels and bodies regular weight: %q", run.text)
 			}
-			if run.text != "▸ YOU" {
-				t.Fatalf("unexpected bold transcript text %q", run.text)
+			if wantColor, ok := roleColors[run.text]; ok {
+				if run.foreground != wantColor {
+					t.Fatalf("role label %q color = %s, want %s", run.text, run.foreground, wantColor)
+				}
+				if run.text == "User" {
+					foundUser = true
+				}
 			}
-			if run.foreground != colorsFor(theme).User {
-				t.Fatalf("user marker color = %s, want %s", run.foreground, colorsFor(theme).User)
-			}
-			foundMarker = true
 		}
 	}
-	if !foundMarker {
-		t.Fatal("transcript user marker is not bold")
+	if !foundUser {
+		t.Fatal("timeline User role label is missing its theme color")
+	}
+	for _, line := range lines {
+		for _, run := range line {
+			if strings.Contains(run.text, "Please review") && run.bold {
+				t.Fatal("user message body should remain regular weight")
+			}
+		}
 	}
 }
 
