@@ -149,7 +149,48 @@ type tokenUsageTotals struct {
 
 const defaultInputPlaceholder = "Ask anything, or paste ResponseInput JSON..."
 
-var tuiCommands = []string{"/compact", "/continue", "/discard", "/effort", "/exit", "/fork", "/keymap", "/model", "/new", "/permissions", "/plan", "/queue", "/resume", "/rewind", "/theme", "/vim"}
+type tuiCommandSpec struct {
+	name        string
+	usage       string
+	description string
+}
+
+var tuiCommands = []tuiCommandSpec{
+	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
+	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
+	{name: "/effort", usage: "/effort [value]", description: "Choose reasoning effort."},
+	{name: "/exit", usage: "/exit", description: "Exit the chat."},
+	{name: "/fork", usage: "/fork", description: "Start a new session from completed history."},
+	{name: "/help", usage: "/help", description: "Show available commands."},
+	{name: "/keymap", usage: "/keymap [reset]", description: "Edit key bindings or restore defaults."},
+	{name: "/model", usage: "/model [profile]", description: "Choose a model profile."},
+	{name: "/new", usage: "/new", description: "Start a new session."},
+	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set the permission mode."},
+	{name: "/plan", usage: "/plan", description: "Toggle Plan mode."},
+	{name: "/queue", usage: "/queue", description: "Review or edit queued messages."},
+	{name: "/resume", usage: "/resume", description: "Choose a session to resume."},
+	{name: "/rewind", usage: "/rewind <n>", description: "Remove the latest n user turns."},
+	{name: "/theme", usage: "/theme [value]", description: "Show or change the theme."},
+	{name: "/vim", usage: "/vim", description: "Toggle Vim input mode."},
+}
+
+func tuiCommandNames() []string {
+	names := make([]string, 0, len(tuiCommands))
+	for _, command := range tuiCommands {
+		names = append(names, command.name)
+	}
+	return names
+}
+
+func tuiHelpText() string {
+	lines := []string{"Available commands:"}
+	for _, command := range tuiCommands {
+		lines = append(lines, fmt.Sprintf("  %-23s %s", command.usage, command.description))
+	}
+	lines = append(lines, "Use /keymap to view or change keyboard shortcuts.")
+	return strings.Join(lines, "\n")
+}
 
 var reasoningEffortOptions = []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
@@ -722,6 +763,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	case "":
 		m.status = "Enter a message or command."
 		return m, nil
+	case "/help":
+		m.addEntry("notice", tuiHelpText(), false)
+		m.resetInput()
+		return m, nil
 	case "/exit":
 		return m, tea.Quit
 	case "/resume":
@@ -786,7 +831,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/") {
 		m.status = "Unknown command."
-		m.addEntry("error", fmt.Sprintf("Unknown command %q. Available commands: %s", line, strings.Join(tuiCommands, " ")), true)
+		m.addEntry("error", fmt.Sprintf("Unknown command %q. Available commands: %s", line, strings.Join(tuiCommandNames(), " ")), true)
 		return m, nil
 	}
 
@@ -2085,10 +2130,14 @@ func (m *tuiModel) updateCommandSuggestions() {
 	if !strings.HasPrefix(line, "/") {
 		return
 	}
-	commands := tuiCommands
-	for _, command := range commands {
-		if strings.HasPrefix(command, line) {
-			m.commandSuggestions = append(m.commandSuggestions, command)
+	for _, command := range tuiCommands {
+		// Keep the bare-slash menu within its existing height; typing "/h"
+		// still offers /help for completion.
+		if line == "/" && command.name == "/help" {
+			continue
+		}
+		if strings.HasPrefix(command.name, line) {
+			m.commandSuggestions = append(m.commandSuggestions, command.name)
 		}
 	}
 }

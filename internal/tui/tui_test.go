@@ -287,12 +287,19 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	ui := newTUIModel(client, false)
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if len(ui.commandSuggestions) != len(tuiCommands) {
-		t.Fatalf("suggestions = %#v, want all available commands", ui.commandSuggestions)
+	if len(ui.commandSuggestions) != len(tuiCommands)-1 {
+		t.Fatalf("suggestions = %#v, want the existing bare-slash menu size", ui.commandSuggestions)
 	}
 	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") {
 		t.Fatalf("suggestions = %#v, want /plan", ui.commandSuggestions)
 	}
+	ui.input.SetValue("/h")
+	ui.updateCommandSuggestions()
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/help") {
+		t.Fatalf("suggestions = %#v, want /help for the /h prefix", ui.commandSuggestions)
+	}
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
 	if !strings.Contains(ui.View().Content, "/compact") {
 		t.Fatalf("view = %q, want command suggestions", ui.View().Content)
 	}
@@ -313,6 +320,45 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(ui.entries[len(ui.entries)-1].text, "Unknown command") {
 		t.Fatalf("last entry = %#v, want unknown-command error", ui.entries[len(ui.entries)-1])
+	}
+	if !strings.Contains(ui.entries[len(ui.entries)-1].text, "/help") {
+		t.Fatalf("unknown-command entry = %#v, want /help in the command list", ui.entries[len(ui.entries)-1])
+	}
+}
+
+func TestTUIHelpCommandShowsCommandsWithoutStartingTask(t *testing.T) {
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	ui.input.SetValue("/help")
+
+	updated, command := ui.submit()
+	finished := updated.(*tuiModel)
+	if command != nil {
+		t.Fatalf("/help returned a command: %v", command)
+	}
+	if client.responses != 0 || len(client.inputs) != 0 {
+		t.Fatalf("/help started a task: responses=%d inputs=%#v", client.responses, client.inputs)
+	}
+	if finished.input.Value() != "" {
+		t.Fatalf("input after /help = %q, want cleared input", finished.input.Value())
+	}
+	if len(finished.entries) == 0 {
+		t.Fatal("/help did not add a help entry")
+	}
+	help := finished.entries[len(finished.entries)-1]
+	if help.role != "notice" || help.err {
+		t.Fatalf("help entry = %#v, want a non-error notice", help)
+	}
+	for _, expected := range []string{
+		"Available commands:",
+		"/help",
+		"/keymap [reset]",
+		"/rewind <n>",
+		"Use /keymap to view or change keyboard shortcuts.",
+	} {
+		if !strings.Contains(help.text, expected) {
+			t.Errorf("help text %q is missing %q", help.text, expected)
+		}
 	}
 }
 

@@ -27,6 +27,38 @@ type cliCore interface {
 	SetPermissionMode(core.PermissionMode) error
 }
 
+type cliCommandHelp struct {
+	name        string
+	usage       string
+	description string
+}
+
+var cliCommands = []cliCommandHelp{
+	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
+	{name: "/exit", usage: "/exit", description: "Exit the chat."},
+	{name: "/help", usage: "/help", description: "Show available commands."},
+	{name: "/new", usage: "/new", description: "Start a new session."},
+	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set mode: read-only, workspace, ask, full-access."},
+	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
+}
+
+func cliCommandNames() []string {
+	names := make([]string, 0, len(cliCommands))
+	for _, command := range cliCommands {
+		names = append(names, command.name)
+	}
+	return names
+}
+
+func cliHelpText() string {
+	lines := []string{"Available commands:"}
+	for _, command := range cliCommands {
+		lines = append(lines, fmt.Sprintf("  %-24s %s", command.usage, command.description))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 type escapeWatcher func() (<-chan struct{}, func(), error)
 
 func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchEscape escapeWatcher) error {
@@ -52,6 +84,8 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 		}
 		line = strings.TrimSpace(line)
 		switch {
+		case line == "/help":
+			fmt.Fprint(stdout, cliHelpText())
 		case line == "/exit":
 			return nil
 		case line == "/new":
@@ -97,7 +131,7 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 			}
 		case line == "":
 		case strings.HasPrefix(line, "/"):
-			fmt.Fprintf(stderr, "Unknown command %q. Available commands: /compact /discard /exit /new /permissions /resume\n", line)
+			fmt.Fprintf(stderr, "Unknown command %q. Available commands: %s\n", line, strings.Join(cliCommandNames(), " "))
 		default:
 			pending, err := client.HasPending(ctx, sessionID)
 			if err != nil {

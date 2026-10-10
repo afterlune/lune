@@ -129,6 +129,39 @@ func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
 	}
 }
 
+func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/help\n/exit\n", nil)
+
+	for _, expected := range []string{
+		"Available commands:",
+		"/help",
+		"/permissions [mode]",
+		"/resume",
+		"read-only, workspace, ask, full-access",
+	} {
+		if !strings.Contains(stdout, expected) {
+			t.Errorf("help output %q is missing %q", stdout, expected)
+		}
+	}
+	if client.responses != 0 || len(client.inputs) != 0 {
+		t.Fatalf("help started a task: responses=%d inputs=%#v", client.responses, client.inputs)
+	}
+	if got := strings.Count(stdout, "> "); got != 2 {
+		t.Errorf("prompt count = %d, want help to return to the input loop", got)
+	}
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+}
+
+func TestCLIUnknownCommandListsHelp(t *testing.T) {
+	_, stderr := runCLI(t, &fakeCLICore{}, "/not-a-command\n/exit\n", nil)
+	if !strings.Contains(stderr, "Available commands:") || !strings.Contains(stderr, "/help") {
+		t.Fatalf("unknown-command output = %q, want the /help command in the list", stderr)
+	}
+}
+
 func TestChatLoopReadsTextAndJSONUntilExit(t *testing.T) {
 	client := &fakeCLICore{}
 	input := "hello\n" + `[{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect"},{"type":"input_video","video_url":"clip"}]}]` + "\n/exit\nignored\n"

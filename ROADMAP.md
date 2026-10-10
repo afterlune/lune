@@ -50,7 +50,7 @@
 - [ ] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [ ] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
 - [ ] 新增 `internal/session/store_test.go`
-- [ ] 新增 `/help`
+- [x] 新增 `/help`（行式 CLI 与 TUI 均列出各自支持的命令）
 - [ ] 日志轮转 `.luneagent/agent.log`
 
 ## P1 公共底座（一次改好，后续都直接复用）
