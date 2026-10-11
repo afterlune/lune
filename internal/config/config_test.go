@@ -75,7 +75,7 @@ func TestLoadMCPServerConfigsWithoutStartingServers(t *testing.T) {
 		"defaultModel":"lead",
 		"mcpServers":{
 			"local-files":{"transport":"stdio","command":"mcp-files","args":["--root","./data"],"env":{"MCP_TOKEN":"${MCP_TOKEN}"}},
-			"remote-docs":{"transport":"streamable-http","url":"https://mcp.example.test/v1/mcp?region=west"}
+			"remote-docs":{"transport":"streamable-http","url":"https://mcp.example.test/v1/mcp?region=west","clientMetadataURL":"https://client.example.test/oauth/lune.json"}
 		}
 	}`)
 	config, err := Load(path)
@@ -87,7 +87,7 @@ func TestLoadMCPServerConfigsWithoutStartingServers(t *testing.T) {
 		t.Fatalf("stdio config = %#v; env values must remain literal", stdio)
 	}
 	http := config.MCPServers["remote-docs"]
-	if http.Transport != MCPTransportStreamableHTTP || http.URL != "https://mcp.example.test/v1/mcp?region=west" {
+	if http.Transport != MCPTransportStreamableHTTP || http.URL != "https://mcp.example.test/v1/mcp?region=west" || http.ClientMetadataURL != "https://client.example.test/oauth/lune.json" {
 		t.Fatalf("streamable HTTP config = %#v", http)
 	}
 }
@@ -155,6 +155,10 @@ func TestLoadRejectsUnknownAndInvalidFields(t *testing.T) {
 		{"streamable HTTP rejects relative URL", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"/mcp"}}}`, "absolute http or https URL"},
 		{"streamable HTTP rejects userinfo", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://user:secret@mcp.example.test/mcp"}}}`, "must not include userinfo"},
 		{"streamable HTTP rejects fragment", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test/mcp#fragment"}}}`, "must not include a fragment"},
+		{"stdio rejects client metadata URL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","clientMetadataURL":"https://client.example.test/oauth/lune.json"}}}`, "only valid for streamable-http"},
+		{"client metadata URL requires HTTPS", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test","clientMetadataURL":"http://client.example.test/lune.json"}}}`, "absolute HTTPS URL"},
+		{"client metadata URL requires path", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test","clientMetadataURL":"https://client.example.test"}}}`, "absolute HTTPS URL"},
+		{"client metadata URL rejects query", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test","clientMetadataURL":"https://client.example.test/lune.json?x=1"}}}`, "no query"},
 		{"MCP server name must not be padded", `{` + base + `,"mcpServers":{" server ":{"transport":"stdio","command":"mcp"}}}`, "keys must be non-empty and unpadded"},
 		{"MCP command cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp\u0000server"}}}`, "command must not contain NUL"},
 		{"MCP arg cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","args":["bad\u0000arg"]}}}`, "args[0] must not contain NUL"},

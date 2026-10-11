@@ -19,11 +19,12 @@ const (
 // no environment-variable expansion is performed. Loading this data never
 // starts a process or connects to the endpoint; the MCP runtime consumes it later.
 type MCPServerConfig struct {
-	Transport MCPTransport      `json:"transport"`
-	Command   string            `json:"command,omitempty"` // Executable for stdio transport; not a shell command.
-	Args      []string          `json:"args,omitempty"`    // Literal arguments passed to the stdio executable.
-	Env       map[string]string `json:"env,omitempty"`     // Literal environment values for stdio; no expansion.
-	URL       string            `json:"url,omitempty"`     // HTTP endpoint for streamable-http transport.
+	Transport         MCPTransport      `json:"transport"`
+	Command           string            `json:"command,omitempty"`           // Executable for stdio transport; not a shell command.
+	Args              []string          `json:"args,omitempty"`              // Literal arguments passed to the stdio executable.
+	Env               map[string]string `json:"env,omitempty"`               // Literal environment values for stdio; no expansion.
+	URL               string            `json:"url,omitempty"`               // HTTP endpoint for streamable-http transport.
+	ClientMetadataURL string            `json:"clientMetadataURL,omitempty"` // Public OAuth Client ID Metadata Document URL.
 }
 
 func validateMCPServers(servers map[string]MCPServerConfig) error {
@@ -52,6 +53,9 @@ func validateMCPServers(servers map[string]MCPServerConfig) error {
 			if server.URL != "" {
 				return fmt.Errorf("mcpServers[%q].url is only valid for streamable-http transport", name)
 			}
+			if server.ClientMetadataURL != "" {
+				return fmt.Errorf("mcpServers[%q].clientMetadataURL is only valid for streamable-http transport", name)
+			}
 			for index, argument := range server.Args {
 				if strings.ContainsRune(argument, '\x00') {
 					return fmt.Errorf("mcpServers[%q].args[%d] must not contain NUL", name, index)
@@ -67,9 +71,22 @@ func validateMCPServers(servers map[string]MCPServerConfig) error {
 			if err := validateMCPServerURL(server.URL); err != nil {
 				return fmt.Errorf("mcpServers[%q].url: %w", name, err)
 			}
+			if server.ClientMetadataURL != "" {
+				if err := validateMCPClientMetadataURL(server.ClientMetadataURL); err != nil {
+					return fmt.Errorf("mcpServers[%q].clientMetadataURL: %w", name, err)
+				}
+			}
 		default:
 			return fmt.Errorf("mcpServers[%q].transport must be %q or %q", name, MCPTransportStdio, MCPTransportStreamableHTTP)
 		}
+	}
+	return nil
+}
+
+func validateMCPClientMetadataURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || parsed.Path == "" || parsed.Path == "/" || parsed.RawQuery != "" || strings.TrimSpace(value) != value {
+		return fmt.Errorf("must be an absolute HTTPS URL with a non-root path and no query, userinfo, or fragment")
 	}
 	return nil
 }
@@ -86,6 +103,14 @@ func validateMCPServerEnv(name string, env map[string]string) error {
 		}
 		if strings.ContainsRune(env[key], '\x00') {
 			return fmt.Errorf("mcpServers[%q].env[%q] must not contain NUL", name, key)
+		}
+		for _, previous := range keys {
+			if previous == key {
+				break
+			}
+			if strings.EqualFold(previous, key) {
+				return fmt.Errorf("mcpServers[%q].env keys must be unique regardless of case", name)
+			}
 		}
 	}
 	return nil

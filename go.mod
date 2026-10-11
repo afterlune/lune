@@ -10,6 +10,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
+	github.com/go-keyring/keyring v0.3.1
 	golang.design/x/clipboard v0.9.0
 	golang.org/x/image v0.47.0
 	golang.org/x/net v0.59.0
@@ -24,8 +25,13 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/ebitengine/purego v0.10.1 // indirect
+	github.com/ebitengine/purego v0.10.2 // indirect
+	github.com/go-freedesktop/secretservice v0.1.0 // indirect
+	github.com/go-macos/keychain v0.1.0 // indirect
+	github.com/go-macos/objc v0.1.1 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

@@ -33,6 +33,19 @@ func TestServerCompactionRequiresResponsesProtocol(t *testing.T) {
 	}
 }
 
+func TestInputAudioCapabilityRequiresResponsesProtocol(t *testing.T) {
+	config := Config{
+		Providers: map[string]ProviderConfig{
+			"claude": {Protocol: ProtocolAnthropicMessages, BaseURL: "https://example.test", APIKey: "key"},
+		},
+		Models:       map[string]ModelProfile{"main": {Provider: "claude", Model: "claude-test", MaxOutputTokens: 512, SupportsInputAudio: true}},
+		DefaultModel: "main",
+	}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "supportsInputAudio") {
+		t.Fatalf("Validate error = %v, want input audio protocol error", err)
+	}
+}
+
 func TestDeepSeekProviderCreateResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Method != http.MethodPost {

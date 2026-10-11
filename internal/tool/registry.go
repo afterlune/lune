@@ -190,6 +190,46 @@ func (r *Registry) Register(registration ToolRegistration) error {
 	return nil
 }
 
+// Unregister removes a dynamically managed tool and drops its category when
+// the category no longer contains any registered tools.
+func (r *Registry) Unregister(name string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[name]; !exists {
+		return false
+	}
+	categoryName := r.toolMetadata[name].Category.Name
+	if categoryName == "" && r.uncategorized > 0 {
+		r.uncategorized--
+	}
+	delete(r.tools, name)
+	delete(r.toolMetadata, name)
+	for index, existing := range r.toolOrder {
+		if existing == name {
+			r.toolOrder = append(r.toolOrder[:index], r.toolOrder[index+1:]...)
+			break
+		}
+	}
+	if categoryName != "" {
+		for _, metadata := range r.toolMetadata {
+			if metadata.Category.Name == categoryName {
+				return true
+			}
+		}
+		delete(r.categories, categoryName)
+		for index, existing := range r.categoryOrder {
+			if existing == categoryName {
+				r.categoryOrder = append(r.categoryOrder[:index], r.categoryOrder[index+1:]...)
+				break
+			}
+		}
+	}
+	return true
+}
+
 // ToolMetadata returns the registration metadata for a tool.
 func (r *Registry) ToolMetadata(name string) (model.ToolMetadata, bool) {
 	if r == nil {
@@ -320,9 +360,21 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 		Failed:   result.Err != nil,
 		Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 	})
+	toolOutput := model.NewToolOutputText(result.Text())
+	if result.ModelOutput != nil {
+		toolOutput = *result.ModelOutput
+		if result.Err != nil {
+			if toolOutput.Text != nil {
+				toolOutput = model.NewToolOutputParts(model.InputText{Text: *toolOutput.Text}, model.InputText{Text: "Error: " + result.Err.Error()})
+			} else {
+				toolOutput.Parts = append(toolOutput.Parts, model.InputText{Text: "Error: " + result.Err.Error()})
+			}
+		}
+	}
 	return model.InputFunctionCallOutput{
-		CallID: call.CallID,
-		Output: model.NewToolOutputText(result.Text()),
+		CallID:         call.CallID,
+		Output:         toolOutput,
+		TranscriptOnly: append([]model.ContentPart(nil), result.TranscriptOnly...),
 	}
 }
 

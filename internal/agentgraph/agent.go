@@ -61,6 +61,7 @@ type AgentOptions struct {
 	Provider           string
 	Protocol           string
 	ServerCompaction   bool
+	SupportsInputAudio bool
 	Model              string
 	Team               TeamExecutor
 	StreamObserver     func(model.ModelStreamEvent)
@@ -86,6 +87,7 @@ type State struct {
 	Provider                 string                     `json:"provider,omitempty"`
 	Protocol                 string                     `json:"protocol,omitempty"`
 	ServerCompaction         bool                       `json:"server_compaction,omitempty"`
+	SupportsInputAudio       bool                       `json:"supports_input_audio"`
 	ServerCompactionFallback bool                       `json:"server_compaction_fallback,omitempty"`
 	ModelProfile             string                     `json:"model_profile,omitempty"`
 	Model                    string                     `json:"model,omitempty"`
@@ -217,6 +219,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.Provider = a.options.Provider
 	state.Protocol = a.options.Protocol
 	state.ServerCompaction = a.options.ServerCompaction
+	state.SupportsInputAudio = a.options.SupportsInputAudio
 	state.ModelProfile = a.options.Profile
 	state.Model = a.options.Model
 	state.ModelOverride = strings.TrimSpace(taskOptions.Model)
@@ -310,7 +313,8 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if state.Protocol == "" {
 		state.Protocol = a.options.Protocol
 		state.ServerCompaction = a.options.ServerCompaction
-	} else if state.Protocol != a.options.Protocol || state.ServerCompaction != a.options.ServerCompaction {
+		state.SupportsInputAudio = a.options.SupportsInputAudio
+	} else if state.Protocol != a.options.Protocol || state.ServerCompaction != a.options.ServerCompaction || state.SupportsInputAudio != a.options.SupportsInputAudio {
 		return failTask(state, errors.New("provider protocol or compaction capability changed; the paused task remains pinned to its original configuration"))
 	}
 	if state.Transcript.Items == nil && state.Transcript.Text == nil {
@@ -590,11 +594,19 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		}
 	default:
 		toolContext := model.WithAgentID(ctx, state.AgentID)
+		toolContext = model.WithInputAudioSupport(toolContext, state.SupportsInputAudio)
 		output = a.tools.ExecuteCall(toolContext, call)
 	}
 
+	transcriptOnly := output.TranscriptOnly
+	output.TranscriptOnly = nil
 	state.History.Items = append(state.History.Items, output)
 	state.Transcript.Items = append(state.Transcript.Items, output)
+	if len(transcriptOnly) > 0 {
+		state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{
+			Role: model.RoleAssistant, Content: model.NewMessageContentParts(transcriptOnly...),
+		})
+	}
 	state.PendingIndex++
 	if state.PendingIndex < len(state.PendingCalls) {
 		return graph.To(state, toolNode), nil

@@ -4,7 +4,7 @@
 > 同一文件/同一接口的改动尽量集中在同一阶段，使前面的施工对后面的影响最小。
 > 标签：`[A]` 会话设置 `[B]` 历史 `[C]` 会话管理 `[E]` 上下文预算/用量 `[G]` 工具结果瘦身 `[H]` 流式 `[D]` MCP `[F]` Subagent `[M]` 多模态输入 `[Q]` 提问 `[X]` 桌面端
 >
-> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（95 条已完成、67 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
+> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（97 条已完成、65 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
 > [x] 表示已完成；[ ] 表示仍需跟踪。注释会区分部分实现、监控、暂缓和待决策。
 
 ---
@@ -36,7 +36,7 @@
 - [x] 修 `workspace` 模式对未知工具免批准的安全缺口（同一改造）
 - [x] 命令取消会结束 shell 子进程：Unix 通过独立 process group 终止整组，Windows 通过 `taskkill /T` 结束进程树，并设置 `WaitDelay` 作为管道关闭兜底；Linux/Windows 回归测试验证后台子进程不会在取消后继续完成。
 - [x] 内置文件工具在 Registry 生命周期内持有 workspace-scoped `os.Root` 执行读取、写入、编辑、列举、glob 与 grep；路径替换后仍锁定原目录，路径检查后的 symlink 越界会被拒绝，递归 grep 在打开前跳过特殊文件；Core 正常关闭及启动失败均释放句柄。
-- [x] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限） — providers/models、context/autoCompact、Responses `serverCompaction`、附件限制及 MCP stdio/Streamable HTTP schema 均有配置校验；MCP 运行与鉴权仍留待 P4。
+- [x] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限） — providers/models、context/autoCompact、Responses `serverCompaction`、附件限制及 MCP stdio/Streamable HTTP/OAuth CIMD URL schema 均有配置校验。
 - [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=3`；版本缺失的旧数据经 v0→v1→v2→v3 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
 - [x] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [x] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
@@ -52,7 +52,7 @@
 - [ ] `[A]` **`Instructions` 合成器**：把 `Goal` + `称呼` + `persona` + plan mode 常量统一拼装
 - [ ] `[A][E]` `requestModel()` 应用上述设置（model 回退默认、effort → `Reasoning`、instructions 走合成器） — 部分实现：model fallback 与任务级 model override、reasoning effort、Goal 与 Plan 指令已接入；上下文窗口现在驱动自动压缩；称呼/persona 顺序待决策。
 - [ ] `[A][E]` 设置持久化并恢复（含称呼、persona）——现在由 `core.Session` 承载 — 部分实现：现有会话/检查点保存 model、effort、Goal 和上下文字段；称呼与 persona 不存在。
-- [ ] `[Q]` **交互式回调通道抽象**：把审批通道（`Core.ResolveApproval` + `core.ApprovalRequest`）泛化成通用用户提问通道，供 `[Q]` 复用
+- [ ] `[Q]` **交互式回调通道抽象**：把审批通道（`Core.ResolveApproval` + `core.ApprovalRequest`）泛化成通用用户提问通道，供 `[Q]` 复用 — Core 已有 request/resolve 事件通道和 headless/subagent fail-fast；TUI 表单/URL 交互待设计确认。
 
 ## P2 会话与历史（相关能力已落地）
 
@@ -142,8 +142,8 @@
 - [x] 测试：图片粘贴组装、占位渲染、超限提示、持久化往返 — 覆盖 TUI 草稿/队列/撤销与双主题 14 张 composer 状态截图，Core 测试覆盖 history 持久化。
 
 ### P3.5 模型可以提问（`[Q]`）
-> 状态：原需求完整保留；Core 审批通道尚未泛化为任务内提问。
-> 现状：agent 只会自主跑到结束；**可复用审批通道**（`core.ApprovalRequest` + `Core.ResolveApproval` 已是「事件 + 等待应答」）。
+> 状态：原需求完整保留；通用 Core 交互通道已实现，`ask_user` 工具和 TUI 表单渲染尚未实现。
+> 现状：agent 只会自主跑到结束；审批仍使用 `core.ApprovalRequest`，MCP elicitation 复用新增的事件 + 等待应答通道。
 - [ ] 新增 `ask_user` 工具并注册进 `internal/tool`（新分类 `ask`）
 - [ ] 阻塞式问答：经通用用户提问通道发事件并等待应答（不另造一套）
 - [ ] TUI / Desktop：提问条目渲染（需要**文本输入**，区别于审批的 Y/N）；支持多行回答
@@ -158,17 +158,17 @@
 
 ## P4 新子系统与收尾
 
-> 团队代理主流程已实现；本区保留团队展示/测试余项，以及尚未开始的 MCP 与命令决策。
+> 团队代理主流程与 MCP 后端已实现；本区保留团队展示/测试余项、MCP TUI 设计门槛及命令决策。
 
 - [x] `[F]` Subagent / Team **剩余项**（主体已落地于 `core/team.go`；隔离测试、用量归属和成员活动展示均已补齐）
   - [x] 独立上下文与父子隔离的**回归测试**补齐 — Core 端到端测试验证 worker 只收到独立任务文本，不继承 parent history；parent 仍保留自身历史并接收 child 结果。
   - [x] 深度上限、禁止自我递归 — 当前 worker Agent 未注入 TeamExecutor，因此不能递归委派；没有额外深度配置。
   - [x] 用量归属的展示口径（team 成员已带 `agentID/profile/provider/modelID`） — Core 会话记录保留 agent/profile/provider/model；TUI Usage 明细行已展示归属并在恢复会话后保留。
   - [x] 前端嵌套展示成员活动 — `EventAgentStarted/Finished` 携带 `TeamRunID`；Activity/Usage 抽屉按 Team 分组显示成员状态与模型。
-- [x] `[D]` MCP：`config.json` 增 `mcpServers` — 配置类型与静态校验已完成；连接、鉴权与工具注册仍待实现。
-- [ ] `[D]` JSON-RPC 2.0 客户端（initialize / tools/list / tools/call），stdio + streamable HTTP
-- [ ] `[D]` MCP 工具注册到 `tool.Registry`（`mcp` 分类，默认需批准）
-- [ ] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连
+- [x] `[D]` MCP：`config.json` 增 `mcpServers` — stdio、Streamable HTTP 与 OAuth CIMD 配置校验已完成。
+- [x] `[D]` 当前版 JSON-RPC 客户端（`2026-07-28`：tools/list、tools/call、resources/read；stdio + Streamable HTTP JSON/SSE）— 不发送已移除的 initialize 握手；MRTR、`x-mcp-header`、分页和当前版本请求元数据均已实现。
+- [x] `[D]` MCP 工具注册到 `tool.Registry`（`mcp` 分类、Network 权限、readOnlyHint 仅影响 Plan 可见性）— 动态注册/移除及结果多模态内容、transcript-only audience 均复用现有工具与会话数据流。
+- [ ] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连 — Core manager 已有工作区启用状态、启动恢复、OAuth/keyring、stdio 进程回收及未来调用前重启；TUI 命令、OAuth 状态及 elicitation 表单/URL 屏待确认 [MCP 设计稿](docs/design/tui/mcp-review.svg) 后实施并补多状态截图。
 - [ ] `/review`（语义待定）
 - [x] 更新命令清单 / footer 文案；日志加 `model` / `effort` — TUI 命令清单已列出 `/model`、`/effort`；旧式 footer 显示设置摘要，现代深浅主题 footer 按已确认设计保持紧凑；模型请求日志记录 model 与 reasoning_effort。CLI 命令集是否同步仍由下一项决策跟踪。
 - [ ] 决定是否同步非 TUI 命令集（`cmd/core_cli.go`）

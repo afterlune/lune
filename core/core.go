@@ -22,6 +22,7 @@ import (
 
 	"github.com/afterlune/lune/internal/agentgraph"
 	projectconfig "github.com/afterlune/lune/internal/config"
+	"github.com/afterlune/lune/internal/mcp"
 	"github.com/afterlune/lune/internal/model"
 	"github.com/afterlune/lune/internal/session"
 	"github.com/afterlune/lune/internal/tool"
@@ -62,17 +63,19 @@ const (
 type EventKind string
 
 const (
-	EventTaskStarted       EventKind = "task_started"
-	EventTaskFinished      EventKind = "task_finished"
-	EventToolStarted       EventKind = "tool_started"
-	EventToolFinished      EventKind = "tool_finished"
-	EventUsage             EventKind = "usage"
-	EventApprovalRequired  EventKind = "approval_required"
-	EventApprovalCancelled EventKind = "approval_cancelled"
-	EventAgentStarted      EventKind = "agent_started"
-	EventAgentFinished     EventKind = "agent_finished"
-	EventModelStream       EventKind = "model_stream"
-	EventContextCompaction EventKind = "context_compaction"
+	EventTaskStarted              EventKind = "task_started"
+	EventTaskFinished             EventKind = "task_finished"
+	EventToolStarted              EventKind = "tool_started"
+	EventToolFinished             EventKind = "tool_finished"
+	EventUsage                    EventKind = "usage"
+	EventApprovalRequired         EventKind = "approval_required"
+	EventApprovalCancelled        EventKind = "approval_cancelled"
+	EventUserInteractionRequired  EventKind = "user_interaction_required"
+	EventUserInteractionCancelled EventKind = "user_interaction_cancelled"
+	EventAgentStarted             EventKind = "agent_started"
+	EventAgentFinished            EventKind = "agent_finished"
+	EventModelStream              EventKind = "model_stream"
+	EventContextCompaction        EventKind = "context_compaction"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads
@@ -88,6 +91,8 @@ type Event struct {
 	Usage                Usage
 	Approval             *ApprovalRequest
 	ApprovalID           string
+	Interaction          *UserInteractionRequest
+	InteractionID        string
 	Err                  string
 	AgentID              string
 	AgentName            string
@@ -135,6 +140,20 @@ type ApprovalRequest struct {
 	AgentID   string
 	Tool      string
 	Arguments json.RawMessage
+}
+
+// UserInteractionRequest is a transient server request that needs a human
+// response. Request payloads must not be persisted or logged without review.
+type UserInteractionRequest struct {
+	ID         string
+	AgentID    string
+	ServerName string
+	Request    json.RawMessage
+}
+
+type userInteractionResult struct {
+	Response json.RawMessage
+	Err      error
 }
 
 type EventHandler func(Event)
@@ -308,16 +327,19 @@ type Core struct {
 	teamRuns         *teamStore
 	team             *teamExecutor
 	runtime          *graphResponder
+	mcpManager       *mcp.Manager
 	checkpoints      *sqlite.Store[agentgraph.State]
 	sessions         *session.Store
 
-	mu              sync.RWMutex
-	usageMu         sync.Mutex
-	approvalQueueMu sync.Mutex
-	active          TaskState
-	handler         EventHandler
-	approvals       map[string]chan bool
-	closed          bool
+	mu                       sync.RWMutex
+	usageMu                  sync.Mutex
+	approvalQueueMu          sync.Mutex
+	active                   TaskState
+	handler                  EventHandler
+	approvals                map[string]chan bool
+	interactions             map[string]chan userInteractionResult
+	userInteractionAvailable bool
+	closed                   bool
 }
 
 func New(config Config) (_ *Core, err error) {
@@ -400,11 +422,31 @@ func New(config Config) (_ *Core, err error) {
 			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
 			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
 		},
-		teamRuns:    teamRuns,
-		checkpoints: checkpoints,
-		sessions:    sessions,
-		active:      TaskState{Status: TaskIdle},
-		approvals:   make(map[string]chan bool),
+		teamRuns:     teamRuns,
+		checkpoints:  checkpoints,
+		sessions:     sessions,
+		active:       TaskState{Status: TaskIdle},
+		approvals:    make(map[string]chan bool),
+		interactions: make(map[string]chan userInteractionResult),
+	}
+	attachmentLimits := c.ProjectAttachmentLimits()
+	mcpManager, err := mcp.NewManager(mcp.Options{
+		Workspace: workspace, StateDir: filepath.Join(workspace, ".luneagent"), Servers: projectConfig.MCPServers, Registry: registry,
+		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
+		RequestInteraction: c.requestUserInteraction,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.mcpManager = mcpManager
+	closeMCPManager := true
+	defer func() {
+		if closeMCPManager {
+			_ = mcpManager.Close()
+		}
+	}()
+	for _, restoreErr := range mcpManager.RestoreEnabled() {
+		slog.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
 	}
 	team := &teamExecutor{core: c, models: models, tools: registry, checkpoints: checkpoints, store: teamRuns}
 	c.team = team
@@ -414,7 +456,7 @@ func New(config Config) (_ *Core, err error) {
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
 	}
-	closeCheckpoints, closeSessions, closeTeamRuns, closeRegistry = false, false, false, false
+	closeCheckpoints, closeSessions, closeTeamRuns, closeRegistry, closeMCPManager = false, false, false, false, false
 	return c, nil
 }
 
@@ -439,7 +481,8 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
-		Team: c.team,
+		SupportsInputAudio: profile.SupportsInputAudio,
+		Team:               c.team,
 		StreamObserver: func(event model.ModelStreamEvent) {
 			activeModel := c.State().Model
 			if activeModel == "" {
@@ -493,8 +536,124 @@ func (c *Core) Close() error {
 		default:
 		}
 	}
+	for id, response := range c.interactions {
+		delete(c.interactions, id)
+		select {
+		case response <- userInteractionResult{Err: errors.New("core is closing")}:
+		default:
+		}
+	}
 	c.mu.Unlock()
-	return errors.Join(c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close())
+	var closeMCP error
+	if c.mcpManager != nil {
+		closeMCP = c.mcpManager.Close()
+	}
+	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close())
+}
+
+func (c *Core) MCPServers() []mcp.ServerStatus {
+	if c == nil || c.mcpManager == nil {
+		return nil
+	}
+	return c.mcpManager.List()
+}
+
+func (c *Core) EnableMCPServer(name string) error {
+	if c == nil || c.mcpManager == nil {
+		return errors.New("MCP manager is unavailable")
+	}
+	if c.State().Status == TaskRunning {
+		return errors.New("cannot change MCP servers while a task is running")
+	}
+	return c.mcpManager.Enable(name)
+}
+
+func (c *Core) DisableMCPServer(name string) error {
+	if c == nil || c.mcpManager == nil {
+		return errors.New("MCP manager is unavailable")
+	}
+	if c.State().Status == TaskRunning {
+		return errors.New("cannot change MCP servers while a task is running")
+	}
+	return c.mcpManager.Disable(name)
+}
+
+func (c *Core) AuthenticateMCPServer(ctx context.Context, name string) error {
+	if c == nil || c.mcpManager == nil {
+		return errors.New("MCP manager is unavailable")
+	}
+	if c.State().Status == TaskRunning {
+		return errors.New("cannot authorize an MCP server while a task is running")
+	}
+	return c.mcpManager.Authorize(ctx, name)
+}
+
+// SetUserInteractionAvailable marks whether the active front end can answer
+// generic user-input requests. Headless clients leave this disabled so MCP
+// tools fail immediately instead of waiting forever.
+func (c *Core) SetUserInteractionAvailable(available bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.userInteractionAvailable = available
+	c.mu.Unlock()
+}
+
+func (c *Core) ResolveUserInteraction(id string, response json.RawMessage) error {
+	if c == nil {
+		return errors.New("core is nil")
+	}
+	if len(response) == 0 || !json.Valid(response) {
+		return errors.New("user interaction response must be valid JSON")
+	}
+	c.mu.Lock()
+	channel, ok := c.interactions[id]
+	if ok {
+		delete(c.interactions, id)
+	}
+	c.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("user interaction %q is no longer pending", id)
+	}
+	channel <- userInteractionResult{Response: append(json.RawMessage(nil), response...)}
+	return nil
+}
+
+func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName string, request json.RawMessage) (json.RawMessage, error) {
+	if agentID != "" && agentID != "lead" {
+		return nil, errors.New("MCP user interaction from subagents is not supported")
+	}
+	c.mu.RLock()
+	available, handler := c.userInteractionAvailable, c.handler
+	c.mu.RUnlock()
+	if !available || handler == nil {
+		return nil, errors.New("this client cannot display MCP user interaction; use the TUI")
+	}
+	id, err := newID()
+	if err != nil {
+		return nil, fmt.Errorf("create user interaction ID: %w", err)
+	}
+	channel := make(chan userInteractionResult, 1)
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("core is closed")
+	}
+	c.interactions[id] = channel
+	c.mu.Unlock()
+	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: c.State().SessionID,
+		Interaction: &UserInteractionRequest{ID: id, AgentID: agentID, ServerName: serverName, Request: append(json.RawMessage(nil), request...)}})
+	select {
+	case result := <-channel:
+		return result.Response, result.Err
+	case <-ctx.Done():
+		c.mu.Lock()
+		delete(c.interactions, id)
+		c.mu.Unlock()
+		c.emit(Event{Kind: EventUserInteractionCancelled, InteractionID: id})
+		return nil, ctx.Err()
+	}
 }
 
 func (c *Core) SetEventHandler(handler EventHandler) {

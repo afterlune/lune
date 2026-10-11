@@ -97,6 +97,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		ID: member.ID, Name: member.ID, Profile: member.Model,
 		Provider: profile.Provider, Protocol: providerConfig.Protocol,
 		ServerCompaction: providerConfig.ServerCompaction, Model: profile.Model,
+		SupportsInputAudio: profile.SupportsInputAudio,
 		StreamObserver: func(event model.ModelStreamEvent) {
 			t.core.onModelStream(member.ID, member.ID, member.Model, profile.Provider, profile.Model, event)
 		},

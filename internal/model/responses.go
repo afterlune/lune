@@ -167,6 +167,9 @@ type InputFunctionCallOutput struct {
 	Status string     `json:"status,omitempty"`
 	CallID string     `json:"call_id"`
 	Output ToolOutput `json:"output"`
+	// TranscriptOnly is presentation content retained in the user transcript but
+	// omitted from model history. It is populated by trusted client-side tools.
+	TranscriptOnly []ContentPart `json:"-"`
 }
 
 func (InputFunctionCallOutput) isInputItem() {}
@@ -317,6 +320,19 @@ func (v InputImage) MarshalJSON() ([]byte, error) {
 	return marshalTagged("input_image", plain(v))
 }
 
+// InputAudio carries base64 audio in a content part for providers whose
+// configured model profile explicitly supports input audio.
+type InputAudio struct {
+	Data   string `json:"data"`
+	Format string `json:"format"`
+}
+
+func (InputAudio) isContentPart() {}
+func (v InputAudio) MarshalJSON() ([]byte, error) {
+	type plain InputAudio
+	return marshalTagged("input_audio", plain(v))
+}
+
 type ReasoningText struct {
 	Text string `json:"text"`
 }
@@ -359,6 +375,15 @@ func decodeContentPart(data []byte) (ContentPart, error) {
 	case "input_image":
 		var part InputImage
 		return part, json.Unmarshal(data, &part)
+	case "input_audio":
+		var part InputAudio
+		if err := json.Unmarshal(data, &part); err != nil {
+			return nil, err
+		}
+		if part.Data == "" || part.Format == "" {
+			return UnknownContentPart{Raw: cloneJSON(data)}, nil
+		}
+		return part, nil
 	case "reasoning_text":
 		var part ReasoningText
 		return part, json.Unmarshal(data, &part)

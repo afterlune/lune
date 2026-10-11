@@ -1,12 +1,18 @@
 package tool
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/afterlune/lune/internal/model"
+)
 
 // Result contains a tool's output and any execution error. Errors are rendered
 // into the output so the model can inspect them and decide what to do next.
 type Result struct {
-	Output string
-	Err    error
+	Output         string
+	ModelOutput    *model.ToolOutput
+	TranscriptOnly []model.ContentPart
+	Err            error
 }
 
 func (r Result) Text() string {

@@ -28,9 +28,10 @@ type ProviderConfig struct {
 // ModelProfile binds a provider model ID to a stable catalog name. Agent runs
 // receive a profile at start and keep it for their lifetime.
 type ModelProfile struct {
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	MaxOutputTokens int64  `json:"maxOutputTokens,omitempty"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	MaxOutputTokens    int64  `json:"maxOutputTokens,omitempty"`
+	SupportsInputAudio bool   `json:"supportsInputAudio,omitempty"`
 }
 
 // Config contains the model catalog settings consumed by ProviderCatalog.
@@ -87,6 +88,9 @@ func (c Config) Validate() error {
 		}
 		if profile.MaxOutputTokens < 0 {
 			return fmt.Errorf("model profile %q maxOutputTokens must not be negative", name)
+		}
+		if profile.SupportsInputAudio && provider.Protocol != ProtocolResponses {
+			return fmt.Errorf("model profile %q enables supportsInputAudio but does not use the Responses protocol", name)
 		}
 		if provider.Protocol == ProtocolAnthropicMessages && profile.MaxOutputTokens == 0 {
 			return fmt.Errorf("model profile %q using %s requires maxOutputTokens", name, ProtocolAnthropicMessages)

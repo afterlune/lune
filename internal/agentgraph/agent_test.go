@@ -96,6 +96,20 @@ type namedRecordingTool struct {
 	calls int
 }
 
+type audienceRecordingTool struct{}
+
+func (audienceRecordingTool) Definition() model.FunctionTool {
+	return model.FunctionTool{Name: "audience", Parameters: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (audienceRecordingTool) Run(context.Context, json.RawMessage) tool.Result {
+	output := model.NewToolOutputParts(model.InputText{Text: "visible to the model"})
+	return tool.Result{ModelOutput: &output, TranscriptOnly: []model.ContentPart{
+		model.InputText{Text: "visible only to the user"},
+		model.InputImage{ImageURL: "data:image/png;base64,CQgH"},
+	}}
+}
+
 func (t *namedRecordingTool) Definition() model.FunctionTool {
 	return model.FunctionTool{
 		Name:        t.name,
@@ -242,6 +256,49 @@ func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 	}
 	if len(requester.requests) != 2 {
 		t.Fatalf("model requests = %d, want 2", len(requester.requests))
+	}
+}
+
+func TestToolAudienceRoutingKeepsUserOnlyTextOutOfModelHistory(t *testing.T) {
+	registry, err := tool.NewRegistry(toolRegistration(
+		audienceRecordingTool{}, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"audience-1","name":"audience","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := model.NewResponseInputText("start")
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "audience-routing", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	requestHistory, err := json.Marshal(requester.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(requestHistory), "visible only to the user") || !strings.Contains(string(requestHistory), "visible to the model") {
+		t.Fatalf("model history audience routing = %s", requestHistory)
+	}
+	transcript, err := json.Marshal(result.Checkpoint.Final.Transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(transcript), "visible only to the user") || !strings.Contains(string(transcript), "CQgH") {
+		t.Fatalf("canonical transcript lost user-only text: %s", transcript)
 	}
 }
 
