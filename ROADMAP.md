@@ -40,7 +40,7 @@
 - [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=3`；版本缺失的旧数据经 v0→v1→v2→v3 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
 - [x] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [x] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
-- [x] 新增 `internal/session/store_test.go`
+- [x] 新增 Core 模块测试 `luneCore/internal/session/store_test.go`
 - [x] 新增 `/help`（行式 CLI 与 TUI 均列出各自支持的命令）
 - [x] 日志轮转 `.luneagent/agent.log`
 
@@ -119,7 +119,7 @@
 - [ ] `[G]` 客户端兜底瘦身：接近预算时保留最近 N 轮原文 + 失败态，其余替换为状态占位/头尾摘录 — 自动压缩已按最旧优先清理 `function_call_output` 并摘要较早历史；固定头尾摘录、失败态保留和选择性 pin/drop/scratchpad 仍待实现。
 - [x] `[G]` 只替换 `function_call_output` 的 `output` 内容，保持 `call_id` 配对 — 清理保留调用 ID 与状态，图片及未知多模态部件不改写。
 - [ ] `[G]` 模型选择性表达：`pin`（关键 `call_id` 不瘦身）/ `drop_result` / scratchpad 笔记
-- [x] `[G]` 双落点：历史组装处（`core/runtime.go` 与 `agentgraph`） — session 保留完整转写；checkpoint 与请求使用可按 provider/model 重建的独立上下文。
+- [x] `[G]` 双落点：历史组装处（`luneCore/runtime.go` 与 `luneCore/internal/agentgraph`） — session 保留完整转写；checkpoint 与请求使用可按 provider/model 重建的独立上下文。
 - [x] `[M]` 图片/附件不参与文本瘦身与 token 估算 — 文本估算排除图片和未知多模态项，本地自动压缩只清理文本工具输出并保留非文本部件。
 
 ### P3.3 流式（provider/Core 已落地；TUI 增量渲染部分落地）
@@ -144,7 +144,7 @@
 ### P3.5 模型可以提问（`[Q]`）
 > 状态：原需求完整保留；通用 Core 交互通道已实现，`ask_user` 工具和 TUI 表单渲染尚未实现。
 > 现状：agent 只会自主跑到结束；审批仍使用 `core.ApprovalRequest`，MCP elicitation 复用新增的事件 + 等待应答通道。
-- [ ] 新增 `ask_user` 工具并注册进 `internal/tool`（新分类 `ask`）
+- [ ] 新增 `ask_user` 工具并注册进 Core 模块 `luneCore/internal/tool`（新分类 `ask`）
 - [ ] 阻塞式问答：经通用用户提问通道发事件并等待应答（不另造一套）
 - [ ] TUI / Desktop：提问条目渲染（需要**文本输入**，区别于审批的 Y/N）；支持多行回答
 - [ ] 回答写入 history 作为 `function_call_output`，**任务继续**（不结束回合）

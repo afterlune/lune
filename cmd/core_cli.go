@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type coreOperation func(context.Context) (json.RawMessage, error)

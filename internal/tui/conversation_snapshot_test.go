@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 	"github.com/charmbracelet/colorprofile"
 )
 

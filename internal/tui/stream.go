@@ -6,7 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 const modelStreamRefreshInterval = 32 * time.Millisecond

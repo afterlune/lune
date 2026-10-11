@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type fakeCLICore struct {

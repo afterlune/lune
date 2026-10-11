@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type fakeResponder struct {

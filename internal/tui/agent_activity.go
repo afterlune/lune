@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type tuiTeamActivity struct {

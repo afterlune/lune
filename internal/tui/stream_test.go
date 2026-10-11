@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 func TestTUIStreamsLeadTextBeforeTaskFinishesAndDoesNotDuplicateFinal(t *testing.T) {

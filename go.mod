@@ -6,18 +6,16 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.10
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/afterlune/luneGraph v0.0.0-20261008085435-d4d35e1c76cd
+	github.com/afterlune/luneCore v0.1.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
-	github.com/go-keyring/keyring v0.3.1
 	golang.design/x/clipboard v0.9.0
 	golang.org/x/image v0.47.0
-	golang.org/x/net v0.59.0
-	modernc.org/sqlite v1.59.0
 )
 
 require (
+	github.com/afterlune/luneGraph v0.0.0-20261008085435-d4d35e1c76cd // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -29,6 +27,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-freedesktop/secretservice v0.1.0 // indirect
+	github.com/go-keyring/keyring v0.3.1 // indirect
 	github.com/go-macos/keychain v0.1.0 // indirect
 	github.com/go-macos/objc v0.1.1 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
@@ -44,9 +43,11 @@ require (
 	golang.design/x/x11 v0.2.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
+	modernc.org/sqlite v1.59.0 // indirect
 )

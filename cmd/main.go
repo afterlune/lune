@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 	"github.com/afterlune/lune/internal/tui"
 	"github.com/eiannone/keyboard"
 )

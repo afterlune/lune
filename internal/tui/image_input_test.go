@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type fakeClipboardImageReader struct {

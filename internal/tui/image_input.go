@@ -22,7 +22,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 	"github.com/atotto/clipboard"
 	clip "golang.design/x/clipboard"
 	_ "golang.org/x/image/webp"

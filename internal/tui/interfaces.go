@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type Client interface {

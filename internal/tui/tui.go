@@ -20,7 +20,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 
-	"github.com/afterlune/lune/core"
+	"github.com/afterlune/luneCore"
 )
 
 type tuiEntry struct {

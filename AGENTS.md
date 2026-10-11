@@ -33,10 +33,10 @@ Capability extension must go through the existing mechanisms instead:
 能力扩展请改用既有机制：
 
 - Tool registry plus tool categories with on-demand discovery (`select_tool_category`)
-  — see `internal/tool` and `internal/agentgraph`.
-  工具注册表 + 工具分类按需发现（`select_tool_category`）—— 见 `internal/tool`、`internal/agentgraph`。
-- Plan mode restricts the visible tool set to read-only tools — see `internal/agentgraph`.
-  Plan 模式将可见工具集裁剪为只读工具 —— 见 `internal/agentgraph`。
+  — see `luneCore/internal/tool` and `luneCore/internal/agentgraph` in the Core module.
+  工具注册表 + 工具分类按需发现（`select_tool_category`）—— 见 Core 模块中的 `luneCore/internal/tool`、`luneCore/internal/agentgraph`。
+- Plan mode restricts the visible tool set to read-only tools — see `luneCore/internal/agentgraph` in the Core module.
+  Plan 模式将可见工具集裁剪为只读工具 —— 见 Core 模块中的 `luneCore/internal/agentgraph`。
 
 ## Permission modes / 权限档位
 
