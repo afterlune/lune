@@ -144,6 +144,30 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 	return nil
 }
 
+// ReplaceDataIfUnchanged replaces a payload only when it still matches the
+// version read by the caller. It leaves updated_at untouched so schema
+// migrations do not reorder sessions.
+func (s *Store) ReplaceDataIfUnchanged(ctx context.Context, id, workspace string, expected, replacement json.RawMessage) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("session store is not open")
+	}
+	if id == "" || workspace == "" || !json.Valid(expected) || !json.Valid(replacement) {
+		return false, errors.New("session id, workspace, and valid data are required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET data = ?
+		WHERE id = ? AND workspace = ? AND data = ?
+	`, []byte(replacement), id, workspace, []byte(expected))
+	if err != nil {
+		return false, fmt.Errorf("replace session data for %q: %w", id, err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("check session data replacement: %w", err)
+	}
+	return updated > 0, nil
+}
+
 func (s *Store) UpdateTitle(ctx context.Context, id, workspace, title string) error {
 	return s.updateMetadata(ctx, id, workspace, "title", title)
 }

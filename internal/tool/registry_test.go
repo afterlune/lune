@@ -101,7 +101,7 @@ func TestExecuteCallPublishesSanitizedLifecycleEvents(t *testing.T) {
 
 func TestAgentIdentityFlowsThroughSharedToolAndApprovalHandlers(t *testing.T) {
 	registry, err := NewRegistry(ToolRegistration{
-		Tool: loggingTestTool{},
+		Tool:     loggingTestTool{},
 		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
 	})
 	if err != nil {
@@ -133,6 +133,7 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry: %v", err)
 	}
+	defer registry.Close()
 	if mode := registry.PermissionMode(); mode != PermissionModeWorkspace {
 		t.Fatalf("default registry mode = %q, want workspace", mode)
 	}
@@ -169,6 +170,19 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	}
 	for name := range want {
 		t.Errorf("default registry is missing %q", name)
+	}
+}
+
+func TestDefaultRegistryRequiresApprovalForCommandInWorkspaceMode(t *testing.T) {
+	registry, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	defer registry.Close()
+
+	result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"exit 0"}`))
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "requires approval") {
+		t.Fatalf("command result error = %v, want workspace-mode approval requirement", result.Err)
 	}
 }
 
@@ -262,6 +276,7 @@ func TestDefaultRegistryCategorizesBuiltInTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry: %v", err)
 	}
+	defer registry.Close()
 	want := map[string][]string{
 		"files":   {"list_dir", "glob", "grep", "read_file", "write_file", "edit_file"},
 		"command": {"command"},

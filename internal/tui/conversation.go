@@ -42,6 +42,8 @@ func (m *tuiModel) ensureMessageCollapseKeys() {
 }
 
 func plainConversationText(markdown string) string {
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
+	markdown = strings.ReplaceAll(markdown, "\r", "\n")
 	lines := strings.Split(markdown, "\n")
 	inCode := false
 	for index, line := range lines {
@@ -184,6 +186,10 @@ func (m *tuiModel) renderSessionTimeline() (string, map[int]string, []string) {
 				appendLine(strings.Repeat(" ", textIndent)+labelText, entry.collapseKey)
 			}
 			continue
+		case "assistant":
+			if entry.incomplete {
+				label, color = "Partial", colors.Muted
+			}
 		case "tool":
 			label, color = "Tool", colors.Tool
 		case "notice":
@@ -262,7 +268,7 @@ func (m *tuiModel) renderLegacyConversation() (string, map[int]string, []string)
 			if rightAlign {
 				indent = width - blockWidth
 			}
-			marker := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.User)).Bold(true).Render("▸ YOU")
+			marker := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.User)).Render("▸ YOU")
 			if rightAlign {
 				marker = lipgloss.PlaceHorizontal(blockWidth, lipgloss.Right, marker)
 				marker = strings.Repeat(" ", indent) + marker
@@ -297,6 +303,9 @@ func (m *tuiModel) renderLegacyConversation() (string, map[int]string, []string)
 		prefixStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		switch entry.role {
 		case "assistant":
+			if entry.incomplete {
+				prefix = "Partial · "
+			}
 		case "tool":
 			prefix = "  ↳ "
 		case "notice":

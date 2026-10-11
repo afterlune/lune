@@ -290,8 +290,10 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	if len(ui.commandSuggestions) != len(tuiCommands)-1 {
 		t.Fatalf("suggestions = %#v, want the existing bare-slash menu size", ui.commandSuggestions)
 	}
-	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") {
-		t.Fatalf("suggestions = %#v, want /plan", ui.commandSuggestions)
+	if !strings.Contains(strings.Join(ui.commandSuggestions, " "), "/plan") ||
+		!strings.Contains(strings.Join(ui.commandSuggestions, " "), "/fold") ||
+		!strings.Contains(strings.Join(ui.commandSuggestions, " "), "/goal") {
+		t.Fatalf("suggestions = %#v, want /plan, /fold, and /goal", ui.commandSuggestions)
 	}
 	ui.input.SetValue("/h")
 	ui.updateCommandSuggestions()
@@ -307,9 +309,10 @@ func TestTUISlashCommandSuggestionsAndUnknownCommand(t *testing.T) {
 	if ui.suggestionIndex != 1 {
 		t.Fatalf("selected suggestion = %d, want index 1", ui.suggestionIndex)
 	}
+	wantCompletion := ui.commandSuggestions[ui.suggestionIndex]
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
-	if ui.input.Value() != "/continue" {
-		t.Fatalf("Tab completion = %q, want /continue", ui.input.Value())
+	if ui.input.Value() != wantCompletion {
+		t.Fatalf("Tab completion = %q, want %q", ui.input.Value(), wantCompletion)
 	}
 
 	ui.input.SetValue("/not-a-command")
@@ -351,6 +354,10 @@ func TestTUIHelpCommandShowsCommandsWithoutStartingTask(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"Available commands:",
+		"/autocompact [on|off|threshold|reset]",
+		"/context [window <tokens>|reserve <tokens>|reset]",
+		"/fold [n]",
+		"/goal [text|clear]",
 		"/help",
 		"/keymap [reset]",
 		"/rewind <n>",
@@ -412,6 +419,85 @@ func TestTUIModelAndEffortPickerCommandsPersistSessionSettings(t *testing.T) {
 	footer := ui.renderFooter(120)
 	if !strings.Contains(footer, "tokens — · cache —") || !strings.Contains(footer, "Reasoning effort set to Default") || strings.Contains(footer, "review") {
 		t.Fatalf("compact footer should show usage and transient status without persistent settings: %q", footer)
+	}
+}
+
+func TestTUIGoalCommandShowsPersistsAndClearsSessionGoal(t *testing.T) {
+	client := &fakeResponder{sessions: map[string]core.Session{
+		"session-1": {ID: "session-1", Settings: core.SessionSettings{ModelProfile: "lead"}},
+	}, last: "session-1"}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session-1"
+	ui.sessionSettings = core.SessionSettings{ModelProfile: "lead"}
+
+	ui.input.SetValue("/goal")
+	ui.submit()
+	if len(ui.entries) == 0 || !strings.Contains(ui.entries[len(ui.entries)-1].text, "No task goal is set") {
+		t.Fatalf("bare /goal output = %#v", ui.entries)
+	}
+
+	ui.input.SetValue("/goal Keep the change focused on observable user behavior.")
+	ui.submit()
+	if got := ui.sessionSettings.Goal; got != "Keep the change focused on observable user behavior." {
+		t.Fatalf("session goal = %q", got)
+	}
+	if got := client.sessions[ui.sessionID].Settings.Goal; got != ui.sessionSettings.Goal {
+		t.Fatalf("persisted goal = %q, want %q", got, ui.sessionSettings.Goal)
+	}
+	ui.input.SetValue("/goal")
+	ui.submit()
+	if got := ui.entries[len(ui.entries)-1].text; !strings.Contains(got, ui.sessionSettings.Goal) {
+		t.Fatalf("goal display = %q, want saved goal", got)
+	}
+
+	ui.pending = true
+	ui.input.SetValue("/goal clear")
+	ui.submit()
+	if ui.sessionSettings.Goal != "" || client.sessions[ui.sessionID].Settings.Goal != "" {
+		t.Fatalf("goal was not cleared: session=%#v persisted=%#v", ui.sessionSettings, client.sessions[ui.sessionID].Settings)
+	}
+	if !strings.Contains(ui.status, "paused task keeps its original goal") {
+		t.Fatalf("status = %q, want paused-task behavior", ui.status)
+	}
+}
+
+func TestTUIFoldCommandListsAndTogglesAnyLongMessage(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.sessionID = "session-fold"
+	ui.preferencesPath = filepath.Join(t.TempDir(), "ui.json")
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.entries = []tuiEntry{
+		{role: "you", text: strings.Repeat("first long message ", 50)},
+		{role: "you", text: strings.Repeat("second long message ", 50)},
+		{role: "you", text: strings.Repeat("third long message ", 50)},
+	}
+	ui.refreshPanels()
+	if len(ui.foldableMessages) != 3 {
+		t.Fatalf("foldable messages = %d, want 3", len(ui.foldableMessages))
+	}
+
+	ui.input.SetValue("/fold")
+	ui.submit()
+	listing := ui.entries[len(ui.entries)-1].text
+	for _, expected := range []string{"1 · collapsed ·", "2 · collapsed ·", "3 · collapsed ·", "/fold <n>"} {
+		if !strings.Contains(listing, expected) {
+			t.Errorf("fold listing %q is missing %q", listing, expected)
+		}
+	}
+
+	key := ui.foldableMessages[1]
+	ui.input.SetValue("/fold 2")
+	ui.submit()
+	if !ui.preferences.ExpandedMessages[key] {
+		t.Fatal("/fold 2 did not expand the second message")
+	}
+	if ui.preferences.ExpandedMessages[ui.foldableMessages[0]] || ui.preferences.ExpandedMessages[ui.foldableMessages[2]] {
+		t.Fatal("/fold 2 changed another message")
+	}
+	ui.input.SetValue("/fold 2")
+	ui.submit()
+	if ui.preferences.ExpandedMessages[key] {
+		t.Fatal("second /fold 2 did not collapse the second message")
 	}
 }
 
@@ -616,7 +702,7 @@ func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 	t.Run("runs default highlighted command", func(t *testing.T) {
 		client := &fakeTUICompactor{compactedTurns: 2}
 		ui := newTUIModel(client, false)
-		ui.input.SetValue("/")
+		ui.input.SetValue("/compact")
 		ui.updateCommandSuggestions()
 
 		updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -635,8 +721,9 @@ func TestTUIEnterRunsHighlightedSlashCommand(t *testing.T) {
 		ui := newTUIModel(client, true)
 		ui.input.SetValue("/")
 		ui.updateCommandSuggestions()
-		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
-		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+		for ui.commandSuggestions[ui.suggestionIndex] != "/discard" {
+			ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+		}
 
 		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 		if client.discarded != 1 || client.pending {
@@ -692,21 +779,26 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 		}
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
-	view = ui.View().Content
+	details := ui.activityDetailsContent()
 	for _, expected := range []string{
 		"#1 · in 100 · out 40 · reason 12 · total 140 · cached 25",
 		"#2 · in 50 · out 10 · reason 0 · total 60 · cached 5",
+		"Session usage by agent (all 2 requests)",
+		"Unattributed · 2 request(s) · 2 metered · in 150 · out 50 · reason 12 · total 200 · cache 30 (20.0%)",
 		"Task · in 150 · out 50 · reason 12 · total 200 · cache 30",
 		"Session · in 150 · out 50 · reason 12 · total 200 · cache 30",
 	} {
-		if !strings.Contains(view, expected) {
-			t.Errorf("details overlay missing %q: %q", expected, view)
+		if !strings.Contains(details, expected) {
+			t.Errorf("usage details missing %q: %q", expected, details)
 		}
+	}
+	if ui.activity.TotalLineCount() <= ui.activity.Height() {
+		t.Fatalf("activity viewport lines=%d height=%d; expected scrollable usage details", ui.activity.TotalLineCount(), ui.activity.Height())
 	}
 
 	ui.Update(modelUsageMsg{})
-	if !strings.Contains(ui.View().Content, "usage unavailable") {
-		t.Fatalf("zero usage should be marked unavailable: %q", ui.View().Content)
+	if !strings.Contains(ui.activityDetailsContent(), "usage unavailable") {
+		t.Fatalf("zero usage should be marked unavailable: %q", ui.activityDetailsContent())
 	}
 	if ui.sessionUsage.requests != 3 || ui.sessionUsage.measured != 2 {
 		t.Fatalf("session usage = %#v, want three requests and two metered", ui.sessionUsage)
@@ -723,6 +815,322 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 		t.Fatalf("task usage=%#v session usage=%#v request details=%d after new task", finished.taskUsage, finished.sessionUsage, len(finished.usageRequests))
 	}
 	finished.Update(command())
+}
+
+func TestTUIUsageDetailsPreserveAgentAndModelAttribution(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferences.Theme = themeDark
+	ui.sessionID = "session-current"
+	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	usage := core.Usage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120}
+	ui.Update(coreEventMsg{event: core.Event{
+		Kind: core.EventUsage, SessionID: ui.sessionID, AgentID: "worker-1",
+		ModelProfile: "review", Provider: "deepseek", Model: "deepseek-worker", Usage: usage,
+	}})
+	current := ui.usageRequests[0].String()
+	for _, expected := range []string{"worker-1", "profile=review", "deepseek/deepseek-worker", "in 100", "out 20"} {
+		if !strings.Contains(current, expected) {
+			t.Fatalf("current usage row missing %q: %q", expected, current)
+		}
+	}
+
+	ui.restoreSessionState(core.Session{UsageRequests: []core.UsageRecord{
+		{
+			Request: 7, Usage: usage, Available: true, AgentID: "worker-2", ModelProfile: "text",
+			Provider: "anthropic", Model: "claude-worker",
+		},
+		{Request: 8, Usage: usage, Available: true, AgentID: "lead", ModelProfile: "lead", ContextWindow: 32000},
+	}})
+	restored := ui.usageRequests[0].String()
+	for _, expected := range []string{"#7", "worker-2", "profile=text", "anthropic/claude-worker"} {
+		if !strings.Contains(restored, expected) {
+			t.Fatalf("restored usage row missing %q: %q", expected, restored)
+		}
+	}
+	if ui.contextWindow != 32000 || ui.contextInput != usage.InputTokens {
+		t.Fatalf("restored context usage = input %d / window %d", ui.contextInput, ui.contextWindow)
+	}
+	if details := ui.activityDetailsContent(); !strings.Contains(details, "Context · ctx 100/32.0k (0%)") {
+		t.Fatalf("restored details missing context ratio: %q", details)
+	}
+}
+
+func TestTUIContextUsageFooterUsesOnlyKnownLimits(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{width: 80, height: 24}, {width: 120, height: 30}} {
+		ui := newTUIModel(&fakeResponder{}, false)
+		ui.preferences.Theme = themeDark
+		ui.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		ui.contextWindow = 64000
+		ui.contextInput = 12300
+		footer := tuiScreenshotANSI.ReplaceAllString(ui.renderFooter(size.width), "")
+		if !strings.Contains(footer, "ctx 12.3k/64.0k (19%)") {
+			t.Fatalf("%dx%d footer missing configured context ratio: %q", size.width, size.height, footer)
+		}
+		if got := lipgloss.Width(ui.renderFooter(size.width)); got > size.width {
+			t.Fatalf("%dx%d context footer width = %d", size.width, size.height, got)
+		}
+		ui.contextWindow = 0
+		if got := tuiScreenshotANSI.ReplaceAllString(ui.renderFooter(size.width), ""); !strings.Contains(got, "ctx 12.3k/unknown") {
+			t.Fatalf("%dx%d footer should label unknown window: %q", size.width, size.height, got)
+		}
+		ui.contextInput = 0
+		if got := tuiScreenshotANSI.ReplaceAllString(ui.renderFooter(size.width), ""); strings.Contains(got, "ctx ") {
+			t.Fatalf("%dx%d footer inferred context usage without input/window data: %q", size.width, size.height, got)
+		}
+	}
+}
+
+func TestTUIContextUsageLabelsMissingServerInputAsEstimate(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferences.Theme = themeDark
+	ui.sessionID = "session-estimate"
+	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	ui.Update(coreEventMsg{event: core.Event{
+		Kind: core.EventUsage, SessionID: ui.sessionID, AgentID: "lead", ContextWindow: 64000,
+		EstimatedInputTokens: 1200, Usage: core.Usage{OutputTokens: 6, TotalTokens: 6},
+	}})
+	if ui.contextInput != 1200 || !ui.contextEstimated || ui.taskUsage.input != 0 || ui.taskUsage.estimatedInput != 1200 {
+		t.Fatalf("context input=%d estimated=%v task totals=%#v", ui.contextInput, ui.contextEstimated, ui.taskUsage)
+	}
+	footer := tuiScreenshotANSI.ReplaceAllString(ui.renderFooter(120), "")
+	if !strings.Contains(footer, "ctx ~1.2k/64.0k (2%)") {
+		t.Fatalf("footer does not identify estimated input: %q", footer)
+	}
+	details := ui.activityDetailsContent()
+	for _, expected := range []string{"Context · ctx ~1.2k/64.0k (2%) · estimate; image contents excluded", "in ~1.2k", "est input ~1.2k"} {
+		if !strings.Contains(details, expected) {
+			t.Errorf("usage details %q missing %q", details, expected)
+		}
+	}
+}
+
+func TestTUIContextCommandShowsPersistsAndResetsOverrides(t *testing.T) {
+	defaults := core.ContextDefaults{ContextWindow: 64000, ReserveOutputTokens: 4096}
+	client := &fakeResponder{
+		contextDefaults: defaults,
+		sessions: map[string]core.Session{
+			"session-context": {ID: "session-context", Settings: core.SessionSettings{ModelProfile: "lead"}},
+		},
+	}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session-context"
+	ui.sessionSettings = core.SessionSettings{ModelProfile: "lead", Goal: "keep the goal", ReasoningEffort: "high"}
+
+	ui.input.SetValue("/context")
+	ui.submit()
+	view := ui.entries[len(ui.entries)-1].text
+	for _, expected := range []string{"64.0k (project default)", "4.1k (project default)", "does not limit model requests yet", "automatic compaction is not active yet"} {
+		if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
+			t.Fatalf("context view %q is missing %q", view, expected)
+		}
+	}
+
+	ui.input.SetValue("/context window 32000")
+	ui.submit()
+	if ui.sessionSettings.ContextWindow == nil || *ui.sessionSettings.ContextWindow != 32000 || ui.contextWindow != 32000 {
+		t.Fatalf("context window override=%v effective=%d", ui.sessionSettings.ContextWindow, ui.contextWindow)
+	}
+	if !strings.Contains(ui.status, "does not limit model requests yet") {
+		t.Fatalf("context window status = %q, want current request limitation disclosed", ui.status)
+	}
+	ui.input.SetValue("/context reserve 2048")
+	ui.submit()
+	if ui.sessionSettings.ReserveOutputTokens == nil || *ui.sessionSettings.ReserveOutputTokens != 2048 {
+		t.Fatalf("reserve override = %v", ui.sessionSettings.ReserveOutputTokens)
+	}
+	persisted := client.sessions[ui.sessionID].Settings
+	if persisted.Goal != "keep the goal" || persisted.ReasoningEffort != "high" {
+		t.Fatalf("context command replaced unrelated session settings: %#v", persisted)
+	}
+
+	ui.input.SetValue("/context window reset")
+	ui.submit()
+	if ui.sessionSettings.ContextWindow != nil || ui.sessionSettings.ReserveOutputTokens == nil || *ui.sessionSettings.ReserveOutputTokens != 2048 || ui.contextWindow != defaults.ContextWindow {
+		t.Fatalf("window reset changed unexpected values: settings=%#v effective=%d", ui.sessionSettings, ui.contextWindow)
+	}
+	ui.input.SetValue("/context reset")
+	ui.submit()
+	if ui.sessionSettings.ContextWindow != nil || ui.sessionSettings.ReserveOutputTokens != nil {
+		t.Fatalf("full context reset left overrides: %#v", ui.sessionSettings)
+	}
+	if settings := client.sessions[ui.sessionID].Settings; settings.ModelProfile != "lead" || settings.Goal != "keep the goal" || settings.ReasoningEffort != "high" {
+		t.Fatalf("reset command replaced unrelated session settings: %#v", settings)
+	}
+
+	ui.pending = true
+	ui.input.SetValue("/context window 48000")
+	ui.submit()
+	if !strings.Contains(ui.status, "paused task keeps its original context settings") {
+		t.Fatalf("status = %q, want paused-task behavior", ui.status)
+	}
+}
+
+func TestTUIAutoCompactCommandPersistsSettingsWithoutClaimingRuntimeEffect(t *testing.T) {
+	client := &fakeResponder{
+		contextDefaults: core.ContextDefaults{AutoCompact: true, AutoCompactThreshold: 0.75},
+		sessions: map[string]core.Session{
+			"session-autocompact": {ID: "session-autocompact", Settings: core.SessionSettings{ModelProfile: "lead"}},
+		},
+	}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session-autocompact"
+	ui.sessionSettings = core.SessionSettings{ModelProfile: "lead", Goal: "preserve this goal"}
+
+	ui.input.SetValue("/autocompact")
+	ui.submit()
+	view := ui.entries[len(ui.entries)-1].text
+	for _, expected := range []string{"on (project default)", "75% (project default)", "runtime auto-compaction is not active yet"} {
+		if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
+			t.Fatalf("auto-compaction view %q is missing %q", view, expected)
+		}
+	}
+
+	ui.input.SetValue("/autocompact off")
+	ui.submit()
+	if ui.sessionSettings.AutoCompact == nil || *ui.sessionSettings.AutoCompact || !strings.Contains(ui.status, "has no effect on current tasks") {
+		t.Fatalf("off setting/status = %#v / %q", ui.sessionSettings.AutoCompact, ui.status)
+	}
+	ui.input.SetValue("/autocompact threshold 0.6")
+	ui.submit()
+	if ui.sessionSettings.AutoCompactThreshold == nil || *ui.sessionSettings.AutoCompactThreshold != 0.6 {
+		t.Fatalf("threshold override = %v", ui.sessionSettings.AutoCompactThreshold)
+	}
+	ui.input.SetValue("/autocompact threshold 1.1")
+	ui.submit()
+	if ui.sessionSettings.AutoCompactThreshold == nil || *ui.sessionSettings.AutoCompactThreshold != 0.6 {
+		t.Fatalf("invalid threshold changed settings: %v", ui.sessionSettings.AutoCompactThreshold)
+	}
+	ui.input.SetValue("/autocompact threshold NaN")
+	ui.submit()
+	if ui.sessionSettings.AutoCompactThreshold == nil || *ui.sessionSettings.AutoCompactThreshold != 0.6 {
+		t.Fatalf("non-finite threshold changed settings: %v", ui.sessionSettings.AutoCompactThreshold)
+	}
+	ui.input.SetValue("/autocompact reset")
+	ui.submit()
+	if ui.sessionSettings.AutoCompact != nil || ui.sessionSettings.AutoCompactThreshold != nil {
+		t.Fatalf("reset left session overrides: %#v", ui.sessionSettings)
+	}
+	if saved := client.sessions[ui.sessionID].Settings; saved.Goal != "preserve this goal" || saved.ModelProfile != "lead" {
+		t.Fatalf("auto-compaction commands replaced unrelated settings: %#v", saved)
+	}
+
+	ui.pending = true
+	ui.input.SetValue("/autocompact off")
+	ui.submit()
+	if !strings.Contains(ui.status, "paused task keeps its original settings") {
+		t.Fatalf("status = %q, want paused-task behavior", ui.status)
+	}
+}
+
+func TestTUINewSessionClearsPreviousContextEstimate(t *testing.T) {
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	ui.sessionID = "session-old"
+	ui.contextWindow = 64000
+	ui.contextInput = 1200
+	ui.contextEstimated = true
+	ui.newSession()
+	if ui.sessionID == "session-old" || ui.contextWindow != 0 || ui.contextInput != 0 || ui.contextEstimated {
+		t.Fatalf("new session retained previous context: id=%q window=%d input=%d estimated=%v",
+			ui.sessionID, ui.contextWindow, ui.contextInput, ui.contextEstimated)
+	}
+}
+
+func TestTUIUsageDetailsSummarizeRecentRequestsByAgent(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.usageRequests = []tokenUsageRecord{
+		{request: 1, agentID: "lead", available: true, usage: core.Usage{
+			InputTokens: 100, OutputTokens: 20, TotalTokens: 120, InputTokensDetails: core.TokenInputDetails{CachedTokens: 20},
+		}},
+		{request: 2, agentID: "research", available: true, usage: core.Usage{
+			InputTokens: 50, OutputTokens: 10, TotalTokens: 60, InputTokensDetails: core.TokenInputDetails{CachedTokens: 5},
+		}},
+		{request: 3, agentID: "research", available: false},
+		{request: 4, available: false},
+	}
+	details := ui.activityDetailsContent()
+	for _, expected := range []string{
+		"Recent usage by agent (4 requests)",
+		"Unattributed · 1 request(s) · 0 metered · usage unavailable",
+		"lead · 1 request(s) · 1 metered · in 100 · out 20 · reason 0 · total 120 · cache 20 (20.0%)",
+		"research · 2 request(s) · 1 metered · in 50 · out 10 · reason 0 · total 60 · cache 5 (10.0%)",
+	} {
+		if !strings.Contains(details, expected) {
+			t.Errorf("usage details missing %q: %q", expected, details)
+		}
+	}
+}
+
+func TestTUIUsageDetailsUsePersistedSessionAgentTotals(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.restoreSessionState(core.Session{
+		UsageRequests:      []core.UsageRecord{{Request: 206, AgentID: "lead", Available: true, Usage: core.Usage{InputTokens: 1, TotalTokens: 1}}},
+		AgentUsageComplete: true,
+		AgentUsage: map[string]core.UsageTotals{
+			"lead":     {Requests: 205, Measured: 204, Input: 32000, EstimatedInput: 1200, Output: 8000, Reasoning: 1000, Total: 40000, Cached: 6000},
+			"research": {Requests: 42, Measured: 42, Input: 9000, Output: 500, Total: 9500, Cached: 0},
+		},
+		SessionUsage: core.UsageTotals{Requests: 247},
+	})
+	details := ui.activityDetailsContent()
+	for _, expected := range []string{
+		"Session usage by agent (all 247 requests)",
+		"lead · 205 request(s) · 204 metered · est input ~1.2k · in 32.0k · out 8.0k · reason 1.0k · total 40.0k · cache 6.0k (18.8%)",
+		"research · 42 request(s) · 42 metered · in 9.0k · out 500 · reason 0 · total 9.5k · cache 0 (0.0%)",
+	} {
+		if !strings.Contains(details, expected) {
+			t.Errorf("session usage details missing %q: %q", expected, details)
+		}
+	}
+
+	ui.agentUsageComplete = false
+	if details := ui.usageByAgentDetails(); !strings.Contains(details, "older requests may be missing") {
+		t.Fatalf("incomplete legacy totals lack a coverage note: %q", details)
+	}
+	ui.agentUsage = nil
+	ui.usageRequests = nil
+	ui.sessionUsage.requests = 5
+	if details := ui.usageByAgentDetails(); !strings.Contains(details, "No retained requests are available") {
+		t.Fatalf("legacy totals without retained details lack an explanation: %q", details)
+	}
+}
+
+func TestTUIViewsUseColorAndMarkersWithoutBold(t *testing.T) {
+	for _, theme := range []themeName{themeDark, themeLight, themeAnime} {
+		t.Run(string(theme), func(t *testing.T) {
+			ui := newTUIModel(&fakeResponder{}, false)
+			ui.preferences.Theme = theme
+			ui.sessionID = "session-current"
+			ui.sessionList = workspaceFixtureSessions()
+			ui.sessionIndex = 1
+			ui.queued = []queuedInput{{display: "review follow-up"}}
+			ui.queueIndex = 0
+			ui.commandSuggestions = []string{"/help", "/model"}
+			ui.suggestionIndex = 0
+			ui.modelOptions = []core.ModelOption{{Profile: "lead", Provider: "deepseek", Model: "deepseek-main"}}
+			ui.modelIndex = 0
+			ui.effortIndex = 1
+			ui.permissionIndex = 1
+			ui.entries = []tuiEntry{{role: "you", text: "Review the config."}, {role: "assistant", text: "The selected option is marked by its arrow and color."}}
+			conversation, _, _ := ui.renderConversation()
+			views := []string{
+				ui.renderHeader(120), ui.renderQueuePicker(), ui.renderPlanReview(), ui.renderCommandSuggestions(),
+				ui.renderKeymapEditor(), ui.renderSessionPicker(), ui.renderModelPicker(), ui.renderEffortPicker(),
+				ui.renderPermissionMenu(), ui.renderAvatar(8, 2), conversation,
+			}
+			combined := strings.Join(views, "\n")
+			if !strings.Contains(tuiScreenshotANSI.ReplaceAllString(combined, ""), "›") {
+				t.Fatal("selected rows lost their structural arrow marker")
+			}
+			for _, line := range parseTUIScreenshotLines(combined, colorsFor(theme).Foreground) {
+				for _, run := range line {
+					if run.bold {
+						t.Fatalf("TUI %s view contains bold text %q", theme, run.text)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
@@ -786,6 +1194,24 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 	inputCursor := ui.input.Cursor()
 	if view.Cursor == nil || inputCursor == nil || view.Cursor.Y != inputCursor.Y+lipgloss.Height(ui.renderHeader(100))+ui.chat.Height()+1 {
 		t.Errorf("anime avatar shifted cursor unexpectedly: cursor=%v header=%d chat=%d", view.Cursor, lipgloss.Height(ui.renderHeader(100)), ui.chat.Height())
+	}
+}
+
+func TestTUICommandSuggestionsScrollWithinBoundedHeight(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	ui.suggestionIndex = len(ui.commandSuggestions) - 1
+	start, end := commandSuggestionRange(ui.suggestionIndex, len(ui.commandSuggestions))
+	if end-start > maxCommandSuggestions || start == 0 {
+		t.Fatalf("suggestion range = %d:%d for selected index %d", start, end, ui.suggestionIndex)
+	}
+	view := ui.renderCommandSuggestions()
+	if !strings.Contains(view, ui.commandSuggestions[ui.suggestionIndex]) {
+		t.Fatalf("suggestions do not show selected command %q: %q", ui.commandSuggestions[ui.suggestionIndex], view)
+	}
+	if got := lipgloss.Height(view); got > maxCommandSuggestions+1 {
+		t.Fatalf("suggestion height = %d, want at most %d", got, maxCommandSuggestions+1)
 	}
 }
 
@@ -904,7 +1330,7 @@ func TestTUIActivityUsesWorkspacePathsAndStudioShowsOnlyRealState(t *testing.T) 
 		ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`), Duration: 12,
 	}})
 	view := ui.View().Content
-	if len(ui.activities) != 1 || ui.activities[0].summary != "Reading "+file || !strings.Contains(view, "single agent") || !strings.Contains(view, "Model usage") {
+	if len(ui.activities) != 1 || ui.activities[0].summary != "Reading "+file || !strings.Contains(view, "Lead agent") || !strings.Contains(view, "Model usage") {
 		t.Fatalf("studio view is missing real activity, agent status, or usage: %q", view)
 	}
 	if strings.Contains(view, "read_file") || strings.Contains(view, "subagent") || strings.Contains(view, "artifact") || strings.Contains(view, "0%") {

@@ -124,7 +124,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 	}
 	t.core.emit(Event{
 		Kind: EventAgentStarted, SessionID: t.core.State().SessionID, TaskID: t.core.State().TaskID,
-		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker",
+		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker", TeamRunID: teamRunID,
 		ModelProfile: member.Model, Provider: profile.Provider, Model: profile.Model, Status: TaskRunning,
 	})
 	var graphResult graph.Result[agentgraph.State]
@@ -145,7 +145,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		if ctx.Err() != nil {
 			updated.Status = "paused"
 			_ = t.store.UpdateMember(teamRunID, updated)
-			t.emitMemberFinished(member, profile, TaskPaused, err.Error())
+			t.emitMemberFinished(teamRunID, member, profile, TaskPaused, err.Error())
 			return result, ctx.Err()
 		}
 		return t.failMember(teamRunID, member, profile, result, err)
@@ -153,7 +153,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 	if ctx.Err() != nil || graphResult.Status == graph.StatusCancelled || graphResult.Status == graph.StatusWaiting {
 		updated.Status = "paused"
 		_ = t.store.UpdateMember(teamRunID, updated)
-		t.emitMemberFinished(member, profile, TaskPaused, "task interrupted")
+		t.emitMemberFinished(teamRunID, member, profile, TaskPaused, "task interrupted")
 		return result, ctx.Err()
 	}
 	if graphResult.Checkpoint.Final == nil {
@@ -174,7 +174,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		return result, err
 	}
 	_ = t.checkpoints.Delete(context.Background(), childRunID)
-	t.emitMemberFinished(member, profile, TaskCompleted, "")
+	t.emitMemberFinished(teamRunID, member, profile, TaskCompleted, "")
 	return result, nil
 }
 
@@ -187,14 +187,14 @@ func (t *teamExecutor) failMember(teamRunID string, member teamMemberRecord, pro
 		return result, errors.Join(err, saveErr)
 	}
 	_ = t.checkpoints.Delete(context.Background(), teamRunID+":"+member.ID)
-	t.emitMemberFinished(member, profile, TaskFailed, result.Error)
+	t.emitMemberFinished(teamRunID, member, profile, TaskFailed, result.Error)
 	return result, nil
 }
 
-func (t *teamExecutor) emitMemberFinished(member teamMemberRecord, profile model.ModelProfile, status TaskStatus, message string) {
+func (t *teamExecutor) emitMemberFinished(teamRunID string, member teamMemberRecord, profile model.ModelProfile, status TaskStatus, message string) {
 	t.core.emit(Event{
 		Kind: EventAgentFinished, SessionID: t.core.State().SessionID, TaskID: t.core.State().TaskID,
-		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker",
+		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker", TeamRunID: teamRunID,
 		ModelProfile: member.Model, Provider: profile.Provider, Model: profile.Model, Status: status, Err: message,
 	})
 }

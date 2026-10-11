@@ -10,6 +10,16 @@ import (
 	"testing"
 )
 
+func TestResolveModelIDUsesOverrideAndProfileFallback(t *testing.T) {
+	profile := ModelProfile{Model: "configured-model"}
+	if got := resolveModelID("task-model", profile); got != "task-model" {
+		t.Fatalf("override model = %q, want task-model", got)
+	}
+	if got := resolveModelID("", profile); got != "configured-model" {
+		t.Fatalf("fallback model = %q, want configured-model", got)
+	}
+}
+
 func TestDeepSeekProviderCreateResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
@@ -22,7 +32,7 @@ func TestDeepSeekProviderCreateResponse(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if request.Model != "deepseek-test" || request.Stream {
+		if request.Model != "deepseek-override" || request.Stream {
 			t.Errorf("request model/stream = %q/%v", request.Model, request.Stream)
 		}
 		_, _ = fmt.Fprint(w, `{"id":"resp-1","object":"response","status":"completed","model":"deepseek-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}`)
@@ -30,7 +40,7 @@ func TestDeepSeekProviderCreateResponse(t *testing.T) {
 	defer server.Close()
 	provider := newResponsesProvider(ProviderDeepSeek, "ds-key", server.URL+"/responses", server.Client())
 	profile := ModelProfile{Provider: ProviderDeepSeek, Model: "deepseek-test"}
-	response, err := provider.CreateResponse(context.Background(), ResponseRequest{Input: NewResponseInputText("hi")}, profile)
+	response, err := provider.CreateResponse(context.Background(), ResponseRequest{Model: "deepseek-override", Input: NewResponseInputText("hi")}, profile)
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
@@ -45,7 +55,7 @@ func TestDeepSeekProviderStreamsNormalizedEvents(t *testing.T) {
 			t.Errorf("Accept = %q", got)
 		}
 		var request ResponseRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !request.Stream {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !request.Stream || request.Model != "deepseek-stream-override" {
 			t.Errorf("stream request = %#v, error = %v", request, err)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -55,7 +65,7 @@ func TestDeepSeekProviderStreamsNormalizedEvents(t *testing.T) {
 	defer server.Close()
 	provider := newResponsesProvider(ProviderDeepSeek, "ds-key", server.URL, server.Client())
 	var events []ModelStreamEvent
-	response, err := provider.StreamResponse(context.Background(), ResponseRequest{Input: NewResponseInputText("hi")}, ModelProfile{Model: "deepseek-test"}, func(event ModelStreamEvent) error {
+	response, err := provider.StreamResponse(context.Background(), ResponseRequest{Model: "deepseek-stream-override", Input: NewResponseInputText("hi")}, ModelProfile{Model: "deepseek-test"}, func(event ModelStreamEvent) error {
 		events = append(events, event)
 		return nil
 	})
@@ -83,7 +93,7 @@ func TestAnthropicMessagesMapsToolsImagesUsageAndErrors(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 		}
 		encoded, _ := json.Marshal(request)
-		for _, expected := range []string{`"model":"claude-test"`, `"max_tokens":2048`, `"type":"tool_use"`, `"type":"tool_result"`, `"type":"image"`, `"input_schema"`} {
+		for _, expected := range []string{`"model":"claude-override"`, `"max_tokens":2048`, `"type":"tool_use"`, `"type":"tool_result"`, `"type":"image"`, `"input_schema"`} {
 			if !strings.Contains(string(encoded), expected) {
 				t.Errorf("request missing %s: %s", expected, encoded)
 			}
@@ -94,6 +104,7 @@ func TestAnthropicMessagesMapsToolsImagesUsageAndErrors(t *testing.T) {
 	provider := newAnthropicMessagesProvider(ProviderAnthropic, "anthropic-key", server.URL+"/v1/messages", server.Client())
 	profile := ModelProfile{Provider: ProviderAnthropic, Model: "claude-test", MaxOutputTokens: 2048}
 	request := ResponseRequest{
+		Model:        "claude-override",
 		Instructions: "Inspect safely.",
 		Input: NewResponseInputItems(
 			InputMessage{Role: RoleUser, Content: NewMessageContentParts(
@@ -128,12 +139,29 @@ func TestAnthropicMessagesRejectsUnsupportedModalitiesExplicitly(t *testing.T) {
 	}
 }
 
+func TestAnthropicImageDecodesCaseInsensitiveEscapedDataURL(t *testing.T) {
+	image, err := anthropicImage(InputImage{ImageURL: "DATA:IMAGE/PNG;BASE64,%2B%2F8%3D"})
+	if err != nil {
+		t.Fatalf("anthropicImage: %v", err)
+	}
+	source, ok := image["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("image source = %#v, want object", image["source"])
+	}
+	if source["media_type"] != "image/png" || source["data"] != "+/8=" {
+		t.Fatalf("image source = %#v, want normalized image/png base64 payload", source)
+	}
+}
+
 func TestAnthropicMessagesStreamsTextAndToolDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		if request["stream"] != true {
 			t.Errorf("stream = %v", request["stream"])
+		}
+		if request["model"] != "claude-stream-override" {
+			t.Errorf("model = %v", request["model"])
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range []string{
@@ -150,7 +178,7 @@ func TestAnthropicMessagesStreamsTextAndToolDeltas(t *testing.T) {
 	defer server.Close()
 	provider := newAnthropicMessagesProvider(ProviderAnthropic, "anthropic-key", server.URL, server.Client())
 	var deltas []string
-	response, err := provider.StreamResponse(context.Background(), ResponseRequest{Input: NewResponseInputText("hi")}, ModelProfile{Model: "claude-test", MaxOutputTokens: 128}, func(event ModelStreamEvent) error {
+	response, err := provider.StreamResponse(context.Background(), ResponseRequest{Model: "claude-stream-override", Input: NewResponseInputText("hi")}, ModelProfile{Model: "claude-test", MaxOutputTokens: 128}, func(event ModelStreamEvent) error {
 		if event.Type == ModelStreamTextDelta {
 			deltas = append(deltas, event.Delta)
 		}

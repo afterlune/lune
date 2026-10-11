@@ -141,6 +141,32 @@ func TestSaveAndHistoryUpdatePreserveSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestReplaceDataIfUnchangedPreservesTimestampAndRejectsStalePayload(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	updatedAt := time.Unix(123, 456)
+	oldData := json.RawMessage(`{"history":["old"],"title":"thread","archived":false}`)
+	newData := json.RawMessage(`{"data_version":1,"history":["old"],"title":"thread","archived":false}`)
+	if err := store.Save(ctx, Snapshot{ID: "one", Workspace: "workspace", UpdatedAt: updatedAt, Data: oldData}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.ReplaceDataIfUnchanged(ctx, "one", "workspace", json.RawMessage(`{"history":[]}`), newData)
+	if err != nil || updated {
+		t.Fatalf("stale replacement updated=%v, error=%v; want unchanged", updated, err)
+	}
+	updated, err = store.ReplaceDataIfUnchanged(ctx, "one", "workspace", oldData, newData)
+	if err != nil || !updated {
+		t.Fatalf("matching replacement updated=%v, error=%v; want updated", updated, err)
+	}
+	snapshot, err := store.Get(ctx, "one", "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshot.Data) != string(newData) || !snapshot.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("snapshot after replacement = %#v, want data version update without timestamp change", snapshot)
+	}
+}
+
 func TestLatestAndListFilterArchivedBeforeLimit(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()

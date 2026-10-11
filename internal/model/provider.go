@@ -21,6 +21,13 @@ type Provider interface {
 // ResponsesRequest is the wire request shared by Responses-compatible APIs.
 type ResponsesRequest ModelRequest
 
+func resolveModelID(requestModel string, profile ModelProfile) string {
+	if requestModel != "" {
+		return requestModel
+	}
+	return profile.Model
+}
+
 func providerEndpoint(protocol, baseURL string) (string, error) {
 	if err := validateBaseURL(baseURL); err != nil {
 		return "", err

@@ -28,6 +28,7 @@ type Client interface {
 	RewindSession(context.Context, string, int) (int, error)
 	ListModelProfiles() []core.ModelOption
 	SetSessionSettings(context.Context, string, core.SessionSettings) error
+	ProjectContextDefaults() core.ContextDefaults
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 	ResolveApproval(string, bool) error

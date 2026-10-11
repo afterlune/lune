@@ -194,6 +194,7 @@ func TestExplorationToolsAreAllowedInReadOnlyPermissionMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer registry.Close()
 	if err := registry.SetPermissionMode(PermissionModeReadOnly); err != nil {
 		t.Fatal(err)
 	}

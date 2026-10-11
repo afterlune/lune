@@ -59,6 +59,7 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	} else {
 		cmd = exec.CommandContext(commandCtx, "/bin/sh", "-c", args.Command)
 	}
+	configureCommandProcess(cmd)
 	cmd.Dir = workspace
 
 	output := &limitedBuffer{limit: maxCommandOutput}

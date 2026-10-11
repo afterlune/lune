@@ -28,10 +28,10 @@ func colorsFor(theme themeName) themeColors {
 		}
 	case themeAnime:
 		return themeColors{
-			Background: "#101c24", Foreground: "#f0f4e8", Muted: "#9db2b9",
-			Accent: "#5bd4c4", Secondary: "#ff9c72", Success: "#88d68a",
-			Warning: "#ffd16e", Error: "#ff7b83", User: "#b7cad1",
-			Assistant: "#79e2d0", Tool: "#ffad82", Code: "#d8e8a7",
+			Background: "#101c24", Foreground: "#e2e7dc", Muted: "#9db2b9",
+			Accent: "#5bd4c4", Secondary: "#e6a68b", Success: "#88d68a",
+			Warning: "#e6c887", Error: "#e89297", User: "#b7cad1",
+			Assistant: "#79e2d0", Tool: "#e9b498", Code: "#d8e8a7",
 		}
 	default:
 		return themeColors{

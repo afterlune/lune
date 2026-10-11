@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,23 @@ import (
 
 	"github.com/afterlune/lune/internal/model"
 )
+
+func TestValidateRejectsNonFiniteAutoCompactThreshold(t *testing.T) {
+	base := Config{
+		Providers: map[string]model.ProviderConfig{
+			"provider": {Protocol: model.ProtocolResponses, BaseURL: "https://example.test", APIKey: "key"},
+		},
+		Models:       map[string]model.ModelProfile{"main": {Provider: "provider", Model: "model"}},
+		DefaultModel: "main",
+	}
+	for _, threshold := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		config := base
+		config.AutoCompactThreshold = threshold
+		if err := config.Validate(); err == nil {
+			t.Errorf("Validate accepted non-finite autoCompactThreshold %v", threshold)
+		}
+	}
+}
 
 func writeConfig(t *testing.T, data string) string {
 	t.Helper()

@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/core"
 	"github.com/charmbracelet/colorprofile"
 )
 
@@ -22,6 +23,49 @@ func TestTUIConversationSVGsMatchDeterministicFixtures(t *testing.T) {
 				assertTUIScreenshotSVG(t, name, got)
 			})
 		}
+	}
+}
+
+func TestTUIFoldCommandSVGsMatchDeterministicFixtures(t *testing.T) {
+	for _, theme := range []themeName{themeDark, themeLight} {
+		theme := theme
+		t.Run(string(theme), func(t *testing.T) {
+			ui := newConversationFixture(theme, "short")
+			ui.entries = []tuiEntry{
+				{role: "you", text: strings.Repeat("First long user request. ", 32)},
+				{role: "assistant", text: "I will preserve the separate long requests."},
+				{role: "you", text: strings.Repeat("Second long user request. ", 32)},
+				{role: "you", text: strings.Repeat("Third long user request. ", 32)},
+			}
+			ui.refreshPanels()
+			ui.input.SetValue("/fold")
+			ui.submit()
+			name := fmt.Sprintf("%s-fold-list.svg", theme)
+			got := renderTUIScreenshotSVG(ui.View().Content, ui.width, ui.height, theme)
+			assertTUIScreenshotSVG(t, name, got)
+		})
+	}
+}
+
+func TestTUIContextCommandSVGsMatchDeterministicFixtures(t *testing.T) {
+	for _, theme := range []themeName{themeDark, themeLight} {
+		theme := theme
+		t.Run(string(theme), func(t *testing.T) {
+			client := &fakeResponder{contextDefaults: core.ContextDefaults{ContextWindow: 64000, ReserveOutputTokens: 4096}}
+			ui := newTUIModel(client, false)
+			ui.preferences.Theme = theme
+			ui.colorProfile = colorprofile.TrueColor
+			ui.sessionID = "session-current"
+			ui.workspace = "D:/work/project"
+			ui.sessionSettings.ModelProfile = "lead"
+			applyTextareaTheme(&ui.input, theme)
+			ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+			ui.input.SetValue("/context")
+			ui.submit()
+			name := fmt.Sprintf("%s-context-settings.svg", theme)
+			got := renderTUIScreenshotSVG(ui.View().Content, ui.width, ui.height, theme)
+			assertTUIScreenshotSVG(t, name, got)
+		})
 	}
 }
 
@@ -60,6 +104,66 @@ func TestTUIConversationAlignmentStylesAndCollapse(t *testing.T) {
 			expanded, _, _ := newConversationFixture(theme, "long-expanded").renderConversation()
 			if !strings.Contains(tuiScreenshotANSI.ReplaceAllString(expanded, ""), "Show less") {
 				t.Fatal("expanded transcript is missing the Show less affordance")
+			}
+		})
+	}
+}
+
+func TestTUIConversationColorsStayOnRoleLabels(t *testing.T) {
+	for _, theme := range []themeName{themeDark, themeLight} {
+		t.Run(string(theme), func(t *testing.T) {
+			ui := newConversationFixture(theme, "short")
+			ui.entries = []tuiEntry{
+				{role: "you", text: "USER_BODY"},
+				{role: "assistant", text: "LUNE_BODY"},
+				{role: "assistant", text: "PARTIAL_BODY", incomplete: true},
+				{role: "tool", text: "TOOL_BODY"},
+				{role: "notice", text: "NOTE_BODY"},
+				{role: "permission", text: "APPROVAL_BODY"},
+				{role: "error", text: "ERROR_BODY", err: true},
+				{role: "queued", text: "QUEUED_BODY"},
+			}
+			conversation, _, _ := ui.renderConversation()
+			lines := parseTUIScreenshotLines(conversation, colorsFor(theme).Foreground)
+			colors := colorsFor(theme)
+			roleColors := map[string]string{
+				"User": colors.User, "Lune": colors.Accent, "Partial": colors.Muted,
+				"Tool": colors.Tool, "Note": colors.Muted, "Approval": colors.Warning,
+				"Error": colors.Error, "Queued": colors.Muted,
+			}
+			bodyLabels := []string{"USER_BODY", "LUNE_BODY", "PARTIAL_BODY", "TOOL_BODY", "NOTE_BODY", "APPROVAL_BODY", "ERROR_BODY", "QUEUED_BODY"}
+			foundRoles := make(map[string]bool, len(roleColors))
+			foundBodies := make(map[string]bool, len(bodyLabels))
+			for _, line := range lines {
+				for _, run := range line {
+					if run.bold {
+						t.Fatalf("modern timeline contains bold text %q", run.text)
+					}
+					if want, ok := roleColors[run.text]; ok {
+						foundRoles[run.text] = true
+						if run.foreground != want {
+							t.Errorf("role %q color = %s, want %s", run.text, run.foreground, want)
+						}
+					}
+					for _, body := range bodyLabels {
+						if strings.Contains(run.text, body) {
+							foundBodies[body] = true
+							if run.foreground != colors.Foreground {
+								t.Errorf("body %q color = %s, want default %s", body, run.foreground, colors.Foreground)
+							}
+						}
+					}
+				}
+			}
+			for role := range roleColors {
+				if !foundRoles[role] {
+					t.Errorf("role label %q not found", role)
+				}
+			}
+			for _, body := range bodyLabels {
+				if !foundBodies[body] {
+					t.Errorf("message body %q not found", body)
+				}
 			}
 		})
 	}
@@ -127,7 +231,8 @@ func assertModernConversationRoleStyles(t *testing.T, conversation string, theme
 	colors := colorsFor(theme)
 	roleColors := map[string]string{
 		"User": colors.User, "Lune": colors.Accent, "Tool": colors.Tool,
-		"Note": colors.Muted, "Approval": colors.Warning, "Error": colors.Error, "Queued": colors.Muted,
+		"Partial": colors.Muted, "Note": colors.Muted, "Approval": colors.Warning,
+		"Error": colors.Error, "Queued": colors.Muted,
 	}
 	foundUser := false
 	for _, line := range lines {

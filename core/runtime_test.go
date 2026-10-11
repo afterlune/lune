@@ -21,6 +21,41 @@ type graphScriptedRequester struct {
 	errors    []error
 }
 
+func TestUsageTrackingRequesterReportsTextInputEstimate(t *testing.T) {
+	inner := &graphScriptedRequester{responses: []*model.Response{{
+		Status: "completed",
+		Output: []model.ResponseOutputItem{model.OutputMessage{
+			Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: "done"}},
+		}},
+		Usage: model.ResponseUsage{OutputTokens: 3, TotalTokens: 3},
+	}}}
+	tracked := &usageTrackingRequester{
+		inner: inner, agentID: "lead", profile: "primary", providerName: "provider-a", modelName: "model-a",
+	}
+	var observedEstimate int64
+	tracked.SetAgentUsageObserver(func(_ model.ResponseUsage, agentID, profile, provider, modelID string, estimate int64) {
+		if agentID != "lead" || profile != "primary" || provider != "provider-a" || modelID != "model-a" {
+			t.Errorf("usage attribution = %q/%q/%q/%q", agentID, profile, provider, modelID)
+		}
+		observedEstimate = estimate
+	})
+	request := model.ModelRequest{
+		Instructions: "Follow the project conventions.",
+		Input: model.NewResponseInputItems(
+			model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("检查项目配置并总结结果")},
+			model.InputFunctionCallOutput{CallID: "call-1", Output: model.NewToolOutputText("configuration is valid")},
+		),
+		Tools: []model.ResponseTool{model.FunctionTool{Name: "read_file", Description: "Read a project file."}},
+	}
+	if _, err := tracked.CreateResponse(context.Background(), request); err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	want := model.EstimateInputTokens(request)
+	if want == 0 || observedEstimate != want {
+		t.Fatalf("observed estimate = %d, want %d", observedEstimate, want)
+	}
+}
+
 func (r *graphScriptedRequester) CreateResponse(_ context.Context, request model.ResponseRequest) (*model.Response, error) {
 	encoded, err := json.Marshal(request)
 	if err != nil {
@@ -92,6 +127,7 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer registry.Close()
 	requester := &graphScriptedRequester{responses: []*model.Response{
 		graphResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_files","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`),
 		graphResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}]}`),

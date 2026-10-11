@@ -88,7 +88,7 @@ func (p *anthropicMessagesProvider) StreamResponse(ctx context.Context, request 
 		return nil, httpStatusError(response, body, p.providerID+" Messages API")
 	}
 	defer response.Body.Close()
-	return readAnthropicStream(ctx, response.Body, emit, request.Model, p.providerID)
+	return readAnthropicStream(ctx, response.Body, emit, wire.Model, p.providerID)
 }
 
 func anthropicHeaders(apiKey, accept string) map[string]string {
@@ -100,10 +100,7 @@ func anthropicHeaders(apiKey, accept string) map[string]string {
 }
 
 func toAnthropicRequest(request ModelRequest, profile ModelProfile, stream bool) (anthropicRequest, error) {
-	modelID := profile.Model
-	if modelID == "" {
-		modelID = request.Model
-	}
+	modelID := resolveModelID(request.Model, profile)
 	maxTokens := profile.MaxOutputTokens
 	if request.MaxOutputTokens != nil {
 		maxTokens = *request.MaxOutputTokens
@@ -329,18 +326,21 @@ func anthropicImage(image InputImage) (map[string]any, error) {
 	if image.ImageURL == "" {
 		return nil, errors.New("Anthropic image input requires image_url")
 	}
-	if strings.HasPrefix(image.ImageURL, "data:") {
+	const dataScheme, base64Suffix = "data:", ";base64"
+	if len(image.ImageURL) >= len(dataScheme) && strings.EqualFold(image.ImageURL[:len(dataScheme)], dataScheme) {
 		metadata, payload, ok := strings.Cut(image.ImageURL, ",")
-		if !ok {
+		if !ok || len(metadata) < len(dataScheme) || !strings.EqualFold(metadata[:len(dataScheme)], dataScheme) {
 			return nil, errors.New("invalid image data URL")
 		}
-		if !strings.Contains(strings.ToLower(metadata), ";base64") {
+		if len(metadata) < len(base64Suffix) || !strings.EqualFold(metadata[len(metadata)-len(base64Suffix):], base64Suffix) {
 			return nil, errors.New("Anthropic image data URLs must use base64 encoding")
 		}
-		mediaHeader := strings.TrimPrefix(metadata, "data:")
-		mediaHeader = mediaHeader[:len(mediaHeader)-len(";base64")]
+		if len(metadata) <= len(dataScheme)+len(base64Suffix) {
+			return nil, errors.New("invalid base64 image data URL")
+		}
+		mediaHeader := metadata[len(dataScheme) : len(metadata)-len(base64Suffix)]
 		mediaType, _, err := mime.ParseMediaType(mediaHeader)
-		if err != nil || !strings.HasPrefix(mediaType, "image/") {
+		if err != nil || len(mediaType) < len("image/") || !strings.EqualFold(mediaType[:len("image/")], "image/") {
 			return nil, errors.New("invalid base64 image data URL")
 		}
 		decoded, err := url.PathUnescape(payload)

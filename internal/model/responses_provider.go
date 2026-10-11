@@ -21,7 +21,7 @@ func newResponsesProvider(providerID, apiKey, endpoint string, httpClient *http.
 func (p *responsesProvider) Name() string { return p.providerID }
 
 func (p *responsesProvider) CreateResponse(ctx context.Context, request ModelRequest, profile ModelProfile) (*ModelResponse, error) {
-	request.Model = profile.Model
+	request.Model = resolveModelID(request.Model, profile)
 	if request.MaxOutputTokens == nil && profile.MaxOutputTokens > 0 {
 		limit := profile.MaxOutputTokens
 		request.MaxOutputTokens = &limit
@@ -49,7 +49,7 @@ func (p *responsesProvider) CreateResponse(ctx context.Context, request ModelReq
 }
 
 func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelRequest, profile ModelProfile, emit func(ModelStreamEvent) error) (*ModelResponse, error) {
-	request.Model = profile.Model
+	request.Model = resolveModelID(request.Model, profile)
 	if request.MaxOutputTokens == nil && profile.MaxOutputTokens > 0 {
 		limit := profile.MaxOutputTokens
 		request.MaxOutputTokens = &limit

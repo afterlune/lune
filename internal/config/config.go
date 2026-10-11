@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"github.com/afterlune/lune/internal/model"
@@ -33,8 +34,8 @@ type Config struct {
 	legacyAPIKey         string
 }
 
-// AttachmentLimits configures future attachment ingestion limits. A zero
-// value means the project has not set an override.
+// AttachmentLimits configures image attachments accepted by Core task input.
+// A zero value means the project has not set a limit for that field.
 type AttachmentLimits struct {
 	MaxFiles      int   `json:"maxFiles,omitempty"`
 	MaxFileBytes  int64 `json:"maxFileBytes,omitempty"`
@@ -132,7 +133,8 @@ func (c Config) Validate() error {
 	if c.ContextWindow > 0 && c.ReserveOutputTokens >= c.ContextWindow {
 		return errors.New("reserveOutputTokens must be smaller than contextWindow")
 	}
-	if c.AutoCompactThreshold < 0 || c.AutoCompactThreshold > 1 {
+	if math.IsNaN(c.AutoCompactThreshold) || math.IsInf(c.AutoCompactThreshold, 0) ||
+		c.AutoCompactThreshold < 0 || c.AutoCompactThreshold > 1 {
 		return errors.New("autoCompactThreshold must be between 0 and 1; 0 means unset")
 	}
 	if c.Attachments.MaxFiles < 0 {

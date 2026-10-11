@@ -25,6 +25,7 @@ type Registry struct {
 	uncategorized int
 	eventObserver ToolEventObserver
 	permissions   *permissionSettings
+	workspaceRoot *workspaceIdentity
 }
 
 // ToolEvent describes a tool call. Arguments are transient so clients can build
@@ -75,6 +76,19 @@ func (r *Registry) SetToolEventObserver(observer ToolEventObserver) {
 	r.mu.Lock()
 	r.eventObserver = observer
 	r.mu.Unlock()
+}
+
+// Close releases resources retained by the registry. Registries returned by
+// NewDefaultRegistry keep the workspace directory pinned until Close.
+func (r *Registry) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	workspaceRoot := r.workspaceRoot
+	r.workspaceRoot = nil
+	r.mu.Unlock()
+	return workspaceRoot.closeRoot()
 }
 
 func (r *Registry) PermissionMode() PermissionMode {
@@ -330,12 +344,15 @@ func (r *Registry) observeToolEvent(event ToolEvent) {
 	observer(event)
 }
 
-// NewDefaultRegistry creates the built-in workspace and web tools.
+// NewDefaultRegistry creates the built-in workspace and web tools. Call Close
+// when the registry is no longer in use to release its pinned workspace root.
 func NewDefaultRegistry(workspace string) (*Registry, error) {
-	root, err := canonicalWorkspace(workspace)
+	rootHandle, err := openWorkspaceRoot(workspace)
 	if err != nil {
 		return nil, err
 	}
+	workspacePath := rootHandle.Name()
+	workspaceID := &workspaceIdentity{root: rootHandle}
 	filesCategory := model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}
 	commandCategory := model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}
 	webCategory := model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}
@@ -344,20 +361,23 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand}
 	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true}
 	registry, err := NewRegistry(
-		ToolRegistration{Tool: ListDirTool{Workspace: root}, Metadata: workspaceRead},
-		ToolRegistration{Tool: GlobTool{Workspace: root}, Metadata: workspaceRead},
-		ToolRegistration{Tool: GrepTool{Workspace: root}, Metadata: workspaceRead},
-		ToolRegistration{Tool: ReadFileTool{Workspace: root}, Metadata: workspaceRead},
-		ToolRegistration{Tool: WriteFileTool{Workspace: root}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: EditFileTool{Workspace: root}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: CommandTool{Workspace: root}, Metadata: command},
+		ToolRegistration{Tool: ListDirTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
+		ToolRegistration{Tool: GlobTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
+		ToolRegistration{Tool: GrepTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
+		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
+		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
+		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
+		ToolRegistration{Tool: CommandTool{Workspace: workspacePath}, Metadata: command},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)
 	if err != nil {
+		_ = workspaceID.closeRoot()
 		return nil, err
 	}
+	registry.workspaceRoot = workspaceID
 	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		_ = registry.Close()
 		return nil, err
 	}
 	return registry, nil

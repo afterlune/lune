@@ -9,18 +9,19 @@ import (
 )
 
 type fakeResponder struct {
-	inputs     []core.TaskRequest
-	firstErr   error
-	responses  int
-	pending    bool
-	resumes    int
-	discarded  int
-	compact    int
-	compactErr error
-	mode       core.PermissionMode
-	sessions   map[string]core.Session
-	last       string
-	sequence   int
+	inputs          []core.TaskRequest
+	firstErr        error
+	responses       int
+	pending         bool
+	resumes         int
+	discarded       int
+	compact         int
+	compactErr      error
+	mode            core.PermissionMode
+	contextDefaults core.ContextDefaults
+	sessions        map[string]core.Session
+	last            string
+	sequence        int
 }
 
 type blockingResponder struct {
@@ -186,6 +187,8 @@ func (f *fakeResponder) SetSessionSettings(_ context.Context, id string, setting
 	f.sessions[id] = saved
 	return nil
 }
+
+func (f *fakeResponder) ProjectContextDefaults() core.ContextDefaults { return f.contextDefaults }
 
 func (f *fakeResponder) PermissionMode() core.PermissionMode {
 	if f.mode == "" {

@@ -139,7 +139,7 @@ func (r *graphResponder) checkpointID(sessionID string) string {
 type usageTrackingRequester struct {
 	inner        agentgraph.Requester
 	mu           sync.RWMutex
-	observer     func(model.ResponseUsage, string, string, string, string)
+	observer     func(model.ResponseUsage, string, string, string, string, int64)
 	agentID      string
 	profile      string
 	providerName string
@@ -151,9 +151,17 @@ func (r *usageTrackingRequester) CreateResponse(ctx context.Context, request mod
 	if response != nil {
 		r.mu.RLock()
 		observer := r.observer
+		modelName := r.modelName
 		r.mu.RUnlock()
+		if request.Model != "" {
+			modelName = request.Model
+		}
 		if observer != nil {
-			observer(response.Usage, r.agentID, r.profile, r.providerName, r.modelName)
+			estimatedInputTokens := int64(0)
+			if response.Usage.InputTokens <= 0 {
+				estimatedInputTokens = model.EstimateInputTokens(request)
+			}
+			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
 		}
 	}
 	return response, err
@@ -168,9 +176,17 @@ func (r *usageTrackingRequester) StreamResponse(ctx context.Context, request mod
 	if response != nil {
 		r.mu.RLock()
 		observer := r.observer
+		modelName := r.modelName
 		r.mu.RUnlock()
+		if request.Model != "" {
+			modelName = request.Model
+		}
 		if observer != nil {
-			observer(response.Usage, r.agentID, r.profile, r.providerName, r.modelName)
+			estimatedInputTokens := int64(0)
+			if response.Usage.InputTokens <= 0 {
+				estimatedInputTokens = model.EstimateInputTokens(request)
+			}
+			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
 		}
 	}
 	return response, err
@@ -181,12 +197,12 @@ func (r *usageTrackingRequester) SetUsageObserver(observer func(model.ResponseUs
 		r.SetAgentUsageObserver(nil)
 		return
 	}
-	r.SetAgentUsageObserver(func(usage model.ResponseUsage, _ string, _ string, _ string, _ string) {
+	r.SetAgentUsageObserver(func(usage model.ResponseUsage, _ string, _ string, _ string, _ string, _ int64) {
 		observer(usage)
 	})
 }
 
-func (r *usageTrackingRequester) SetAgentUsageObserver(observer func(model.ResponseUsage, string, string, string, string)) {
+func (r *usageTrackingRequester) SetAgentUsageObserver(observer func(model.ResponseUsage, string, string, string, string, int64)) {
 	r.mu.Lock()
 	r.observer = observer
 	r.mu.Unlock()

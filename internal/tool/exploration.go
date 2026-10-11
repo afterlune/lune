@@ -36,7 +36,10 @@ const (
 var errStopWalk = errors.New("stop workspace walk")
 
 // ListDirTool lists the direct children of a workspace directory.
-type ListDirTool struct{ Workspace string }
+type ListDirTool struct {
+	Workspace string
+	workspace *workspaceIdentity
+}
 
 func (ListDirTool) Definition() model.FunctionTool {
 	return optionalPathDefinition("list_dir", "List names and types of entries in a workspace directory.", listDirSchema)
@@ -52,6 +55,11 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid list_dir arguments: %w", err)}
 	}
+	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeRoot()
 	directory, info, err := resolveWorkspaceEntry(t.Workspace, args.Path)
 	if err != nil {
 		return Result{Err: err}
@@ -59,10 +67,26 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if !info.IsDir() {
 		return Result{Err: errors.New("path is not a directory")}
 	}
+	relative, err := rootRelativePath(root, directory)
+	if err != nil {
+		return Result{Err: err}
+	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("list_dir stopped: %w", err)}
 	}
-	entries, err := os.ReadDir(directory)
+	directoryFile, err := root.Open(relative)
+	if err != nil {
+		return Result{Err: fmt.Errorf("list directory: %w", err)}
+	}
+	defer directoryFile.Close()
+	openedInfo, err := directoryFile.Stat()
+	if err != nil {
+		return Result{Err: fmt.Errorf("stat directory: %w", err)}
+	}
+	if !openedInfo.IsDir() {
+		return Result{Err: errors.New("path is not a directory")}
+	}
+	entries, err := directoryFile.ReadDir(-1)
 	if err != nil {
 		return Result{Err: fmt.Errorf("list directory: %w", err)}
 	}
@@ -91,7 +115,10 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 }
 
 // GlobTool returns workspace-relative paths matching a glob pattern.
-type GlobTool struct{ Workspace string }
+type GlobTool struct {
+	Workspace string
+	workspace *workspaceIdentity
+}
 
 func (GlobTool) Definition() model.FunctionTool {
 	return functionDefinition("glob", "Find workspace files and directories by glob pattern; ** matches recursively.", globSchema)
@@ -111,10 +138,11 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: err}
 	}
-	root, err := canonicalWorkspace(t.Workspace)
+	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
 	if err != nil {
 		return Result{Err: err}
 	}
+	defer closeRoot()
 
 	output := newToolText()
 	matches := 0
@@ -152,7 +180,10 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 }
 
 // GrepTool searches text files line by line with a regular expression.
-type GrepTool struct{ Workspace string }
+type GrepTool struct {
+	Workspace string
+	workspace *workspaceIdentity
+}
 
 func (GrepTool) Definition() model.FunctionTool {
 	return optionalPathDefinition("grep", "Search text files by case-sensitive regular expression. Directories are searched recursively; .git is skipped.", grepSchema)
@@ -176,39 +207,49 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: fmt.Errorf("invalid grep pattern: %w", err)}
 	}
+	workspaceRoot, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeRoot()
 	root, rootInfo, err := resolveWorkspaceEntry(t.Workspace, args.Path)
 	if err != nil {
 		return Result{Err: err}
 	}
-	workspaceRoot, err := canonicalWorkspace(t.Workspace)
+	rootRelative, err := rootRelativePath(workspaceRoot, root)
 	if err != nil {
 		return Result{Err: err}
 	}
-	if isInsideGitDirectory(workspaceRoot, root) {
+	if isInsideGitDirectory(workspaceRoot.Name(), root) {
 		return Result{Output: "Search skipped: .git is excluded."}
 	}
 
 	output := newToolText()
 	matches := 0
-	matchFile := func(filePath string) error {
+	matchFile := func(relative string, info fs.FileInfo) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
-		}
-		info, err := os.Stat(filePath)
-		if err != nil {
-			return err
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		err = grepFile(ctx, filePath, pattern, func(lineNumber int, line string) error {
+		file, err := workspaceRoot.Open(relative)
+		if err != nil {
+			return err
+		}
+		openedInfo, err := file.Stat()
+		if err != nil {
+			file.Close()
+			return err
+		}
+		if !openedInfo.Mode().IsRegular() {
+			file.Close()
+			return nil
+		}
+		err = grepFile(ctx, file, pattern, func(lineNumber int, line string) error {
 			if matches == maxGrepMatches {
 				output.Truncate("match limit reached")
 				return errStopWalk
-			}
-			relative, err := filepath.Rel(workspaceRoot, filePath)
-			if err != nil {
-				return err
 			}
 			matches++
 			if !output.Write(fmt.Sprintf("%s:%d:%s\n", filepath.ToSlash(relative), lineNumber, line)) {
@@ -220,14 +261,17 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 
 	if !rootInfo.IsDir() {
-		err = matchFile(root)
+		err = matchFile(rootRelative, rootInfo)
 	} else {
-		err = walkWorkspaceFrom(ctx, workspaceRoot, root, func(relative string, entry fs.DirEntry) error {
+		err = walkWorkspaceFrom(ctx, workspaceRoot.FS(), filepath.ToSlash(rootRelative), func(relative string, entry fs.DirEntry) error {
 			if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 				return nil
 			}
-			filePath := filepath.Join(workspaceRoot, filepath.FromSlash(relative))
-			return matchFile(filePath)
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			return matchFile(filepath.FromSlash(relative), info)
 		})
 	}
 	if errors.Is(err, errStopWalk) {
@@ -319,13 +363,13 @@ func globMatches(pattern []string, name string) bool {
 
 var errWalkLimit = errors.New("workspace scan limit reached")
 
-func walkWorkspace(ctx context.Context, root string, visit func(string, fs.DirEntry) error) error {
-	return walkWorkspaceFrom(ctx, root, root, visit)
+func walkWorkspace(ctx context.Context, root *os.Root, visit func(string, fs.DirEntry) error) error {
+	return walkWorkspaceFrom(ctx, root.FS(), ".", visit)
 }
 
-func walkWorkspaceFrom(ctx context.Context, workspaceRoot, start string, visit func(string, fs.DirEntry) error) error {
+func walkWorkspaceFrom(ctx context.Context, filesystem fs.FS, start string, visit func(string, fs.DirEntry) error) error {
 	visited := 0
-	err := filepath.WalkDir(start, func(filePath string, entry fs.DirEntry, err error) error {
+	err := fs.WalkDir(filesystem, start, func(filePath string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -333,17 +377,13 @@ func walkWorkspaceFrom(ctx context.Context, workspaceRoot, start string, visit f
 			return err
 		}
 		if filePath != start && entry.IsDir() && entry.Name() == ".git" {
-			return filepath.SkipDir
+			return fs.SkipDir
 		}
 		if visited == maxWalkEntries {
 			return errWalkLimit
 		}
 		visited++
-		relative, err := filepath.Rel(workspaceRoot, filePath)
-		if err != nil {
-			return err
-		}
-		return visit(filepath.ToSlash(relative), entry)
+		return visit(filePath, entry)
 	})
 	return err
 }
@@ -361,11 +401,7 @@ func isInsideGitDirectory(root, candidate string) bool {
 	return false
 }
 
-func grepFile(ctx context.Context, filePath string, expression *regexp.Regexp, visit func(int, string) error) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
+func grepFile(ctx context.Context, file *os.File, expression *regexp.Regexp, visit func(int, string) error) error {
 	defer file.Close()
 
 	prefix := make([]byte, 8192)
@@ -398,7 +434,7 @@ func grepFile(ctx context.Context, filePath string, expression *regexp.Regexp, v
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			return fmt.Errorf("line exceeds %d bytes in %q", maxGrepLineSize, filePath)
+			return fmt.Errorf("line exceeds %d bytes in %q", maxGrepLineSize, file.Name())
 		}
 		return err
 	}

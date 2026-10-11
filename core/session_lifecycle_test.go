@@ -6,11 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/afterlune/lune/internal/agentgraph"
 	"github.com/afterlune/lune/internal/model"
+	"github.com/afterlune/lune/internal/session"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
 )
@@ -75,6 +78,77 @@ func TestSessionTitleArchiveForkAndLatest(t *testing.T) {
 	cleared, err := client.GetSession(ctx, fork.ID)
 	if err != nil || cleared.Title != "" {
 		t.Fatalf("cleared title = %q, error=%v", cleared.Title, err)
+	}
+}
+
+func TestSessionDataVersionMigratesLegacyPayloadAndRejectsFutureVersion(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, server.URL)
+	client := openSettingsCore(t, workspace, stateDir)
+	ctx := context.Background()
+
+	legacyData := json.RawMessage(`{"history":[{"type":"message","role":"user","content":"old"}],"settings":{"model_profile":"review","reasoning_effort":"high"},"title":"Legacy thread","archived":true}`)
+	legacyUpdatedAt := time.Now().Add(-time.Hour)
+	if err := client.sessions.Save(ctx, session.Snapshot{
+		ID: "legacy", Workspace: workspace, UpdatedAt: legacyUpdatedAt, Data: legacyData,
+	}); err != nil {
+		t.Fatalf("save legacy session: %v", err)
+	}
+	migrated, err := client.GetSession(ctx, "legacy")
+	if err != nil {
+		t.Fatalf("GetSession legacy payload: %v", err)
+	}
+	if migrated.DataVersion != CurrentSessionDataVersion || migrated.Title != "Legacy thread" || !migrated.Archived ||
+		migrated.Settings.ModelProfile != "review" || migrated.Settings.ReasoningEffort != model.ReasoningEffortHigh || !strings.Contains(string(migrated.History), "old") {
+		t.Fatalf("migrated session = %#v", migrated)
+	}
+	if !migrated.UpdatedAt.Equal(legacyUpdatedAt) {
+		t.Fatalf("migration changed updated_at: got %s want %s", migrated.UpdatedAt, legacyUpdatedAt)
+	}
+	persisted, err := client.sessions.Get(ctx, "legacy", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedData struct {
+		DataVersion int `json:"data_version"`
+	}
+	if err := json.Unmarshal(persisted.Data, &persistedData); err != nil {
+		t.Fatal(err)
+	}
+	if persistedData.DataVersion != CurrentSessionDataVersion {
+		t.Fatalf("persisted data_version = %d, want %d", persistedData.DataVersion, CurrentSessionDataVersion)
+	}
+
+	created, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil || created.DataVersion != CurrentSessionDataVersion || !created.AgentUsageComplete {
+		t.Fatalf("new session data_version = %d, error=%v", created.DataVersion, err)
+	}
+
+	versionOne := json.RawMessage(`{"data_version":1,"history":null,"usage_requests":[{"request":204,"available":true,"agent_id":"lead","usage":{"input_tokens":80,"output_tokens":10,"total_tokens":90}},{"request":205,"available":true,"agent_id":"research","usage":{"input_tokens":50,"output_tokens":5,"total_tokens":55}}],"session_usage":{"requests":205,"measured":205,"input":10000}}`)
+	if err := client.sessions.Save(ctx, session.Snapshot{ID: "version-one", Workspace: workspace, Data: versionOne}); err != nil {
+		t.Fatalf("save version-one session: %v", err)
+	}
+	migratedV1, err := client.GetSession(ctx, "version-one")
+	if err != nil {
+		t.Fatalf("GetSession version-one payload: %v", err)
+	}
+	if migratedV1.DataVersion != CurrentSessionDataVersion || migratedV1.AgentUsageComplete ||
+		migratedV1.AgentUsage["lead"].Requests != 1 || migratedV1.AgentUsage["lead"].Input != 80 ||
+		migratedV1.AgentUsage["research"].Requests != 1 || migratedV1.AgentUsage["research"].Input != 50 {
+		t.Fatalf("version-one usage migration = %#v", migratedV1)
+	}
+
+	for _, dataVersion := range []int{-1, CurrentSessionDataVersion + 1} {
+		id := "version-" + strconv.Itoa(dataVersion)
+		data, _ := json.Marshal(map[string]any{"data_version": dataVersion, "history": json.RawMessage("null")})
+		if err := client.sessions.Save(ctx, session.Snapshot{ID: id, Workspace: workspace, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.GetSession(ctx, id); err == nil {
+			t.Fatalf("GetSession accepted unsupported data_version %d", dataVersion)
+		}
 	}
 }
 

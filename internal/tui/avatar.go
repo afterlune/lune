@@ -103,7 +103,7 @@ func (m *tuiModel) renderAvatar(width, height int) string {
 			return art
 		}
 	}
-	return m.styled(colorsFor(m.preferences.Theme).Accent).Bold(true).Render(stateGlyph(state))
+	return m.styled(colorsFor(m.preferences.Theme).Accent).Render(stateGlyph(state))
 }
 
 func backgroundColor(value string) color.Color {

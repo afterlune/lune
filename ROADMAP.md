@@ -4,7 +4,7 @@
 > 同一文件/同一接口的改动尽量集中在同一阶段，使前面的施工对后面的影响最小。
 > 标签：`[A]` 会话设置 `[B]` 历史 `[C]` 会话管理 `[E]` 上下文预算/用量 `[G]` 工具结果瘦身 `[H]` 流式 `[D]` MCP `[F]` Subagent `[M]` 多模态输入 `[Q]` 提问 `[X]` 桌面端
 >
-> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
+> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（75 条已完成、87 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
 > [x] 表示已完成；[ ] 表示仍需跟踪。注释会区分部分实现、监控、暂缓和待决策。
 
 ---
@@ -34,8 +34,10 @@
 - [ ] 修 I-1：类别选择/工具可见性跨轮丢失 + 提示可操作化（已复现 3 次，含写入反复失败） — 监控中：当前只读 Plan 运行 7 次请求未复现；没有证据时不做猜测性修复。
 - [x] 统一工具元数据：注册时声明 `category + permission class + read-only`，替换硬编码（原 `tool/permissions.go`、`agentgraph`、`registry.NewDefaultRegistry`）
 - [x] 修 `workspace` 模式对未知工具免批准的安全缺口（同一改造）
-- [ ] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限）——provider catalog 已部分落地，待补齐 — 部分实现：providers/models、context/autoCompact 与附件限制字段有配置校验；mcpServers 不支持，附件限制尚未用于输入采集。
-- [ ] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — 部分实现：SQLite 有 user_version=1 迁移；会话 JSON payload 尚无独立数据版本。
+- [x] 命令取消会结束 shell 子进程：Unix 通过独立 process group 终止整组，Windows 通过 `taskkill /T` 结束进程树，并设置 `WaitDelay` 作为管道关闭兜底；Linux/Windows 回归测试验证后台子进程不会在取消后继续完成。
+- [x] 内置文件工具在 Registry 生命周期内持有 workspace-scoped `os.Root` 执行读取、写入、编辑、列举、glob 与 grep；路径替换后仍锁定原目录，路径检查后的 symlink 越界会被拒绝，递归 grep 在打开前跳过特殊文件；Core 正常关闭及启动失败均释放句柄。
+- [ ] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限）——provider catalog 已部分落地，待补齐 — 部分实现：providers/models、context/autoCompact 与附件限制字段有配置校验；Core 的结构化图片输入已执行 limits；mcpServers 仍不支持。
+- [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=2`；版本缺失的旧数据经 v0→v1→v2 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
 - [x] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [x] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
 - [x] 新增 `internal/session/store_test.go`
@@ -44,11 +46,11 @@
 
 ## P1 公共底座（一次改好，后续都直接复用）
 
-- [ ] `[A][E]` `TaskOptions` / `State` 增加 `Model` / `ReasoningEffort` / `Goal` / `ContextWindow` / `AutoCompact` 等字段，并在 `Start` 写入 `State`（`Recover` 不传 `TaskOptions`，必须持久化） — 部分实现：State/checkpoint 保存 ModelProfile 与 provider/model；TaskOptions 没有单独 Model 覆盖字段。
+- [x] `[A][E]` `TaskOptions` / `State` 增加 `Model` / `ReasoningEffort` / `Goal` / `ContextWindow` / `AutoCompact` 等字段，并在 `Start` 写入 `State`（`Recover` 不传 `TaskOptions`，必须持久化） — Core TaskRequest/agentgraph TaskOptions 支持当前 profile 同 provider 下的 API model 覆盖；覆盖值保存在 checkpoint，恢复后继续使用。ModelProfile/provider/model、reasoning、Goal 与上下文设置均写入任务状态。
 - [ ] `[A]` **「模型对用户的称呼」设置**：与 `Goal` / plan mode 一起组合进 `Instructions`
 - [ ] `[A]` **「模型人物背景设定（persona）」**：同一管线注入；**合成顺序**上只塑造风格，**不得弱化** plan mode / 权限等系统约束
 - [ ] `[A]` **`Instructions` 合成器**：把 `Goal` + `称呼` + `persona` + plan mode 常量统一拼装
-- [ ] `[A][E]` `requestModel()` 应用上述设置（model 回退默认、effort → `Reasoning`、instructions 走合成器） — 部分实现：model fallback、reasoning effort 与 Plan 指令已接入；Goal、上下文预算和自动压缩尚未影响请求。
+- [ ] `[A][E]` `requestModel()` 应用上述设置（model 回退默认、effort → `Reasoning`、instructions 走合成器） — 部分实现：model fallback 与任务级 model override、reasoning effort、Goal 与 Plan 指令已接入；称呼/persona 顺序待决策，上下文预算和自动压缩尚未影响请求。
 - [ ] `[A][E]` 设置持久化并恢复（含称呼、persona）——现在由 `core.Session` 承载 — 部分实现：现有会话/检查点保存 model、effort、Goal 和上下文字段；称呼与 persona 不存在。
 - [ ] `[Q]` **交互式回调通道抽象**：把审批通道（`Core.ResolveApproval` + `core.ApprovalRequest`）泛化成通用用户提问通道，供 `[Q]` 复用
 
@@ -66,7 +68,7 @@
 
 ## P3 渲染基调 → 命令 → 上下文效率 → 输入 → 提问
 
-> 本区完整保留转写、上下文、流式、附件与提问任务。当前渲染已有多项实现，但未完成的设计项仍受 P0 用户确认门禁约束。
+> 本区完整保留转写、上下文、流式、附件与提问任务。会话工作区方向已获确认并落地；剩余设计细节按已选方向继续核验。
 
 ### P3.0 输出渲染改版：**会话工作区时间线，正文保持常规字重**（先行；当前“杂乱无章”的根因）
 > 前置：须先完成 P0 首位的「效果图 → 用户确认」门禁。
@@ -75,9 +77,9 @@
 
 - [x] **左右分栏**：旧布局已实现用户右对齐；会话工作区已改为单列时间线，User / Lune / Tool 以角色栏左对齐
 - [x] **正文常规字重**：旧版短标记方案已被角色栏替代；现代时间线的角色标签用主题色、正文不加粗
-- [ ] 区分事件优先靠**角色栏 + 留白**；主题色只用于短角色/状态标签，不铺满正文 — 部分实现：消息正文保持前景色；错误与审批提示使用独立状态色。
-- [ ] **不辣眼睛**：避免高饱和/高亮/纯色块；不叠加边框与背景色 — 部分实现：正文保持常规样式；仍需按最终设计图核验配色和分隔线。
-- [ ] 其余加粗一律移除：角色标签与正文不加粗 — 部分实现：时间线已使用常规字重；现代布局标题及活动图标仍使用粗体。
+- [x] 区分事件优先靠**角色栏 + 留白**；主题色只用于短角色/状态标签，不铺满正文 — User/Lune/Tool/Note/Approval/Error/Queued 标签保留主题状态色；所有对应正文为默认前景色并有逐角色回归测试。
+- [x] **不辣眼睛**：避免高饱和/高亮/纯色块；不叠加边框与背景色 — 深浅/Anime 三主题语义色对比度均 ≥4.5:1、HSL 饱和度 ≤0.68、单通道亮度 ≤242/255；消息正文不铺色块，选区使用清晰对比色；确定性截图覆盖会话栏与抽屉分隔线。
+- [x] 其余加粗一律移除：角色标签与正文不加粗 — TUI 运行视图统一使用常规字重；选择状态用箭头和主题色表示，提示用语义色表示。
 - [x] 层级靠结构：缩进 + 间距 + 单一前缀标记区分工具/通知/错误
 - [x] Markdown 降级：标题→纯文本或极简前缀；代码块保持原样缩进；**不**引入行内加粗/斜体/彩色标题/表格重排
 - [x] 一致性：assistant 与 user 走同一处理路径
@@ -86,45 +88,45 @@
 - [x] 间距规范化：块间空行统一
 - [x] 窄终端退化：会话栏收起为顶部会话切换器，事件角色栏与正文继续左对齐
 - [x] 渲染性能：避免每帧全量重建 + `SetContent`
-- [x] 测试：确定性截图覆盖角色时间线、长文本、抽屉滚动和窄屏布局；交互测试覆盖会话切换与布局稳定性
+- [x] 测试：确定性截图覆盖角色时间线、长文本、抽屉滚动和窄屏布局；交互测试覆盖会话切换与布局稳定性 — 快照源文件路径通过 runtime source 定位，交叉编译时从工作目录查找仓库根；Anime fixture 固定 `NO_COLOR=1`，不受宿主环境影响。
 
-- [ ] **长条目可点击折叠/展开**
+- [x] **长条目可点击折叠/展开**
   - [x] 条目增加 `collapsed`，并持久化
-  - [ ] 长用户输入**默认折叠**为 N 行；点击首行/标记切换展开 — 部分实现：按 6 行或 600 字符阈值折叠，预览 3 行；键盘快捷键只切换最近一条。
+  - [x] 长用户输入**默认折叠**为 N 行；点击首行/标记切换展开 — 超过 6 行或 600 字符时自动折叠，显示 3 行预览；点击首行/标记可展开。
   - [x] 折叠状态提示**只对超阈值长条目显示**（现代时间线使用 `Show more` / `Show less`）
   - [x] **点击命中测试**：建立「条目 → 渲染行区间」索引 + viewport 偏移换算
-  - [ ] 点击落在活动面板/选择器时不误触；补键盘等价操作 — 实现已覆盖活动面板与选择器的点击隔离；任意折叠消息的键盘寻址尚未实现。
+- [x] 点击落在活动面板/选择器时不误触；补键盘等价操作 — 点击命中已隔离活动面板与选择器；`/fold` 列出长用户消息，`/fold <n>` 可切换任意条目，Alt+M 仍切换最近一条。
 
-- [ ] **会话可回到底部**
+- [x] **会话可回到底部** — 回到底部按键、滚动期间不跟随及恢复跟随均有回归测试。
   - [x] 新增按键跳到末尾（候选：`End` / `G` / `Ctrl+End`）
   - [x] 滚离底部时**不**自动跟随；回到底部后恢复自动跟随
   - [x] 可选「↓ 回到底部」提示；与折叠、流式增量共存不得强制拉回底部
 
 ### P3.1 命令
-- [ ] `[A]` `/goal`（查看/设置/清除）、`/effort`（选择菜单）、`/model`（菜单 + `<name>`） — 部分实现：/model 与 /effort 已实现，/goal 尚未提供。
+- [x] `[A]` `/goal`（查看/设置/清除）、`/effort`（选择菜单）、`/model`（菜单 + `<name>`） — TUI 已实现并持久化会话级 Goal；模型请求会带入 Goal，Plan mode 指令仍限制为只读工具。非 TUI 命令集同步仍由 P4 决策项跟踪。
 - [ ] `[A]` **`/user`（或 `/callme`）**：查看 / 设置 / 清除「模型对用户的称呼」
 - [ ] `[A]` **`/persona`**：查看 / 设置 / 清除「模型人物背景设定」（支持多行输入）
-- [ ] `[E]` `/context`（查看/设置窗口/预留/reset）、`/autocompact`（查看/on/off/threshold） — 部分实现：配置和会话保存字段已存在，命令及运行时预算/自动压缩尚未接通。
+- [x] `[E]` `/context`（查看/设置窗口/预留/reset）、`/autocompact`（查看/on/off/threshold） — TUI 已实现查看、设置、重置、校验和会话持久化，并明确提示自动压缩运行时尚未接通；触发逻辑仍由 P3.2 单独跟踪。
 - [x] `[E]` 配置项 `contextWindow` / `autoCompact` / `autoCompactThreshold` / `reserveOutputTokens`
 
 ### P3.2 上下文效率
 
-> 配置与检查点保存上下文设置；Agent 请求尚未应用窗口预算，也没有自动压缩触发。手动 /compact 已实现。
+> 配置与检查点保存上下文设置；文本输入估算仅作提示，不参与自动压缩判断；Agent 请求尚未应用窗口预算，也没有自动压缩触发。手动 /compact 已实现。
 - [ ] `[E]` 自动压缩触发（任务内生效；先瘦身、再摘要）
-- [ ] `[E]` footer 增加上下文占用比例 `ctx 12.3k/64k (19%)`，保持一行简要（按宽度裁剪）
-- [ ] `[E]` 详情面板增加窗口/占比/缓存命中率、按 agent 分组统计（`core` 已有 per-agent usage 记录） — 部分实现：usage、cache 与请求详情可见；上下文窗口/占比及按 agent 分组展示未完成。
-- [ ] `[E]` 口径统一：以服务器 `usage.InputTokens` 为准，缺失时估算
+- [x] `[E]` footer 增加上下文占用比例 `ctx 12.3k/64k (19%)`，保持一行简要（按宽度裁剪） — 使用当前任务解析出的 contextWindow 与服务器 `usage.InputTokens`；窗口未知时显示 `unknown`，不推断 provider 默认值。
+- [x] `[E]` 详情面板增加窗口/占比/缓存命中率、按 agent 分组统计（`core` 已有 per-agent usage 记录） — 请求行和会话累计按 agent 分组；窗口/占比、cache rate 均可见；缺失 server input 时单独显示文本估算；旧会话无法回溯的累计值明确标注。
+- [x] `[E]` 口径统一：以服务器 `usage.InputTokens` 为准，缺失时估算 — 请求前从 instructions、文本历史和工具 schema 做粗略估算；服务器值优先，估算单独保存/展示、不计入 measured totals；图片内容和未知多模态项不参与。
 - [ ] `[G]` 客户端兜底瘦身：接近预算时保留最近 N 轮原文 + 失败态，其余替换为状态占位/头尾摘录 — 尚未实现工具结果瘦身；选择性 pin/drop/scratchpad 与此项依赖同一未实现能力。
 - [ ] `[G]` 只替换 `function_call_output` 的 `output` 内容，保持 `call_id` 配对
 - [ ] `[G]` 模型选择性表达：`pin`（关键 `call_id` 不瘦身）/ `drop_result` / scratchpad 笔记
 - [ ] `[G]` 双落点：历史组装处（`core/runtime.go` 与 `agentgraph`）
-- [ ] `[M]` 图片/附件不参与文本瘦身与 token 估算 — 依赖文本瘦身能力；目前无需另加分支，保持待办。
+- [ ] `[M]` 图片/附件不参与文本瘦身与 token 估算 — token estimate 已排除图片内容和未知多模态项；文本瘦身尚未实现，相关排除仍待该能力落地。
 
-### P3.3 流式（provider/Core 已落地；TUI 增量渲染仍待做）
+### P3.3 流式（provider/Core 已落地；TUI 增量渲染部分落地）
 > `core.StreamResponse` / `model.ModelStreamEvent` / `Core.onModelStream` 已实现。
-- [ ] 增量渲染的**流式态**细节（首 token 延迟、reasoning delta 展示开关） — 部分实现：provider/Core 暴露流式事件；TUI 尚未消费 EventModelStream 做增量渲染。
-- [ ] 未闭合 markdown / 半行处理
-- [ ] 取消传播与中断恢复衔接的边界用例 — 部分实现：任务取消/恢复有测试；provider streaming 专属边界测试仍缺。
+- [ ] 增量渲染的**流式态**细节（首 token 延迟、reasoning delta 展示开关） — 部分实现：provider/Core 与 TUI 已接入 lead 文本增量，按 32ms 批量刷新，并在 Activity/Usage 中记录任务开始到首段可见文本的延迟；reasoning delta 显示策略仍待决策。
+- [x] 未闭合 markdown / 半行处理 — 增量渲染保留未换行尾部，未闭合强调/代码定界符和开放代码块可见；CRLF/CR 归一化，测试覆盖跨增量分隔符。
+- [x] 取消传播与中断恢复衔接的边界用例 — Core 端到端测试覆盖 delta 后取消/checkpoint 恢复和增量后 provider failure；TUI 测试验证 partial 保留并与恢复后的新回复分开显示。
 - [x] 从 `response.completed` 取 usage 与现有 `usageTrackingRequester` 观测点对齐
 
 ### P3.4 输入栏支持任意模态粘贴（`[M]`）
@@ -133,7 +135,7 @@
 - [ ] 消息组装：文本 + 图片/附件 → `MessageContent.Parts`，而非纯字符串 — 部分实现：model wire 层支持 InputImage；TUI 尚无原生附件组装和粘贴流程。
 - [ ] 输入栏显示**占位标记**，发送时替换为真实部件
 - [ ] 粘贴路径/拖拽：按扩展名分流（图片→`InputImage`，文本→内联或 `read_file`）
-- [ ] 类型与大小校验（上限进配置），超限给出可操作提示 — 部分实现：配置接受附件限制；尚未有附件采集流程来执行这些限制。
+- [ ] 类型与大小校验（上限进配置），超限给出可操作提示 — 部分实现：Core/CLI 的结构化 InputImage 输入会校验 maxFiles 和 data URL base64 的 maxFileBytes/maxTotalBytes；`data:` scheme、image MIME 和 `;base64` 标记不区分大小写，URL 转义的 Base64 payload 会先解码再计字节；字节受限时无法核验大小的远程 URL/FileID 会要求改用 data URL；TUI 原生附件采集仍未实现。
 - [x] 与 `ParseTaskInput` 的 JSON 通路统一，避免两套语义
 - [ ] 多模态条目渲染（占位 + 元信息；可选 kitty/iTerm2 图形协议）与持久化体积评估
 - [ ] plan mode 下是否允许图片输入；`Ctrl+V` 入口与移除单个附件
@@ -158,17 +160,17 @@
 
 > 团队代理主流程已实现；本区保留团队展示/测试余项，以及尚未开始的 MCP 与命令决策。
 
-- [ ] `[F]` Subagent / Team **剩余项**（主体已落地于 `core/team.go`）
-  - [ ] 独立上下文与父子隔离的**回归测试**补齐 — 部分实现：已有测试验证成员不继承 Goal/context 设置；需补齐完整的父子历史隔离覆盖。
+- [x] `[F]` Subagent / Team **剩余项**（主体已落地于 `core/team.go`；隔离测试、用量归属和成员活动展示均已补齐）
+  - [x] 独立上下文与父子隔离的**回归测试**补齐 — Core 端到端测试验证 worker 只收到独立任务文本，不继承 parent history；parent 仍保留自身历史并接收 child 结果。
   - [x] 深度上限、禁止自我递归 — 当前 worker Agent 未注入 TeamExecutor，因此不能递归委派；没有额外深度配置。
-  - [ ] 用量归属的展示口径（team 成员已带 `agentID/profile/provider/modelID`） — 部分实现：Core 按 AgentID 记录用量；TUI 请求行和详情尚未显示 agent 归属。
-  - [ ] 前端嵌套展示成员活动
+  - [x] 用量归属的展示口径（team 成员已带 `agentID/profile/provider/modelID`） — Core 会话记录保留 agent/profile/provider/model；TUI Usage 明细行已展示归属并在恢复会话后保留。
+  - [x] 前端嵌套展示成员活动 — `EventAgentStarted/Finished` 携带 `TeamRunID`；Activity/Usage 抽屉按 Team 分组显示成员状态与模型。
 - [ ] `[D]` MCP：`config.json` 增 `mcpServers`
 - [ ] `[D]` JSON-RPC 2.0 客户端（initialize / tools/list / tools/call），stdio + streamable HTTP
 - [ ] `[D]` MCP 工具注册到 `tool.Registry`（`mcp` 分类，默认需批准）
 - [ ] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连
 - [ ] `/review`（语义待定）
-- [ ] 更新命令清单 / footer 文案；日志加 `model` / `effort` — 部分实现：TUI 已列出 /model、/effort 并持久化会话设置；旧式 footer 显示设置摘要，现代深浅主题 footer 按已确认设计保持紧凑；日志仍需确认 reasoning effort 记录。
+- [x] 更新命令清单 / footer 文案；日志加 `model` / `effort` — TUI 命令清单已列出 `/model`、`/effort`；旧式 footer 显示设置摘要，现代深浅主题 footer 按已确认设计保持紧凑；模型请求日志记录 model 与 reasoning_effort。CLI 命令集是否同步仍由下一项决策跟踪。
 - [ ] 决定是否同步非 TUI 命令集（`cmd/core_cli.go`）
 
 ## P5 桌面端（Wails；暂缓，待桌面产品需求确认）

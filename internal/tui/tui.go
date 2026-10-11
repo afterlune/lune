@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type tuiEntry struct {
 	role        string
 	text        string
 	err         bool
+	incomplete  bool
 	activityID  string
 	collapseKey string
 }
@@ -76,75 +78,107 @@ type tuiModel struct {
 	chat      viewport.Model
 	activity  viewport.Model
 
-	entries            []tuiEntry
-	activities         []tuiActivity
-	chatClickTargets   map[int]string
-	foldableMessages   []string
-	commandSuggestions []string
-	suggestionIndex    int
-	keymapOpen         bool
-	keymapIndex        int
-	keymapCapture      string
-	keymapDraft        map[string]string
-	undoStack          []string
-	redoStack          []string
-	permissionMenu     bool
-	permissionIndex    int
-	modelPicker        bool
-	modelOptions       []core.ModelOption
-	modelIndex         int
-	effortPicker       bool
-	effortIndex        int
-	sessionSettings    core.SessionSettings
-	pendingApproval    *toolApprovalRequestMsg
-	sessionPicker      bool
-	showArchived       bool
-	deleteConfirm      bool
-	renamingSession    bool
-	sessionList        []core.Session
-	sessionIndex       int
-	queued             []queuedInput
-	detailsOpen        bool
-	planMode           bool
-	planReview         bool
-	taskPlanMode       bool
-	vimMode            bool
-	vimNormal          bool
-	vimPendingDelete   bool
-	queuePicker        bool
-	queueIndex         int
-	taskUsage          tokenUsageTotals
-	sessionUsage       tokenUsageTotals
-	usageRequests      []tokenUsageRecord
-	width              int
-	height             int
-	pending            bool
-	running            bool
-	cancel             context.CancelFunc
-	cancelled          bool
-	abandonOnFinish    bool
-	status             string
-	preferences        uiPreferences
-	preferencesPath    string
-	colorProfile       colorprofile.Profile
+	entries                       []tuiEntry
+	activities                    []tuiActivity
+	teamActivities                []tuiTeamActivity
+	chatClickTargets              map[int]string
+	foldableMessages              []string
+	commandSuggestions            []string
+	suggestionIndex               int
+	keymapOpen                    bool
+	keymapIndex                   int
+	keymapCapture                 string
+	keymapDraft                   map[string]string
+	undoStack                     []string
+	redoStack                     []string
+	permissionMenu                bool
+	permissionIndex               int
+	modelPicker                   bool
+	modelOptions                  []core.ModelOption
+	modelIndex                    int
+	effortPicker                  bool
+	effortIndex                   int
+	sessionSettings               core.SessionSettings
+	pendingApproval               *toolApprovalRequestMsg
+	sessionPicker                 bool
+	showArchived                  bool
+	deleteConfirm                 bool
+	renamingSession               bool
+	sessionList                   []core.Session
+	sessionIndex                  int
+	queued                        []queuedInput
+	detailsOpen                   bool
+	planMode                      bool
+	planReview                    bool
+	taskPlanMode                  bool
+	vimMode                       bool
+	vimNormal                     bool
+	vimPendingDelete              bool
+	queuePicker                   bool
+	queueIndex                    int
+	taskUsage                     tokenUsageTotals
+	sessionUsage                  tokenUsageTotals
+	agentUsage                    map[string]agentUsageSummary
+	agentUsageComplete            bool
+	usageRequests                 []tokenUsageRecord
+	contextWindow                 int64
+	contextInput                  int64
+	contextEstimated              bool
+	modelStreamTaskID             string
+	modelStreamStartedAt          time.Time
+	modelStreamFirstTokenLatency  time.Duration
+	modelStreamFirstTokenRecorded bool
+	modelStreamClosed             bool
+	modelStreamPending            []core.Event
+	modelStreamTick               bool
+	modelStreamToken              uint64
+	modelStreamItems              map[string]int
+	modelStreamCurrent            []int
+	modelStreamLast               []int
+	width                         int
+	height                        int
+	pending                       bool
+	running                       bool
+	cancel                        context.CancelFunc
+	cancelled                     bool
+	abandonOnFinish               bool
+	status                        string
+	preferences                   uiPreferences
+	preferencesPath               string
+	colorProfile                  colorprofile.Profile
 }
 
-type modelUsageMsg struct{ usage core.Usage }
+type modelUsageMsg struct {
+	usage                core.Usage
+	agentID              string
+	profile              string
+	provider             string
+	model                string
+	contextWindow        int64
+	estimatedInputTokens int64
+}
 
 type tokenUsageRecord struct {
-	request   int
-	usage     core.Usage
-	available bool
+	request              int
+	usage                core.Usage
+	available            bool
+	agentID              string
+	profile              string
+	provider             string
+	model                string
+	contextWindow        int64
+	estimatedInputTokens int64
 }
 
 type tokenUsageTotals struct {
-	requests  int
-	measured  int
-	input     int64
-	output    int64
-	reasoning int64
-	total     int64
-	cached    int64
+	requests       int
+	measured       int
+	input          int64
+	estimatedInput int64
+	output         int64
+	reasoning      int64
+	total          int64
+	cached         int64
 }
 
 const defaultInputPlaceholder = "Ask anything, or paste ResponseInput JSON..."
@@ -154,6 +188,7 @@ const (
 	sessionRailMaxWidth   = 30
 	sessionRailHeaderRows = 2
 	sessionRailMaxItems   = 6
+	maxCommandSuggestions = 8
 )
 
 type tuiCommandSpec struct {
@@ -163,12 +198,16 @@ type tuiCommandSpec struct {
 }
 
 var tuiCommands = []tuiCommandSpec{
+	{name: "/autocompact", usage: "/autocompact [on|off|threshold|reset]", description: "Configure auto-compaction settings; runtime is pending."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/context", usage: "/context [window <tokens>|reserve <tokens>|reset]", description: "View or set session context values."},
 	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/effort", usage: "/effort [value]", description: "Choose reasoning effort."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
+	{name: "/fold", usage: "/fold [n]", description: "List or toggle a long user message."},
 	{name: "/fork", usage: "/fork", description: "Start a new session from completed history."},
+	{name: "/goal", usage: "/goal [text|clear]", description: "Show, set, or clear the goal for future tasks."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
 	{name: "/keymap", usage: "/keymap [reset]", description: "Edit key bindings or restore defaults."},
 	{name: "/model", usage: "/model [profile]", description: "Choose a model profile."},
@@ -308,6 +347,7 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 		pending:     pending,
 		status:      "Ready",
 		preferences: defaultUIPreferences(),
+		agentUsage:  make(map[string]agentUsageSummary), agentUsageComplete: true,
 	}
 	model.chat.SoftWrap = true
 	model.activity.SoftWrap = true
@@ -333,8 +373,21 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case coreEventMsg:
 		switch message.event.Kind {
+		case core.EventTaskStarted:
+			if message.event.SessionID == m.sessionID {
+				m.startModelStream(message.event)
+				m.contextWindow = message.event.ContextWindow
+				m.contextInput = 0
+				m.contextEstimated = false
+			}
+		case core.EventTaskFinished:
+			m.finishModelStreamEvent(message.event)
+		case core.EventModelStream:
+			return m, m.queueModelStreamEvent(message.event)
 		case core.EventToolStarted, core.EventToolFinished:
 			m.updateToolActivity(message.event.Tool)
+		case core.EventAgentStarted, core.EventAgentFinished:
+			m.updateTeamActivity(message.event)
 		case core.EventApprovalRequired:
 			if message.event.Approval != nil {
 				request := toolApprovalRequestMsg{request: *message.event.Approval}
@@ -348,9 +401,18 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Tool approval cancelled."
 			}
 		case core.EventUsage:
-			m.updateModelUsage(message.event.Usage)
+			m.updateModelUsage(message.event.Usage, message.event.AgentID, message.event.ModelProfile,
+				message.event.Provider, message.event.Model, message.event.ContextWindow, message.event.EstimatedInputTokens)
 		}
 		m.refreshPanels()
+		return m, nil
+	case modelStreamFlushMsg:
+		if message.token != m.modelStreamToken || !m.modelStreamTick {
+			return m, nil
+		}
+		if m.flushModelStreamEvents() {
+			m.refreshPanels()
+		}
 		return m, nil
 	case toolActivityMsg:
 		m.updateToolActivity(message.event)
@@ -369,7 +431,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case modelUsageMsg:
-		m.updateModelUsage(message.usage)
+		m.updateModelUsage(message.usage, message.agentID, message.profile, message.provider, message.model,
+			message.contextWindow, message.estimatedInputTokens)
 		m.refreshPanels()
 		return m, nil
 	case taskFinishedMsg:
@@ -788,6 +851,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.openSessionPicker()
 	case "/fork":
 		return m.forkSession()
+	case "/fold":
+		return m.showFoldableMessages()
+	case "/goal":
+		return m.showGoal()
 	case "/rewind":
 		m.status = "Use /rewind <n> to remove the latest n user turns."
 		return m, nil
@@ -801,6 +868,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.discard()
 	case "/compact":
 		return m.compact()
+	case "/autocompact":
+		return m.showAutoCompactSettings()
+	case "/context":
+		return m.showContextSettings()
 	case "/permissions":
 		return m.openPermissionMenu()
 	case "/model":
@@ -827,6 +898,18 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/permissions ") || strings.HasPrefix(line, "/permissions\t") {
 		return m.setPermissionModeFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/context ") || strings.HasPrefix(line, "/context\t") {
+		return m.setContextSettingsFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/autocompact ") || strings.HasPrefix(line, "/autocompact\t") {
+		return m.setAutoCompactFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/goal ") || strings.HasPrefix(line, "/goal\t") {
+		return m.setGoalFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/fold ") || strings.HasPrefix(line, "/fold\t") {
+		return m.toggleLongMessageFromCommand(line)
 	}
 	if strings.HasPrefix(line, "/model ") || strings.HasPrefix(line, "/model\t") {
 		return m.setModelFromCommand(line)
@@ -874,6 +957,276 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: m.planMode})
 		return taskResult{response: response, err: err}
 	}, true)
+}
+
+func (m *tuiModel) showGoal() (tea.Model, tea.Cmd) {
+	goal := strings.TrimSpace(m.sessionSettings.Goal)
+	if goal == "" {
+		m.addEntry("notice", "No task goal is set. Use /goal <text> to set one.", false)
+	} else {
+		m.addEntry("notice", "Task goal:\n"+goal, false)
+	}
+	m.status = "Goal applies to future tasks in this session."
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) showContextSettings() (tea.Model, tea.Cmd) {
+	defaults := m.projectContextDefaults()
+	window, windowSource := defaults.ContextWindow, "project default"
+	reserve, reserveSource := defaults.ReserveOutputTokens, "project default"
+	if m.sessionSettings.ContextWindow != nil {
+		window, windowSource = *m.sessionSettings.ContextWindow, "session override"
+	}
+	if m.sessionSettings.ReserveOutputTokens != nil {
+		reserve, reserveSource = *m.sessionSettings.ReserveOutputTokens, "session override"
+	}
+	windowLabel := "unknown"
+	if window > 0 {
+		windowLabel = compactTokens(window)
+	} else if windowSource == "session override" {
+		windowLabel = "disabled"
+	}
+	reserveLabel := "none"
+	if reserve > 0 {
+		reserveLabel = compactTokens(reserve)
+	}
+	message := fmt.Sprintf("Context window: %s (%s)\nOutput reserve: %s (%s)", windowLabel, windowSource, reserveLabel, reserveSource)
+	message += "\nUse /context <tokens>, /context window <tokens|reset>, /context reserve <tokens|reset>, or /context reset."
+	message += "\nThe context window currently affects usage display only; it does not limit model requests yet."
+	message += "\nOutput reserve is saved, but automatic compaction is not active yet."
+	m.addEntry("notice", message, false)
+	m.status = "Context settings are session overrides; project defaults remain unchanged."
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) projectContextDefaults() core.ContextDefaults {
+	if m.client == nil {
+		return core.ContextDefaults{}
+	}
+	return m.client.ProjectContextDefaults()
+}
+
+func (m *tuiModel) setContextSettingsFromCommand(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	settings := m.sessionSettings
+	message := ""
+	switch {
+	case len(fields) == 2 && fields[1] == "reset":
+		settings.ContextWindow = nil
+		settings.ReserveOutputTokens = nil
+		message = "Context window and output reserve overrides cleared."
+	case len(fields) == 3 && fields[1] == "window" && fields[2] == "reset":
+		settings.ContextWindow = nil
+		message = "Context window override cleared."
+	case len(fields) == 3 && fields[1] == "reserve" && fields[2] == "reset":
+		settings.ReserveOutputTokens = nil
+		message = "Output reserve override cleared."
+	case len(fields) == 2:
+		value, ok := parseContextTokenCount(fields[1])
+		if !ok {
+			return m.contextCommandUsage()
+		}
+		settings.ContextWindow = &value
+		message = "Context window saved for usage display; it does not limit model requests yet."
+	case len(fields) == 3 && fields[1] == "window":
+		value, ok := parseContextTokenCount(fields[2])
+		if !ok {
+			return m.contextCommandUsage()
+		}
+		settings.ContextWindow = &value
+		message = "Context window saved for usage display; it does not limit model requests yet."
+	case len(fields) == 3 && fields[1] == "reserve":
+		value, ok := parseContextTokenCount(fields[2])
+		if !ok {
+			return m.contextCommandUsage()
+		}
+		settings.ReserveOutputTokens = &value
+		message = "Output reserve saved for future tasks. Automatic compaction is not active yet."
+	default:
+		return m.contextCommandUsage()
+	}
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Context settings could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	defaults := m.projectContextDefaults()
+	m.contextWindow = defaults.ContextWindow
+	if settings.ContextWindow != nil {
+		m.contextWindow = *settings.ContextWindow
+	}
+	if m.pending {
+		message += " The paused task keeps its original context settings."
+	}
+	m.status = message
+	m.addEntry("notice", message, false)
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) showAutoCompactSettings() (tea.Model, tea.Cmd) {
+	defaults := m.projectContextDefaults()
+	enabled, enabledSource := defaults.AutoCompact, "project default"
+	threshold, thresholdSource := defaults.AutoCompactThreshold, "project default"
+	if m.sessionSettings.AutoCompact != nil {
+		enabled, enabledSource = *m.sessionSettings.AutoCompact, "session override"
+	}
+	if m.sessionSettings.AutoCompactThreshold != nil {
+		threshold, thresholdSource = *m.sessionSettings.AutoCompactThreshold, "session override"
+	}
+	if threshold == 0 {
+		threshold = core.DefaultAutoCompactThreshold
+		thresholdSource = "default when enabled"
+	}
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	message := fmt.Sprintf("Automatic compaction: %s (%s)\nThreshold: %.0f%% (%s)", state, enabledSource, threshold*100, thresholdSource)
+	message += "\nRuntime auto-compaction is not active yet; these values are saved for future tasks."
+	message += "\nUse /autocompact on|off, /autocompact threshold <0..1>, or /autocompact reset."
+	m.addEntry("notice", message, false)
+	m.status = "Auto-compaction settings are session overrides; runtime behavior is not active yet."
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) setAutoCompactFromCommand(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	settings := m.sessionSettings
+	message := ""
+	switch {
+	case len(fields) == 2 && fields[1] == "reset":
+		settings.AutoCompact = nil
+		settings.AutoCompactThreshold = nil
+		message = "Auto-compaction overrides cleared."
+	case len(fields) == 2 && (fields[1] == "on" || fields[1] == "off"):
+		enabled := fields[1] == "on"
+		settings.AutoCompact = &enabled
+		message = fmt.Sprintf("Auto-compaction setting saved as %s.", fields[1])
+	case len(fields) == 3 && fields[1] == "threshold" && fields[2] == "reset":
+		settings.AutoCompactThreshold = nil
+		message = "Auto-compaction threshold override cleared."
+	case len(fields) == 3 && fields[1] == "threshold":
+		threshold, err := strconv.ParseFloat(fields[2], 64)
+		if err != nil || math.IsNaN(threshold) || math.IsInf(threshold, 0) || threshold <= 0 || threshold > 1 {
+			m.status = "Threshold must be greater than 0 and at most 1."
+			m.addEntry("error", m.status, true)
+			return m, nil
+		}
+		settings.AutoCompactThreshold = &threshold
+		message = fmt.Sprintf("Auto-compaction threshold saved as %.0f%%.", threshold*100)
+	default:
+		m.status = "Use /autocompact on|off, /autocompact threshold <0..1>, or /autocompact reset."
+		return m, nil
+	}
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Auto-compaction settings could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	message += " Runtime auto-compaction is not active yet; the saved setting has no effect on current tasks."
+	if m.pending {
+		message += " The paused task keeps its original settings."
+	}
+	m.status = message
+	m.addEntry("notice", message, false)
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) contextCommandUsage() (tea.Model, tea.Cmd) {
+	m.status = "Use /context <tokens>, /context window <tokens|reset>, /context reserve <tokens|reset>, or /context reset."
+	return m, nil
+}
+
+func parseContextTokenCount(value string) (int64, bool) {
+	tokens, err := strconv.ParseInt(value, 10, 64)
+	return tokens, err == nil && tokens >= 0
+}
+
+func (m *tuiModel) setGoalFromCommand(line string) (tea.Model, tea.Cmd) {
+	goal := strings.TrimSpace(line[len("/goal"):])
+	clear := strings.EqualFold(goal, "clear")
+	if clear {
+		goal = ""
+	}
+	settings := m.sessionSettings
+	settings.Goal = goal
+	if err := m.client.SetSessionSettings(context.Background(), m.sessionID, settings); err != nil {
+		m.status = "Task goal could not be saved."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.sessionSettings = settings
+	switch {
+	case clear:
+		m.status = "Task goal cleared."
+	case goal == "":
+		m.status = "Use /goal <text> to set a task goal, or /goal clear to remove it."
+	default:
+		m.status = "Task goal saved for future tasks."
+	}
+	if m.pending {
+		m.status += " The paused task keeps its original goal."
+	}
+	m.addEntry("notice", m.status, false)
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) showFoldableMessages() (tea.Model, tea.Cmd) {
+	m.refreshPanels()
+	if len(m.foldableMessages) == 0 {
+		m.status = "No long user messages to fold."
+		m.addEntry("notice", m.status, false)
+		m.resetInput()
+		return m, nil
+	}
+	lines := []string{"Long user messages:"}
+	for index, key := range m.foldableMessages {
+		state, preview := "collapsed", ""
+		if m.preferences.ExpandedMessages[key] {
+			state = "expanded"
+		}
+		for _, entry := range m.entries {
+			if entry.collapseKey != key {
+				continue
+			}
+			preview = strings.Join(strings.Fields(entry.text), " ")
+			if runes := []rune(preview); len(runes) > 72 {
+				preview = string(runes[:69]) + "…"
+			}
+			break
+		}
+		lines = append(lines, fmt.Sprintf("%d · %s · %s", index+1, state, preview))
+	}
+	lines = append(lines, "Use /fold <n> to toggle a message.")
+	m.addEntry("notice", strings.Join(lines, "\n"), false)
+	m.status = "Choose a long user message with /fold <n>."
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) toggleLongMessageFromCommand(line string) (tea.Model, tea.Cmd) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		m.status = "Use /fold <n> to toggle a listed long user message."
+		return m, nil
+	}
+	index, err := strconv.Atoi(fields[1])
+	if err != nil || index < 1 || index > len(m.foldableMessages) {
+		m.status = "Unknown long user message. Use /fold to list available messages."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	m.toggleMessageExpansion(m.foldableMessages[index-1])
+	m.resetInput()
+	return m, nil
 }
 
 func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
@@ -1605,7 +1958,7 @@ func (m *tuiModel) handleNarrowSessionSwitcherClick(message tea.MouseClickMsg) (
 func (m *tuiModel) renderSessionRail(width, height int) string {
 	colors := colorsFor(m.preferences.Theme)
 	lines := []string{
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Sessions"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Sessions"),
 		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("click · /resume"),
 	}
 	if len(m.sessionList) == 0 {
@@ -1864,6 +2217,16 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.entries = nil
 	m.activities = nil
 	m.usageRequests = nil
+	m.agentUsage = make(map[string]agentUsageSummary)
+	m.agentUsageComplete = saved.AgentUsageComplete
+	m.modelStreamFirstTokenLatency = 0
+	m.modelStreamFirstTokenRecorded = false
+	m.contextWindow = 0
+	if saved.Settings.ContextWindow != nil {
+		m.contextWindow = *saved.Settings.ContextWindow
+	}
+	m.contextInput = 0
+	m.contextEstimated = false
 	m.taskUsage = tokenUsageTotals{}
 	m.sessionUsage = tokenUsageTotals{}
 	m.planMode = false
@@ -1947,16 +2310,58 @@ func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
 	m.activities = nil
+	m.teamActivities = nil
+	m.modelStreamFirstTokenLatency = 0
+	m.modelStreamFirstTokenRecorded = false
+	m.contextWindow = 0
+	m.contextInput = 0
+	m.contextEstimated = false
+	if saved.Settings.ContextWindow != nil {
+		m.contextWindow = *saved.Settings.ContextWindow
+	}
 	m.usageRequests = make([]tokenUsageRecord, 0, len(saved.UsageRequests))
 	for _, record := range saved.UsageRequests {
-		m.usageRequests = append(m.usageRequests, tokenUsageRecord{request: record.Request, usage: record.Usage, available: record.Available})
+		m.usageRequests = append(m.usageRequests, tokenUsageRecord{
+			request: record.Request, usage: record.Usage, available: record.Available,
+			agentID: record.AgentID, profile: record.ModelProfile, provider: record.Provider, model: record.Model,
+			contextWindow: record.ContextWindow, estimatedInputTokens: record.EstimatedInputTokens,
+		})
+	}
+	m.agentUsage = make(map[string]agentUsageSummary, len(saved.AgentUsage))
+	for agentID, totals := range saved.AgentUsage {
+		m.agentUsage[agentID] = usageSummaryFromTotals(totals)
+	}
+	m.agentUsageComplete = saved.AgentUsageComplete
+	for index := len(m.usageRequests) - 1; index >= 0; index-- {
+		record := m.usageRequests[index]
+		if record.agentID != "" && record.agentID != "lead" {
+			continue
+		}
+		if record.contextWindow > 0 {
+			m.contextWindow = record.contextWindow
+			if record.usage.InputTokens > 0 {
+				m.contextInput = record.usage.InputTokens
+				m.contextEstimated = false
+			} else if record.estimatedInputTokens > 0 {
+				m.contextInput = record.estimatedInputTokens
+				m.contextEstimated = true
+			} else {
+				m.contextInput = 0
+				m.contextEstimated = false
+			}
+		} else if saved.Settings.ContextWindow == nil {
+			m.contextWindow = 0
+			m.contextInput = 0
+			m.contextEstimated = false
+		}
+		break
 	}
 	m.taskUsage = loadUsageTotals(saved.TaskUsage)
 	m.sessionUsage = loadUsageTotals(saved.SessionUsage)
 }
 
 func loadUsageTotals(totals core.UsageTotals) tokenUsageTotals {
-	return tokenUsageTotals{requests: totals.Requests, measured: totals.Measured, input: totals.Input,
+	return tokenUsageTotals{requests: totals.Requests, measured: totals.Measured, input: totals.Input, estimatedInput: totals.EstimatedInput,
 		output: totals.Output, reasoning: totals.Reasoning, total: totals.Total, cached: totals.Cached}
 }
 
@@ -2180,6 +2585,9 @@ func (m *tuiModel) hasPending() (bool, error) {
 }
 
 func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUsage bool) (tea.Model, tea.Cmd) {
+	m.resetModelStream()
+	m.modelStreamFirstTokenLatency = 0
+	m.modelStreamFirstTokenRecorded = false
 	if resetUsage {
 		m.taskUsage = tokenUsageTotals{}
 	}
@@ -2210,13 +2618,16 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.cancel = nil
 	}
 
+	var responseText string
+	var responseErr error
 	if result.response != nil {
-		text, err := responseDisplayText(result.response)
-		if err != nil {
-			m.addEntry("error", err.Error(), true)
-		} else if text != "" {
-			m.addEntry("assistant", text, false)
-		}
+		responseText, responseErr = responseDisplayText(result.response)
+	}
+	streamedFinal := m.finishModelStream(responseText, result.err == nil && !m.cancelled)
+	if responseErr != nil {
+		m.addEntry("error", responseErr.Error(), true)
+	} else if responseText != "" && !streamedFinal {
+		m.addEntry("assistant", responseText, false)
 	}
 	if result.notice != "" {
 		m.addEntry("notice", result.notice, false)
@@ -2270,8 +2681,8 @@ func (m *tuiModel) updateCommandSuggestions() {
 		return
 	}
 	for _, command := range tuiCommands {
-		// Keep the bare-slash menu within its existing height; typing "/h"
-		// still offers /help for completion.
+		// Typing "/h" offers /help for completion; the renderer scrolls the
+		// full bare-slash list inside a bounded number of rows.
 		if line == "/" && command.name == "/help" {
 			continue
 		}
@@ -2281,17 +2692,55 @@ func (m *tuiModel) updateCommandSuggestions() {
 	}
 }
 
-func (m *tuiModel) updateModelUsage(usage core.Usage) {
+func (m *tuiModel) updateModelUsage(usage core.Usage, agentID, profile, provider, model string, contextWindow, estimatedInputTokens int64) {
 	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 ||
 		usage.TotalTokens != 0 || usage.InputTokensDetails.CachedTokens != 0
 	requestNumber := m.sessionUsage.requests + 1
-	record := tokenUsageRecord{request: requestNumber, usage: usage, available: available}
+	estimatedInput := int64(0)
+	if usage.InputTokens <= 0 && estimatedInputTokens > 0 {
+		estimatedInput = estimatedInputTokens
+	}
+	record := tokenUsageRecord{
+		request: requestNumber, usage: usage, available: available,
+		agentID: agentID, profile: profile, provider: provider, model: model,
+		contextWindow:        contextWindow,
+		estimatedInputTokens: estimatedInput,
+	}
+	if agentID == "" || agentID == "lead" {
+		m.contextWindow = contextWindow
+		if usage.InputTokens > 0 {
+			m.contextInput = usage.InputTokens
+			m.contextEstimated = false
+		} else if record.estimatedInputTokens > 0 {
+			m.contextInput = record.estimatedInputTokens
+			m.contextEstimated = true
+		} else {
+			m.contextInput = 0
+			m.contextEstimated = false
+		}
+	}
 	m.taskUsage.add(usage, available)
 	m.sessionUsage.add(usage, available)
+	m.taskUsage.estimatedInput += record.estimatedInputTokens
+	m.sessionUsage.estimatedInput += record.estimatedInputTokens
 	m.usageRequests = append(m.usageRequests, record)
 	if len(m.usageRequests) > 200 {
 		m.usageRequests = append([]tokenUsageRecord(nil), m.usageRequests[len(m.usageRequests)-200:]...)
 	}
+	if m.agentUsage == nil {
+		m.agentUsage = make(map[string]agentUsageSummary)
+	}
+	summary := m.agentUsage[agentID]
+	summary.requests++
+	if available {
+		summary.measured++
+		summary.input += usage.InputTokens
+		summary.output += usage.OutputTokens
+		summary.reasoning += usage.OutputTokensDetails.ReasoningTokens
+		summary.total += usage.TotalTokens
+		summary.cached += usage.InputTokensDetails.CachedTokens
+	}
+	m.agentUsage[agentID] = summary
 }
 
 func (totals *tokenUsageTotals) add(usage core.Usage, available bool) {
@@ -2308,12 +2757,42 @@ func (totals *tokenUsageTotals) add(usage core.Usage, available bool) {
 }
 
 func (record tokenUsageRecord) String() string {
-	if !record.available {
-		return fmt.Sprintf("#%d usage unavailable", record.request)
+	label := fmt.Sprintf("#%d", record.request)
+	var attribution []string
+	if record.agentID != "" {
+		attribution = append(attribution, record.agentID)
 	}
-	return fmt.Sprintf("#%d · in %s · out %s · reason %s · total %s · cached %s (%s)",
-		record.request,
-		compactTokens(record.usage.InputTokens),
+	if record.profile != "" && record.profile != record.agentID {
+		attribution = append(attribution, "profile="+record.profile)
+	}
+	model := record.model
+	if record.provider != "" {
+		if model == "" {
+			model = record.provider
+		} else {
+			model = record.provider + "/" + model
+		}
+	}
+	if model != "" {
+		attribution = append(attribution, model)
+	}
+	if len(attribution) > 0 {
+		label += " · " + strings.Join(attribution, " · ")
+	}
+	if !record.available {
+		label += " · usage unavailable"
+		if record.estimatedInputTokens > 0 {
+			label += " · input ~" + compactTokens(record.estimatedInputTokens)
+		}
+		return label
+	}
+	inputTokens := compactTokens(record.usage.InputTokens)
+	if record.usage.InputTokens <= 0 && record.estimatedInputTokens > 0 {
+		inputTokens = "~" + compactTokens(record.estimatedInputTokens)
+	}
+	return fmt.Sprintf("%s · in %s · out %s · reason %s · total %s · cached %s (%s)",
+		label,
+		inputTokens,
 		compactTokens(record.usage.OutputTokens),
 		compactTokens(record.usage.OutputTokensDetails.ReasoningTokens),
 		compactTokens(record.usage.TotalTokens),
@@ -2327,9 +2806,12 @@ func (totals tokenUsageTotals) String(label string) string {
 		return fmt.Sprintf("%s: no model requests", label)
 	}
 	if totals.measured == 0 {
+		if totals.estimatedInput > 0 {
+			return fmt.Sprintf("%s: usage unavailable (%d request(s)); input estimate ~%s", label, totals.requests, compactTokens(totals.estimatedInput))
+		}
 		return fmt.Sprintf("%s: usage unavailable (%d request(s))", label, totals.requests)
 	}
-	return fmt.Sprintf("%s · in %s · out %s · reason %s · total %s · cache %s (%s)",
+	result := fmt.Sprintf("%s · in %s · out %s · reason %s · total %s · cache %s (%s)",
 		label,
 		compactTokens(totals.input),
 		compactTokens(totals.output),
@@ -2338,6 +2820,10 @@ func (totals tokenUsageTotals) String(label string) string {
 		compactTokens(totals.cached),
 		cacheHitRate(totals.input, totals.cached),
 	)
+	if totals.estimatedInput > 0 {
+		result += " · est input ~" + compactTokens(totals.estimatedInput)
+	}
+	return result
 }
 
 func compactTokens(tokens int64) string {
@@ -2581,13 +3067,25 @@ func (m *tuiModel) activityDetailsContent() string {
 			activities.WriteByte('\n')
 		}
 		icon := activityBadge(activity.status)
-		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Bold(true).Render(icon) + " " + activity.summary + " · " + activity.status
+		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(icon) + " " + activity.summary + " · " + activity.status
 		if activity.status != "running" && activity.duration > 0 {
 			line += "  " + activity.duration.Round(time.Millisecond).String()
 		}
 		activities.WriteString(line)
 	}
-	activities.WriteString("\n\nAgent · " + stateName(m.visualState()) + " · single agent")
+	activities.WriteString("\n\nLead agent · " + stateName(m.visualState()))
+	if m.modelStreamFirstTokenRecorded {
+		activities.WriteString("\nFirst token · " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String())
+	}
+	if teamDetails := m.teamActivityDetails(colors); teamDetails != "" {
+		activities.WriteString("\n\n" + teamDetails)
+	}
+	if contextLabel := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); contextLabel != "" {
+		activities.WriteString("\n\nContext · " + contextLabel)
+		if m.contextEstimated {
+			activities.WriteString(" · estimate; image contents excluded")
+		}
+	}
 	paths := m.recentWorkspacePaths(5)
 	if len(paths) > 0 {
 		activities.WriteString("\nRecent workspace paths")
@@ -2603,6 +3101,10 @@ func (m *tuiModel) activityDetailsContent() string {
 			activities.WriteByte('\n')
 			activities.WriteString(record.String())
 		}
+	}
+	if byAgent := m.usageByAgentDetails(); byAgent != "" {
+		activities.WriteString("\n\n")
+		activities.WriteString(byAgent)
 	}
 	activities.WriteByte('\n')
 	activities.WriteString(m.taskUsage.String("Task"))
@@ -2745,7 +3247,7 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 		state.EndOfBuffer = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		state.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		state.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
-		state.Selection = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(lipgloss.Color(colors.Secondary))
+		state.Selection = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(lipgloss.Color(colors.Secondary))
 	}
 	apply(&styles.Focused)
 	apply(&styles.Blurred)
@@ -2797,7 +3299,7 @@ func (m *tuiModel) commandSuggestionHeight() int {
 	if len(m.commandSuggestions) == 0 {
 		return 0
 	}
-	return len(m.commandSuggestions) + 1
+	return min(len(m.commandSuggestions), maxCommandSuggestions) + 1
 }
 
 func (m *tuiModel) View() tea.View {
@@ -2900,7 +3402,7 @@ func (m *tuiModel) renderHeader(width int) string {
 	colors := colorsFor(m.preferences.Theme)
 	if m.modernConversation() {
 		state := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(stateName(m.visualState()))
-		brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true).Render("☾ Lune")
+		brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Render("☾ Lune")
 		left := brand + " · " + state
 		if !m.wideConversation() {
 			left = brand + "  ‹ " + fitTerminalText(m.currentSessionTitle(), max(12, width/2)) + " › · " + state
@@ -2928,13 +3430,13 @@ func (m *tuiModel) renderHeader(width int) string {
 	if m.sessionID != "" {
 		headerText += "  ·  " + m.sessionID[:min(8, len(m.sessionID))]
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render(headerText)
+	header := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(headerText)
 	if m.preferences.Theme == themeAnime && !m.studioLayout() && width >= 80 && m.height >= 24 {
 		avatar := m.renderAvatar(8, 4)
 		if m.canRenderColorArt() {
 			return lipgloss.JoinHorizontal(lipgloss.Center, header, "   ", avatar)
 		}
-		header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render(
+		header = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(
 			stateGlyph(m.visualState()) + " " + headerText)
 	}
 	return header
@@ -2969,11 +3471,21 @@ func (m *tuiModel) renderFooter(width int) string {
 				status = "/resume sessions · " + status
 			}
 		}
+		if m.running && m.modelStreamFirstTokenRecorded {
+			status += " · first token " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String()
+		}
 		if len(m.foldableMessages) > 0 && !m.detailsOpen {
 			status += " · " + m.keyLabel("input_toggle_message_fold") + " fold latest long message"
 		}
 		if !m.chat.AtBottom() && !m.detailsOpen {
 			status += " · " + m.keyLabel("jump_chat_bottom") + " back to latest"
+		}
+		if contextLabel := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); contextLabel != "" {
+			if m.wideConversation() {
+				status = contextLabel + " · " + status
+			} else {
+				metrics = contextLabel + " · " + metrics
+			}
 		}
 		status = fitTerminalText(status, width)
 		if metrics == "" {
@@ -3065,7 +3577,7 @@ func (m *tuiModel) renderQueuePicker() string {
 		line := fmt.Sprintf("  %d. %s", index+1, preview)
 		if index == m.queueIndex {
 			line = "›" + strings.TrimPrefix(line, " ")
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3073,7 +3585,7 @@ func (m *tuiModel) renderQueuePicker() string {
 }
 
 func (m *tuiModel) renderPlanReview() string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorsFor(m.preferences.Theme).Warning)).Bold(true).Render(
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorsFor(m.preferences.Theme).Warning)).Render(
 		"Plan review · Enter accepts · type feedback and Enter to revise · Esc cancels",
 	)
 }
@@ -3083,17 +3595,33 @@ func (m *tuiModel) renderCommandSuggestions() string {
 	if m.permissionMenu || len(m.commandSuggestions) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(m.commandSuggestions)+1)
-	for index, command := range m.commandSuggestions {
+	start, end := commandSuggestionRange(m.suggestionIndex, len(m.commandSuggestions))
+	lines := make([]string, 0, end-start+1)
+	for index := start; index < end; index++ {
+		command := m.commandSuggestions[index]
 		line := "  " + command
 		if index == m.suggestionIndex {
 			line = "› " + command
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "  "+m.keyLabel("suggestion_previous")+"/"+m.keyLabel("suggestion_next")+" select · "+m.keyLabel("send")+" run")
+	hint := "  " + m.keyLabel("suggestion_previous") + "/" + m.keyLabel("suggestion_next") + " select · " + m.keyLabel("send") + " run"
+	if len(m.commandSuggestions) > maxCommandSuggestions {
+		hint = fmt.Sprintf("  %d–%d of %d · %s", start+1, end, len(m.commandSuggestions), strings.TrimPrefix(hint, "  "))
+	}
+	lines = append(lines, hint)
 	return strings.Join(lines, "\n")
+}
+
+func commandSuggestionRange(index, total int) (int, int) {
+	visible := min(total, maxCommandSuggestions)
+	if visible <= 0 {
+		return 0, 0
+	}
+	index = max(0, min(index, total-1))
+	start := max(0, min(index-visible/2, total-visible))
+	return start, start + visible
 }
 
 func (m *tuiModel) renderKeymapEditor() string {
@@ -3122,7 +3650,7 @@ func (m *tuiModel) renderKeymapEditor() string {
 		line := fmt.Sprintf("  %-38s %s", label, chord)
 		if index == m.keymapIndex {
 			line = "›" + strings.TrimPrefix(line, " ")
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3182,7 +3710,7 @@ func (m *tuiModel) renderSessionPicker() string {
 		}
 		if index == m.sessionIndex {
 			line = "›" + strings.TrimPrefix(line, " ")
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3209,7 +3737,7 @@ func (m *tuiModel) renderModelPicker() string {
 		line := fmt.Sprintf("  %-20s %s / %s", option.Profile, option.Provider, option.Model)
 		if index == m.modelIndex {
 			line = "›" + strings.TrimPrefix(line, " ")
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3224,7 +3752,7 @@ func (m *tuiModel) renderEffortPicker() string {
 		line := "  " + reasoningEffortLabel(value)
 		if index == m.effortIndex {
 			line = "› " + reasoningEffortLabel(value)
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3246,7 +3774,7 @@ func (m *tuiModel) renderPermissionMenu() string {
 		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
 		if index == m.permissionIndex {
 			line = fmt.Sprintf("› %-12s %s", option.label, option.description)
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render(line)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -3276,7 +3804,7 @@ func (m *tuiModel) renderBody(width int) string {
 		if bodyHeight < 5 {
 			return m.activity.View()
 		}
-		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
+		title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close")
 		content := lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
 		return lipgloss.NewStyle().Width(max(1, width-2)).Height(bodyHeight - 2).
@@ -3294,7 +3822,7 @@ func (m *tuiModel) renderBody(width int) string {
 	}
 	if m.studioLayout() {
 		separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
-		label := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).
+		label := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).
 			Render("STUDIO · " + stateName(m.visualState()) + " · single agent")
 		return lipgloss.JoinVertical(lipgloss.Left, m.chat.View(), separator, label, m.activity.View())
 	}
@@ -3329,7 +3857,7 @@ func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
 
 func (m *tuiModel) activityDrawerHeading() string {
 	colors := colorsFor(m.preferences.Theme)
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("Activity & usage")
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(
 		m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " close",
 	)

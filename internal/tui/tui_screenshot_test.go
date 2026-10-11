@@ -38,11 +38,32 @@ func TestTUIScreenshotSVGPreservesForegroundAndBold(t *testing.T) {
 func assertTUIScreenshotSVG(t *testing.T, name, got string) {
 	t.Helper()
 	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not locate screenshot test source")
+	if ok {
+		candidate := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+		if _, err := os.Stat(filepath.Join(candidate, "go.mod")); err == nil {
+			writeOrCompareTUIScreenshot(t, filepath.Join(candidate, "docs", "design", "tui", "verification"), name, got)
+			return
+		}
 	}
-	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	screenshotDirectory := filepath.Join(repositoryRoot, "docs", "design", "tui", "verification")
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("locate screenshot workspace: %v", err)
+	}
+	for directory := filepath.Clean(workingDirectory); ; directory = filepath.Dir(directory) {
+		if _, err := os.Stat(filepath.Join(directory, "go.mod")); err == nil {
+			writeOrCompareTUIScreenshot(t, filepath.Join(directory, "docs", "design", "tui", "verification"), name, got)
+			return
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+	}
+	t.Fatalf("could not locate repository root from screenshot test source %q or working directory %q", source, workingDirectory)
+}
+
+func writeOrCompareTUIScreenshot(t *testing.T, screenshotDirectory, name, got string) {
+	t.Helper()
 	path := filepath.Join(screenshotDirectory, name)
 	if *updateTUIScreenshots {
 		if err := os.MkdirAll(screenshotDirectory, 0755); err != nil {
@@ -58,7 +79,16 @@ func assertTUIScreenshotSVG(t *testing.T, name, got string) {
 		t.Fatalf("read screenshot %s: %v; refresh with go test ./internal/tui -run 'TestTUI(SessionWorkspace|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path, err)
 	}
 	if !bytes.Equal([]byte(got), want) {
-		t.Fatalf("screenshot %s differs; refresh with go test ./internal/tui -run 'TestTUI(SessionWorkspace|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots", path)
+		gotBytes := []byte(got)
+		index := 0
+		for index < len(gotBytes) && index < len(want) && gotBytes[index] == want[index] {
+			index++
+		}
+		start := max(index-32, 0)
+		gotEnd := min(index+64, len(gotBytes))
+		wantEnd := min(index+64, len(want))
+		t.Fatalf("screenshot %s differs at byte %d; got %q, want %q; refresh with go test ./internal/tui -run 'TestTUI(SessionWorkspace|Conversation)SVGsMatchDeterministicFixtures' -args -update-tui-screenshots",
+			path, index, gotBytes[start:gotEnd], want[start:wantEnd])
 	}
 }
 

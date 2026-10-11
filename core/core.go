@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +27,10 @@ import (
 	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 )
 
-const legacyRunID = "lune-cli-active"
+const (
+	legacyRunID                 = "lune-cli-active"
+	DefaultAutoCompactThreshold = projectconfig.DefaultAutoCompactThreshold
+)
 
 type PermissionMode string
 
@@ -65,22 +69,25 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind         EventKind
-	TaskID       string
-	SessionID    string
-	Status       TaskStatus
-	Tool         ToolCall
-	Usage        Usage
-	Approval     *ApprovalRequest
-	ApprovalID   string
-	Err          string
-	AgentID      string
-	AgentName    string
-	AgentRole    string
-	Provider     string
-	ModelProfile string
-	Model        string
-	Stream       *ModelStreamEvent
+	Kind                 EventKind
+	TaskID               string
+	SessionID            string
+	Status               TaskStatus
+	ContextWindow        int64
+	EstimatedInputTokens int64
+	Tool                 ToolCall
+	Usage                Usage
+	Approval             *ApprovalRequest
+	ApprovalID           string
+	Err                  string
+	AgentID              string
+	AgentName            string
+	AgentRole            string
+	TeamRunID            string
+	Provider             string
+	ModelProfile         string
+	Model                string
+	Stream               *ModelStreamEvent
 }
 
 type ModelStreamEvent struct {
@@ -130,24 +137,27 @@ type TokenOutputDetails struct {
 }
 
 type UsageRecord struct {
-	Request      int    `json:"request"`
-	Usage        Usage  `json:"usage"`
-	Available    bool   `json:"available"`
-	AgentID      string `json:"agent_id,omitempty"`
-	Provider     string `json:"provider,omitempty"`
-	ModelProfile string `json:"model_profile,omitempty"`
-	Model        string `json:"model,omitempty"`
+	Request              int    `json:"request"`
+	Usage                Usage  `json:"usage"`
+	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
+	Available            bool   `json:"available"`
+	ContextWindow        int64  `json:"context_window,omitempty"`
+	AgentID              string `json:"agent_id,omitempty"`
+	Provider             string `json:"provider,omitempty"`
+	ModelProfile         string `json:"model_profile,omitempty"`
+	Model                string `json:"model,omitempty"`
 }
 
 type UsageTotals struct {
-	Requests      int   `json:"requests"`
-	Measured      int   `json:"measured"`
-	Input         int64 `json:"input"`
-	Output        int64 `json:"output"`
-	Reasoning     int64 `json:"reasoning"`
-	Total         int64 `json:"total"`
-	Cached        int64 `json:"cached"`
-	CacheCreation int64 `json:"cache_creation,omitempty"`
+	Requests       int   `json:"requests"`
+	Measured       int   `json:"measured"`
+	Input          int64 `json:"input"`
+	EstimatedInput int64 `json:"estimated_input,omitempty"`
+	Output         int64 `json:"output"`
+	Reasoning      int64 `json:"reasoning"`
+	Total          int64 `json:"total"`
+	Cached         int64 `json:"cached"`
+	CacheCreation  int64 `json:"cache_creation,omitempty"`
 }
 
 // SessionSettings contains per-session overrides. Nil context settings inherit
@@ -170,6 +180,15 @@ type taskSettings struct {
 	AutoCompactThreshold float64
 }
 
+// ContextDefaults exposes project-level context values to frontends so they
+// can distinguish inherited defaults from session overrides.
+type ContextDefaults struct {
+	ContextWindow        int64
+	ReserveOutputTokens  int64
+	AutoCompact          bool
+	AutoCompactThreshold float64
+}
+
 // ModelOption is a model profile exposed to clients without leaking the
 // internal model package through Core's public API.
 type ModelOption struct {
@@ -180,16 +199,19 @@ type ModelOption struct {
 
 // Session contains durable conversation state, not TUI transcript caches.
 type Session struct {
-	ID            string          `json:"id"`
-	Workspace     string          `json:"workspace"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	Title         string          `json:"title"`
-	Archived      bool            `json:"archived"`
-	Settings      SessionSettings `json:"settings"`
-	History       json.RawMessage `json:"history,omitempty"`
-	UsageRequests []UsageRecord   `json:"usage_requests,omitempty"`
-	TaskUsage     UsageTotals     `json:"task_usage,omitempty"`
-	SessionUsage  UsageTotals     `json:"session_usage,omitempty"`
+	ID                 string                 `json:"id"`
+	Workspace          string                 `json:"workspace"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	DataVersion        int                    `json:"data_version"`
+	Title              string                 `json:"title"`
+	Archived           bool                   `json:"archived"`
+	Settings           SessionSettings        `json:"settings"`
+	History            json.RawMessage        `json:"history,omitempty"`
+	UsageRequests      []UsageRecord          `json:"usage_requests,omitempty"`
+	AgentUsage         map[string]UsageTotals `json:"agent_usage,omitempty"`
+	AgentUsageComplete bool                   `json:"agent_usage_complete"`
+	TaskUsage          UsageTotals            `json:"task_usage,omitempty"`
+	SessionUsage       UsageTotals            `json:"session_usage,omitempty"`
 }
 
 type TaskInput struct{ Raw json.RawMessage }
@@ -220,9 +242,11 @@ func ParseTaskInput(line string) (TaskInput, error) {
 }
 
 type TaskRequest struct {
-	SessionID     string
-	Input         TaskInput
-	PlanMode      bool
+	SessionID string
+	Input     TaskInput
+	PlanMode  bool
+	// Model optionally overrides the selected profile's API model identifier for this task.
+	Model         string
 	MaxToolRounds int
 }
 
@@ -230,6 +254,7 @@ type TaskState struct {
 	Status          TaskStatus
 	SessionID       string
 	TaskID          string
+	ContextWindow   int64
 	PlanMode        bool
 	ModelProfile    string
 	Provider        string
@@ -243,15 +268,16 @@ type Config struct {
 }
 
 type Core struct {
-	workspace    string
-	registry     *tool.Registry
-	models       *model.ProviderCatalog
-	taskDefaults taskSettings
-	teamRuns     *teamStore
-	team         *teamExecutor
-	runtime      *graphResponder
-	checkpoints  *sqlite.Store[agentgraph.State]
-	sessions     *session.Store
+	workspace        string
+	registry         *tool.Registry
+	models           *model.ProviderCatalog
+	taskDefaults     taskSettings
+	attachmentLimits projectconfig.AttachmentLimits
+	teamRuns         *teamStore
+	team             *teamExecutor
+	runtime          *graphResponder
+	checkpoints      *sqlite.Store[agentgraph.State]
+	sessions         *session.Store
 
 	mu              sync.RWMutex
 	usageMu         sync.Mutex
@@ -289,6 +315,12 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
+	closeRegistry := true
+	defer func() {
+		if closeRegistry {
+			_ = registry.Close()
+		}
+	}()
 	projectConfig, err := projectconfig.Load(filepath.Join(workspace, projectconfig.FileName))
 	if err != nil {
 		return nil, err
@@ -328,9 +360,10 @@ func New(config Config) (_ *Core, err error) {
 		}
 	}()
 	c := &Core{
-		workspace: workspace,
-		registry:  registry,
-		models:    models,
+		workspace:        workspace,
+		registry:         registry,
+		models:           models,
+		attachmentLimits: projectConfig.Attachments,
 		taskDefaults: taskSettings{
 			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
 			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
@@ -349,7 +382,7 @@ func New(config Config) (_ *Core, err error) {
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
 	}
-	closeCheckpoints, closeSessions, closeTeamRuns = false, false, false
+	closeCheckpoints, closeSessions, closeTeamRuns, closeRegistry = false, false, false, false
 	return c, nil
 }
 
@@ -371,7 +404,11 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Team: c.team,
 		StreamObserver: func(event model.ModelStreamEvent) {
-			c.onModelStream("lead", "Lead", profileID, profile.Provider, profile.Model, event)
+			activeModel := c.State().Model
+			if activeModel == "" {
+				activeModel = profile.Model
+			}
+			c.onModelStream("lead", "Lead", profileID, profile.Provider, activeModel, event)
 		},
 	})
 	if err != nil {
@@ -411,7 +448,7 @@ func (c *Core) Close() error {
 		}
 	}
 	c.mu.Unlock()
-	return errors.Join(c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close())
+	return errors.Join(c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close())
 }
 
 func (c *Core) SetEventHandler(handler EventHandler) {
@@ -476,6 +513,16 @@ func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, setting
 	return c.saveSession(ctx, saved)
 }
 
+func (c *Core) ProjectContextDefaults() ContextDefaults {
+	if c == nil {
+		return ContextDefaults{}
+	}
+	return ContextDefaults{
+		ContextWindow: c.taskDefaults.ContextWindow, ReserveOutputTokens: c.taskDefaults.ReserveOutputTokens,
+		AutoCompact: c.taskDefaults.AutoCompact, AutoCompactThreshold: c.taskDefaults.AutoCompactThreshold,
+	}
+}
+
 func (c *Core) normalizeSessionModelSettings(settings SessionSettings) (SessionSettings, error) {
 	if settings.ModelProfile == "" {
 		settings.ModelProfile = c.models.DefaultModel()
@@ -509,7 +556,8 @@ func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettin
 	if settings.ReserveOutputTokens != nil && *settings.ReserveOutputTokens < 0 {
 		return SessionSettings{}, errors.New("reserveOutputTokens override must not be negative")
 	}
-	if settings.AutoCompactThreshold != nil && (*settings.AutoCompactThreshold <= 0 || *settings.AutoCompactThreshold > 1) {
+	if settings.AutoCompactThreshold != nil && (math.IsNaN(*settings.AutoCompactThreshold) || math.IsInf(*settings.AutoCompactThreshold, 0) ||
+		*settings.AutoCompactThreshold <= 0 || *settings.AutoCompactThreshold > 1) {
 		return SessionSettings{}, errors.New("autoCompactThreshold override must be greater than 0 and at most 1")
 	}
 	if _, err := c.resolveTaskSettings(settings); err != nil {
@@ -545,7 +593,8 @@ func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, erro
 	if effective.ContextWindow > 0 && effective.ReserveOutputTokens >= effective.ContextWindow {
 		return taskSettings{}, errors.New("reserveOutputTokens must be smaller than contextWindow")
 	}
-	if effective.AutoCompactThreshold < 0 || effective.AutoCompactThreshold > 1 {
+	if math.IsNaN(effective.AutoCompactThreshold) || math.IsInf(effective.AutoCompactThreshold, 0) ||
+		effective.AutoCompactThreshold < 0 || effective.AutoCompactThreshold > 1 {
 		return taskSettings{}, errors.New("autoCompactThreshold must be between 0 and 1")
 	}
 	return effective, nil
@@ -553,7 +602,7 @@ func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, erro
 
 func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 	return agentgraph.TaskOptions{
-		PlanMode: state.PlanMode, MaxToolRounds: state.MaxToolRounds, ReasoningEffort: state.ReasoningEffort,
+		PlanMode: state.PlanMode, MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 	}
@@ -595,6 +644,9 @@ func (c *Core) ResolveApproval(id string, allowed bool) error {
 }
 
 func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessage, error) {
+	if c == nil || ctx == nil {
+		return nil, errors.New("core and context are required")
+	}
 	if len(request.Input.Raw) == 0 || !json.Valid(request.Input.Raw) {
 		return nil, errors.New("task input must be valid JSON")
 	}
@@ -602,14 +654,17 @@ func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	return c.run(ctx, request.SessionID, request.PlanMode, request.MaxToolRounds, false, input)
+	if err := validateTaskInputAttachments(input, c.attachmentLimits); err != nil {
+		return nil, err
+	}
+	return c.run(ctx, request.SessionID, request.PlanMode, request.MaxToolRounds, request.Model, false, input)
 }
 
 func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessage, error) {
-	return c.run(ctx, sessionID, false, 0, true, nil)
+	return c.run(ctx, sessionID, false, 0, "", true, nil)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, resume bool, input *model.ResponseInput) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, resume bool, input *model.ResponseInput) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -619,6 +674,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if maxRounds < 0 {
 		return nil, errors.New("maximum tool rounds must not be negative")
 	}
+	modelOverride = strings.TrimSpace(modelOverride)
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -672,7 +728,8 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		taskOptions = agentgraph.TaskOptions{
 			PlanMode: planMode, MaxToolRounds: maxRounds, ReasoningEffort: settings.ReasoningEffort,
-			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
+			Model: modelOverride,
+			Goal:  effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 		}
@@ -685,7 +742,11 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		history = &decoded
 	}
-	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, saved.UpdatedAt); err != nil {
+	effectiveModel := profile.Model
+	if taskOptions.Model != "" {
+		effectiveModel = taskOptions.Model
+	}
+	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, effectiveModel, taskOptions.ContextWindow, saved.UpdatedAt); err != nil {
 		return nil, err
 	}
 	defer c.endTask()
@@ -744,7 +805,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, expectedUpdatedAt time.Time) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, contextWindow int64, expectedUpdatedAt time.Time) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")
 	}
@@ -772,13 +833,13 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 		return "", err
 	}
 	c.active = TaskState{
-		Status: TaskRunning, SessionID: sessionID, TaskID: id, PlanMode: planMode,
-		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: profile.Model,
+		Status: TaskRunning, SessionID: sessionID, TaskID: id, ContextWindow: contextWindow, PlanMode: planMode,
+		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName,
 		ReasoningEffort: settings.ReasoningEffort,
 	}
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventTaskStarted, TaskID: id, SessionID: sessionID, Status: TaskRunning,
-		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: profile.Model})
+	c.emit(Event{Kind: EventTaskStarted, TaskID: id, SessionID: sessionID, Status: TaskRunning, ContextWindow: contextWindow,
+		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName})
 	return id, nil
 }
 
@@ -799,7 +860,7 @@ func (c *Core) setTaskStatus(status TaskStatus) {
 func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	c.setTaskStatus(status)
 	state := c.State()
-	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, SessionID: sessionID, Status: status, Err: errorString(err),
+	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, SessionID: sessionID, Status: status, ContextWindow: state.ContextWindow, Err: errorString(err),
 		ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model})
 }
 
@@ -845,22 +906,27 @@ func (c *Core) onModelStream(agentID, agentName, profile, provider, modelID stri
 }
 
 func (c *Core) onUsage(usage model.ResponseUsage) {
-	c.onAgentUsage(usage, "", "", "", "")
+	c.onAgentUsage(usage, "", "", "", "", 0)
 }
 
-func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string) {
+func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
 	value := Usage{InputTokens: usage.InputTokens, InputTokensDetails: TokenInputDetails{
 		CachedTokens: usage.InputTokensDetails.CachedTokens, CacheCreationTokens: usage.InputTokensDetails.CacheCreationTokens,
 	},
 		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: usage.TotalTokens}
 	state := c.State()
+	contextWindow := state.ContextWindow
+	if agentID != "" && agentID != "lead" {
+		contextWindow = 0
+	}
 	if state.SessionID != "" {
-		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID); err != nil {
+		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens); err != nil {
 			slog.Warn("persist token usage", "error", err)
 		}
 	}
 	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, Usage: value,
-		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID})
+		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID, ContextWindow: contextWindow,
+		EstimatedInputTokens: estimatedInputTokensIfMissing(value.InputTokens, estimatedInputTokens)})
 }
 
 func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
@@ -915,9 +981,9 @@ func (c *Core) createSession(ctx context.Context, history json.RawMessage, setti
 		return Session{}, err
 	}
 	saved := Session{
-		ID: id, Workspace: c.workspace, UpdatedAt: time.Now(),
-		Settings: settings,
-		History:  append(json.RawMessage(nil), history...),
+		ID: id, Workspace: c.workspace, UpdatedAt: time.Now(), DataVersion: CurrentSessionDataVersion,
+		Settings: settings, AgentUsage: map[string]UsageTotals{}, AgentUsageComplete: true,
+		History: append(json.RawMessage(nil), history...),
 	}
 	if err := c.saveSession(ctx, saved); err != nil {
 		return Session{}, err
@@ -954,7 +1020,7 @@ func (c *Core) LatestSession(ctx context.Context) (Session, bool, error) {
 	if err != nil || snapshot == nil {
 		return Session{}, false, err
 	}
-	saved, err := c.decodeSession(*snapshot)
+	saved, err := c.decodeSession(ctx, *snapshot)
 	return saved, err == nil, err
 }
 
@@ -968,7 +1034,7 @@ func (c *Core) ListSessions(ctx context.Context, limit int, includeArchived bool
 	}
 	sessions := make([]Session, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		saved, err := c.decodeSession(snapshot)
+		saved, err := c.decodeSession(ctx, snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -1102,7 +1168,7 @@ func (c *Core) GetSession(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return c.decodeSession(*snapshot)
+	return c.decodeSession(ctx, *snapshot)
 }
 
 func (c *Core) SetSessionHistory(ctx context.Context, id string, history json.RawMessage) error {
@@ -1183,8 +1249,12 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	effective, err := c.resolveTaskSettings(settings)
+	if err != nil {
+		return 0, err
+	}
 	profile, _ := c.models.Profile(settings.ModelProfile)
-	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, saved.UpdatedAt); err != nil {
+	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, effective.ContextWindow, saved.UpdatedAt); err != nil {
 		return 0, err
 	}
 	defer c.endTask()
@@ -1240,10 +1310,10 @@ func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string) error {
 }
 
 func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {
-	return c.recordUsageForAgent(ctx, id, usage, "", "", "", "")
+	return c.recordUsageForAgent(ctx, id, usage, "", "", "", "", 0, 0)
 }
 
-func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string) error {
+func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string, contextWindow, estimatedInputTokens int64) error {
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
 	saved, err := c.GetSession(ctx, id)
@@ -1254,16 +1324,34 @@ func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, 
 		usage.InputTokensDetails.CachedTokens != 0 || usage.InputTokensDetails.CacheCreationTokens != 0
 	record := UsageRecord{
 		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
+		ContextWindow: contextWindow, EstimatedInputTokens: estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens),
 		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID,
 	}
 	saved.UsageRequests = append(saved.UsageRequests, record)
 	if len(saved.UsageRequests) > 200 {
 		saved.UsageRequests = append([]UsageRecord(nil), saved.UsageRequests[len(saved.UsageRequests)-200:]...)
 	}
+	if saved.AgentUsage == nil {
+		saved.AgentUsage = make(map[string]UsageTotals)
+	}
+	agentTotals := saved.AgentUsage[agentID]
+	addUsage(&agentTotals, usage, available)
+	estimatedInput := estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens)
+	agentTotals.EstimatedInput += estimatedInput
+	saved.AgentUsage[agentID] = agentTotals
 	addUsage(&saved.SessionUsage, usage, available)
 	addUsage(&saved.TaskUsage, usage, available)
+	saved.SessionUsage.EstimatedInput += estimatedInput
+	saved.TaskUsage.EstimatedInput += estimatedInput
 	saved.UpdatedAt = time.Now()
 	return c.saveSession(ctx, saved)
+}
+
+func estimatedInputTokensIfMissing(inputTokens, estimatedInputTokens int64) int64 {
+	if inputTokens > 0 || estimatedInputTokens <= 0 {
+		return 0
+	}
+	return estimatedInputTokens
 }
 
 func addUsage(totals *UsageTotals, usage Usage, available bool) {
@@ -1281,6 +1369,11 @@ func addUsage(totals *UsageTotals, usage Usage, available bool) {
 }
 
 func (c *Core) saveSession(ctx context.Context, saved Session) error {
+	var err error
+	saved, _, err = migrateSessionData(saved)
+	if err != nil {
+		return err
+	}
 	if saved.UpdatedAt.IsZero() {
 		saved.UpdatedAt = time.Now()
 	}
@@ -1291,19 +1384,45 @@ func (c *Core) saveSession(ctx context.Context, saved Session) error {
 	return c.sessions.Save(ctx, session.Snapshot{ID: saved.ID, Workspace: c.workspace, UpdatedAt: saved.UpdatedAt, Data: data})
 }
 
-func (c *Core) decodeSession(snapshot session.Snapshot) (Session, error) {
-	var saved Session
-	if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
-		return Session{}, fmt.Errorf("decode session %q: %w", snapshot.ID, err)
+func (c *Core) decodeSession(ctx context.Context, snapshot session.Snapshot) (Session, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		var saved Session
+		if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
+			return Session{}, fmt.Errorf("decode session %q: %w", snapshot.ID, err)
+		}
+		saved.ID, saved.Workspace, saved.UpdatedAt = snapshot.ID, snapshot.Workspace, snapshot.UpdatedAt
+		migrated, changed, err := migrateSessionData(saved)
+		if err != nil {
+			return Session{}, fmt.Errorf("migrate session %q: %w", snapshot.ID, err)
+		}
+		saved = migrated
+		if len(saved.History) == 0 {
+			saved.History = json.RawMessage("null")
+		}
+		if saved.Settings.ModelProfile == "" {
+			saved.Settings.ModelProfile = c.models.DefaultModel()
+		}
+		if !changed {
+			return saved, nil
+		}
+		encoded, err := json.Marshal(saved)
+		if err != nil {
+			return Session{}, fmt.Errorf("encode migrated session %q: %w", snapshot.ID, err)
+		}
+		updated, err := c.sessions.ReplaceDataIfUnchanged(ctx, snapshot.ID, snapshot.Workspace, snapshot.Data, encoded)
+		if err != nil {
+			return Session{}, fmt.Errorf("persist session %q migration: %w", snapshot.ID, err)
+		}
+		if updated {
+			return saved, nil
+		}
+		latest, err := c.sessions.Get(ctx, snapshot.ID, snapshot.Workspace)
+		if err != nil {
+			return Session{}, fmt.Errorf("reload session %q during migration: %w", snapshot.ID, err)
+		}
+		snapshot = *latest
 	}
-	saved.ID, saved.Workspace, saved.UpdatedAt = snapshot.ID, snapshot.Workspace, snapshot.UpdatedAt
-	if len(saved.History) == 0 {
-		saved.History = json.RawMessage("null")
-	}
-	if saved.Settings.ModelProfile == "" {
-		saved.Settings.ModelProfile = c.models.DefaultModel()
-	}
-	return saved, nil
+	return Session{}, fmt.Errorf("session %q changed repeatedly during data migration", snapshot.ID)
 }
 
 func (c *Core) migrateLegacySession(ctx context.Context) error {

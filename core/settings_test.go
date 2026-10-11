@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -128,6 +129,11 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	}
 	writeProjectSettingsConfig(t, workspace, project)
 	client := openSettingsCore(t, workspace, stateDir)
+	if defaults := client.ProjectContextDefaults(); defaults != (ContextDefaults{
+		ContextWindow: 64000, ReserveOutputTokens: 4096, AutoCompact: true, AutoCompactThreshold: 0.75,
+	}) {
+		t.Fatalf("project context defaults = %#v", defaults)
+	}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +205,8 @@ func TestSessionTaskSettingsRejectInvalidOverrides(t *testing.T) {
 		{ContextWindow: int64Pointer(1000), ReserveOutputTokens: int64Pointer(1000)},
 		{AutoCompactThreshold: float64Pointer(0)},
 		{AutoCompactThreshold: float64Pointer(1.1)},
+		{AutoCompactThreshold: float64Pointer(math.NaN())},
+		{AutoCompactThreshold: float64Pointer(math.Inf(1))},
 	} {
 		if err := client.SetSessionSettings(context.Background(), saved.ID, settings); err == nil {
 			t.Errorf("SetSessionSettings accepted invalid override %#v", settings)
@@ -319,15 +327,20 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	firstDone := make(chan error, 1)
 	input := mustSettingsTaskInput(t, "pause me")
+	const taskModel = "task-specific-model"
 	go func() {
-		_, runErr := client.RunTask(ctx, TaskRequest{SessionID: saved.ID, Input: input})
+		_, runErr := client.RunTask(ctx, TaskRequest{SessionID: saved.ID, Input: input, Model: taskModel})
 		firstDone <- runErr
 	}()
 	select {
 	case first := <-observed:
-		if first.Model != "primary-wire-model" || first.Reasoning == nil || first.Reasoning.Effort != model.ReasoningEffortLow {
+		if first.Model != taskModel || first.Reasoning == nil || first.Reasoning.Effort != model.ReasoningEffortLow {
 			cancel()
 			t.Fatalf("initial request = %#v", first)
+		}
+		if active := client.State(); active.Model != taskModel {
+			cancel()
+			t.Fatalf("active task model = %q, want %q", active.Model, taskModel)
 		}
 	case <-time.After(5 * time.Second):
 		cancel()
@@ -343,6 +356,9 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	pausedState, ok, err := client.runtime.PendingStateFor(context.Background(), saved.ID)
 	if err != nil || !ok {
 		t.Fatalf("PendingStateFor after interruption: found=%v error=%v", ok, err)
+	}
+	if pausedState.ModelOverride != taskModel {
+		t.Fatalf("checkpoint model override = %q, want %q", pausedState.ModelOverride, taskModel)
 	}
 	assertTaskSettingsSnapshot(t, pausedState, taskSettings{
 		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
@@ -360,7 +376,7 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	}
 	select {
 	case resumed := <-observed:
-		if resumed.Model != "primary-wire-model" || resumed.Reasoning == nil || resumed.Reasoning.Effort != model.ReasoningEffortLow {
+		if resumed.Model != taskModel || resumed.Reasoning == nil || resumed.Reasoning.Effort != model.ReasoningEffortLow {
 			t.Fatalf("resumed request = %#v; want pinned original settings", resumed)
 		}
 	case <-time.After(5 * time.Second):
@@ -370,12 +386,18 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.7,
 	})
+	if client.runtime.taskOptions.Model != taskModel {
+		t.Fatalf("resumed task model override = %q, want %q", client.runtime.taskOptions.Model, taskModel)
+	}
 	current, err := client.GetSession(context.Background(), saved.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if current.Settings.ModelProfile != "review" || current.Settings.ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("session settings after resume = %#v", current.Settings)
+	}
+	if len(current.UsageRequests) != 1 || current.UsageRequests[0].Model != taskModel {
+		t.Fatalf("usage requests = %#v; want one request attributed to %q", current.UsageRequests, taskModel)
 	}
 }
 

@@ -158,6 +158,49 @@ func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
 	}
 }
 
+func TestTaskGoalIsAppliedWithoutWeakeningPlanInstructions(t *testing.T) {
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"plan ready"}]}]}`),
+	}}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("inspect the project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "goal-plan-instructions", nil, input, TaskOptions{
+		Goal: "Map the public API and summarize its dependencies.", PlanMode: true,
+	}, graph.Options[State]{Store: store})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || len(requester.requests) != 1 {
+		t.Fatalf("result status=%q requests=%d", result.Status, len(requester.requests))
+	}
+	instructions := requester.requests[0].Instructions
+	for _, expected := range []string{
+		"Map the public API and summarize its dependencies.",
+		"does not override higher-priority instructions",
+		"You are in plan mode.",
+		"You may use read-only tools only.",
+		"Do not claim to have made changes.",
+	} {
+		if !strings.Contains(instructions, expected) {
+			t.Errorf("instructions %q are missing %q", instructions, expected)
+		}
+	}
+}
+
 func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 	readFile := &namedRecordingTool{name: "read_file"}
 	writeFile := &namedRecordingTool{name: "write_file"}
@@ -240,7 +283,7 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	options := graph.Options[State]{Store: store, MaxSteps: 1}
-	paused, err := agent.Start(context.Background(), "agent-poc", nil, input, TaskOptions{}, options)
+	paused, err := agent.Start(context.Background(), "agent-poc", nil, input, TaskOptions{Model: "override-model"}, options)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -264,6 +307,14 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	}
 	if len(requester.requests) != 3 {
 		t.Fatalf("model requests = %d, want 3", len(requester.requests))
+	}
+	for index, request := range requester.requests {
+		if request.Model != "override-model" {
+			t.Errorf("request %d model = %q, want persisted override", index+1, request.Model)
+		}
+	}
+	if completed.Checkpoint.Final.ModelOverride != "override-model" {
+		t.Errorf("recovered model override = %q, want persisted override", completed.Checkpoint.Final.ModelOverride)
 	}
 	if len(requester.requests[0].Tools) != 1 {
 		t.Fatalf("initial tools = %#v, want only category selector", requester.requests[0].Tools)
@@ -481,7 +532,7 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "hidden-tool-category", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	result, err := agent.Start(context.Background(), "hidden-tool-category", nil, input, TaskOptions{ReasoningEffort: model.ReasoningEffortHigh}, graph.Options[State]{Store: store})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -514,6 +565,7 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	for _, expected := range []string{
 		"agent model request started",
 		"request=2",
+		"reasoning_effort=high",
 		"selected_category=files",
 		`visible_tools="[select_tool_category read_file]"`,
 		"tool category selected",
@@ -735,6 +787,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer registry.Close()
 	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
 		t.Fatal(err)
 	}

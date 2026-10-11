@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/afterlune/lune/internal/model"
@@ -16,6 +17,7 @@ const editFileSchema = `{"type":"object","properties":{"path":{"type":"string","
 // EditFileTool replaces one exact, unique text occurrence inside a file.
 type EditFileTool struct {
 	Workspace string
+	workspace *workspaceIdentity
 }
 
 func (EditFileTool) Definition() model.FunctionTool {
@@ -37,14 +39,35 @@ func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if args.OldText == "" {
 		return Result{Err: errors.New("old_text must not be empty")}
 	}
+	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeRoot()
 	path, err := resolveWorkspacePath(t.Workspace, args.Path, true)
+	if err != nil {
+		return Result{Err: err}
+	}
+	relative, err := rootRelativePath(root, path)
 	if err != nil {
 		return Result{Err: err}
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
 	}
-	contents, err := os.ReadFile(path)
+	file, err := root.OpenFile(relative, os.O_RDWR, 0)
+	if err != nil {
+		return Result{Err: fmt.Errorf("open %q for editing: %w", args.Path, err)}
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return Result{Err: fmt.Errorf("stat %q: %w", args.Path, err)}
+	}
+	if !info.Mode().IsRegular() {
+		return Result{Err: fmt.Errorf("path %q does not refer to a regular file", args.Path)}
+	}
+	contents, err := io.ReadAll(file)
 	if err != nil {
 		return Result{Err: fmt.Errorf("read %q: %w", args.Path, err)}
 	}
@@ -56,14 +79,16 @@ func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: fmt.Errorf("old_text must occur exactly once in %q; found %d occurrences", args.Path, count)}
 	}
 	updated := bytes.Replace(contents, []byte(args.OldText), []byte(args.NewText), 1)
-	info, err := os.Stat(path)
-	if err != nil {
-		return Result{Err: fmt.Errorf("stat %q: %w", args.Path, err)}
-	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("edit stopped: %w", err)}
 	}
-	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return Result{Err: fmt.Errorf("seek %q: %w", args.Path, err)}
+	}
+	if err := file.Truncate(0); err != nil {
+		return Result{Err: fmt.Errorf("truncate %q: %w", args.Path, err)}
+	}
+	if _, err := file.Write(updated); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
 	}
 	return Result{Output: fmt.Sprintf("Updated %s", args.Path)}
