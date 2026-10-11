@@ -9,19 +9,20 @@ import (
 )
 
 type fakeResponder struct {
-	inputs          []core.TaskRequest
-	firstErr        error
-	responses       int
-	pending         bool
-	resumes         int
-	discarded       int
-	compact         int
-	compactErr      error
-	mode            core.PermissionMode
-	contextDefaults core.ContextDefaults
-	sessions        map[string]core.Session
-	last            string
-	sequence        int
+	inputs           []core.TaskRequest
+	firstErr         error
+	responses        int
+	pending          bool
+	resumes          int
+	discarded        int
+	compact          int
+	compactErr       error
+	mode             core.PermissionMode
+	contextDefaults  core.ContextDefaults
+	attachmentLimits core.AttachmentLimits
+	sessions         map[string]core.Session
+	last             string
+	sequence         int
 }
 
 type blockingResponder struct {
@@ -189,6 +190,13 @@ func (f *fakeResponder) SetSessionSettings(_ context.Context, id string, setting
 }
 
 func (f *fakeResponder) ProjectContextDefaults() core.ContextDefaults { return f.contextDefaults }
+
+func (f *fakeResponder) ProjectAttachmentLimits() core.AttachmentLimits {
+	if f.attachmentLimits.MaxFiles == 0 && f.attachmentLimits.MaxFileBytes == 0 && f.attachmentLimits.MaxTotalBytes == 0 {
+		return core.AttachmentLimits{MaxFiles: 5, MaxFileBytes: 10 << 20, MaxTotalBytes: 20 << 20}
+	}
+	return f.attachmentLimits
+}
 
 func (f *fakeResponder) PermissionMode() core.PermissionMode {
 	if f.mode == "" {

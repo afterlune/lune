@@ -81,7 +81,7 @@ func TestLoadProjectConfigEnablesAutoCompactionByDefault(t *testing.T) {
 		t.Fatalf("project defaults = %#v, want auto compaction enabled at 0.8 with no guessed context window", config)
 	}
 	if config.Attachments != (AttachmentLimits{}) {
-		t.Fatalf("unset attachment limits = %#v", config.Attachments)
+		t.Fatalf("unset attachment configuration = %#v", config.Attachments)
 	}
 }
 

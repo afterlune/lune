@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 var updateTUIScreenshots = flag.Bool("update-tui-screenshots", false, "update TUI verification SVG screenshots")
@@ -95,13 +97,20 @@ func writeOrCompareTUIScreenshot(t *testing.T, screenshotDirectory, name, got st
 func renderTUIScreenshotSVG(content string, width, height int, theme themeName) string {
 	colors := colorsFor(theme)
 	content = strings.TrimRight(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
-	lines := parseTUIScreenshotLines(content, colors.Foreground)
+	lines := parseTUIScreenshotLinesWithBackground(content, colors.Foreground, colors.Background)
 	const cellWidth, lineHeight, margin = 9, 18, 12
 	pixelWidth := width*cellWidth + 2*margin
 	pixelHeight := height*lineHeight + 2*margin
 	var svg strings.Builder
 	fmt.Fprintf(&svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\">", pixelWidth, pixelHeight, pixelWidth, pixelHeight)
 	fmt.Fprintf(&svg, "<rect width=\"100%%\" height=\"100%%\" fill=\"%s\"/>", colors.Background)
+	for _, line := range lines {
+		for _, run := range line {
+			if run.background != colors.Background {
+				return renderTUIScreenshotSVGWithBackground(lines, width, height, colors, cellWidth, lineHeight, margin, pixelWidth, pixelHeight)
+			}
+		}
+	}
 	fmt.Fprintf(&svg, "<g fill=\"%s\" font-family=\"Cascadia Mono, Consolas, monospace\" font-size=\"14\" style=\"white-space:pre\">", colors.Foreground)
 	for row := 0; row < height; row++ {
 		var line []tuiScreenshotRun
@@ -131,19 +140,59 @@ func renderTUIScreenshotSVG(content string, width, height int, theme themeName) 
 	return svg.String()
 }
 
+func renderTUIScreenshotSVGWithBackground(lines [][]tuiScreenshotRun, width, height int, colors themeColors, cellWidth, lineHeight, margin, pixelWidth, pixelHeight int) string {
+	var svg strings.Builder
+	fmt.Fprintf(&svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\">", pixelWidth, pixelHeight, pixelWidth, pixelHeight)
+	fmt.Fprintf(&svg, "<rect width=\"100%%\" height=\"100%%\" fill=\"%s\"/>", colors.Background)
+	for row := 0; row < height; row++ {
+		var line []tuiScreenshotRun
+		if row < len(lines) {
+			line = lines[row]
+		}
+		x := margin
+		baseline := margin + (row+1)*lineHeight - 3
+		for _, run := range line {
+			runWidth := lipgloss.Width(run.text)
+			if run.background != colors.Background && runWidth > 0 {
+				fmt.Fprintf(&svg, "<rect x=\"%d\" y=\"%d\" width=\"%d\" height=\"16\" rx=\"2\" fill=\"%s\"/>",
+					x, baseline-14, runWidth*cellWidth, run.background)
+			}
+			if run.text != "" {
+				fmt.Fprintf(&svg, "<text xml:space=\"preserve\" x=\"%d\" y=\"%d\" fill=\"%s\" font-family=\"Cascadia Mono, Consolas, monospace\" font-size=\"14\"",
+					x, baseline, html.EscapeString(run.foreground))
+				if run.bold {
+					svg.WriteString(" font-weight=\"bold\"")
+				}
+				svg.WriteString(">")
+				svg.WriteString(html.EscapeString(run.text))
+				svg.WriteString("</text>")
+			}
+			x += runWidth * cellWidth
+		}
+	}
+	svg.WriteString("</svg>\n")
+	return svg.String()
+}
+
 type tuiScreenshotRun struct {
 	text       string
 	foreground string
+	background string
 	bold       bool
 }
 
 type tuiScreenshotStyle struct {
 	foreground string
+	background string
 	bold       bool
 }
 
 func parseTUIScreenshotLines(content, defaultForeground string) [][]tuiScreenshotRun {
-	style := tuiScreenshotStyle{foreground: defaultForeground}
+	return parseTUIScreenshotLinesWithBackground(content, defaultForeground, "")
+}
+
+func parseTUIScreenshotLinesWithBackground(content, defaultForeground, defaultBackground string) [][]tuiScreenshotRun {
+	style := tuiScreenshotStyle{foreground: defaultForeground, background: defaultBackground}
 	runStyle := style
 	lines := [][]tuiScreenshotRun{{}}
 	var run strings.Builder
@@ -152,7 +201,7 @@ func parseTUIScreenshotLines(content, defaultForeground string) [][]tuiScreensho
 			return
 		}
 		lines[len(lines)-1] = append(lines[len(lines)-1], tuiScreenshotRun{
-			text: run.String(), foreground: runStyle.foreground, bold: runStyle.bold,
+			text: run.String(), foreground: runStyle.foreground, background: runStyle.background, bold: runStyle.bold,
 		})
 		run.Reset()
 	}
@@ -176,7 +225,7 @@ func parseTUIScreenshotLines(content, defaultForeground string) [][]tuiScreensho
 	cursor := 0
 	for _, match := range tuiScreenshotSGR.FindAllStringSubmatchIndex(content, -1) {
 		appendText(content[cursor:match[0]])
-		applyTUIScreenshotSGR(content[match[2]:match[3]], &style, defaultForeground)
+		applyTUIScreenshotSGR(content[match[2]:match[3]], &style, defaultForeground, defaultBackground)
 		cursor = match[1]
 	}
 	appendText(content[cursor:])
@@ -184,7 +233,7 @@ func parseTUIScreenshotLines(content, defaultForeground string) [][]tuiScreensho
 	return lines
 }
 
-func applyTUIScreenshotSGR(parameters string, style *tuiScreenshotStyle, defaultForeground string) {
+func applyTUIScreenshotSGR(parameters string, style *tuiScreenshotStyle, defaultForeground, defaultBackground string) {
 	codes := strings.Split(parameters, ";")
 	for index := 0; index < len(codes); index++ {
 		code, err := strconv.Atoi(codes[index])
@@ -193,13 +242,15 @@ func applyTUIScreenshotSGR(parameters string, style *tuiScreenshotStyle, default
 		}
 		switch code {
 		case 0:
-			*style = tuiScreenshotStyle{foreground: defaultForeground}
+			*style = tuiScreenshotStyle{foreground: defaultForeground, background: defaultBackground}
 		case 1:
 			style.bold = true
 		case 22:
 			style.bold = false
 		case 39:
 			style.foreground = defaultForeground
+		case 49:
+			style.background = defaultBackground
 		case 38:
 			if index+4 >= len(codes) || codes[index+1] != "2" {
 				continue
@@ -210,6 +261,18 @@ func applyTUIScreenshotSGR(parameters string, style *tuiScreenshotStyle, default
 			if redErr == nil && greenErr == nil && blueErr == nil &&
 				red >= 0 && red <= 255 && green >= 0 && green <= 255 && blue >= 0 && blue <= 255 {
 				style.foreground = fmt.Sprintf("#%02x%02x%02x", red, green, blue)
+			}
+			index += 4
+		case 48:
+			if index+4 >= len(codes) || codes[index+1] != "2" {
+				continue
+			}
+			red, redErr := strconv.Atoi(codes[index+2])
+			green, greenErr := strconv.Atoi(codes[index+3])
+			blue, blueErr := strconv.Atoi(codes[index+4])
+			if redErr == nil && greenErr == nil && blueErr == nil &&
+				red >= 0 && red <= 255 && green >= 0 && green <= 255 && blue >= 0 && blue <= 255 {
+				style.background = fmt.Sprintf("#%02x%02x%02x", red, green, blue)
 			}
 			index += 4
 		}

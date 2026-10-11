@@ -16,7 +16,10 @@ import (
 const (
 	FileName = "config.json"
 	// DefaultAutoCompactThreshold is used when auto compaction is enabled and no threshold is configured.
-	DefaultAutoCompactThreshold = 0.8
+	DefaultAutoCompactThreshold          = 0.8
+	DefaultAttachmentMaxFiles            = 5
+	DefaultAttachmentMaxFileBytes  int64 = 10 << 20
+	DefaultAttachmentMaxTotalBytes int64 = 20 << 20
 )
 
 // Config is the project configuration. Its JSON shape stays flat so existing
@@ -35,7 +38,8 @@ type Config struct {
 }
 
 // AttachmentLimits configures image attachments accepted by Core task input.
-// A zero value means the project has not set a limit for that field.
+// Zero means there is no explicit project override; Core applies safe byte
+// defaults to inline image data while leaving remote image URLs unchanged.
 type AttachmentLimits struct {
 	MaxFiles      int   `json:"maxFiles,omitempty"`
 	MaxFileBytes  int64 `json:"maxFileBytes,omitempty"`

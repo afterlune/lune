@@ -13,8 +13,12 @@ import (
 
 func validateTaskInputAttachments(input *model.ResponseInput, limits projectconfig.AttachmentLimits) error {
 	images := taskInputImages(input)
-	if limits.MaxFiles > 0 && len(images) > limits.MaxFiles {
-		return fmt.Errorf("input has %d image attachment(s); attachments.maxFiles allows %d", len(images), limits.MaxFiles)
+	maxFiles := limits.MaxFiles
+	if maxFiles <= 0 {
+		maxFiles = projectconfig.DefaultAttachmentMaxFiles
+	}
+	if len(images) > maxFiles {
+		return fmt.Errorf("input has %d image attachment(s); attachments.maxFiles allows %d", len(images), maxFiles)
 	}
 	totalBytes := int64(0)
 	for index, image := range images {
@@ -28,17 +32,23 @@ func validateTaskInputAttachments(input *model.ResponseInput, limits projectconf
 
 		var size int64
 		if hasFoldedPrefix(image.ImageURL, "data:") {
-			byteLimit, hasByteLimit := int64(0), false
-			if limits.MaxFileBytes > 0 {
-				byteLimit, hasByteLimit = limits.MaxFileBytes, true
+			maxFileBytes := limits.MaxFileBytes
+			if maxFileBytes <= 0 {
+				maxFileBytes = projectconfig.DefaultAttachmentMaxFileBytes
 			}
-			if limits.MaxTotalBytes > 0 {
-				remaining := limits.MaxTotalBytes - totalBytes
-				if !hasByteLimit || remaining < byteLimit {
-					byteLimit, hasByteLimit = remaining, true
-				}
+			maxTotalBytes := limits.MaxTotalBytes
+			if maxTotalBytes <= 0 {
+				maxTotalBytes = projectconfig.DefaultAttachmentMaxTotalBytes
 			}
-			parsedSize, err := dataURLImageSize(image.ImageURL, byteLimit, hasByteLimit)
+			remaining := maxTotalBytes - totalBytes
+			if remaining <= 0 {
+				return fmt.Errorf("image attachments exceed attachments.maxTotalBytes (%d bytes allowed)", maxTotalBytes)
+			}
+			byteLimit := maxFileBytes
+			if remaining < byteLimit {
+				byteLimit = remaining
+			}
+			parsedSize, err := dataURLImageSize(image.ImageURL, byteLimit, true)
 			if err != nil {
 				return fmt.Errorf("attachment %d: %w", attachmentNumber, err)
 			}
@@ -47,11 +57,19 @@ func validateTaskInputAttachments(input *model.ResponseInput, limits projectconf
 			return fmt.Errorf("attachment %d uses a remote URL or file_id whose size cannot be verified; supply a data:image/...;base64 payload or remove the byte limit", attachmentNumber)
 		}
 
-		if limits.MaxFileBytes > 0 && size > limits.MaxFileBytes {
-			return fmt.Errorf("attachment %d is %d bytes; attachments.maxFileBytes allows %d", attachmentNumber, size, limits.MaxFileBytes)
+		maxFileBytes := limits.MaxFileBytes
+		if maxFileBytes <= 0 {
+			maxFileBytes = projectconfig.DefaultAttachmentMaxFileBytes
 		}
-		if limits.MaxTotalBytes > 0 && (size > limits.MaxTotalBytes || totalBytes > limits.MaxTotalBytes-size) {
-			return fmt.Errorf("image attachments exceed attachments.maxTotalBytes (%d bytes allowed)", limits.MaxTotalBytes)
+		maxTotalBytes := limits.MaxTotalBytes
+		if maxTotalBytes <= 0 {
+			maxTotalBytes = projectconfig.DefaultAttachmentMaxTotalBytes
+		}
+		if hasFoldedPrefix(image.ImageURL, "data:") && size > maxFileBytes {
+			return fmt.Errorf("attachment %d is %d bytes; attachments.maxFileBytes allows %d", attachmentNumber, size, maxFileBytes)
+		}
+		if hasFoldedPrefix(image.ImageURL, "data:") && (size > maxTotalBytes || totalBytes > maxTotalBytes-size) {
+			return fmt.Errorf("image attachments exceed attachments.maxTotalBytes (%d bytes allowed)", maxTotalBytes)
 		}
 		totalBytes += size
 	}

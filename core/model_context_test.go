@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,5 +77,37 @@ func TestSessionConversationPersistsProviderContextAndClearsItOnHistoryEdit(t *t
 	}
 	if hasSessionHistory(loaded.ModelContext) || loaded.ModelContextKey != "" {
 		t.Fatalf("history edit retained stale provider context: %s key=%q", loaded.ModelContext, loaded.ModelContextKey)
+	}
+}
+
+func TestSessionConversationDoesNotDuplicateUncompactedContext(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	client := &Core{workspace: "workspace", sessions: store}
+	saved, err := client.createSession(context.Background(), json.RawMessage(`null`), SessionSettings{ModelProfile: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("look at this image")},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageContentParts(
+			model.InputImage{ImageURL: "data:image/png;base64," + strings.Repeat("a", 64)},
+		)},
+	)
+	if err := client.setSessionConversation(context.Background(), saved.ID, conversation, conversation, "same-context-key"); err != nil {
+		t.Fatalf("setSessionConversation: %v", err)
+	}
+	loaded, err := client.GetSession(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSessionHistory(loaded.ModelContext) || loaded.ModelContextKey != "" {
+		t.Fatalf("identical context was stored twice: model_context=%s key=%q", loaded.ModelContext, loaded.ModelContextKey)
+	}
+	if !strings.Contains(string(loaded.History), "data:image/png;base64,") {
+		t.Fatalf("canonical history lost image data: %s", loaded.History)
 	}
 }

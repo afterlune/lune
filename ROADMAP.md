@@ -4,7 +4,7 @@
 > 同一文件/同一接口的改动尽量集中在同一阶段，使前面的施工对后面的影响最小。
 > 标签：`[A]` 会话设置 `[B]` 历史 `[C]` 会话管理 `[E]` 上下文预算/用量 `[G]` 工具结果瘦身 `[H]` 流式 `[D]` MCP `[F]` Subagent `[M]` 多模态输入 `[Q]` 提问 `[X]` 桌面端
 >
-> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（82 条已完成、80 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
+> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（93 条已完成、69 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
 > [x] 表示已完成；[ ] 表示仍需跟踪。注释会区分部分实现、监控、暂缓和待决策。
 
 ---
@@ -130,16 +130,16 @@
 - [x] 从 `response.completed` 取 usage 与现有 `usageTrackingRequester` 观测点对齐
 
 ### P3.4 输入栏支持任意模态粘贴（`[M]`）
-> 状态：原需求完整保留；模型协议支持图片部件，但尚无原生附件输入流程，需确认实际使用场景后排期。
-- [ ] 输入栏可**直接粘贴图片**：剪贴板图像 → `data:image/...;base64` → `InputImage`
-- [ ] 消息组装：文本 + 图片/附件 → `MessageContent.Parts`，而非纯字符串 — 部分实现：model wire 层支持 InputImage；TUI 尚无原生附件组装和粘贴流程。
-- [ ] 输入栏显示**占位标记**，发送时替换为真实部件
-- [ ] 粘贴路径/拖拽：按扩展名分流（图片→`InputImage`，文本→内联或 `read_file`）
-- [ ] 类型与大小校验（上限进配置），超限给出可操作提示 — 部分实现：Core/CLI 的结构化 InputImage 输入会校验 maxFiles 和 data URL base64 的 maxFileBytes/maxTotalBytes；`data:` scheme、image MIME 和 `;base64` 标记不区分大小写，URL 转义的 Base64 payload 会先解码再计字节；字节受限时无法核验大小的远程 URL/FileID 会要求改用 data URL；TUI 原生附件采集仍未实现。
+> 状态：图片附件端到端流程已实现；任意文件、音频/PDF 与终端图形协议仍不在当前范围。
+- [x] 输入栏可**直接粘贴图片**：剪贴板文件列表优先，其次剪贴板位图；转换为内联 `data:image/...;base64` 和 `InputImage`。
+- [x] 消息组装：文本 + 图片/附件 → `MessageContent.Parts`，而非纯字符串 — TUI 标签与图片部件按草稿顺序组装。
+- [x] 输入栏显示**占位标记**，发送时替换为真实部件 — 可编辑元信息标签；删除标签会移除关联图片，撤销/重做可恢复。
+- [ ] 粘贴路径/拖拽：图片路径与终端文件拖放按扩展名分流到 `InputImage`；其它文件路径仍按普通文本处理，未自动读取。
+- [x] 类型与大小校验（上限进配置），超限给出可操作提示 — 支持 PNG/JPEG/GIF/WebP；默认每条消息最多 5 张、单张 10 MiB、合计 20 MiB，项目正数配置可覆盖。远程 URL/FileID 保留现有校验语义。
 - [x] 与 `ParseTaskInput` 的 JSON 通路统一，避免两套语义
-- [ ] 多模态条目渲染（占位 + 元信息；可选 kitty/iTerm2 图形协议）与持久化体积评估
-- [ ] plan mode 下是否允许图片输入；`Ctrl+V` 入口与移除单个附件
-- [ ] 测试：图片粘贴组装、占位渲染、超限提示、持久化往返
+- [x] 多模态条目渲染（占位 + 元信息；可选 kitty/iTerm2 图形协议）与持久化体积评估 — 当前采用可编辑标签，不用终端图形协议；图片字节随会话 SQLite 历史持久化，不保存临时路径。图片不进入本地文本 token 估算。
+- [x] plan mode 下允许图片输入；支持 `Ctrl+V` 入口与移除单个附件 — Plan 的工具只读限制保持不变。
+- [x] 测试：图片粘贴组装、占位渲染、超限提示、持久化往返 — 覆盖 TUI 草稿/队列/撤销与双主题 14 张 composer 状态截图，Core 测试覆盖 history 持久化。
 
 ### P3.5 模型可以提问（`[Q]`）
 > 状态：原需求完整保留；Core 审批通道尚未泛化为任务内提问。
@@ -214,9 +214,9 @@
 - [ ] 提问是否计入 token 预算与工具轮数上限
 - [ ] A2A：规范版本、是否需要 push notifications、Agent Card 鉴权方案、远程 agent 权限是否继承本地档位
 - [ ] 多模态范围：只做图片，还是含音频/PDF/任意文件
-- [ ] 剪贴板图像获取方式：`atotto/clipboard` 仅文本 vs 各平台命令（`pngpaste` / `xclip` / `wl-paste` / PowerShell）
-- [ ] 终端内是否做图形显示（kitty / iTerm2 图形协议）还是仅占位 + 元信息
-- [ ] 附件大小上限与是否压缩后上传；是否计入 `sessions.db` 体积与上下文预算
+- [x] 剪贴板图像获取方式：采用 `golang.design/x/clipboard` 的跨平台文件列表/位图读取；`atotto/clipboard` 继续提供文本粘贴回退。
+- [x] 终端内是否做图形显示（kitty / iTerm2 图形协议）还是仅占位 + 元信息 — 采用占位标签与元信息，不传输终端图形协议。
+- [x] 附件大小上限与是否压缩后上传；是否计入 `sessions.db` 体积与上下文预算 — 默认 5 张/条、10 MiB/张、20 MiB/条；不压缩，内联数据随 SQLite 会话历史持久化，图片不计入本地文本 token 估算。
 - [ ] `Instructions` 合成顺序与优先级：Goal / 称呼 / persona / plan mode 谁先谁后；**persona 不得覆盖或弱化**系统约束 — 待决策：Goal/persona 管线未接通，须保持系统权限与 Plan 约束优先。
 - [ ] persona 存哪一层：会话还是全局配置；是否支持多套方案切换
 - [ ] persona 是否也传给 team 成员与压缩摘要请求（默认只作用于主 agent）
@@ -228,7 +228,7 @@
 - [x] `/context` 窗口按模型还是全局 — 现状已定：项目配置为默认值，会话可覆盖；不是按模型 profile 设置。
 - [ ] `/model` 清单来源（provider catalog 已有，待定是否用户可编辑） — 部分实现：目前使用 ProviderCatalog；是否允许用户编辑尚未决定。
 - [ ] `/mcp` 传输范围与鉴权
-- [ ] 是否允许新增依赖（`go.mod`）
+- [x] 是否允许新增依赖（`go.mod`） — 图片剪贴板读取与 WebP 解码采用 `golang.design/x/clipboard`、`golang.org/x/image`。
 - [ ] 各家模型名 / effort 取值 / 窗口默认值（已接多 provider，需逐家确认） — 部分实现：model profile 与 effort 配置已接入；各 provider context window 默认值未定义。
 - [ ] team 成员形态与上限、是否允许嵌套/并发
 - [x] 成员是否继承父的 `Goal` / plan mode（默认不继承） — 现状已定：PlanMode 与 reasoning effort 继承；Goal/context 设置不继承，已有测试验证。

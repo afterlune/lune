@@ -29,6 +29,7 @@ type Client interface {
 	ListModelProfiles() []core.ModelOption
 	SetSessionSettings(context.Context, string, core.SessionSettings) error
 	ProjectContextDefaults() core.ContextDefaults
+	ProjectAttachmentLimits() core.AttachmentLimits
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 	ResolveApproval(string, bool) error

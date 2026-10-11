@@ -441,11 +441,12 @@ func (m *tuiModel) recordInputChange(before, after string) {
 	if before == after {
 		return
 	}
-	m.undoStack = append(m.undoStack, before)
+	m.undoStack = append(m.undoStack, inputSnapshot{text: before, attachments: shallowCopyImageAttachments(m.attachments)})
 	if len(m.undoStack) > maxInputUndoSteps {
 		m.undoStack = m.undoStack[len(m.undoStack)-maxInputUndoSteps:]
 	}
 	m.redoStack = nil
+	m.reconcileDraftAttachments(after)
 }
 
 func (m *tuiModel) undoInput() {
@@ -453,12 +454,12 @@ func (m *tuiModel) undoInput() {
 		m.status = "Nothing to undo."
 		return
 	}
-	current := m.input.Value()
+	current := inputSnapshot{text: m.input.Value(), attachments: shallowCopyImageAttachments(m.attachments)}
 	last := len(m.undoStack) - 1
 	value := m.undoStack[last]
 	m.undoStack = m.undoStack[:last]
 	m.redoStack = append(m.redoStack, current)
-	m.input.SetValue(value)
+	m.restoreInputSnapshot(value)
 	m.moveInputCursorToEnd()
 	m.input.ClearSelection()
 	m.status = "Input edit undone."
@@ -469,7 +470,7 @@ func (m *tuiModel) redoInput() {
 		m.status = "Nothing to redo."
 		return
 	}
-	current := m.input.Value()
+	current := inputSnapshot{text: m.input.Value(), attachments: shallowCopyImageAttachments(m.attachments)}
 	last := len(m.redoStack) - 1
 	value := m.redoStack[last]
 	m.redoStack = m.redoStack[:last]
@@ -477,7 +478,7 @@ func (m *tuiModel) redoInput() {
 	if len(m.undoStack) > maxInputUndoSteps {
 		m.undoStack = m.undoStack[len(m.undoStack)-maxInputUndoSteps:]
 	}
-	m.input.SetValue(value)
+	m.restoreInputSnapshot(value)
 	m.moveInputCursorToEnd()
 	m.input.ClearSelection()
 	m.status = "Input edit redone."
@@ -492,6 +493,12 @@ func (m *tuiModel) moveInputCursorToEnd() {
 }
 
 func (m *tuiModel) setInputValue(value string) {
+	for _, attachment := range m.attachments {
+		if !strings.Contains(value, attachment.Token) {
+			m.status = "Remove attached images before replacing the draft."
+			return
+		}
+	}
 	m.input.SetValue(value)
 	m.undoStack = nil
 	m.redoStack = nil

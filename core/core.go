@@ -2,6 +2,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -31,6 +32,12 @@ import (
 const (
 	legacyRunID                 = "lune-cli-active"
 	DefaultAutoCompactThreshold = projectconfig.DefaultAutoCompactThreshold
+	DefaultAttachmentMaxFiles   = projectconfig.DefaultAttachmentMaxFiles
+)
+
+const (
+	DefaultAttachmentMaxFileBytes  = projectconfig.DefaultAttachmentMaxFileBytes
+	DefaultAttachmentMaxTotalBytes = projectconfig.DefaultAttachmentMaxTotalBytes
 )
 
 type PermissionMode string
@@ -201,6 +208,14 @@ type ContextDefaults struct {
 	AutoCompactThreshold float64
 }
 
+// AttachmentLimits exposes the effective project limits to frontends before
+// they read or encode image data.
+type AttachmentLimits struct {
+	MaxFiles      int
+	MaxFileBytes  int64
+	MaxTotalBytes int64
+}
+
 // ModelOption is a model profile exposed to clients without leaking the
 // internal model package through Core's public API.
 type ModelOption struct {
@@ -220,8 +235,8 @@ type Session struct {
 	Settings    SessionSettings `json:"settings"`
 	// History is the complete provider-neutral conversation shown to clients.
 	History json.RawMessage `json:"history,omitempty"`
-	// ModelContext is the active provider-specific request context. It can
-	// contain opaque Responses compaction state and is never rendered as chat.
+	// ModelContext is a cached provider-specific request context when it differs
+	// from History. It can contain opaque Responses state and is never rendered.
 	ModelContext       json.RawMessage        `json:"model_context,omitempty"`
 	ModelContextKey    string                 `json:"model_context_key,omitempty"`
 	UsageRequests      []UsageRecord          `json:"usage_requests,omitempty"`
@@ -551,6 +566,25 @@ func (c *Core) ProjectContextDefaults() ContextDefaults {
 	return ContextDefaults{
 		ContextWindow: c.taskDefaults.ContextWindow, ReserveOutputTokens: c.taskDefaults.ReserveOutputTokens,
 		AutoCompact: c.taskDefaults.AutoCompact, AutoCompactThreshold: c.taskDefaults.AutoCompactThreshold,
+	}
+}
+
+func (c *Core) ProjectAttachmentLimits() AttachmentLimits {
+	limits := projectconfig.AttachmentLimits{}
+	if c != nil {
+		limits = c.attachmentLimits
+	}
+	if limits.MaxFiles <= 0 {
+		limits.MaxFiles = DefaultAttachmentMaxFiles
+	}
+	if limits.MaxFileBytes <= 0 {
+		limits.MaxFileBytes = DefaultAttachmentMaxFileBytes
+	}
+	if limits.MaxTotalBytes <= 0 {
+		limits.MaxTotalBytes = DefaultAttachmentMaxTotalBytes
+	}
+	return AttachmentLimits{
+		MaxFiles: limits.MaxFiles, MaxFileBytes: limits.MaxFileBytes, MaxTotalBytes: limits.MaxTotalBytes,
 	}
 }
 
@@ -1239,13 +1273,20 @@ func (c *Core) setSessionConversation(ctx context.Context, id string, transcript
 		return fmt.Errorf("encode session transcript: %w", err)
 	}
 	var contextJSON json.RawMessage = json.RawMessage("null")
+	contextKeyToSave := contextKey
 	if modelContext != nil {
 		contextJSON, err = json.Marshal(modelContext)
 		if err != nil {
 			return fmt.Errorf("encode provider model context: %w", err)
 		}
+		if bytes.Equal(contextJSON, transcriptJSON) {
+			// Avoid storing the same potentially large inline image payload twice.
+			// A task rebuilds this provider context from History when it is absent.
+			contextJSON = json.RawMessage("null")
+			contextKeyToSave = ""
+		}
 	}
-	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKey)
+	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKeyToSave)
 }
 
 func (c *Core) HasPending(ctx context.Context, sessionID string) (bool, error) {

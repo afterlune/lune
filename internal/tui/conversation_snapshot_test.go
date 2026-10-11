@@ -26,6 +26,59 @@ func TestTUIConversationSVGsMatchDeterministicFixtures(t *testing.T) {
 	}
 }
 
+func TestTUIImageAttachmentComposerSVGsMatchDeterministicFixtures(t *testing.T) {
+	scenarios := []string{"empty", "single", "multiple", "removed", "narrow", "error", "limit"}
+	for _, theme := range []themeName{themeDark, themeLight} {
+		for _, scenario := range scenarios {
+			theme, scenario := theme, scenario
+			name := fmt.Sprintf("%s-image-attachments-%s.svg", theme, scenario)
+			t.Run(name, func(t *testing.T) {
+				ui := newConversationFixture(theme, "short")
+				first := screenshotImageAttachment(t, 1, 16, 9)
+				second := screenshotImageAttachment(t, 2, 11, 7)
+				switch scenario {
+				case "single":
+					ui.attachments = []imageAttachment{first}
+					ui.input.SetValue("Compare this view: " + first.Token)
+				case "multiple":
+					ui.attachments = []imageAttachment{first, second}
+					ui.input.SetValue("Compare these states: " + first.Token + " " + second.Token + " and fix the shifting column.")
+				case "removed":
+					ui.input.SetValue("Compare the final screenshot.")
+					ui.status = "Image removed · Ctrl+Z restores the draft."
+				case "narrow":
+					ui.attachments = []imageAttachment{first, second}
+					ui.input.SetValue("Compare these states: " + first.Token + " " + second.Token + " and fix the shifting column.")
+					ui.Update(tea.WindowSizeMsg{Width: 72, Height: 24})
+				case "error":
+					ui.input.SetValue(`D:\screenshots\missing.png`)
+					ui.status = "Could not open image; the pasted path remains in the draft."
+				case "limit":
+					ui.attachments = []imageAttachment{first}
+					ui.input.SetValue("Compare this view: " + first.Token)
+					ui.status = "Image limit reached · attachments.maxFiles allows 1."
+				}
+				if scenario != "narrow" {
+					ui.nextAttachmentID = 3
+				}
+				ui.updateLayout()
+				got := renderTUIScreenshotSVG(ui.View().Content, ui.width, ui.height, theme)
+				assertTUIScreenshotSVG(t, name, got)
+			})
+		}
+	}
+}
+
+func screenshotImageAttachment(t *testing.T, index, width, height int) imageAttachment {
+	t.Helper()
+	attachment, err := imageAttachmentFromBytes(testPNG(t, width, height), "screen.png", core.AttachmentLimits{})
+	if err != nil {
+		t.Fatalf("build screenshot image attachment: %v", err)
+	}
+	attachment.Token = imageAttachmentToken(index, attachment)
+	return attachment
+}
+
 func TestTUIFoldCommandSVGsMatchDeterministicFixtures(t *testing.T) {
 	for _, theme := range []themeName{themeDark, themeLight} {
 		theme := theme

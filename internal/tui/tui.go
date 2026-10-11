@@ -38,10 +38,15 @@ type transcriptEntry struct {
 }
 
 type queuedInput struct {
-	text     string
-	display  string
-	input    core.TaskInput
-	planMode bool
+	text        string
+	display     string
+	attachments []imageAttachment
+	planMode    bool
+}
+
+type inputSnapshot struct {
+	text        string
+	attachments []imageAttachment
 }
 
 type tuiActivity struct {
@@ -71,12 +76,17 @@ type taskResult struct {
 }
 
 type tuiModel struct {
-	client    Client
-	sessionID string
-	workspace string
-	input     textarea.Model
-	chat      viewport.Model
-	activity  viewport.Model
+	client              Client
+	sessionID           string
+	workspace           string
+	input               textarea.Model
+	attachments         []imageAttachment
+	attachmentLimits    core.AttachmentLimits
+	clipboardReader     clipboardImageReader
+	clipboardTextReader func() (string, error)
+	nextAttachmentID    int
+	chat                viewport.Model
+	activity            viewport.Model
 
 	entries                       []tuiEntry
 	activities                    []tuiActivity
@@ -89,8 +99,8 @@ type tuiModel struct {
 	keymapIndex                   int
 	keymapCapture                 string
 	keymapDraft                   map[string]string
-	undoStack                     []string
-	redoStack                     []string
+	undoStack                     []inputSnapshot
+	redoStack                     []inputSnapshot
 	permissionMenu                bool
 	permissionIndex               int
 	modelPicker                   bool
@@ -338,16 +348,23 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 	applyTextareaTheme(&input, themeDark)
 
 	model := &tuiModel{
-		client:      client,
-		input:       input,
-		chat:        viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
-		activity:    viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
-		width:       100,
-		height:      30,
-		pending:     pending,
-		status:      "Ready",
-		preferences: defaultUIPreferences(),
-		agentUsage:  make(map[string]agentUsageSummary), agentUsageComplete: true,
+		client:              client,
+		input:               input,
+		attachmentLimits:    defaultAttachmentLimits(),
+		clipboardReader:     systemClipboardImageReader{},
+		clipboardTextReader: readClipboardText,
+		nextAttachmentID:    1,
+		chat:                viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		activity:            viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		width:               100,
+		height:              30,
+		pending:             pending,
+		status:              "Ready",
+		preferences:         defaultUIPreferences(),
+		agentUsage:          make(map[string]agentUsageSummary), agentUsageComplete: true,
+	}
+	if client != nil {
+		model.attachmentLimits = normalizeAttachmentLimits(client.ProjectAttachmentLimits())
 	}
 	model.chat.SoftWrap = true
 	model.activity.SoftWrap = true
@@ -447,6 +464,22 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m.startQueuedInput()
 		}
 		return m, nil
+	case imageInputReadyMsg:
+		m.applyImageInputResult(message)
+		m.updateCommandSuggestions()
+		m.updateLayout()
+		m.refreshPanels()
+		return m, nil
+	case tea.PasteMsg:
+		if m.canAttachImages() {
+			if paths, ok := parsePastedImagePaths(message.Content, m.workspace); ok {
+				return m, m.loadPastedImagePaths(paths, message.Content)
+			}
+		}
+		command := m.updateInput(message)
+		m.updateCommandSuggestions()
+		m.updateLayout()
+		return m, command
 	case tea.MouseWheelMsg:
 		if m.detailsOpen {
 			m.activity, _ = m.activity.Update(message)
@@ -799,6 +832,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.matchesKey("input_paste", message) && m.canAttachImages() {
+			return m, m.readClipboardInput()
+		}
 		if len(m.commandSuggestions) > 0 {
 			switch {
 			case m.matchesKey("suggestion_previous", message):
@@ -838,13 +874,19 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	raw := m.input.Value()
 	line := strings.TrimSpace(raw)
+	if len(m.attachments) > 0 && strings.HasPrefix(line, "/") {
+		m.status = "Remove attached images before running a slash command."
+		return m, nil
+	}
 	if m.planReview && line != "" && !strings.HasPrefix(line, "/") {
 		m.planReview = false
 	}
 	switch line {
 	case "":
-		m.status = "Enter a message or command."
-		return m, nil
+		if len(m.attachments) == 0 {
+			m.status = "Enter a message or command."
+			return m, nil
+		}
 	case "/help":
 		m.addEntry("notice", tuiHelpText(), false)
 		m.resetInput()
@@ -937,7 +979,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	input, err := parseInputLine(raw)
+	input, err := draftTaskInput(raw, m.attachments)
 	if err != nil {
 		m.addEntry("error", err.Error(), true)
 		m.status = "Input was not accepted."
@@ -1455,7 +1497,7 @@ func animeLayoutLabel(preferences uiPreferences) string {
 func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
 	raw := m.input.Value()
 	line := strings.TrimSpace(raw)
-	if line == "" {
+	if line == "" && len(m.attachments) == 0 {
 		m.status = "Type a message before queueing it."
 		return m, nil
 	}
@@ -1463,13 +1505,15 @@ func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
 		m.status = "Commands cannot be queued while a task is running."
 		return m, nil
 	}
-	input, err := parseInputLine(raw)
+	input, err := draftTaskInput(raw, m.attachments)
 	if err != nil {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
 	display := inputTranscriptText(input, raw)
-	m.queued = append(m.queued, queuedInput{text: raw, display: display, input: input, planMode: m.planMode})
+	m.queued = append(m.queued, queuedInput{
+		text: raw, display: display, attachments: shallowCopyImageAttachments(m.attachments), planMode: m.planMode,
+	})
 	m.addEntry("queued", display, false)
 	m.status = fmt.Sprintf("Queued %d message(s). %s adds another · %s interrupts and sends.", len(m.queued), m.keyLabel("send"), m.keyLabel("interrupt_send"))
 	m.resetInput()
@@ -1498,6 +1542,8 @@ func (m *tuiModel) editQueuedInput() (tea.Model, tea.Cmd) {
 	m.queued = append(m.queued[:m.queueIndex], m.queued[m.queueIndex+1:]...)
 	m.removeQueuedEntry(queued.display)
 	m.setInputValue(queued.text)
+	m.attachments = shallowCopyImageAttachments(queued.attachments)
+	m.nextAttachmentID = nextImageAttachmentID(m.attachments)
 	m.planMode = queued.planMode
 	m.queuePicker = false
 	m.status = "Editing a queued message; Enter resubmits it."
@@ -1553,18 +1599,31 @@ func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
 	}
 	queued := m.queued[0]
 	m.queued = m.queued[1:]
+	input, inputErr := draftTaskInput(queued.text, queued.attachments)
+	if inputErr != nil {
+		m.queued = append([]queuedInput{queued}, m.queued...)
+		m.addEntry("error", "Queued image message could not be prepared: "+inputErr.Error(), true)
+		m.refreshPanels()
+		if len(m.queued) > 0 {
+			return m.startQueuedInput()
+		}
+		return m, nil
+	}
 	if pending, err := m.hasPending(); err != nil {
+		m.queued = append([]queuedInput{queued}, m.queued...)
 		m.addEntry("error", "Could not inspect paused task: "+err.Error(), true)
 		return m, nil
 	} else if pending {
 		if m.abandonOnFinish {
 			if _, err := m.client.DiscardTask(context.Background(), m.sessionID); err != nil {
+				m.queued = append([]queuedInput{queued}, m.queued...)
 				m.addEntry("error", "Could not discard interrupted task: "+err.Error(), true)
 				return m, nil
 			}
 			m.pending = false
 			m.abandonOnFinish = false
 		} else if err := m.branchPausedSession(); err != nil {
+			m.queued = append([]queuedInput{queued}, m.queued...)
 			m.addEntry("error", "Could not branch paused task: "+err.Error(), true)
 			return m, nil
 		}
@@ -1579,7 +1638,7 @@ func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
 	m.cancelled = false
 	m.resetInput()
 	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: queued.input, PlanMode: queued.planMode})
+		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: queued.planMode})
 		return taskResult{response: response, err: err}
 	}, true)
 }
@@ -1698,10 +1757,7 @@ func (m *tuiModel) deleteCurrentLine() {
 	line := min(max(cursor.Y, 0), len(lines)-1)
 	lines = append(lines[:line], lines[line+1:]...)
 	before := m.input.Value()
-	m.setInputValue(strings.Join(lines, "\n"))
-	if m.input.Value() == "" {
-		m.setInputValue("")
-	}
+	m.input.SetValue(strings.Join(lines, "\n"))
 	m.recordInputChange(before, m.input.Value())
 }
 
@@ -2474,6 +2530,7 @@ func messageContentText(content json.RawMessage) string {
 		return "[multimodal content]"
 	}
 	var out strings.Builder
+	images := 0
 	for _, raw := range parts {
 		var part struct {
 			Type string `json:"type"`
@@ -2484,7 +2541,10 @@ func messageContentText(content json.RawMessage) string {
 		case "input_text", "output_text":
 			out.WriteString(part.Text)
 		case "input_image":
-			out.WriteString("[image]")
+			images++
+			if strings.Count(out.String(), "[Image #") < images {
+				out.WriteString("[image]")
+			}
 		case "reasoning_text":
 		default:
 			out.WriteString("[multimodal content]")
@@ -2588,6 +2648,8 @@ func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) resetInput() {
 	m.input.Reset()
+	m.attachments = nil
+	m.nextAttachmentID = 1
 	m.undoStack = nil
 	m.redoStack = nil
 	m.updateCommandSuggestions()
@@ -3361,7 +3423,7 @@ func (m *tuiModel) View() tea.View {
 	body := m.renderBody(width)
 	suggestions := m.renderCommandSuggestions()
 	footer := m.renderFooter(width)
-	parts := []string{header, body, divider, m.input.View()}
+	parts := []string{header, body, divider, m.renderInputView()}
 	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" {
 		parts = append(parts, auxiliary)
 	}
@@ -3407,7 +3469,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	body := m.renderSessionWorkspaceBody(width)
 	centerWidth := max(1, m.chat.Width())
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
-	input := m.renderWorkspaceRow(m.input.View(), centerWidth)
+	input := m.renderWorkspaceRow(m.renderInputView(), centerWidth)
 	suggestions := m.renderCommandSuggestions()
 	parts := []string{header, headerRule, body, m.renderWorkspaceRow(divider, centerWidth), input}
 	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" {
@@ -3535,6 +3597,9 @@ func (m *tuiModel) renderFooter(width int) string {
 				metrics = contextLabel + " · " + metrics
 			}
 		}
+		if len(m.attachments) > 0 {
+			status += fmt.Sprintf(" · %d image(s) · Ctrl+V add · edit a tag to remove", len(m.attachments))
+		}
 		status = fitTerminalText(status, width)
 		if metrics == "" {
 			return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status)
@@ -3588,6 +3653,9 @@ func (m *tuiModel) renderFooter(width int) string {
 			vimState = "VIM NORMAL"
 		}
 		status = vimState + " · " + status
+	}
+	if len(m.attachments) > 0 {
+		status += fmt.Sprintf(" · %d image(s) · Ctrl+V add · edit a tag to remove", len(m.attachments))
 	}
 	status = fitTerminalText(status, width)
 	metrics = fitTerminalText(metrics, width)
