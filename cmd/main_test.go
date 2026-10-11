@@ -30,6 +30,19 @@ type fakeCLICore struct {
 	resolveErr error
 }
 
+func TestWriteCLICompactionStatus(t *testing.T) {
+	var stderr bytes.Buffer
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "started", Mode: "local"})
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "completed", Mode: "local", BeforeTokens: 2400, AfterTokens: 320})
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "failed", Err: "summary provider unavailable"})
+	got := stderr.String()
+	for _, want := range []string{"Compacting context", "2.4k to 320 tokens", "summary provider unavailable"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CLI status %q is missing %q", got, want)
+		}
+	}
+}
+
 type blockingCLICore struct {
 	*fakeCLICore
 	started chan struct{}

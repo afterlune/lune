@@ -5,6 +5,12 @@
       "baseURL": "https://api.deepseek.com",
       "apiKey": ""
     },
+    "openai-responses": {
+      "protocol": "responses",
+      "baseURL": "https://api.openai.com/v1",
+      "apiKey": "",
+      "serverCompaction": true
+    },
     "anthropic": {
       "protocol": "anthropic-messages",
       "baseURL": "https://api.anthropic.com",
@@ -16,6 +22,10 @@
       "provider": "deepseek",
       "model": "deepseek-flash"
     },
+    "openai-model": {
+      "provider": "openai-responses",
+      "model": "replace-with-model-id"
+    },
     "anthropic-model": {
       "provider": "anthropic",
       "model": "replace-with-model-id",
@@ -25,7 +35,7 @@
   "defaultModel": "deepseek-flash",
   "maxParallelAgents": 4,
   "contextWindow": 0,
-  "autoCompact": false,
+  "autoCompact": true,
   "autoCompactThreshold": 0.8,
   "reserveOutputTokens": 0,
   "attachments": {

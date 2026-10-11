@@ -10,19 +10,26 @@ import (
 // ModelRequest is the shared agent-facing request passed to model providers.
 // Provider adapters translate it into their native wire format.
 type ModelRequest struct {
-	Model           string           `json:"model"`
-	Input           *ResponseInput   `json:"input,omitempty"`
-	Instructions    string           `json:"instructions,omitempty"`
-	Reasoning       *ReasoningConfig `json:"reasoning,omitempty"`
-	MaxOutputTokens *int64           `json:"max_output_tokens,omitempty"`
-	Stream          bool             `json:"stream,omitempty"`
-	Temperature     *float64         `json:"temperature,omitempty"`
-	TopP            *float64         `json:"top_p,omitempty"`
-	TopLogprobs     *int             `json:"top_logprobs,omitempty"`
-	Text            *ResponseText    `json:"text,omitempty"`
-	Tools           []ResponseTool   `json:"tools,omitempty"`
-	ToolChoice      *ToolChoice      `json:"tool_choice,omitempty"`
-	User            string           `json:"user,omitempty"`
+	Model             string                  `json:"model"`
+	Input             *ResponseInput          `json:"input,omitempty"`
+	Instructions      string                  `json:"instructions,omitempty"`
+	ContextManagement []ContextManagementItem `json:"context_management,omitempty"`
+	Reasoning         *ReasoningConfig        `json:"reasoning,omitempty"`
+	MaxOutputTokens   *int64                  `json:"max_output_tokens,omitempty"`
+	Stream            bool                    `json:"stream,omitempty"`
+	Temperature       *float64                `json:"temperature,omitempty"`
+	TopP              *float64                `json:"top_p,omitempty"`
+	TopLogprobs       *int                    `json:"top_logprobs,omitempty"`
+	Text              *ResponseText           `json:"text,omitempty"`
+	Tools             []ResponseTool          `json:"tools,omitempty"`
+	ToolChoice        *ToolChoice             `json:"tool_choice,omitempty"`
+	User              string                  `json:"user,omitempty"`
+}
+
+// ContextManagementItem configures server-side Responses API compaction.
+type ContextManagementItem struct {
+	Type             string `json:"type"`
+	CompactThreshold int64  `json:"compact_threshold"`
 }
 
 // UnmarshalJSON decodes tools as a tagged union while preserving unknown tool
@@ -708,6 +715,21 @@ func (v OutputCustomToolCall) MarshalJSON() ([]byte, error) {
 	return marshalTagged("custom_tool_call", plain(v))
 }
 
+// OutputCompaction is opaque provider state returned by server-side
+// compaction. It is carried forward unchanged and is not part of the visible
+// conversation transcript.
+type OutputCompaction struct {
+	ID               string `json:"id,omitempty"`
+	EncryptedContent string `json:"encrypted_content"`
+	CreatedBy        string `json:"created_by,omitempty"`
+}
+
+func (OutputCompaction) isResponseOutputItem() {}
+func (v OutputCompaction) MarshalJSON() ([]byte, error) {
+	type plain OutputCompaction
+	return marshalTagged("compaction", plain(v))
+}
+
 type UnknownOutputItem struct{ Raw json.RawMessage }
 
 func (UnknownOutputItem) isResponseOutputItem()          {}
@@ -732,6 +754,9 @@ func decodeResponseOutputItem(data []byte) (ResponseOutputItem, error) {
 		return item, json.Unmarshal(data, &item)
 	case "custom_tool_call":
 		var item OutputCustomToolCall
+		return item, json.Unmarshal(data, &item)
+	case "compaction":
+		var item OutputCompaction
 		return item, json.Unmarshal(data, &item)
 	default:
 		return UnknownOutputItem{Raw: cloneJSON(data)}, nil

@@ -141,6 +141,45 @@ func TestSaveAndHistoryUpdatePreserveSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	if err := store.Save(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":[],"model_context":["old"],"model_context_key":"old-key","title":"keep"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := json.RawMessage(`[{"type":"message","role":"user","content":"visible"}]`)
+	modelContext := json.RawMessage(`[{"type":"compaction","encrypted_content":"opaque"}]`)
+	if err := store.UpdateConversation(ctx, "session", "workspace", transcript, modelContext, "responses:openai:gpt-test"); err != nil {
+		t.Fatalf("UpdateConversation: %v", err)
+	}
+	snapshot, err := store.Get(ctx, "session", "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		History         json.RawMessage `json:"history"`
+		ModelContext    json.RawMessage `json:"model_context"`
+		ModelContextKey string          `json:"model_context_key"`
+		Title           string          `json:"title"`
+	}
+	if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if string(saved.History) != string(transcript) || string(saved.ModelContext) != string(modelContext) || saved.ModelContextKey != "responses:openai:gpt-test" || saved.Title != "keep" {
+		t.Fatalf("saved conversation = %#v", saved)
+	}
+	if err := store.UpdateHistory(ctx, "session", "workspace", json.RawMessage(`[]`)); err != nil {
+		t.Fatalf("UpdateHistory: %v", err)
+	}
+	snapshot, err = store.Get(ctx, "session", "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(snapshot.Data), "opaque") || strings.Contains(string(snapshot.Data), "responses:openai") {
+		t.Fatalf("replacing canonical history retained stale provider context: %s", snapshot.Data)
+	}
+}
+
 func TestReplaceDataIfUnchangedPreservesTimestampAndRejectsStalePayload(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()

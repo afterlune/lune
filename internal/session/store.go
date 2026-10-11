@@ -226,27 +226,40 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	return deleted > 0, nil
 }
 
-// UpdateHistory replaces only the conversation history in a session payload.
-// The single SQL update makes it safe to persist completed history before its
-// graph checkpoint is removed.
+// UpdateHistory replaces the canonical conversation and discards any cached
+// provider context because it no longer corresponds to that transcript.
 func (s *Store) UpdateHistory(ctx context.Context, id, workspace string, history json.RawMessage) error {
+	return s.UpdateConversation(ctx, id, workspace, history, json.RawMessage("null"), "")
+}
+
+// UpdateConversation atomically replaces the canonical transcript and its
+// active provider context. A single SQL update keeps them consistent with the
+// graph checkpoint lifecycle.
+func (s *Store) UpdateConversation(ctx context.Context, id, workspace string, history, modelContext json.RawMessage, contextKey string) error {
 	if s == nil || s.db == nil {
 		return errors.New("session store is not open")
 	}
-	if id == "" || workspace == "" || !json.Valid(history) {
-		return errors.New("session id, workspace, and valid history are required")
+	if id == "" || workspace == "" || !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
+		return errors.New("session id, workspace, valid history, and valid model context are required")
+	}
+	if len(modelContext) == 0 {
+		modelContext = json.RawMessage("null")
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions
-		SET data = CAST(json_set(CAST(data AS TEXT), '$.history', json(?)) AS BLOB), updated_at = ?
+		SET data = CAST(json_set(
+			json_set(
+				json_set(CAST(data AS TEXT), '$.history', json(?)),
+				'$.model_context', json(?)),
+			'$.model_context_key', ?) AS BLOB), updated_at = ?
 		WHERE id = ? AND workspace = ?
-	`, string(history), time.Now().UnixNano(), id, workspace)
+	`, string(history), string(modelContext), contextKey, time.Now().UnixNano(), id, workspace)
 	if err != nil {
-		return fmt.Errorf("persist history for session %q: %w", id, err)
+		return fmt.Errorf("persist conversation for session %q: %w", id, err)
 	}
 	updated, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("check session history update: %w", err)
+		return fmt.Errorf("check session conversation update: %w", err)
 	}
 	if updated == 0 {
 		return fmt.Errorf("session %q does not exist in workspace", id)

@@ -69,6 +69,25 @@ func TestTUIContextCommandSVGsMatchDeterministicFixtures(t *testing.T) {
 	}
 }
 
+func TestTUICompactionStatusSVGsMatchDeterministicFixtures(t *testing.T) {
+	for _, theme := range []themeName{themeDark, themeLight} {
+		for _, stage := range []string{"started", "completed"} {
+			theme, stage := theme, stage
+			t.Run(string(theme)+"-"+stage, func(t *testing.T) {
+				ui := newConversationFixture(theme, "short")
+				ui.sessionID = "session-current"
+				details := &core.ContextCompactionDetails{Stage: stage, Mode: "local", BeforeTokens: 48000, AfterTokens: 22000}
+				ui.Update(coreEventMsg{event: core.Event{
+					Kind: core.EventContextCompaction, SessionID: ui.sessionID, Compaction: details,
+				}})
+				name := fmt.Sprintf("%s-compaction-%s.svg", theme, stage)
+				got := renderTUIScreenshotSVG(ui.View().Content, ui.width, ui.height, theme)
+				assertTUIScreenshotSVG(t, name, got)
+			})
+		}
+	}
+}
+
 func TestTUIConversationAlignmentStylesAndCollapse(t *testing.T) {
 	for _, theme := range []themeName{themeDark, themeLight} {
 		t.Run(string(theme), func(t *testing.T) {

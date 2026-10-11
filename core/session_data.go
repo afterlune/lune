@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const CurrentSessionDataVersion = 2
+const CurrentSessionDataVersion = 3
 
 func migrateSessionData(saved Session) (Session, bool, error) {
 	if saved.DataVersion < 0 {
@@ -22,12 +22,23 @@ func migrateSessionData(saved Session) (Session, bool, error) {
 			saved = migrateSessionDataV0ToV1(saved)
 		case 1:
 			saved = migrateSessionDataV1ToV2(saved)
+		case 2:
+			saved = migrateSessionDataV2ToV3(saved)
 		default:
 			return Session{}, false, fmt.Errorf("no migration exists from data version %d", saved.DataVersion)
 		}
 		changed = true
 	}
 	return saved, changed, nil
+}
+
+func migrateSessionDataV2ToV3(saved Session) Session {
+	// Existing history remains the canonical transcript. A provider context is
+	// built from it on the next task using the selected protocol.
+	saved.ModelContext = nil
+	saved.ModelContextKey = ""
+	saved.DataVersion = 3
+	return saved
 }
 
 func migrateSessionDataV0ToV1(saved Session) Session {

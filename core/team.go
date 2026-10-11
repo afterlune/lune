@@ -80,6 +80,10 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 	if member.Provider != profile.Provider || member.ModelID != profile.Model {
 		return result, fmt.Errorf("team member %q model profile changed; the paused member remains pinned to its original provider and model", member.ID)
 	}
+	providerConfig, ok := t.models.ProviderConfig(profile.Provider)
+	if !ok {
+		return result, fmt.Errorf("team member %q provider %q is no longer configured", member.ID, profile.Provider)
+	}
 	client, err := t.models.NewClient(member.Model, t.tools)
 	if err != nil {
 		return result, err
@@ -91,7 +95,8 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 	}
 	agentOptions := agentgraph.AgentOptions{
 		ID: member.ID, Name: member.ID, Profile: member.Model,
-		Provider: profile.Provider, Model: profile.Model,
+		Provider: profile.Provider, Protocol: providerConfig.Protocol,
+		ServerCompaction: providerConfig.ServerCompaction, Model: profile.Model,
 		StreamObserver: func(event model.ModelStreamEvent) {
 			t.core.onModelStream(member.ID, member.ID, member.Model, profile.Provider, profile.Model, event)
 		},

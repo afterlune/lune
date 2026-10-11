@@ -4,7 +4,7 @@
 > 同一文件/同一接口的改动尽量集中在同一阶段，使前面的施工对后面的影响最小。
 > 标签：`[A]` 会话设置 `[B]` 历史 `[C]` 会话管理 `[E]` 上下文预算/用量 `[G]` 工具结果瘦身 `[H]` 流式 `[D]` MCP `[F]` Subagent `[M]` 多模态输入 `[Q]` 提问 `[X]` 桌面端
 >
-> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（75 条已完成、87 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
+> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（82 条已完成、80 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
 > [x] 表示已完成；[ ] 表示仍需跟踪。注释会区分部分实现、监控、暂缓和待决策。
 
 ---
@@ -36,8 +36,8 @@
 - [x] 修 `workspace` 模式对未知工具免批准的安全缺口（同一改造）
 - [x] 命令取消会结束 shell 子进程：Unix 通过独立 process group 终止整组，Windows 通过 `taskkill /T` 结束进程树，并设置 `WaitDelay` 作为管道关闭兜底；Linux/Windows 回归测试验证后台子进程不会在取消后继续完成。
 - [x] 内置文件工具在 Registry 生命周期内持有 workspace-scoped `os.Root` 执行读取、写入、编辑、列举、glob 与 grep；路径替换后仍锁定原目录，路径检查后的 symlink 越界会被拒绝，递归 grep 在打开前跳过特殊文件；Core 正常关闭及启动失败均释放句柄。
-- [ ] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限）——provider catalog 已部分落地，待补齐 — 部分实现：providers/models、context/autoCompact 与附件限制字段有配置校验；Core 的结构化图片输入已执行 limits；mcpServers 仍不支持。
-- [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=2`；版本缺失的旧数据经 v0→v1→v2 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
+- [ ] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限）——provider catalog 已部分落地，待补齐 — 部分实现：providers/models、context/autoCompact、Responses `serverCompaction` 能力开关与附件限制字段有配置校验；Core 的结构化图片输入已执行 limits；mcpServers 仍不支持。
+- [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=3`；版本缺失的旧数据经 v0→v1→v2→v3 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
 - [x] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [x] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
 - [x] 新增 `internal/session/store_test.go`
@@ -50,7 +50,7 @@
 - [ ] `[A]` **「模型对用户的称呼」设置**：与 `Goal` / plan mode 一起组合进 `Instructions`
 - [ ] `[A]` **「模型人物背景设定（persona）」**：同一管线注入；**合成顺序**上只塑造风格，**不得弱化** plan mode / 权限等系统约束
 - [ ] `[A]` **`Instructions` 合成器**：把 `Goal` + `称呼` + `persona` + plan mode 常量统一拼装
-- [ ] `[A][E]` `requestModel()` 应用上述设置（model 回退默认、effort → `Reasoning`、instructions 走合成器） — 部分实现：model fallback 与任务级 model override、reasoning effort、Goal 与 Plan 指令已接入；称呼/persona 顺序待决策，上下文预算和自动压缩尚未影响请求。
+- [ ] `[A][E]` `requestModel()` 应用上述设置（model 回退默认、effort → `Reasoning`、instructions 走合成器） — 部分实现：model fallback 与任务级 model override、reasoning effort、Goal 与 Plan 指令已接入；上下文窗口现在驱动自动压缩；称呼/persona 顺序待决策。
 - [ ] `[A][E]` 设置持久化并恢复（含称呼、persona）——现在由 `core.Session` 承载 — 部分实现：现有会话/检查点保存 model、effort、Goal 和上下文字段；称呼与 persona 不存在。
 - [ ] `[Q]` **交互式回调通道抽象**：把审批通道（`Core.ResolveApproval` + `core.ApprovalRequest`）泛化成通用用户提问通道，供 `[Q]` 复用
 
@@ -106,21 +106,21 @@
 - [x] `[A]` `/goal`（查看/设置/清除）、`/effort`（选择菜单）、`/model`（菜单 + `<name>`） — TUI 已实现并持久化会话级 Goal；模型请求会带入 Goal，Plan mode 指令仍限制为只读工具。非 TUI 命令集同步仍由 P4 决策项跟踪。
 - [ ] `[A]` **`/user`（或 `/callme`）**：查看 / 设置 / 清除「模型对用户的称呼」
 - [ ] `[A]` **`/persona`**：查看 / 设置 / 清除「模型人物背景设定」（支持多行输入）
-- [x] `[E]` `/context`（查看/设置窗口/预留/reset）、`/autocompact`（查看/on/off/threshold） — TUI 已实现查看、设置、重置、校验和会话持久化，并明确提示自动压缩运行时尚未接通；触发逻辑仍由 P3.2 单独跟踪。
+- [x] `[E]` `/context`（查看/设置窗口/预留/reset）、`/autocompact`（查看/on/off/threshold） — TUI 已实现查看、设置、重置、校验和会话持久化；窗口缺失时会提示无法自动触发。
 - [x] `[E]` 配置项 `contextWindow` / `autoCompact` / `autoCompactThreshold` / `reserveOutputTokens`
 
 ### P3.2 上下文效率
 
-> 配置与检查点保存上下文设置；文本输入估算仅作提示，不参与自动压缩判断；Agent 请求尚未应用窗口预算，也没有自动压缩触发。手动 /compact 已实现。
-- [ ] `[E]` 自动压缩触发（任务内生效；先瘦身、再摘要）
+> 配置与检查点保存上下文设置；Responses 端点按能力走服务端压缩，Anthropic Messages 和无该能力的 Responses 端点在本地先清理工具结果、再摘要；可移植对话转写与 provider 专用上下文分开保存，reasoning、opaque 和未知 provider 输出不会跨协议重放。
+- [x] `[E]` 自动压缩触发（任务内生效；先瘦身、再摘要） — 新任务默认开启，阈值 80%；需配置 `contextWindow`。Responses provider 可显式启用 `serverCompaction`；Claude 本地路径先清旧工具输出再摘要。provider 切换后从完整转写重建上下文。
 - [x] `[E]` footer 增加上下文占用比例 `ctx 12.3k/64k (19%)`，保持一行简要（按宽度裁剪） — 使用当前任务解析出的 contextWindow 与服务器 `usage.InputTokens`；窗口未知时显示 `unknown`，不推断 provider 默认值。
 - [x] `[E]` 详情面板增加窗口/占比/缓存命中率、按 agent 分组统计（`core` 已有 per-agent usage 记录） — 请求行和会话累计按 agent 分组；窗口/占比、cache rate 均可见；缺失 server input 时单独显示文本估算；旧会话无法回溯的累计值明确标注。
 - [x] `[E]` 口径统一：以服务器 `usage.InputTokens` 为准，缺失时估算 — 请求前从 instructions、文本历史和工具 schema 做粗略估算；服务器值优先，估算单独保存/展示、不计入 measured totals；图片内容和未知多模态项不参与。
-- [ ] `[G]` 客户端兜底瘦身：接近预算时保留最近 N 轮原文 + 失败态，其余替换为状态占位/头尾摘录 — 尚未实现工具结果瘦身；选择性 pin/drop/scratchpad 与此项依赖同一未实现能力。
-- [ ] `[G]` 只替换 `function_call_output` 的 `output` 内容，保持 `call_id` 配对
+- [ ] `[G]` 客户端兜底瘦身：接近预算时保留最近 N 轮原文 + 失败态，其余替换为状态占位/头尾摘录 — 自动压缩已按最旧优先清理 `function_call_output` 并摘要较早历史；固定头尾摘录、失败态保留和选择性 pin/drop/scratchpad 仍待实现。
+- [x] `[G]` 只替换 `function_call_output` 的 `output` 内容，保持 `call_id` 配对 — 清理保留调用 ID 与状态，图片及未知多模态部件不改写。
 - [ ] `[G]` 模型选择性表达：`pin`（关键 `call_id` 不瘦身）/ `drop_result` / scratchpad 笔记
-- [ ] `[G]` 双落点：历史组装处（`core/runtime.go` 与 `agentgraph`）
-- [ ] `[M]` 图片/附件不参与文本瘦身与 token 估算 — token estimate 已排除图片内容和未知多模态项；文本瘦身尚未实现，相关排除仍待该能力落地。
+- [x] `[G]` 双落点：历史组装处（`core/runtime.go` 与 `agentgraph`） — session 保留完整转写；checkpoint 与请求使用可按 provider/model 重建的独立上下文。
+- [x] `[M]` 图片/附件不参与文本瘦身与 token 估算 — 文本估算排除图片和未知多模态项，本地自动压缩只清理文本工具输出并保留非文本部件。
 
 ### P3.3 流式（provider/Core 已落地；TUI 增量渲染部分落地）
 > `core.StreamResponse` / `model.ModelStreamEvent` / `Core.onModelStream` 已实现。
@@ -224,7 +224,7 @@
 - [ ] 称呼粒度：仅称呼还是同时影响语气；是否只作用于主 agent
 - [ ] 称呼命令名与形态：`/user` vs `/callme`；空值是否等于恢复默认
 - [ ] TUI 效果图用哪个 image gen 工具/模型；效果图存放位置（如 `docs/design/`）；确认流程
-- [ ] 自动压缩方案（任务内 vs 仅任务间）
+- [x] 自动压缩方案（任务内 vs 仅任务间） — 任务内生效；Responses 可使用服务端 `context_management`，Anthropic Messages 使用客户端清理旧工具结果并摘要。
 - [x] `/context` 窗口按模型还是全局 — 现状已定：项目配置为默认值，会话可覆盖；不是按模型 profile 设置。
 - [ ] `/model` 清单来源（provider catalog 已有，待定是否用户可编辑） — 部分实现：目前使用 ProviderCatalog；是否允许用户编辑尚未决定。
 - [ ] `/mcp` 传输范围与鉴权
@@ -232,8 +232,8 @@
 - [ ] 各家模型名 / effort 取值 / 窗口默认值（已接多 provider，需逐家确认） — 部分实现：model profile 与 effort 配置已接入；各 provider context window 默认值未定义。
 - [ ] team 成员形态与上限、是否允许嵌套/并发
 - [x] 成员是否继承父的 `Goal` / plan mode（默认不继承） — 现状已定：PlanMode 与 reasoning effort 继承；Goal/context 设置不继承，已有测试验证。
-- [ ] 工具结果瘦身默认策略（纯状态 / 头尾摘录 / 仅保留最近一轮）
-- [ ] 工具结果瘦身保留窗口（仅当前 user turn / 最近 N 轮）
+- [x] 工具结果瘦身默认策略（纯状态 / 头尾摘录 / 仅保留最近一轮） — 达到预算后从最旧工具结果起替换为状态占位，再摘要历史。
+- [x] 工具结果瘦身保留窗口（仅当前 user turn / 最近 N 轮） — 不设固定轮数；保留当前完整 user turn，旧工具结果按需清理。
 - [ ] 瘦身决策权分层（客户端兜底 + 模型 pin/笔记）
 - [ ] scratchpad / 笔记的存储位置（会话内 vs 工作区文件）
 - [ ] footer 窄终端取舍（上下文占比 vs in/out）

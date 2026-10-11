@@ -19,9 +19,10 @@ const (
 // ProviderConfig selects an API format independently from the provider name.
 // Credentials are never included in logs or model profiles.
 type ProviderConfig struct {
-	Protocol string `json:"protocol"`
-	BaseURL  string `json:"baseURL"` // API root, or the full endpoint path for this protocol.
-	APIKey   string `json:"apiKey"`
+	Protocol         string `json:"protocol"`
+	BaseURL          string `json:"baseURL"` // API root, or the full endpoint path for this protocol.
+	APIKey           string `json:"apiKey"`
+	ServerCompaction bool   `json:"serverCompaction,omitempty"`
 }
 
 // ModelProfile binds a provider model ID to a stable catalog name. Agent runs
@@ -62,6 +63,9 @@ func (c Config) Validate() error {
 		}
 		if provider.Protocol != ProtocolResponses && provider.Protocol != ProtocolAnthropicMessages {
 			return fmt.Errorf("provider %q has unsupported protocol %q", name, provider.Protocol)
+		}
+		if provider.ServerCompaction && provider.Protocol != ProtocolResponses {
+			return fmt.Errorf("provider %q enables serverCompaction but does not use the Responses protocol", name)
 		}
 		if err := validateBaseURL(provider.BaseURL); err != nil {
 			return fmt.Errorf("provider %q: %w", name, err)

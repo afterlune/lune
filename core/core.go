@@ -4,6 +4,7 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,7 @@ const (
 	EventAgentStarted      EventKind = "agent_started"
 	EventAgentFinished     EventKind = "agent_finished"
 	EventModelStream       EventKind = "model_stream"
+	EventContextCompaction EventKind = "context_compaction"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads
@@ -88,6 +90,16 @@ type Event struct {
 	ModelProfile         string
 	Model                string
 	Stream               *ModelStreamEvent
+	Compaction           *ContextCompactionDetails
+}
+
+type ContextCompactionDetails struct {
+	Stage        string
+	Mode         string
+	BeforeTokens int64
+	AfterTokens  int64
+	Threshold    int64
+	Err          string
 }
 
 type ModelStreamEvent struct {
@@ -199,14 +211,19 @@ type ModelOption struct {
 
 // Session contains durable conversation state, not TUI transcript caches.
 type Session struct {
-	ID                 string                 `json:"id"`
-	Workspace          string                 `json:"workspace"`
-	UpdatedAt          time.Time              `json:"updated_at"`
-	DataVersion        int                    `json:"data_version"`
-	Title              string                 `json:"title"`
-	Archived           bool                   `json:"archived"`
-	Settings           SessionSettings        `json:"settings"`
-	History            json.RawMessage        `json:"history,omitempty"`
+	ID          string          `json:"id"`
+	Workspace   string          `json:"workspace"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	DataVersion int             `json:"data_version"`
+	Title       string          `json:"title"`
+	Archived    bool            `json:"archived"`
+	Settings    SessionSettings `json:"settings"`
+	// History is the complete provider-neutral conversation shown to clients.
+	History json.RawMessage `json:"history,omitempty"`
+	// ModelContext is the active provider-specific request context. It can
+	// contain opaque Responses compaction state and is never rendered as chat.
+	ModelContext       json.RawMessage        `json:"model_context,omitempty"`
+	ModelContextKey    string                 `json:"model_context_key,omitempty"`
 	UsageRequests      []UsageRecord          `json:"usage_requests,omitempty"`
 	AgentUsage         map[string]UsageTotals `json:"agent_usage,omitempty"`
 	AgentUsageComplete bool                   `json:"agent_usage_complete"`
@@ -391,6 +408,10 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 	if !ok {
 		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown model profile %q", profileID)
 	}
+	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	if !ok {
+		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown provider %q for model profile %q", profile.Provider, profileID)
+	}
 	client, err := c.models.NewClient(profileID, c.registry)
 	if err != nil {
 		return nil, nil, model.ModelProfile{}, err
@@ -402,6 +423,7 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 	}
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
+		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		Team: c.team,
 		StreamObserver: func(event model.ModelStreamEvent) {
 			activeModel := c.State().Model
@@ -409,6 +431,15 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 				activeModel = profile.Model
 			}
 			c.onModelStream("lead", "Lead", profileID, profile.Provider, activeModel, event)
+		},
+		CompactionObserver: func(event agentgraph.ContextCompactionEvent) {
+			active := c.State()
+			details := &ContextCompactionDetails{
+				Stage: event.Stage, Mode: event.Mode, BeforeTokens: event.BeforeTokens,
+				AfterTokens: event.AfterTokens, Threshold: event.Threshold, Err: errorString(event.Error),
+			}
+			c.emit(Event{Kind: EventContextCompaction, TaskID: active.TaskID, SessionID: active.SessionID,
+				Provider: profile.Provider, ModelProfile: profileID, Model: active.Model, Err: errorString(event.Error), Compaction: details})
 		},
 	})
 	if err != nil {
@@ -703,9 +734,16 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if !ok {
 		return nil, fmt.Errorf("session model profile %q is not configured", settings.ModelProfile)
 	}
+	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	if !ok {
+		return nil, fmt.Errorf("provider %q is not configured", profile.Provider)
+	}
 	if resume && ((pendingState.Provider != "" && pendingState.Provider != profile.Provider) ||
 		(pendingState.Model != "" && pendingState.Model != profile.Model)) {
 		return nil, fmt.Errorf("paused task model profile %q changed in config; it remains pinned to provider %q and model %q", settings.ModelProfile, pendingState.Provider, pendingState.Model)
+	}
+	if resume && pendingState.Protocol != "" && (pendingState.Protocol != providerConfig.Protocol || pendingState.ServerCompaction != providerConfig.ServerCompaction) {
+		return nil, fmt.Errorf("paused task provider protocol or compaction capability changed; it remains pinned to %q with serverCompaction=%t", pendingState.Protocol, pendingState.ServerCompaction)
 	}
 	if resume {
 		settings, err = c.normalizeSessionModelSettings(settings)
@@ -734,17 +772,26 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 		}
 	}
-	var history *model.ResponseInput
+	var transcript *model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var decoded model.ResponseInput
 		if err := json.Unmarshal(saved.History, &decoded); err != nil {
 			return nil, fmt.Errorf("decode session history: %w", err)
 		}
-		history = &decoded
+		transcript = &decoded
 	}
 	effectiveModel := profile.Model
 	if taskOptions.Model != "" {
 		effectiveModel = taskOptions.Model
+	}
+	contextKey := modelContextKey(profile.Provider, effectiveModel, providerConfig)
+	modelContext := transcript
+	if saved.ModelContextKey == contextKey && hasSessionHistory(saved.ModelContext) {
+		var decoded model.ResponseInput
+		if err := json.Unmarshal(saved.ModelContext, &decoded); err != nil {
+			return nil, fmt.Errorf("decode provider model context: %w", err)
+		}
+		modelContext = &decoded
 	}
 	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, effectiveModel, taskOptions.ContextWindow, saved.UpdatedAt); err != nil {
 		return nil, err
@@ -760,14 +807,10 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			return nil, err
 		}
 	}
-	c.runtime.SetSession(sessionID, history)
+	c.runtime.SetSessionState(sessionID, transcript, modelContext, contextKey)
 	c.runtime.SetTaskOptions(taskOptions)
-	c.runtime.SetHistorySaver(func(id string, history *model.ResponseInput) error {
-		encoded, err := json.Marshal(history)
-		if err != nil {
-			return err
-		}
-		return c.SetSessionHistory(context.Background(), id, encoded)
+	c.runtime.SetHistorySaver(func(id string, transcript, modelContext *model.ResponseInput, key string) error {
+		return c.setSessionConversation(context.Background(), id, transcript, modelContext, key)
 	})
 	defer c.runtime.SetHistorySaver(nil)
 	var response *model.Response
@@ -1184,6 +1227,27 @@ func (c *Core) SetSessionHistory(ctx context.Context, id string, history json.Ra
 	return c.sessions.UpdateHistory(ctx, id, c.workspace, history)
 }
 
+func (c *Core) setSessionConversation(ctx context.Context, id string, transcript, modelContext *model.ResponseInput, contextKey string) error {
+	if c == nil || ctx == nil || id == "" {
+		return errors.New("core, context, and session id are required")
+	}
+	if transcript == nil {
+		transcript = model.NewResponseInputItems()
+	}
+	transcriptJSON, err := json.Marshal(transcript)
+	if err != nil {
+		return fmt.Errorf("encode session transcript: %w", err)
+	}
+	var contextJSON json.RawMessage = json.RawMessage("null")
+	if modelContext != nil {
+		contextJSON, err = json.Marshal(modelContext)
+		if err != nil {
+			return fmt.Errorf("encode provider model context: %w", err)
+		}
+	}
+	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKey)
+}
+
 func (c *Core) HasPending(ctx context.Context, sessionID string) (bool, error) {
 	if sessionID == "" {
 		return false, errors.New("session id is required")
@@ -1237,13 +1301,13 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var history *model.ResponseInput
+	var transcript *model.ResponseInput
 	if len(saved.History) > 0 {
 		var decoded model.ResponseInput
 		if err := json.Unmarshal(saved.History, &decoded); err != nil {
 			return 0, err
 		}
-		history = &decoded
+		transcript = &decoded
 	}
 	settings, err := c.normalizeSessionSettings(saved.Settings)
 	if err != nil {
@@ -1254,6 +1318,19 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		return 0, err
 	}
 	profile, _ := c.models.Profile(settings.ModelProfile)
+	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	if !ok {
+		return 0, fmt.Errorf("provider %q is not configured", profile.Provider)
+	}
+	contextKey := modelContextKey(profile.Provider, profile.Model, providerConfig)
+	modelContext := transcript
+	if saved.ModelContextKey == contextKey && hasSessionHistory(saved.ModelContext) {
+		var decoded model.ResponseInput
+		if err := json.Unmarshal(saved.ModelContext, &decoded); err != nil {
+			return 0, fmt.Errorf("decode provider model context: %w", err)
+		}
+		modelContext = &decoded
+	}
 	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, effective.ContextWindow, saved.UpdatedAt); err != nil {
 		return 0, err
 	}
@@ -1266,7 +1343,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return 0, err
 	}
-	c.runtime.SetSession(sessionID, history)
+	c.runtime.SetSessionState(sessionID, transcript, modelContext, contextKey)
 	compacted, err := c.runtime.Compact(ctx)
 	if err == nil {
 		err = c.saveHistoryUsage(ctx, sessionID)
@@ -1298,15 +1375,22 @@ func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
 }
 
 func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string) error {
-	history := c.runtime.SessionHistory()
-	if history == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(history)
-	if err != nil {
-		return err
-	}
-	return c.SetSessionHistory(ctx, sessionID, encoded)
+	return c.setSessionConversation(ctx, sessionID, c.runtime.SessionHistory(), c.runtime.ModelContextHistory(), c.runtime.ContextKey())
+}
+
+func modelContextKey(providerName, effectiveModel string, providerConfig model.ProviderConfig) string {
+	identity, _ := json.Marshal(struct {
+		Provider         string `json:"provider"`
+		Protocol         string `json:"protocol"`
+		BaseURL          string `json:"base_url"`
+		Model            string `json:"model"`
+		ServerCompaction bool   `json:"server_compaction"`
+	}{
+		Provider: providerName, Protocol: providerConfig.Protocol, BaseURL: providerConfig.BaseURL,
+		Model: effectiveModel, ServerCompaction: providerConfig.ServerCompaction,
+	})
+	digest := sha256.Sum256(identity)
+	return hex.EncodeToString(digest[:])
 }
 
 func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {

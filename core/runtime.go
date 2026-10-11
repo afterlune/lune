@@ -24,12 +24,14 @@ type graphResponder struct {
 	store           graph.Store[agentgraph.State]
 	requester       *usageTrackingRequester
 	historyMu       sync.RWMutex
-	history         *model.ResponseInput
+	history         *model.ResponseInput // provider-specific model context
+	transcript      *model.ResponseInput
+	contextKey      string
 	sessionID       string
 	taskOptions     agentgraph.TaskOptions
 	modelName       string
 	reasoningEffort string
-	historySaver    func(string, *model.ResponseInput) error
+	historySaver    func(string, *model.ResponseInput, *model.ResponseInput, string) error
 }
 
 func (r *graphResponder) SetTaskOptions(options agentgraph.TaskOptions) { r.taskOptions = options }
@@ -41,24 +43,46 @@ func (r *graphResponder) SetRunModel(agent *agentgraph.Agent, requester *usageTr
 	r.reasoningEffort = reasoningEffort
 }
 
-func (r *graphResponder) SetHistorySaver(saver func(string, *model.ResponseInput) error) {
+func (r *graphResponder) SetHistorySaver(saver func(string, *model.ResponseInput, *model.ResponseInput, string) error) {
 	r.historyMu.Lock()
 	r.historySaver = saver
 	r.historyMu.Unlock()
 }
 
 func (r *graphResponder) SetSession(id string, history *model.ResponseInput) {
+	r.SetSessionState(id, history, history, "")
+}
+
+func (r *graphResponder) SetSessionState(id string, transcript, modelContext *model.ResponseInput, contextKey string) {
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
 	r.sessionID = id
-	if history == nil {
-		r.history = nil
-		return
+	if transcript == nil {
+		r.transcript = nil
+	} else {
+		r.transcript = model.NewResponseInputItems(responseHistoryItems(transcript)...)
 	}
-	r.history = model.NewResponseInputItems(responseHistoryItems(history)...)
+	if modelContext == nil {
+		modelContext = transcript
+	}
+	if modelContext == nil {
+		r.history = nil
+	} else {
+		r.history = model.NewResponseInputItems(responseHistoryItems(modelContext)...)
+	}
+	r.contextKey = contextKey
 }
 
 func (r *graphResponder) SessionHistory() *model.ResponseInput {
+	r.historyMu.RLock()
+	defer r.historyMu.RUnlock()
+	if r.transcript == nil {
+		return nil
+	}
+	return model.NewResponseInputItems(responseHistoryItems(r.transcript)...)
+}
+
+func (r *graphResponder) ModelContextHistory() *model.ResponseInput {
 	r.historyMu.RLock()
 	defer r.historyMu.RUnlock()
 	if r.history == nil {
@@ -67,14 +91,20 @@ func (r *graphResponder) SessionHistory() *model.ResponseInput {
 	return model.NewResponseInputItems(responseHistoryItems(r.history)...)
 }
 
+func (r *graphResponder) ContextKey() string {
+	r.historyMu.RLock()
+	defer r.historyMu.RUnlock()
+	return r.contextKey
+}
+
 func (r *graphResponder) persistSessionHistory() error {
 	r.historyMu.RLock()
-	id, saver := r.sessionID, r.historySaver
+	id, saver, contextKey := r.sessionID, r.historySaver, r.contextKey
 	r.historyMu.RUnlock()
 	if saver == nil || id == "" {
 		return nil
 	}
-	return saver(id, r.SessionHistory())
+	return saver(id, r.SessionHistory(), r.ModelContextHistory(), contextKey)
 }
 
 func (r *graphResponder) PendingHistoryFor(ctx context.Context, sessionID string) (*model.ResponseInput, error) {
@@ -84,6 +114,9 @@ func (r *graphResponder) PendingHistoryFor(ctx context.Context, sessionID string
 	}
 	if !ok {
 		return nil, nil
+	}
+	if state.Transcript.Items != nil || state.Transcript.Text != nil {
+		return model.NewResponseInputItems(responseHistoryItems(&state.Transcript)...), nil
 	}
 	return model.NewResponseInputItems(responseHistoryItems(&state.History)...), nil
 }
@@ -221,8 +254,9 @@ func (r *graphResponder) Respond(ctx context.Context, input *model.ResponseInput
 		return nil, errors.New("a task is paused in this session; use /continue or start a new session")
 	}
 	runID := r.runID()
-	history := r.SessionHistory()
-	result, err := r.agent.Start(ctx, runID, history, input, r.taskOptions, r.options())
+	transcript := r.SessionHistory()
+	modelContext := r.ModelContextHistory()
+	result, err := r.agent.StartWithTranscript(ctx, runID, modelContext, transcript, input, r.taskOptions, r.options())
 	return r.finish(result, err)
 }
 
@@ -260,7 +294,7 @@ func (r *graphResponder) Compact(ctx context.Context) (int, error) {
 		return 0, errors.New("a task is paused in this session; continue it or start a new session before compacting")
 	}
 
-	history := r.SessionHistory()
+	history := r.ModelContextHistory()
 	items := responseHistoryItems(history)
 	userStarts := make([]int, 0, len(items))
 	for index, item := range items {
@@ -388,24 +422,26 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final state"))
 		}
 		state := result.Checkpoint.Final
-		if state.TaskError != "" && state.FinalResponse == nil {
-			if err := r.deleteCompletedRun(); err != nil {
-				runErr = errors.Join(runErr, err)
-			}
-			return nil, errors.Join(runErr, errors.New(state.TaskError))
-		}
 		r.historyMu.Lock()
 		r.history = model.NewResponseInputItems(state.History.Items...)
+		transcript := state.Transcript
+		if transcript.Items == nil && transcript.Text == nil {
+			transcript = state.History
+		}
+		r.transcript = model.NewResponseInputItems(responseHistoryItems(&transcript)...)
 		r.historyMu.Unlock()
 		response := state.FinalResponse
+		if err := r.persistSessionHistory(); err != nil {
+			return response, errors.Join(runErr, fmt.Errorf("persist completed session history: %w", err))
+		}
 		if response == nil {
 			if err := r.deleteCompletedRun(); err != nil {
 				runErr = errors.Join(runErr, err)
 			}
+			if state.TaskError != "" {
+				return nil, errors.Join(runErr, errors.New(state.TaskError))
+			}
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final response"))
-		}
-		if err := r.persistSessionHistory(); err != nil {
-			return response, errors.Join(runErr, fmt.Errorf("persist completed session history: %w", err))
 		}
 		if err := r.deleteCompletedRun(); err != nil {
 			return response, errors.Join(runErr, err)

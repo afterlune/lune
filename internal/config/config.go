@@ -27,7 +27,7 @@ type Config struct {
 	DefaultModel         string                          `json:"defaultModel"`
 	MaxParallelAgents    int                             `json:"maxParallelAgents,omitempty"`
 	ContextWindow        int64                           `json:"contextWindow,omitempty"`        // Tokens; zero means unset.
-	AutoCompact          bool                            `json:"autoCompact,omitempty"`          // Defaults to false.
+	AutoCompact          bool                            `json:"autoCompact"`                    // Defaults to true; set false to disable.
 	AutoCompactThreshold float64                         `json:"autoCompactThreshold,omitempty"` // Ratio from 0 to 1; defaults to 0.8 when enabled.
 	ReserveOutputTokens  int64                           `json:"reserveOutputTokens,omitempty"`  // Tokens; zero means unset.
 	Attachments          AttachmentLimits                `json:"attachments,omitempty"`
@@ -109,6 +109,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = Config(decoded)
+	if _, explicitlySet := fields["autoCompact"]; !explicitlySet {
+		c.AutoCompact = true
+	}
 	c.legacyAPIKey = legacyAPIKey
 	return nil
 }

@@ -38,7 +38,7 @@ func writeConfig(t *testing.T, data string) string {
 
 func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 	path := writeConfig(t, `{
-		"providers": {"vendor-a": {"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
+		"providers": {"vendor-a": {"protocol":"responses","baseURL":"https://example.com","apiKey":"key","serverCompaction":true}},
 		"models": {"lead": {"provider":"vendor-a","model":"model-a"}},
 		"defaultModel":"lead",
 		"contextWindow": 128000,
@@ -53,6 +53,9 @@ func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 	if config.ContextWindow != 128000 || config.ReserveOutputTokens != 4096 {
 		t.Fatalf("context settings = (%d, %d)", config.ContextWindow, config.ReserveOutputTokens)
 	}
+	if !config.Providers["vendor-a"].ServerCompaction {
+		t.Fatal("serverCompaction capability was not loaded")
+	}
 	if !config.AutoCompact || config.AutoCompactThreshold != 0.8 {
 		t.Fatalf("auto compact = (%v, %v), want true and 0.8", config.AutoCompact, config.AutoCompactThreshold)
 	}
@@ -65,7 +68,7 @@ func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadProjectConfigKeepsUnsetDefaults(t *testing.T) {
+func TestLoadProjectConfigEnablesAutoCompactionByDefault(t *testing.T) {
 	config, err := Load(writeConfig(t, `{
 		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
 		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
@@ -74,11 +77,26 @@ func TestLoadProjectConfigKeepsUnsetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if config.ContextWindow != 0 || config.ReserveOutputTokens != 0 || config.AutoCompact || config.AutoCompactThreshold != 0 {
-		t.Fatalf("unset project settings should remain zero: %#v", config)
+	if config.ContextWindow != 0 || config.ReserveOutputTokens != 0 || !config.AutoCompact || config.AutoCompactThreshold != 0.8 {
+		t.Fatalf("project defaults = %#v, want auto compaction enabled at 0.8 with no guessed context window", config)
 	}
 	if config.Attachments != (AttachmentLimits{}) {
 		t.Fatalf("unset attachment limits = %#v", config.Attachments)
+	}
+}
+
+func TestLoadProjectConfigPreservesExplicitAutoCompactOff(t *testing.T) {
+	config, err := Load(writeConfig(t, `{
+		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
+		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
+		"defaultModel":"lead",
+		"autoCompact":false
+	}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if config.AutoCompact || config.AutoCompactThreshold != 0 {
+		t.Fatalf("explicit autoCompact:false changed to %#v", config)
 	}
 }
 

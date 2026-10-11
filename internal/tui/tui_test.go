@@ -919,7 +919,7 @@ func TestTUIContextCommandShowsPersistsAndResetsOverrides(t *testing.T) {
 	ui.input.SetValue("/context")
 	ui.submit()
 	view := ui.entries[len(ui.entries)-1].text
-	for _, expected := range []string{"64.0k (project default)", "4.1k (project default)", "does not limit model requests yet", "automatic compaction is not active yet"} {
+	for _, expected := range []string{"64.0k (project default)", "4.1k (project default)", "context window sets its trigger budget", "output reserve leaves room"} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
 			t.Fatalf("context view %q is missing %q", view, expected)
 		}
@@ -930,8 +930,8 @@ func TestTUIContextCommandShowsPersistsAndResetsOverrides(t *testing.T) {
 	if ui.sessionSettings.ContextWindow == nil || *ui.sessionSettings.ContextWindow != 32000 || ui.contextWindow != 32000 {
 		t.Fatalf("context window override=%v effective=%d", ui.sessionSettings.ContextWindow, ui.contextWindow)
 	}
-	if !strings.Contains(ui.status, "does not limit model requests yet") {
-		t.Fatalf("context window status = %q, want current request limitation disclosed", ui.status)
+	if !strings.Contains(ui.status, "Automatic compaction can use it") {
+		t.Fatalf("context window status = %q, want automatic-compaction status", ui.status)
 	}
 	ui.input.SetValue("/context reserve 2048")
 	ui.submit()
@@ -965,7 +965,7 @@ func TestTUIContextCommandShowsPersistsAndResetsOverrides(t *testing.T) {
 	}
 }
 
-func TestTUIAutoCompactCommandPersistsSettingsWithoutClaimingRuntimeEffect(t *testing.T) {
+func TestTUIAutoCompactCommandPersistsSettingsAndShowsRuntimeBehavior(t *testing.T) {
 	client := &fakeResponder{
 		contextDefaults: core.ContextDefaults{AutoCompact: true, AutoCompactThreshold: 0.75},
 		sessions: map[string]core.Session{
@@ -979,7 +979,7 @@ func TestTUIAutoCompactCommandPersistsSettingsWithoutClaimingRuntimeEffect(t *te
 	ui.input.SetValue("/autocompact")
 	ui.submit()
 	view := ui.entries[len(ui.entries)-1].text
-	for _, expected := range []string{"on (project default)", "75% (project default)", "runtime auto-compaction is not active yet"} {
+	for _, expected := range []string{"on (project default)", "75% (project default)", "runs before model requests", "set a context window"} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(expected)) {
 			t.Fatalf("auto-compaction view %q is missing %q", view, expected)
 		}
@@ -987,7 +987,7 @@ func TestTUIAutoCompactCommandPersistsSettingsWithoutClaimingRuntimeEffect(t *te
 
 	ui.input.SetValue("/autocompact off")
 	ui.submit()
-	if ui.sessionSettings.AutoCompact == nil || *ui.sessionSettings.AutoCompact || !strings.Contains(ui.status, "has no effect on current tasks") {
+	if ui.sessionSettings.AutoCompact == nil || *ui.sessionSettings.AutoCompact || !strings.Contains(ui.status, "applies to future tasks") {
 		t.Fatalf("off setting/status = %#v / %q", ui.sessionSettings.AutoCompact, ui.status)
 	}
 	ui.input.SetValue("/autocompact threshold 0.6")
@@ -1019,6 +1019,35 @@ func TestTUIAutoCompactCommandPersistsSettingsWithoutClaimingRuntimeEffect(t *te
 	ui.submit()
 	if !strings.Contains(ui.status, "paused task keeps its original settings") {
 		t.Fatalf("status = %q, want paused-task behavior", ui.status)
+	}
+}
+
+func TestTUIShowsAutomaticCompactionProgressAndFailure(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.sessionID = "session-compaction"
+	model, _ := ui.Update(coreEventMsg{event: core.Event{
+		Kind: core.EventContextCompaction, SessionID: ui.sessionID,
+		Compaction: &core.ContextCompactionDetails{Stage: "started", Mode: "local"},
+	}})
+	ui = model.(*tuiModel)
+	if !strings.Contains(ui.status, "Compacting context") {
+		t.Fatalf("status after compaction start = %q", ui.status)
+	}
+	model, _ = ui.Update(coreEventMsg{event: core.Event{
+		Kind: core.EventContextCompaction, SessionID: ui.sessionID,
+		Compaction: &core.ContextCompactionDetails{Stage: "completed", Mode: "local", BeforeTokens: 900, AfterTokens: 120},
+	}})
+	ui = model.(*tuiModel)
+	if !strings.Contains(ui.status, "900 → 120 estimated tokens") {
+		t.Fatalf("status after compaction completion = %q", ui.status)
+	}
+	model, _ = ui.Update(coreEventMsg{event: core.Event{
+		Kind: core.EventContextCompaction, SessionID: ui.sessionID, Err: "summary provider unavailable",
+		Compaction: &core.ContextCompactionDetails{Stage: "failed", Mode: "local", Err: "summary provider unavailable"},
+	}})
+	ui = model.(*tuiModel)
+	if !strings.Contains(ui.status, "summary provider unavailable") {
+		t.Fatalf("status after compaction failure = %q", ui.status)
 	}
 }
 

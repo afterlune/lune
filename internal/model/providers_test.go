@@ -20,6 +20,19 @@ func TestResolveModelIDUsesOverrideAndProfileFallback(t *testing.T) {
 	}
 }
 
+func TestServerCompactionRequiresResponsesProtocol(t *testing.T) {
+	config := Config{
+		Providers: map[string]ProviderConfig{
+			"claude": {Protocol: ProtocolAnthropicMessages, BaseURL: "https://example.test", APIKey: "key", ServerCompaction: true},
+		},
+		Models:       map[string]ModelProfile{"main": {Provider: "claude", Model: "claude-test", MaxOutputTokens: 512}},
+		DefaultModel: "main",
+	}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "does not use the Responses protocol") {
+		t.Fatalf("Validate error = %v, want server compaction protocol error", err)
+	}
+}
+
 func TestDeepSeekProviderCreateResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
@@ -46,6 +59,39 @@ func TestDeepSeekProviderCreateResponse(t *testing.T) {
 	}
 	if response.ID != "resp-1" || response.Usage.TotalTokens != 6 {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestResponsesProviderSendsServerCompactionConfiguration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		var management []ContextManagementItem
+		if err := json.Unmarshal(request["context_management"], &management); err != nil {
+			t.Fatalf("decode context_management: %v", err)
+		}
+		if len(management) != 1 || management[0] != (ContextManagementItem{Type: "compaction", CompactThreshold: 51200}) {
+			t.Fatalf("context management = %#v", management)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp-compact","object":"response","status":"completed","model":"openai-test","output":[{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-state","created_by":"responses.compact"}],"usage":{"input_tokens":50000,"output_tokens":2,"total_tokens":50002}}`)
+	}))
+	defer server.Close()
+	provider := newResponsesProvider("openai", "test-key", server.URL, server.Client())
+	response, err := provider.CreateResponse(context.Background(), ModelRequest{
+		Model: "openai-test", Input: NewResponseInputText("continue"),
+		ContextManagement: []ContextManagementItem{{Type: "compaction", CompactThreshold: 51200}},
+	}, ModelProfile{Provider: "openai", Model: "openai-test"})
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
+	}
+	if len(response.Output) != 1 {
+		t.Fatalf("output = %#v", response.Output)
+	}
+	compaction, ok := response.Output[0].(OutputCompaction)
+	if !ok || compaction.ID != "cmp_1" || compaction.EncryptedContent != "opaque-state" || compaction.CreatedBy != "responses.compact" {
+		t.Fatalf("compaction output = %#v", response.Output[0])
 	}
 }
 
@@ -92,6 +138,9 @@ func TestAnthropicMessagesMapsToolsImagesUsageAndErrors(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
+		if _, leaked := request["context_management"]; leaked {
+			t.Errorf("Responses-only context management leaked into Anthropic request: %#v", request["context_management"])
+		}
 		encoded, _ := json.Marshal(request)
 		for _, expected := range []string{`"model":"claude-override"`, `"max_tokens":2048`, `"type":"tool_use"`, `"type":"tool_result"`, `"type":"image"`, `"input_schema"`} {
 			if !strings.Contains(string(encoded), expected) {
@@ -114,7 +163,8 @@ func TestAnthropicMessagesMapsToolsImagesUsageAndErrors(t *testing.T) {
 			UnknownInputItem{Raw: json.RawMessage(`{"type":"function_call","call_id":"toolu-previous","name":"read_file","arguments":"{\"path\":\"a.go\"}"}`)},
 			InputFunctionCallOutput{CallID: "toolu-previous", Output: NewToolOutputText("package main")},
 		),
-		Tools: []ResponseTool{FunctionTool{Name: "read_file", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		Tools:             []ResponseTool{FunctionTool{Name: "read_file", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		ContextManagement: []ContextManagementItem{{Type: "compaction", CompactThreshold: 51200}},
 	}
 	response, err := provider.CreateResponse(context.Background(), request, profile)
 	if err != nil {

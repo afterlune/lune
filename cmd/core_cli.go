@@ -216,18 +216,25 @@ func respondCoreWithKeys(client cliCore, workspace string, operation coreOperati
 	interactive.Store(keyEvents != nil)
 	approvalEvents := make(chan core.ApprovalRequest, 1)
 	client.SetEventHandler(func(event core.Event) {
-		if event.Kind != core.EventApprovalRequired || event.Approval == nil {
-			return
-		}
-		request := *event.Approval
-		if !interactive.Load() {
-			denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
-			return
-		}
-		select {
-		case approvalEvents <- request:
-		case <-ctx.Done():
-			_ = client.ResolveApproval(request.ID, false)
+		switch event.Kind {
+		case core.EventContextCompaction:
+			if event.Compaction != nil {
+				writeCLICompactionStatus(stderr, *event.Compaction)
+			}
+		case core.EventApprovalRequired:
+			if event.Approval == nil {
+				return
+			}
+			request := *event.Approval
+			if !interactive.Load() {
+				denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
+				return
+			}
+			select {
+			case approvalEvents <- request:
+			case <-ctx.Done():
+				_ = client.ResolveApproval(request.ID, false)
+			}
 		}
 	})
 	defer client.SetEventHandler(nil)
@@ -305,6 +312,34 @@ func respondCoreWithKeys(client cliCore, workspace string, operation coreOperati
 			}
 		}
 	}
+}
+
+func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDetails) {
+	switch event.Stage {
+	case "started":
+		_, _ = fmt.Fprintln(stderr, "Compacting context...")
+	case "completed":
+		if event.AfterTokens > 0 {
+			_, _ = fmt.Fprintf(stderr, "Context compacted (estimated input %s to %s tokens).\n", compactCLITokens(event.BeforeTokens), compactCLITokens(event.AfterTokens))
+		} else {
+			_, _ = fmt.Fprintln(stderr, "Provider compacted the context.")
+		}
+	case "fallback":
+		_, _ = fmt.Fprintf(stderr, "Server compaction unavailable; using local compaction: %s\n", event.Err)
+	case "skipped":
+		if event.Err != "" {
+			_, _ = fmt.Fprintf(stderr, "Automatic compaction skipped: %s\n", event.Err)
+		}
+	case "failed":
+		_, _ = fmt.Fprintf(stderr, "Context compaction failed: %s\n", event.Err)
+	}
+}
+
+func compactCLITokens(tokens int64) string {
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
 }
 
 func resolveCLIApproval(client cliCore, request core.ApprovalRequest, allowed bool, stderr io.Writer) {

@@ -156,6 +156,16 @@ func (c *ProviderCatalog) Profile(name string) (ModelProfile, bool) {
 	return profile, ok
 }
 
+// ProviderConfig returns the API protocol and endpoint capabilities selected
+// for one configured provider.
+func (c *ProviderCatalog) ProviderConfig(name string) (ProviderConfig, bool) {
+	if c == nil {
+		return ProviderConfig{}, false
+	}
+	provider, ok := c.config.Providers[name]
+	return provider, ok
+}
+
 func (c *ProviderCatalog) Profiles() map[string]ModelProfile {
 	profiles := make(map[string]ModelProfile)
 	if c == nil {

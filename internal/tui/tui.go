@@ -198,7 +198,7 @@ type tuiCommandSpec struct {
 }
 
 var tuiCommands = []tuiCommandSpec{
-	{name: "/autocompact", usage: "/autocompact [on|off|threshold|reset]", description: "Configure auto-compaction settings; runtime is pending."},
+	{name: "/autocompact", usage: "/autocompact [on|off|threshold|reset]", description: "Configure automatic context compaction for future tasks."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
 	{name: "/context", usage: "/context [window <tokens>|reserve <tokens>|reset]", description: "View or set session context values."},
 	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
@@ -403,6 +403,10 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case core.EventUsage:
 			m.updateModelUsage(message.event.Usage, message.event.AgentID, message.event.ModelProfile,
 				message.event.Provider, message.event.Model, message.event.ContextWindow, message.event.EstimatedInputTokens)
+		case core.EventContextCompaction:
+			if message.event.SessionID == "" || message.event.SessionID == m.sessionID {
+				m.updateContextCompaction(message.event)
+			}
 		}
 		m.refreshPanels()
 		return m, nil
@@ -993,8 +997,8 @@ func (m *tuiModel) showContextSettings() (tea.Model, tea.Cmd) {
 	}
 	message := fmt.Sprintf("Context window: %s (%s)\nOutput reserve: %s (%s)", windowLabel, windowSource, reserveLabel, reserveSource)
 	message += "\nUse /context <tokens>, /context window <tokens|reset>, /context reserve <tokens|reset>, or /context reset."
-	message += "\nThe context window currently affects usage display only; it does not limit model requests yet."
-	message += "\nOutput reserve is saved, but automatic compaction is not active yet."
+	message += "\nWhen automatic compaction is enabled, the context window sets its trigger budget."
+	message += "\nThe output reserve leaves room for the model's response when compaction is triggered."
 	m.addEntry("notice", message, false)
 	m.status = "Context settings are session overrides; project defaults remain unchanged."
 	m.resetInput()
@@ -1029,21 +1033,29 @@ func (m *tuiModel) setContextSettingsFromCommand(line string) (tea.Model, tea.Cm
 			return m.contextCommandUsage()
 		}
 		settings.ContextWindow = &value
-		message = "Context window saved for usage display; it does not limit model requests yet."
+		if value == 0 {
+			message = "Context window cleared. Automatic compaction will wait for a positive window."
+		} else {
+			message = "Context window saved. Automatic compaction can use it on future tasks."
+		}
 	case len(fields) == 3 && fields[1] == "window":
 		value, ok := parseContextTokenCount(fields[2])
 		if !ok {
 			return m.contextCommandUsage()
 		}
 		settings.ContextWindow = &value
-		message = "Context window saved for usage display; it does not limit model requests yet."
+		if value == 0 {
+			message = "Context window cleared. Automatic compaction will wait for a positive window."
+		} else {
+			message = "Context window saved. Automatic compaction can use it on future tasks."
+		}
 	case len(fields) == 3 && fields[1] == "reserve":
 		value, ok := parseContextTokenCount(fields[2])
 		if !ok {
 			return m.contextCommandUsage()
 		}
 		settings.ReserveOutputTokens = &value
-		message = "Output reserve saved for future tasks. Automatic compaction is not active yet."
+		message = "Output reserve saved for future tasks. It reduces the input budget available before compaction."
 	default:
 		return m.contextCommandUsage()
 	}
@@ -1086,10 +1098,17 @@ func (m *tuiModel) showAutoCompactSettings() (tea.Model, tea.Cmd) {
 		state = "on"
 	}
 	message := fmt.Sprintf("Automatic compaction: %s (%s)\nThreshold: %.0f%% (%s)", state, enabledSource, threshold*100, thresholdSource)
-	message += "\nRuntime auto-compaction is not active yet; these values are saved for future tasks."
+	message += "\nAutomatic compaction runs before model requests when the configured threshold is reached."
+	window := defaults.ContextWindow
+	if m.sessionSettings.ContextWindow != nil {
+		window = *m.sessionSettings.ContextWindow
+	}
+	if enabled && window <= 0 {
+		message += "\nSet a context window with /context window <tokens> to activate automatic compaction."
+	}
 	message += "\nUse /autocompact on|off, /autocompact threshold <0..1>, or /autocompact reset."
 	m.addEntry("notice", message, false)
-	m.status = "Auto-compaction settings are session overrides; runtime behavior is not active yet."
+	m.status = "Auto-compaction settings apply to future tasks."
 	m.resetInput()
 	return m, nil
 }
@@ -1129,7 +1148,7 @@ func (m *tuiModel) setAutoCompactFromCommand(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.sessionSettings = settings
-	message += " Runtime auto-compaction is not active yet; the saved setting has no effect on current tasks."
+	message += " This setting applies to future tasks."
 	if m.pending {
 		message += " The paused task keeps its original settings."
 	}
@@ -2689,6 +2708,35 @@ func (m *tuiModel) updateCommandSuggestions() {
 		if strings.HasPrefix(command.name, line) {
 			m.commandSuggestions = append(m.commandSuggestions, command.name)
 		}
+	}
+}
+
+func (m *tuiModel) updateContextCompaction(event core.Event) {
+	if event.Compaction == nil {
+		return
+	}
+	details := event.Compaction
+	switch details.Stage {
+	case "started":
+		if details.Mode == "server" {
+			m.status = "Provider is compacting the model context…"
+		} else {
+			m.status = "Compacting context: clearing older tool output and summarizing…"
+		}
+	case "completed":
+		if details.AfterTokens > 0 {
+			m.status = fmt.Sprintf("Context compacted: %s → %s estimated tokens.", compactTokens(details.BeforeTokens), compactTokens(details.AfterTokens))
+		} else {
+			m.status = "Provider compacted the context."
+		}
+	case "fallback":
+		m.status = "Server compaction unavailable; using local compaction."
+	case "skipped":
+		if strings.Contains(strings.ToLower(event.Err), "contextwindow is unset") {
+			m.status = "Auto-compaction needs a context window. Set it with /context window <tokens>."
+		}
+	case "failed":
+		m.status = "Context compaction failed: " + event.Err
 	}
 }
 
