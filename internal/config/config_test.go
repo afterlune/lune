@@ -68,6 +68,30 @@ func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadMCPServerConfigsWithoutStartingServers(t *testing.T) {
+	path := writeConfig(t, `{
+		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
+		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
+		"defaultModel":"lead",
+		"mcpServers":{
+			"local-files":{"transport":"stdio","command":"mcp-files","args":["--root","./data"],"env":{"MCP_TOKEN":"${MCP_TOKEN}"}},
+			"remote-docs":{"transport":"streamable-http","url":"https://mcp.example.test/v1/mcp?region=west"}
+		}
+	}`)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	stdio := config.MCPServers["local-files"]
+	if stdio.Transport != MCPTransportStdio || stdio.Command != "mcp-files" || len(stdio.Args) != 2 || stdio.Env["MCP_TOKEN"] != "${MCP_TOKEN}" {
+		t.Fatalf("stdio config = %#v; env values must remain literal", stdio)
+	}
+	http := config.MCPServers["remote-docs"]
+	if http.Transport != MCPTransportStreamableHTTP || http.URL != "https://mcp.example.test/v1/mcp?region=west" {
+		t.Fatalf("streamable HTTP config = %#v", http)
+	}
+}
+
 func TestLoadProjectConfigEnablesAutoCompactionByDefault(t *testing.T) {
 	config, err := Load(writeConfig(t, `{
 		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
@@ -121,7 +145,22 @@ func TestLoadRejectsUnknownAndInvalidFields(t *testing.T) {
 		want string
 	}{
 		{"unknown top-level", `{` + base + `,"mispelled":true}`, "unknown config field"},
-		{"deferred mcp config", `{` + base + `,"mcpServers":{}}`, "unknown config field \"mcpServers\""},
+		{"unknown MCP server field", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","unexpected":true}}}`, "unknown field"},
+		{"unsupported MCP transport", `{` + base + `,"mcpServers":{"server":{"transport":"sse","url":"https://mcp.example.test"}}}`, "transport must be"},
+		{"stdio requires command", `{` + base + `,"mcpServers":{"server":{"transport":"stdio"}}}`, "requires a non-empty command"},
+		{"stdio command must not be padded", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":" mcp "}}}`, "command must not contain surrounding whitespace"},
+		{"stdio rejects URL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","url":"https://mcp.example.test"}}}`, "only valid for streamable-http"},
+		{"streamable HTTP requires URL", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http"}}}`, "a URL is required"},
+		{"streamable HTTP rejects stdio fields", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test","args":[]}}}`, "only valid for stdio"},
+		{"streamable HTTP rejects relative URL", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"/mcp"}}}`, "absolute http or https URL"},
+		{"streamable HTTP rejects userinfo", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://user:secret@mcp.example.test/mcp"}}}`, "must not include userinfo"},
+		{"streamable HTTP rejects fragment", `{` + base + `,"mcpServers":{"server":{"transport":"streamable-http","url":"https://mcp.example.test/mcp#fragment"}}}`, "must not include a fragment"},
+		{"MCP server name must not be padded", `{` + base + `,"mcpServers":{" server ":{"transport":"stdio","command":"mcp"}}}`, "keys must be non-empty and unpadded"},
+		{"MCP command cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp\u0000server"}}}`, "command must not contain NUL"},
+		{"MCP arg cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","args":["bad\u0000arg"]}}}`, "args[0] must not contain NUL"},
+		{"MCP env key cannot contain equals", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"BAD=KEY":"value"}}}}`, "must not contain '=' or NUL"},
+		{"MCP env key cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"BAD\u0000KEY":"value"}}}}`, "must not contain '=' or NUL"},
+		{"MCP env value cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"KEY":"bad\u0000value"}}}}`, "must not contain NUL"},
 		{"unknown provider field", `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key","endpoint":"x"}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"lead"}`, "unknown field"},
 		{"unknown attachment field", `{` + base + `,"attachments":{"maxFileSize":12}}`, "unknown field"},
 		{"missing provider key", `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":" "}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"lead"}`, "non-empty apiKey"},

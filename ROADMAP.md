@@ -4,7 +4,7 @@
 > 同一文件/同一接口的改动尽量集中在同一阶段，使前面的施工对后面的影响最小。
 > 标签：`[A]` 会话设置 `[B]` 历史 `[C]` 会话管理 `[E]` 上下文预算/用量 `[G]` 工具结果瘦身 `[H]` 流式 `[D]` MCP `[F]` Subagent `[M]` 多模态输入 `[Q]` 提问 `[X]` 桌面端
 >
-> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（93 条已完成、69 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
+> 原版 159 条 checkbox（157 条未完成、2 条已完成）全部保留；清单另含 3 条补充项，当前共 162 条（95 条已完成、67 条仍待跟踪）。每项按当前代码状态核对；部分实现、暂缓和待决策仍属于待办。
 > [x] 表示已完成；[ ] 表示仍需跟踪。注释会区分部分实现、监控、暂缓和待决策。
 
 ---
@@ -36,7 +36,7 @@
 - [x] 修 `workspace` 模式对未知工具免批准的安全缺口（同一改造）
 - [x] 命令取消会结束 shell 子进程：Unix 通过独立 process group 终止整组，Windows 通过 `taskkill /T` 结束进程树，并设置 `WaitDelay` 作为管道关闭兜底；Linux/Windows 回归测试验证后台子进程不会在取消后继续完成。
 - [x] 内置文件工具在 Registry 生命周期内持有 workspace-scoped `os.Root` 执行读取、写入、编辑、列举、glob 与 grep；路径替换后仍锁定原目录，路径检查后的 symlink 越界会被拒绝，递归 grep 在打开前跳过特殊文件；Core 正常关闭及启动失败均释放句柄。
-- [ ] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限）——provider catalog 已部分落地，待补齐 — 部分实现：providers/models、context/autoCompact、Responses `serverCompaction` 能力开关与附件限制字段有配置校验；Core 的结构化图片输入已执行 limits；mcpServers 仍不支持。
+- [x] 结构化配置加载+校验（`models` / `mcpServers` / `contextWindow` / `autoCompact` / 附件大小上限） — providers/models、context/autoCompact、Responses `serverCompaction`、附件限制及 MCP stdio/Streamable HTTP schema 均有配置校验；MCP 运行与鉴权仍留待 P4。
 - [x] 会话 `data` 加版本号 + 迁移策略（`migrateLegacySession` 已有雏形，需正式版本化） — Core 会话 payload 使用独立 `data_version=3`；版本缺失的旧数据经 v0→v1→v2→v3 迁移并以比较后原子替换写回，更新会话数据不改变更新时间；拒绝负数或高于当前版本的数据。
 - [x] 定 `sessions.db` 与 `checkpoints.db` 的级联删除关系
 - [x] 定 token 计数口径（服务器 `usage.InputTokens` vs 本地启发式）
@@ -165,7 +165,7 @@
   - [x] 深度上限、禁止自我递归 — 当前 worker Agent 未注入 TeamExecutor，因此不能递归委派；没有额外深度配置。
   - [x] 用量归属的展示口径（team 成员已带 `agentID/profile/provider/modelID`） — Core 会话记录保留 agent/profile/provider/model；TUI Usage 明细行已展示归属并在恢复会话后保留。
   - [x] 前端嵌套展示成员活动 — `EventAgentStarted/Finished` 携带 `TeamRunID`；Activity/Usage 抽屉按 Team 分组显示成员状态与模型。
-- [ ] `[D]` MCP：`config.json` 增 `mcpServers`
+- [x] `[D]` MCP：`config.json` 增 `mcpServers` — 配置类型与静态校验已完成；连接、鉴权与工具注册仍待实现。
 - [ ] `[D]` JSON-RPC 2.0 客户端（initialize / tools/list / tools/call），stdio + streamable HTTP
 - [ ] `[D]` MCP 工具注册到 `tool.Registry`（`mcp` 分类，默认需批准）
 - [ ] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连

@@ -42,5 +42,6 @@
     "maxFiles": 0,
     "maxFileBytes": 0,
     "maxTotalBytes": 0
-  }
+  },
+  "mcpServers": {}
 }

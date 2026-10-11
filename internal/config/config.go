@@ -22,8 +22,8 @@ const (
 	DefaultAttachmentMaxTotalBytes int64 = 20 << 20
 )
 
-// Config is the project configuration. Its JSON shape stays flat so existing
-// provider and model settings remain unchanged.
+// Config is the workspace's project configuration. Provider and model fields
+// retain their existing JSON shapes; other settings are optional additions.
 type Config struct {
 	Providers            map[string]model.ProviderConfig `json:"providers"`
 	Models               map[string]model.ModelProfile   `json:"models"`
@@ -34,6 +34,7 @@ type Config struct {
 	AutoCompactThreshold float64                         `json:"autoCompactThreshold,omitempty"` // Ratio from 0 to 1; defaults to 0.8 when enabled.
 	ReserveOutputTokens  int64                           `json:"reserveOutputTokens,omitempty"`  // Tokens; zero means unset.
 	Attachments          AttachmentLimits                `json:"attachments,omitempty"`
+	MCPServers           map[string]MCPServerConfig      `json:"mcpServers,omitempty"`
 	legacyAPIKey         string
 }
 
@@ -81,7 +82,7 @@ func Load(path string) (Config, error) {
 }
 
 // UnmarshalJSON accepts the old single-provider apikey input and rejects
-// unknown fields at both the project and nested setting levels.
+// unknown fields at the project and nested configuration levels.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -96,7 +97,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	for key := range fields {
 		switch key {
-		case "providers", "models", "defaultModel", "maxParallelAgents", "contextWindow", "autoCompact", "autoCompactThreshold", "reserveOutputTokens", "attachments":
+		case "providers", "models", "defaultModel", "maxParallelAgents", "contextWindow", "autoCompact", "autoCompactThreshold", "reserveOutputTokens", "attachments", "mcpServers":
 		default:
 			return fmt.Errorf("unknown config field %q", key)
 		}
@@ -120,7 +121,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Validate checks project settings and the model catalog.
+// Validate checks project settings, the model catalog, and MCP server configs.
 func (c *Config) applyDefaults() {
 	if c.AutoCompact && c.AutoCompactThreshold == 0 {
 		c.AutoCompactThreshold = DefaultAutoCompactThreshold
@@ -129,6 +130,9 @@ func (c *Config) applyDefaults() {
 
 func (c Config) Validate() error {
 	if err := c.ModelConfig().Validate(); err != nil {
+		return err
+	}
+	if err := validateMCPServers(c.MCPServers); err != nil {
 		return err
 	}
 	if c.ContextWindow < 0 {
