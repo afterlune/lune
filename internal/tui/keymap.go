@@ -46,6 +46,11 @@ var keymapActions = []keymapAction{
 	{id: "queue_remove", label: "Remove queued message", defaultKey: "delete", contexts: []string{"queue_picker"}},
 	{id: "approve_tool", label: "Approve tool call", defaultKey: "y", contexts: []string{"approval"}},
 	{id: "deny_tool", label: "Deny tool call", defaultKey: "n", contexts: []string{"approval"}},
+	{id: "mcp_field_next", label: "Next MCP form field", defaultKey: "tab", contexts: []string{"mcp_form"}},
+	{id: "mcp_field_previous", label: "Previous MCP form field", defaultKey: "shift+tab", contexts: []string{"mcp_form"}},
+	{id: "mcp_form_decline", label: "Decline MCP form", defaultKey: "ctrl+n", contexts: []string{"mcp_form"}},
+	{id: "mcp_url_open", label: "Open MCP elicitation URL", defaultKey: "y", contexts: []string{"mcp_url"}},
+	{id: "mcp_url_decline", label: "Decline MCP URL elicitation", defaultKey: "n", contexts: []string{"mcp_url"}},
 	{id: "input_character_backward", label: "Move cursor left", defaultKey: "left", contexts: []string{"input", "session_rename"}},
 	{id: "input_character_forward", label: "Move cursor right", defaultKey: "right", contexts: []string{"input", "session_rename"}},
 	{id: "input_line_previous", label: "Move cursor up", defaultKey: "up", contexts: []string{"input", "session_rename"}},
@@ -94,7 +99,7 @@ var keymapActions = []keymapAction{
 func allKeymapContexts() []string {
 	return []string{
 		"main", "input", "suggestions", "vim_normal", "session_picker", "session_rename",
-		"permission_menu", "model_picker", "effort_picker", "queue_picker", "delete_confirm", "plan_review", "approval", "details", "running",
+		"permission_menu", "model_picker", "effort_picker", "queue_picker", "delete_confirm", "plan_review", "approval", "details", "running", "mcp_form", "mcp_url",
 	}
 }
 

@@ -110,6 +110,9 @@ type tuiModel struct {
 	effortIndex                   int
 	sessionSettings               core.SessionSettings
 	pendingApproval               *toolApprovalRequestMsg
+	pendingMCPInteraction         *mcpInteractionState
+	mcpCommandPending             bool
+	mcpAuthCancel                 context.CancelFunc
 	sessionPicker                 bool
 	showArchived                  bool
 	deleteConfirm                 bool
@@ -221,6 +224,7 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/help", usage: "/help", description: "Show available commands."},
 	{name: "/keymap", usage: "/keymap [reset]", description: "Edit key bindings or restore defaults."},
 	{name: "/model", usage: "/model [profile]", description: "Choose a model profile."},
+	{name: "/mcp", usage: "/mcp <list|enable|disable|auth> [name]", description: "Manage configured Model Context Protocol servers."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set the permission mode."},
 	{name: "/plan", usage: "/plan", description: "Toggle Plan mode."},
@@ -311,6 +315,7 @@ func Run(client Client) error {
 	ui.preferences = preferences
 	ui.preferencesPath = preferencesPath
 	applyTextareaTheme(&ui.input, preferences.Theme)
+	ui.applyMCPInteractionTheme(preferences.Theme)
 	ui.applyKeymap()
 	if preferencesErr != nil {
 		ui.status = "Some UI preferences were invalid; defaults were used where needed."
@@ -327,7 +332,17 @@ func Run(client Client) error {
 	ui.refreshPanels()
 	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
 	client.SetEventHandler(func(event core.Event) { program.Send(coreEventMsg{event: event}) })
-	defer client.SetEventHandler(nil)
+	client.SetUserInteractionAvailable(true)
+	defer func() {
+		if ui.mcpAuthCancel != nil {
+			ui.mcpAuthCancel()
+		}
+		if ui.pendingMCPInteraction != nil {
+			_ = client.ResolveUserInteraction(ui.pendingMCPInteraction.request.ID, json.RawMessage(`{"action":"cancel"}`))
+		}
+		client.SetUserInteractionAvailable(false)
+		client.SetEventHandler(nil)
+	}()
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run TUI: %w", err)
 	}
@@ -389,6 +404,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPanels()
 		return m, nil
 	case coreEventMsg:
+		var command tea.Cmd
 		switch message.event.Kind {
 		case core.EventTaskStarted:
 			if message.event.SessionID == m.sessionID {
@@ -417,6 +433,14 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingApproval = nil
 				m.status = "Tool approval cancelled."
 			}
+		case core.EventUserInteractionRequired:
+			if message.event.Interaction != nil {
+				command = m.beginMCPInteraction(*message.event.Interaction)
+			}
+		case core.EventUserInteractionCancelled:
+			if m.pendingMCPInteraction != nil && m.pendingMCPInteraction.request.ID == message.event.InteractionID {
+				m.finishMCPInteraction("MCP interaction cancelled because its task ended.", false)
+			}
 		case core.EventUsage:
 			m.updateModelUsage(message.event.Usage, message.event.AgentID, message.event.ModelProfile,
 				message.event.Provider, message.event.Model, message.event.ContextWindow, message.event.EstimatedInputTokens)
@@ -426,7 +450,13 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.refreshPanels()
+		return m, command
+	case mcpCommandResultMsg:
+		m.finishMCPCommand(message)
+		m.refreshPanels()
 		return m, nil
+	case mcpOpenURLResultMsg:
+		return m.finishMCPURLOpen(message)
 	case modelStreamFlushMsg:
 		if message.token != m.modelStreamToken || !m.modelStreamTick {
 			return m, nil
@@ -471,6 +501,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPanels()
 		return m, nil
 	case tea.PasteMsg:
+		if m.pendingMCPInteraction != nil {
+			return m, m.updateMCPInteractionInput(message)
+		}
 		if m.canAttachImages() {
 			if paths, ok := parsePastedImagePaths(message.Content, m.workspace); ok {
 				return m, m.loadPastedImagePaths(paths, message.Content)
@@ -481,6 +514,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, command
 	case tea.MouseWheelMsg:
+		if m.pendingMCPInteraction != nil {
+			return m, nil
+		}
 		if m.detailsOpen {
 			m.activity, _ = m.activity.Update(message)
 		} else {
@@ -488,6 +524,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
+		if m.pendingMCPInteraction != nil {
+			return m, nil
+		}
 		if updated, command, handled := m.handleSessionRailClick(message); handled {
 			return updated, command
 		}
@@ -499,6 +538,14 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.pendingMCPInteraction != nil {
+			return m.handleMCPInteractionKey(message)
+		}
+		if m.mcpAuthCancel != nil && message.String() == "esc" {
+			m.mcpAuthCancel()
+			m.status = "Cancelling MCP authorization…"
+			return m, nil
+		}
 		if m.keymapOpen {
 			return m.handleKeymapKey(message)
 		}
@@ -878,6 +925,10 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.status = "Remove attached images before running a slash command."
 		return m, nil
 	}
+	if m.mcpCommandPending && line != "" && !strings.HasPrefix(line, "/") {
+		m.status = "Wait for the MCP operation to finish before starting a task."
+		return m, nil
+	}
 	if m.planReview && line != "" && !strings.HasPrefix(line, "/") {
 		m.planReview = false
 	}
@@ -922,6 +973,8 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.openPermissionMenu()
 	case "/model":
 		return m.openModelPicker()
+	case "/mcp":
+		return m.handleMCPCommand("/mcp")
 	case "/effort":
 		return m.openEffortPicker()
 	case "/plan":
@@ -959,6 +1012,9 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/model ") || strings.HasPrefix(line, "/model\t") {
 		return m.setModelFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/mcp ") || strings.HasPrefix(line, "/mcp\t") {
+		return m.handleMCPCommand(line)
 	}
 	if strings.HasPrefix(line, "/effort ") || strings.HasPrefix(line, "/effort\t") {
 		return m.setEffortFromCommand(line)
@@ -3285,6 +3341,7 @@ func (m *tuiModel) updateLayout() {
 			footerHeight, dividerCount = 1, 2
 		}
 		m.input.SetWidth(inputWidth)
+		m.updateMCPInteractionWidth(inputWidth)
 		bodyHeight := m.availableBodyHeight(contentWidth, footerHeight, dividerCount)
 		m.chat.SoftWrap = false
 		m.chat.SetWidth(inputWidth)
@@ -3306,6 +3363,7 @@ func (m *tuiModel) updateLayout() {
 		return
 	}
 	m.input.SetWidth(contentWidth)
+	m.updateMCPInteractionWidth(contentWidth)
 	bodyHeight := m.availableBodyHeight(contentWidth, 2, 1)
 	if m.detailsOpen {
 		m.chat.SetWidth(contentWidth)
@@ -3339,6 +3397,9 @@ func (m *tuiModel) updateLayout() {
 
 func (m *tuiModel) availableBodyHeight(contentWidth, footerHeight, dividerCount int) int {
 	bodyHeight := max(1, m.height-lipgloss.Height(m.renderHeader(contentWidth))-dividerCount-m.input.Height()-m.commandSuggestionHeight()-footerHeight)
+	if m.pendingMCPInteraction != nil {
+		bodyHeight = max(1, bodyHeight-lipgloss.Height(m.renderMCPInteraction()))
+	}
 	if m.keymapOpen {
 		bodyHeight = max(1, bodyHeight-m.keymapEditorHeight())
 	}
@@ -3434,7 +3495,7 @@ func (m *tuiModel) View() tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if cursor := m.input.Cursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
 		view.Cursor = cursor
 	}
@@ -3443,6 +3504,8 @@ func (m *tuiModel) View() tea.View {
 
 func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
 	switch {
+	case m.pendingMCPInteraction != nil:
+		return m.renderMCPInteraction()
 	case m.keymapOpen:
 		return m.renderKeymapEditor()
 	case m.sessionPicker:
@@ -3482,7 +3545,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	if cursor := m.input.Cursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(headerRule) + lipgloss.Height(body) + lipgloss.Height(divider)
 		cursor.X += m.sessionRailWidth() + 1
 		view.Cursor = cursor
@@ -3569,6 +3632,10 @@ func (m *tuiModel) renderFooter(width int) string {
 		switch {
 		case m.detailsOpen:
 			status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
+		case m.pendingMCPInteraction != nil:
+			status = m.mcpInteractionFooter()
+		case m.mcpAuthCancel != nil:
+			status = m.mcpAuthFooter()
 		case m.pendingApproval != nil:
 			status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
 		case m.running:
@@ -3638,6 +3705,10 @@ func (m *tuiModel) renderFooter(width int) string {
 	switch {
 	case m.detailsOpen:
 		status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
+	case m.pendingMCPInteraction != nil:
+		status = m.mcpInteractionFooter()
+	case m.mcpAuthCancel != nil:
+		status = m.mcpAuthFooter()
 	case m.pendingApproval != nil:
 		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
 	case m.running:

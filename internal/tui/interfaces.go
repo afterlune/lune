@@ -33,4 +33,11 @@ type Client interface {
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 	ResolveApproval(string, bool) error
+	MCPServers() []core.MCPServerStatus
+	EnableMCPServer(string) error
+	DisableMCPServer(string) error
+	AuthenticateMCPServer(context.Context, string) error
+	OpenMCPURL(string, string) error
+	SetUserInteractionAvailable(bool)
+	ResolveUserInteraction(string, json.RawMessage) error
 }

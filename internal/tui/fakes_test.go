@@ -23,6 +23,13 @@ type fakeResponder struct {
 	sessions         map[string]core.Session
 	last             string
 	sequence         int
+	mcpServers       []core.MCPServerStatus
+	mcpActions       []string
+	mcpActionErr     error
+	openMCPURLs      []string
+	interactionIDs   []string
+	interactionJSON  []json.RawMessage
+	interactionReady bool
 }
 
 type blockingResponder struct {
@@ -207,3 +214,28 @@ func (f *fakeResponder) PermissionMode() core.PermissionMode {
 
 func (f *fakeResponder) SetPermissionMode(mode core.PermissionMode) error { f.mode = mode; return nil }
 func (f *fakeResponder) ResolveApproval(string, bool) error               { return nil }
+func (f *fakeResponder) MCPServers() []core.MCPServerStatus {
+	return append([]core.MCPServerStatus(nil), f.mcpServers...)
+}
+func (f *fakeResponder) EnableMCPServer(name string) error {
+	f.mcpActions = append(f.mcpActions, "enable:"+name)
+	return f.mcpActionErr
+}
+func (f *fakeResponder) DisableMCPServer(name string) error {
+	f.mcpActions = append(f.mcpActions, "disable:"+name)
+	return f.mcpActionErr
+}
+func (f *fakeResponder) AuthenticateMCPServer(_ context.Context, name string) error {
+	f.mcpActions = append(f.mcpActions, "auth:"+name)
+	return f.mcpActionErr
+}
+func (f *fakeResponder) OpenMCPURL(serverName, target string) error {
+	f.openMCPURLs = append(f.openMCPURLs, serverName+" "+target)
+	return f.mcpActionErr
+}
+func (f *fakeResponder) SetUserInteractionAvailable(available bool) { f.interactionReady = available }
+func (f *fakeResponder) ResolveUserInteraction(id string, response json.RawMessage) error {
+	f.interactionIDs = append(f.interactionIDs, id)
+	f.interactionJSON = append(f.interactionJSON, append(json.RawMessage(nil), response...))
+	return f.mcpActionErr
+}

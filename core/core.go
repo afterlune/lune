@@ -235,6 +235,19 @@ type AttachmentLimits struct {
 	MaxTotalBytes int64
 }
 
+// MCPServerStatus describes one configured MCP server without exposing its
+// credentials or child-process environment.
+type MCPServerStatus struct {
+	Name      string
+	Transport string
+	Endpoint  string
+	Command   string
+	Enabled   bool
+	Connected bool
+	ToolCount int
+	LastError string
+}
+
 // ModelOption is a model profile exposed to clients without leaking the
 // internal model package through Core's public API.
 type ModelOption struct {
@@ -551,11 +564,19 @@ func (c *Core) Close() error {
 	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close())
 }
 
-func (c *Core) MCPServers() []mcp.ServerStatus {
+func (c *Core) MCPServers() []MCPServerStatus {
 	if c == nil || c.mcpManager == nil {
 		return nil
 	}
-	return c.mcpManager.List()
+	servers := c.mcpManager.List()
+	result := make([]MCPServerStatus, 0, len(servers))
+	for _, server := range servers {
+		result = append(result, MCPServerStatus{
+			Name: server.Name, Transport: string(server.Transport), Endpoint: server.Endpoint, Command: server.Command, Enabled: server.Enabled,
+			Connected: server.Connected, ToolCount: server.ToolCount, LastError: server.LastError,
+		})
+	}
+	return result
 }
 
 func (c *Core) EnableMCPServer(name string) error {
@@ -586,6 +607,13 @@ func (c *Core) AuthenticateMCPServer(ctx context.Context, name string) error {
 		return errors.New("cannot authorize an MCP server while a task is running")
 	}
 	return c.mcpManager.Authorize(ctx, name)
+}
+
+func (c *Core) OpenMCPURL(serverName, target string) error {
+	if c == nil || c.mcpManager == nil {
+		return errors.New("MCP manager is unavailable")
+	}
+	return c.mcpManager.OpenElicitationURL(serverName, target)
 }
 
 // SetUserInteractionAvailable marks whether the active front end can answer

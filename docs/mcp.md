@@ -24,12 +24,14 @@ stdio 命令直接执行，不经过 shell。服务器继承 Lune 当前进程�
 
 ## 管理
 
-Core 已提供启停、列表和授权接口；TUI 命令及 elicitation 弹层在 [MCP TUI 设计稿](design/tui/mcp-review.svg)确认后接入。计划的命令为：
+Core 与 TUI 均提供 MCP 管理和交互。TUI 按已确认的 [MCP TUI 设计稿](design/tui/mcp-review.svg)实现，并支持深浅主题、窄屏和错误状态；对应截图位于 [verification](design/tui/verification/README.md)。命令为：
 
 - `/mcp list` 查看配置服务器、启用状态、连接状态和工具数。
 - `/mcp enable <name>` 连接服务器、发现工具并保存启用状态。
 - `/mcp disable <name>` 移除该服务器工具并关闭连接。
 - `/mcp auth <name>` 对 Streamable HTTP 服务器执行 OAuth。
+
+重复运行 `/mcp enable <name>` 会重新连接并刷新服务器工具；列表会展示连接错误、工具数及脱敏后的 endpoint。
 
 启用状态保存在工作区 `.luneagent/mcp-enabled.json`。TUI 和行式/无界面 CLI 启动时都恢复已启用的服务；无界面客户端不能处理 elicitation，遇到这类请求会立即返回明确错误。
 
@@ -39,10 +41,10 @@ Core 已提供启停、列表和授权接口；TUI 命令及 elicitation 弹层�
 
 HTTP OAuth 使用 OAuth 2.1 授权码流程和 PKCE S256。若配置了 `clientMetadataURL` 且授权服务器声明支持 CIMD，会使用该 HTTPS 文档；否则尝试 Dynamic Client Registration。CIMD 文档必须包含固定回调 `http://127.0.0.1:42477/oauth/callback`；动态注册使用本次授权的回环地址。Access/refresh token 和动态注册 client ID 只存入操作系统 keyring。keyring 不可用时授权失败，不会写明文备用文件。
 
-`/mcp auth <name>` 会打开系统浏览器。授权回调校验随机 state，并在交换 code 前校验授权服务器 issuer。访问令牌过期时使用 refresh token；scope 不足时提示再次运行授权命令。
+`/mcp auth <name>` 会在后台打开系统浏览器，TUI 显示等待状态；按 Esc 可取消授权。授权回调校验随机 state，并在交换 code 前校验授权服务器 issuer。访问令牌过期时使用 refresh token；scope 不足时提示再次运行授权命令。
 
 ## 交互和结果
 
-MRTR 仅处理 `elicitation/create`，每个原始请求最多交互 5 轮；重试使用新 JSON-RPC ID，并原样回传服务器的 opaque `requestState`。支持表单和 URL 两种模式；URL 页面需要用户确认后才打开，Lune 不采集外部页面中的密码。Sampling 和 roots 请求会明确失败，subagent 不会弹出用户交互。
+MRTR 仅处理 `elicitation/create`，每个原始请求最多交互 5 轮；重试使用新 JSON-RPC ID，并原样回传服务器的 opaque `requestState`。表单使用 Tab/Shift+Tab 移动字段、Enter 提交、Ctrl+N 拒绝、Esc 取消；URL 模式使用 `y` 打开、`n` 拒绝、Esc 取消。URL 页面只有在用户按 `y` 确认后才打开，预览会隐藏 query 与 fragment，Lune 不采集外部页面中的密码。Sampling 和 roots 请求会明确失败，subagent 不会弹出用户交互。
 
 工具结果保留文本、图片、音频、resource 和 structured content。resource link 由同一服务器自动 `resources/read`。用户专属 audience 内容只写入用户 transcript，不进入模型上下文。无法交给模型的二进制内容显示 MIME 与大小；MCP 结果沿用附件限制：最多 5 个二进制块、单块 10 MiB、合计 20 MiB，项目 `attachments` 可覆盖。模型 profile 的 `supportsInputAudio` 默认关闭；开启时仅允许 Responses 协议 profile。

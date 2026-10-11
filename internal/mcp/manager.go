@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,6 +46,8 @@ type Options struct {
 type ServerStatus struct {
 	Name      string
 	Transport projectconfig.MCPTransport
+	Endpoint  string
+	Command   string
 	Enabled   bool
 	Connected bool
 	ToolCount int
@@ -137,7 +140,7 @@ func (manager *Manager) RestoreEnabled() []error {
 }
 
 func (manager *Manager) Enable(name string) error {
-	if err := manager.connect(name); err != nil {
+	if err := manager.reconnect(name); err != nil {
 		manager.mu.Lock()
 		manager.errors[name] = err.Error()
 		manager.mu.Unlock()
@@ -195,12 +198,27 @@ func (manager *Manager) List() []ServerStatus {
 		}
 		status := ServerStatus{Name: name, Transport: config.Transport, Enabled: manager.enabled[name],
 			Connected: connected, LastError: manager.errors[name]}
+		if config.Transport == projectconfig.MCPTransportStreamableHTTP {
+			status.Endpoint = safeEndpoint(config.URL)
+		} else {
+			status.Command = filepath.Base(config.Command)
+		}
 		if instance != nil {
 			status.ToolCount = len(instance.tools)
 		}
 		result = append(result, status)
 	}
 	return result
+}
+
+func safeEndpoint(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery, parsed.Fragment = "", ""
+	return parsed.String()
 }
 
 func (manager *Manager) Close() error {
@@ -227,6 +245,14 @@ func (manager *Manager) Close() error {
 }
 
 func (manager *Manager) connect(name string) error {
+	return manager.connectServer(name, false)
+}
+
+func (manager *Manager) reconnect(name string) error {
+	return manager.connectServer(name, true)
+}
+
+func (manager *Manager) connectServer(name string, force bool) error {
 	manager.connectMu.Lock()
 	defer manager.connectMu.Unlock()
 	manager.mu.Lock()
@@ -236,7 +262,8 @@ func (manager *Manager) connect(name string) error {
 	}
 	existing := manager.instances[name]
 	if existing != nil {
-		if stdio, ok := existing.client.(*stdioTransport); !ok || stdio.Alive() {
+		stdio, isStdio := existing.client.(*stdioTransport)
+		if !force && (!isStdio || stdio.Alive()) {
 			manager.mu.Unlock()
 			return nil
 		}
@@ -328,6 +355,27 @@ func (manager *Manager) Authorize(ctx context.Context, name string) error {
 		client = newHTTPTransport(name, config)
 	}
 	return client.Authorize(ctx)
+}
+
+// OpenElicitationURL opens a server-provided URL only after the front end has
+// obtained explicit confirmation. The URL is used as an exec argument, never
+// interpolated into a shell command.
+func (manager *Manager) OpenElicitationURL(serverName, target string) error {
+	manager.mu.Lock()
+	instance := manager.instances[serverName]
+	enabled := manager.enabled[serverName]
+	manager.mu.Unlock()
+	if !enabled || instance == nil {
+		return fmt.Errorf("MCP server %q is not enabled", serverName)
+	}
+	if strings.TrimSpace(target) != target || strings.ContainsAny(target, "\r\n\t ") {
+		return errors.New("MCP elicitation URL contains whitespace")
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Host == "" || parsed.User != nil || !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("MCP elicitation URL must be an absolute http or https URL without userinfo")
+	}
+	return openOAuthBrowser(target)
 }
 
 func (manager *Manager) unregister(instance *serverInstance) {

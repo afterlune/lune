@@ -177,7 +177,16 @@ func TestHTTPManagerRegistersToolsAndPreservesMCPResults(t *testing.T) {
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("enabled state was not persisted: %v", err)
 	}
-	if strings.Join(calls, ",") != "tools/list,tools/call,resources/read" {
+	if err := manager.Enable("docs"); err != nil {
+		t.Fatalf("re-enable MCP server: %v", err)
+	}
+	if got := manager.List(); len(got) != 1 || !got[0].Connected || !got[0].Enabled || got[0].ToolCount != 1 {
+		t.Fatalf("server status after reconnect = %#v", got)
+	}
+	if definitions := registry.DefinitionsForCategory("mcp"); len(definitions) != 1 {
+		t.Fatalf("reconnect registered duplicate definitions: %#v", definitions)
+	}
+	if strings.Join(calls, ",") != "tools/list,tools/call,resources/read,tools/list" {
 		t.Fatalf("MCP calls = %v", calls)
 	}
 	if err := manager.Disable("docs"); err != nil {
@@ -185,6 +194,15 @@ func TestHTTPManagerRegistersToolsAndPreservesMCPResults(t *testing.T) {
 	}
 	if definitions := registry.DefinitionsForCategory("mcp"); len(definitions) != 0 {
 		t.Fatalf("disabled server left definitions: %#v", definitions)
+	}
+}
+
+func TestSafeEndpointRemovesCredentialsAndQuery(t *testing.T) {
+	if got, want := safeEndpoint("https://user:password@example.test/v1/mcp?token=secret#fragment"), "https://example.test/v1/mcp"; got != want {
+		t.Fatalf("safe endpoint = %q, want %q", got, want)
+	}
+	if got := safeEndpoint("not a URL"); got != "" {
+		t.Fatalf("invalid endpoint = %q, want empty", got)
 	}
 }
 
