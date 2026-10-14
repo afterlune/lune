@@ -71,7 +71,6 @@ type taskFinishedMsg struct {
 	result taskResult
 }
 
-type flushScrollbackMsg struct{}
 type terminalColorTimeoutMsg struct{}
 
 type turnSubmittedMsg struct {
@@ -107,8 +106,6 @@ type tuiModel struct {
 	activity            viewport.Model
 
 	entries                       []tuiEntry
-	printedEntryCount             int
-	scrollbackRedrawPending       bool
 	activities                    []tuiActivity
 	teamActivities                []tuiTeamActivity
 	commandSuggestions            []string
@@ -190,7 +187,6 @@ type tuiModel struct {
 	terminalBackgroundReceived    bool
 	terminalForegroundReceived    bool
 	terminalColorQueryPending     bool
-	terminalColorsReady           bool
 	colorProfile                  colorprofile.Profile
 }
 
@@ -251,7 +247,7 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/effort", usage: "/effort [value]", description: "Choose reasoning effort."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
-	{name: "/details", usage: "/details [n]", description: "Show a long message or activity entry in terminal history."},
+	{name: "/details", usage: "/details [n]", description: "Show a user message in the session transcript."},
 	{name: "/fork", usage: "/fork", description: "Start a new session from completed history."},
 	{name: "/goal", usage: "/goal [text|clear]", description: "Show, set, or clear the goal for future tasks."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
@@ -392,7 +388,7 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 	input.Prompt = "› "
 	input.ShowLineNumbers = false
 	input.DynamicHeight = true
-	input.MinHeight = 2
+	input.MinHeight = 1
 	input.MaxHeight = 6
 	input.MaxContentHeight = 10000
 	input.SetVirtualCursor(false)
@@ -413,7 +409,6 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 		pending:             pending,
 		status:              "Ready",
 		preferences:         defaultUIPreferences(),
-		terminalColorsReady: true,
 		agentUsage:          make(map[string]agentUsageSummary), agentUsageComplete: true,
 		activeExecutions: make(map[string]bool),
 	}
@@ -434,7 +429,6 @@ func (m *tuiModel) Init() tea.Cmd {
 	if m.preferences.Theme == themeAuto {
 		commands = append(commands, m.requestTerminalColors())
 	}
-	commands = append(commands, m.flushScrollback())
 	if m.running && m.runningExecutionID != "" {
 		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
 	}
@@ -581,37 +575,14 @@ func (m *tuiModel) refreshRuntimeProjection() error {
 }
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := message.(flushScrollbackMsg); ok {
-		m.scrollbackRedrawPending = false
-	}
-	transientBeforeUpdate := m.hasTransientPanel()
-	terminalColorsWereReady := m.terminalColorsReady
-	model, command := m.update(message)
-	terminalColorsResolved := !terminalColorsWereReady && m.terminalColorsReady
-	if (transientBeforeUpdate && !m.hasTransientPanel() || terminalColorsResolved) && !m.scrollbackRedrawPending {
-		// Let Bubble Tea render the dismissed panel before inserting scrollback above the view.
-		m.scrollbackRedrawPending = true
-		redraw := tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return flushScrollbackMsg{} })
-		return model, tea.Batch(command, redraw)
-	}
-	scrollback := m.flushScrollback()
-	if scrollback == nil {
-		return model, command
-	}
-	if command == nil {
-		return model, scrollback
-	}
-	return model, tea.Sequence(scrollback, command)
+	return m.update(message)
 }
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
-	case flushScrollbackMsg:
-		return m, nil
 	case terminalColorTimeoutMsg:
 		if m.terminalColorQueryPending {
 			m.terminalColorQueryPending = false
-			m.terminalColorsReady = true
 			if m.preferences.Theme == themeAuto {
 				m.applyResolvedTheme()
 			}
@@ -821,6 +792,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.running {
 					m.detailsOpen = false
+					m.updateLayout()
 					m.interrupt()
 					return m, nil
 				}
@@ -1312,6 +1284,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.refreshPanels()
 		m.status = "Usage details toggled."
 		m.resetInput()
+		m.updateLayout()
 		return m, nil
 	case "/vim":
 		return m.toggleVimMode()
@@ -1687,7 +1660,7 @@ func (m *tuiModel) showMessageDetails(line string) (tea.Model, tea.Cmd) {
 			m.status = "No user messages to show."
 			m.addEntry("notice", m.status, false)
 		} else {
-			lines := []string{"User messages · use /details <n> to show one in terminal history:"}
+			lines := []string{"User messages · use /details <n> to show one in the transcript:"}
 			for index, entry := range messages {
 				preview := strings.Join(strings.Fields(entry.text), " ")
 				if runes := []rune(preview); len(runes) > 72 {
@@ -1702,7 +1675,7 @@ func (m *tuiModel) showMessageDetails(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if len(fields) != 2 {
-		m.status = "Use /details <n> to show a user message in terminal history."
+		m.status = "Use /details <n> to show a user message in the transcript."
 		return m, nil
 	}
 	index, err := strconv.Atoi(fields[1])
@@ -1712,7 +1685,7 @@ func (m *tuiModel) showMessageDetails(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.addEntry("notice", fmt.Sprintf("User message %d:\n%s", index, messages[index-1].text), false)
-	m.status = fmt.Sprintf("Displayed user message %d in terminal history.", index)
+	m.status = fmt.Sprintf("Displayed user message %d in the transcript.", index)
 	m.resetInput()
 	return m, nil
 }
@@ -1896,10 +1869,8 @@ func (m *tuiModel) setThemeFromCommand(line string) (tea.Model, tea.Cmd) {
 		m.terminalBackgroundReceived = false
 		m.terminalForegroundReceived = false
 		m.terminalColorQueryPending = true
-		m.terminalColorsReady = false
 	} else {
 		m.terminalColorQueryPending = false
-		m.terminalColorsReady = true
 	}
 	m.applyResolvedTheme()
 	m.resetInput()
@@ -1920,7 +1891,6 @@ func (m *tuiModel) requestTerminalColors() tea.Cmd {
 	m.terminalBackgroundReceived = false
 	m.terminalForegroundReceived = false
 	m.terminalColorQueryPending = true
-	m.terminalColorsReady = false
 	return m.requestTerminalColorCommands()
 }
 
@@ -1935,7 +1905,6 @@ func (m *tuiModel) requestTerminalColorCommands() tea.Cmd {
 func (m *tuiModel) finishTerminalColorQueryIfReady() {
 	if m.terminalColorQueryPending && m.terminalBackgroundReceived && m.terminalForegroundReceived {
 		m.terminalColorQueryPending = false
-		m.terminalColorsReady = true
 	}
 }
 
@@ -2522,7 +2491,8 @@ func (m *tuiModel) handleSessionRailClick(message tea.MouseClickMsg) (tea.Model,
 	if itemOffset < 0 {
 		return m, nil, false
 	}
-	bodyHeight := m.availableBodyHeight(max(1, m.width), 1, 2)
+	width := max(1, m.width)
+	bodyHeight := m.availableBodyHeight(width, lipgloss.Height(m.renderFooter(m.workspaceCenterWidth(width))), 2)
 	start, end := m.sessionRailRange(bodyHeight)
 	index := start + itemOffset
 	if index < start || index >= end {
@@ -3039,7 +3009,6 @@ func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
 func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
-	m.printedEntryCount = 0
 	m.activities = nil
 	m.teamActivities = nil
 	m.modelStreamFirstTokenLatency = 0
@@ -3849,6 +3818,11 @@ func (m *tuiModel) addEntry(role, text string, isError bool) {
 }
 
 func (m *tuiModel) refreshPanels() {
+	followLatest := m.chat.AtBottom()
+	m.chat.SetContent(formatConversationTranscript(m.entries, m.themeColors()))
+	if followLatest {
+		m.chat.GotoBottom()
+	}
 	m.activity.SetContent(m.activityDetailsContent())
 }
 
@@ -3963,49 +3937,39 @@ func (m *tuiModel) updateLayout() {
 		m.height = 24
 	}
 	contentWidth := max(1, m.width)
-	if m.modernConversation() {
-		wide := m.wideConversation()
-		inputWidth, footerHeight, dividerCount := contentWidth, 2, 1
-		if wide {
-			inputWidth = max(1, contentWidth-m.sessionRailWidth()-1)
-			footerHeight, dividerCount = 1, 2
-		}
-		m.input.SetWidth(inputWidth)
-		m.updateMCPInteractionWidth(inputWidth)
-		bodyHeight := m.availableBodyHeight(contentWidth, footerHeight, dividerCount)
-		m.chat.SoftWrap = false
-		m.chat.SetWidth(inputWidth)
-		drawerHeight := 0
-		if m.detailsOpen {
-			drawerHeight = activityDrawerContentHeight(bodyHeight)
-		}
+	inputWidth := m.workspaceCenterWidth(contentWidth)
+	m.input.SetWidth(inputWidth)
+	m.updateMCPInteractionWidth(inputWidth)
+	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), 2)
+	m.chat.SoftWrap = true
+	m.chat.SetWidth(inputWidth)
+	if m.detailsOpen {
+		drawerHeight := activityDrawerContentHeight(bodyHeight)
 		chatHeight := bodyHeight
 		if drawerHeight > 0 {
 			chatHeight = max(1, bodyHeight-drawerHeight-1)
 		}
 		m.chat.SetHeight(chatHeight)
-		m.activity.SetWidth(inputWidth)
-		if drawerHeight > 0 {
-			m.activity.SetHeight(drawerHeight - 1)
-		} else {
-			m.activity.SetHeight(max(1, bodyHeight))
-		}
-		return
-	}
-	m.input.SetWidth(contentWidth)
-	m.updateMCPInteractionWidth(contentWidth)
-	bodyHeight := m.availableBodyHeight(contentWidth, 2, 1)
-	if m.detailsOpen {
-		m.chat.SetWidth(contentWidth)
+		m.activity.SetHeight(max(1, drawerHeight-1))
+	} else {
 		m.chat.SetHeight(bodyHeight)
-		m.activity.SetWidth(max(1, contentWidth-2))
-		m.activity.SetHeight(max(1, bodyHeight-4))
-		return
+		m.activity.SetHeight(max(1, bodyHeight))
 	}
-	m.chat.SetWidth(contentWidth)
-	m.chat.SetHeight(bodyHeight)
-	m.activity.SetWidth(max(1, contentWidth-2))
-	m.activity.SetHeight(max(1, bodyHeight-4))
+	m.activity.SetWidth(inputWidth)
+}
+
+func (m *tuiModel) workspaceRailWidth() int {
+	if m.wideConversation() {
+		return m.sessionRailWidth()
+	}
+	return 0
+}
+
+func (m *tuiModel) workspaceCenterWidth(width int) int {
+	if railWidth := m.workspaceRailWidth(); railWidth > 0 {
+		return max(1, width-railWidth-1)
+	}
+	return max(1, width)
 }
 
 func (m *tuiModel) availableBodyHeight(contentWidth, footerHeight, dividerCount int) int {
@@ -4023,11 +3987,11 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 	colors := colorsFor(theme)
 	styles := textarea.DefaultStyles(theme != themeLight)
 	apply := func(state *textarea.StyleState) {
-		state.Base = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(lipgloss.Color(colors.Background))
+		state.Base = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
 		state.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
 		state.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		state.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-		state.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(lipgloss.Color(colors.Background))
+		state.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
 		state.EndOfBuffer = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		state.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 		state.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
@@ -4068,155 +4032,11 @@ func (m *tuiModel) commandSuggestionHeight() int {
 	if len(m.commandSuggestions) == 0 {
 		return 0
 	}
-	return min(len(m.commandSuggestions), maxCommandSuggestions) + 1
+	return 0
 }
 
 func (m *tuiModel) View() tea.View {
-	width := max(1, m.width)
-	colors := m.themeColors()
-	var before []string
-	if len(m.entries) == 0 && !m.running && strings.TrimSpace(m.input.Value()) == "" {
-		before = append(before, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Lune"))
-		before = append(before, "Ready to work in "+m.workspace+".")
-		before = append(before, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("Use /help to see commands."))
-	}
-	if live := m.liveOutput(); live != "" {
-		limit := max(2, m.height-9)
-		before = append(before, tailTerminalLines(live, limit))
-	}
-	if m.detailsOpen {
-		before = append(before, "Activity & usage\n"+tailTerminalLines(m.activityDetailsContent(), min(16, max(4, m.height/2))))
-	}
-	if auxiliary := m.renderAuxiliaryPanel(m.renderCommandSuggestions()); auxiliary != "" {
-		before = append(before, auxiliary)
-	}
-	input := m.renderInputView()
-	content := strings.Join(before, "\n")
-	if content != "" {
-		content += "\n"
-	}
-	content += input
-	footer := m.renderInlineFooter(width, colors)
-	content += "\n" + footer
-	view := tea.NewView(content)
-	if m.preferences.Theme == themeAuto {
-		view.BackgroundColor = m.terminalBackground
-		view.ForegroundColor = m.terminalForeground
-	} else {
-		view.BackgroundColor = backgroundColor(colors.Background)
-		view.ForegroundColor = backgroundColor(colors.Foreground)
-	}
-	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
-		if len(before) > 0 {
-			cursor.Y += lipgloss.Height(strings.Join(before, "\n")) + 1
-		}
-		view.Cursor = cursor
-	}
-	return view
-}
-
-func (m *tuiModel) liveOutput() string {
-	var lines []string
-	indices := m.modelStreamCurrent
-	if len(indices) == 0 && m.runtimeTask {
-		indices = m.modelStreamLast
-	}
-	seen := make(map[int]bool, len(indices))
-	for _, index := range indices {
-		if index >= 0 && index < len(m.entries) && !seen[index] {
-			seen[index] = true
-			lines = append(lines, plainConversationText(m.entries[index].text))
-		}
-	}
-	if len(lines) > 0 {
-		return strings.Join(lines, "\n")
-	}
-	for index := len(m.activities) - 1; index >= 0; index-- {
-		if m.activities[index].status == "running" {
-			return m.activities[index].summary + "…"
-		}
-	}
-	return ""
-}
-
-func tailTerminalLines(content string, limit int) string {
-	lines := strings.Split(content, "\n")
-	if len(lines) > limit {
-		lines = append([]string{"…"}, lines[len(lines)-limit+1:]...)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m *tuiModel) renderInlineFooter(width int, colors themeColors) string {
-	model := m.sessionSettings.ModelProfile
-	if model == "" {
-		model = "default model"
-	}
-	effort := reasoningEffortLabel(m.sessionSettings.ReasoningEffort)
-	mode := permissionModeLabel(core.PermissionReadOnly)
-	if m.client != nil {
-		mode = permissionModeLabel(m.currentPermissionMode())
-	}
-	left := model + " · " + effort + " · " + mode
-	if context := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); context != "" {
-		left += " · " + context
-	}
-	status := m.status
-	if status == "Ready" {
-		status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · /plan · /permissions"
-	} else if m.running {
-		status = "Working · " + m.keyLabel("interrupt_or_copy") + " interrupt · /queue"
-	} else if m.pending {
-		status = "Paused · /continue to review · /discard"
-	}
-	usage := "tokens — · cache —"
-	if m.taskUsage.requests > 0 {
-		usage = fmt.Sprintf("in %d · out %d · reason %d · total %d · cache %s",
-			m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning, m.taskUsage.total,
-			cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
-	}
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-	return style.Render(fitTerminalText(left+"   "+status, width) + "\n" + fitTerminalText(usage, width))
-}
-
-func (m *tuiModel) flushScrollback() tea.Cmd {
-	if m.printedEntryCount > len(m.entries) {
-		m.printedEntryCount = 0
-	}
-	if m.scrollbackRedrawPending || m.hasTransientPanel() ||
-		(m.preferences.Theme == themeAuto && !m.terminalColorsReady) {
-		return nil
-	}
-	limit := len(m.entries)
-	for _, index := range m.modelStreamCurrent {
-		if index >= m.printedEntryCount && index < limit {
-			limit = index
-		}
-	}
-	if m.runtimeTask {
-		for _, index := range m.modelStreamLast {
-			if index >= m.printedEntryCount && index < limit {
-				limit = index
-			}
-		}
-	}
-	if limit <= m.printedEntryCount {
-		return nil
-	}
-	commands := make([]tea.Cmd, 0, limit-m.printedEntryCount)
-	for _, entry := range m.entries[m.printedEntryCount:limit] {
-		text := formatScrollbackEntryWithColors(entry, m.width, m.themeColors())
-		commands = append(commands, tea.Println(text))
-	}
-	m.printedEntryCount = limit
-	return tea.Sequence(commands...)
-}
-
-func (m *tuiModel) hasTransientPanel() bool {
-	return m.detailsOpen || m.exitConfirm || m.keymapOpen || m.sessionPicker ||
-		m.modelPicker || m.effortPicker || m.queuePicker || m.planReview ||
-		m.permissionMenu || m.pendingApproval != nil || m.pendingRequest != nil ||
-		m.pendingMCPInteraction != nil || len(m.commandSuggestions) > 0
+	return m.renderSessionWorkspace(max(1, m.width))
 }
 
 func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
@@ -4249,24 +4069,25 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	header := m.renderHeader(width)
 	headerRule := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
 	body := m.renderSessionWorkspaceBody(width)
-	centerWidth := max(1, m.chat.Width())
+	centerWidth := m.workspaceCenterWidth(width)
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
 	input := m.renderWorkspaceRow(m.renderInputView(), centerWidth)
 	suggestions := m.renderCommandSuggestions()
 	parts := []string{header, headerRule, body, m.renderWorkspaceRow(divider, centerWidth), input}
-	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" {
+	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" && auxiliary != suggestions {
 		parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
 	}
 	parts = append(parts, m.renderWorkspaceRow(m.renderFooter(centerWidth), centerWidth))
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	view := tea.NewView(content)
-	view.BackgroundColor = backgroundColor(colors.Background)
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(header) + lipgloss.Height(headerRule) + lipgloss.Height(body) + lipgloss.Height(divider)
-		cursor.X += m.sessionRailWidth() + 1
+		if railWidth := m.workspaceRailWidth(); railWidth > 0 {
+			cursor.X += railWidth + 1
+		}
 		view.Cursor = cursor
 	}
 	return view
@@ -4274,8 +4095,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 
 func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
 	colors := m.themeColors()
-	separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
-	leftPadding := strings.Repeat(" ", m.sessionRailWidth())
+	railWidth := m.workspaceRailWidth()
 	content = lipgloss.NewStyle().Width(centerWidth).Render(content)
 	lines := strings.Split(content, "\n")
 	rows := make([]string, len(lines))
@@ -4285,7 +4105,12 @@ func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
 		} else if lipgloss.Width(line) > centerWidth {
 			line = fitTerminalText(line, centerWidth)
 		}
-		rows[index] = leftPadding + separator + line
+		if railWidth > 0 {
+			separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
+			rows[index] = strings.Repeat(" ", railWidth) + separator + line
+		} else {
+			rows[index] = line
+		}
 	}
 	return strings.Join(rows, "\n")
 }
@@ -4324,91 +4149,22 @@ func (m *tuiModel) renderHeader(width int) string {
 
 func (m *tuiModel) renderFooter(width int) string {
 	colors := m.themeColors()
-	if m.modernConversation() {
-		metrics := ""
-		if !m.wideConversation() {
-			if m.taskUsage.requests > 0 {
-				metrics = fmt.Sprintf("in %d · out %d · reason %d · cache %s",
-					m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning,
-					cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
-			} else {
-				metrics = "tokens — · cache —"
-			}
-		}
-		status := m.status
-		switch {
-		case m.detailsOpen:
-			status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
-		case m.pendingMCPInteraction != nil:
-			status = m.mcpInteractionFooter()
-		case m.mcpAuthCancel != nil:
-			status = m.mcpAuthFooter()
-		case m.pendingApproval != nil:
-			status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
-		case m.running:
-			status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt/send", len(m.queued), m.keyLabel("interrupt_send"))
-		case m.pending:
-			status = "Paused task · /continue to resume"
-		case m.status == "Ready":
-			status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + m.keyLabel("cycle_permissions") + " permissions · /plan · " + m.keyLabel("toggle_activity") + " activity"
-			if !m.wideConversation() {
-				status = "/resume sessions · " + status
-			}
-		}
-		if m.running && m.modelStreamFirstTokenRecorded {
-			status += " · first token " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String()
-		}
-		if !m.chat.AtBottom() && !m.detailsOpen {
-			status += " · " + m.keyLabel("jump_chat_bottom") + " back to latest"
-		}
-		if contextLabel := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); contextLabel != "" {
-			if m.wideConversation() {
-				status = contextLabel + " · " + status
-			} else {
-				metrics = contextLabel + " · " + metrics
-			}
-		}
-		if len(m.attachments) > 0 {
-			status += fmt.Sprintf(" · %d image(s) · Ctrl+V add · edit a tag to remove", len(m.attachments))
-		}
-		status = fitTerminalText(status, width)
-		if metrics == "" {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status)
-		}
-		metrics = fitTerminalText(metrics, width)
-		return lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(metrics),
-			lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status),
-		)
+	model := strings.TrimSpace(m.sessionSettings.ModelProfile)
+	if model == "" {
+		model = "default model"
 	}
-	mode := "BUILD"
-	if m.planMode {
-		mode = "PLAN · read-only tools"
-	}
-	metrics := mode
-	metrics += " · " + m.themePreferenceLabel()
+	metadata := model + " · " + reasoningEffortLabel(m.sessionSettings.ReasoningEffort)
 	if m.client != nil {
-		metrics += " · " + permissionModeLabel(m.currentPermissionMode())
+		metadata += " · " + permissionModeLabel(m.currentPermissionMode())
 	}
-	if m.sessionSettings.ModelProfile != "" {
-		metrics += " · " + m.sessionSettings.ModelProfile
+	if m.planMode {
+		metadata += " · Plan"
 	}
-	if m.sessionSettings.ReasoningEffort == "" {
-		metrics += " · effort default"
-	} else {
-		metrics += " · effort " + m.sessionSettings.ReasoningEffort
-	}
-	if m.taskUsage.requests > 0 {
-		metrics += fmt.Sprintf(" · in %d · out %d · reason %d · cache %s",
-			m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning,
-			cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
-	} else {
-		metrics += " · tokens — · cache —"
-	}
+
 	status := m.status
 	switch {
 	case m.detailsOpen:
-		status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close"
+		status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " close"
 	case m.pendingMCPInteraction != nil:
 		status = m.mcpInteractionFooter()
 	case m.mcpAuthCancel != nil:
@@ -4416,11 +4172,11 @@ func (m *tuiModel) renderFooter(width int) string {
 	case m.pendingApproval != nil:
 		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
 	case m.running:
-		status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt/send", len(m.queued), m.keyLabel("interrupt_send"))
+		status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt", len(m.queued), m.keyLabel("interrupt_send"))
 	case m.pending:
-		status = "Paused task · /continue to resume"
+		status = "Paused · /continue resume · /discard"
 	case m.status == "Ready":
-		status = fmt.Sprintf("/ commands · %s send · %s permissions · /plan planning · %s activity", m.keyLabel("send"), m.keyLabel("cycle_permissions"), m.keyLabel("toggle_activity"))
+		status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + m.keyLabel("cycle_permissions") + " modes · /plan"
 	}
 	if m.vimMode {
 		vimState := "VIM INSERT"
@@ -4429,14 +4185,39 @@ func (m *tuiModel) renderFooter(width int) string {
 		}
 		status = vimState + " · " + status
 	}
-	if len(m.attachments) > 0 {
-		status += fmt.Sprintf(" · %d image(s) · Ctrl+V add · edit a tag to remove", len(m.attachments))
+	if m.running && m.modelStreamFirstTokenRecorded {
+		status += " · first token " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String()
 	}
-	status = fitTerminalText(status, width)
-	metrics = fitTerminalText(metrics, width)
+	if !m.chat.AtBottom() && !m.detailsOpen {
+		status += " · " + m.keyLabel("jump_chat_bottom") + " latest"
+	}
+	if len(m.attachments) > 0 {
+		status += fmt.Sprintf(" · %d image(s)", len(m.attachments))
+	}
+
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
+	usageLine := ""
+	var usage []string
+	if context := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); context != "" {
+		usage = append(usage, context)
+	}
+	if m.taskUsage.requests > 0 {
+		usage = append(usage,
+			"in "+compactTokens(m.taskUsage.input),
+			"out "+compactTokens(m.taskUsage.output),
+			"reason "+compactTokens(m.taskUsage.reasoning),
+			"total "+compactTokens(m.taskUsage.total),
+			"cache "+compactTokens(m.taskUsage.cached)+" ("+cacheHitRate(m.taskUsage.input, m.taskUsage.cached)+")",
+		)
+	}
+	if len(usage) > 0 {
+		usageLine = muted.Render(fitTerminalText(strings.Join(usage, " · "), width))
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(metrics),
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(status),
+		muted.Render(fitTerminalText(metadata, width)),
+		statusStyle.Render(fitTerminalText(status, width)),
+		usageLine,
 	)
 }
 
@@ -4478,12 +4259,20 @@ func (m *tuiModel) renderPlanReview() string {
 }
 
 func (m *tuiModel) renderCommandSuggestions() string {
+	return m.renderCommandSuggestionsForHeight(maxCommandSuggestions + 1)
+}
+
+func (m *tuiModel) renderCommandSuggestionsForHeight(maxLines int) string {
 	colors := m.themeColors()
-	if m.permissionMenu || len(m.commandSuggestions) == 0 {
+	if m.permissionMenu || len(m.commandSuggestions) == 0 || maxLines <= 0 {
 		return ""
 	}
-	start, end := commandSuggestionRange(m.suggestionIndex, len(m.commandSuggestions))
-	lines := make([]string, 0, end-start+1)
+	commandRows := min(maxCommandSuggestions, max(1, maxLines-1))
+	if maxLines == 1 {
+		commandRows = 1
+	}
+	start, end := commandSuggestionRangeVisible(m.suggestionIndex, len(m.commandSuggestions), commandRows)
+	lines := make([]string, 0, min(maxLines, end-start+1))
 	for index := start; index < end; index++ {
 		command := m.commandSuggestions[index]
 		line := "  " + command
@@ -4493,16 +4282,22 @@ func (m *tuiModel) renderCommandSuggestions() string {
 		}
 		lines = append(lines, line)
 	}
-	hint := "  " + m.keyLabel("suggestion_previous") + "/" + m.keyLabel("suggestion_next") + " select · " + m.keyLabel("send") + " run"
-	if len(m.commandSuggestions) > maxCommandSuggestions {
-		hint = fmt.Sprintf("  %d–%d of %d · %s", start+1, end, len(m.commandSuggestions), strings.TrimPrefix(hint, "  "))
+	if maxLines > 1 {
+		hint := "  " + m.keyLabel("suggestion_previous") + "/" + m.keyLabel("suggestion_next") + " select · " + m.keyLabel("send") + " run"
+		if len(m.commandSuggestions) > end-start {
+			hint = fmt.Sprintf("  %d–%d of %d · %s", start+1, end, len(m.commandSuggestions), strings.TrimPrefix(hint, "  "))
+		}
+		lines = append(lines, hint)
 	}
-	lines = append(lines, hint)
 	return strings.Join(lines, "\n")
 }
 
 func commandSuggestionRange(index, total int) (int, int) {
-	visible := min(total, maxCommandSuggestions)
+	return commandSuggestionRangeVisible(index, total, maxCommandSuggestions)
+}
+
+func commandSuggestionRangeVisible(index, total, visible int) (int, int) {
+	visible = min(total, max(0, visible))
 	if visible <= 0 {
 		return 0, 0
 	}
@@ -4702,9 +4497,9 @@ func (m *tuiModel) renderBody(width int) string {
 
 func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
 	colors := m.themeColors()
-	bodyHeight := m.availableBodyHeight(width, 1, 2)
-	railWidth := m.sessionRailWidth()
-	centerWidth := max(1, width-railWidth-1)
+	railWidth := m.workspaceRailWidth()
+	centerWidth := m.workspaceCenterWidth(width)
+	bodyHeight := m.availableBodyHeight(width, lipgloss.Height(m.renderFooter(centerWidth)), 2)
 	center := m.chat.View()
 	drawerHeight := activityDrawerContentHeight(bodyHeight)
 	if m.detailsOpen {
@@ -4715,9 +4510,20 @@ func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
 			center = lipgloss.JoinVertical(lipgloss.Left, center, divider, m.activityDrawerHeading(), m.activity.View())
 		}
 	}
+	centerLines := fitWorkspaceColumn(center, centerWidth, bodyHeight)
+	if suggestions := m.renderCommandSuggestions(); suggestions != "" && m.renderAuxiliaryPanel(suggestions) == suggestions {
+		popupLines := strings.Split(m.renderCommandSuggestionsForHeight(len(centerLines)), "\n")
+		start := len(centerLines) - len(popupLines)
+		for index, line := range popupLines {
+			line = fitTerminalText(line, centerWidth)
+			centerLines[start+index] = line + strings.Repeat(" ", max(0, centerWidth-lipgloss.Width(line)))
+		}
+	}
+	if railWidth == 0 {
+		return strings.Join(centerLines, "\n")
+	}
 	rail := m.renderSessionRail(railWidth, bodyHeight)
 	railLines := fitWorkspaceColumn(rail, railWidth, bodyHeight)
-	centerLines := fitWorkspaceColumn(center, centerWidth, bodyHeight)
 	separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
 	rows := make([]string, bodyHeight)
 	for row := range rows {

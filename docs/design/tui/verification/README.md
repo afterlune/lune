@@ -1,8 +1,8 @@
 # TUI verification screenshots
 
-These SVG files are deterministic Bubble Tea view fixtures for the native-scrollback TUI. The live screen uses the terminal's scrollback for stable user, assistant, tool, and notice entries; only the input, active stream, and selected activity details are redrawn.
+These SVG files are deterministic Bubble Tea view fixtures for the alternate-screen TUI. The live screen owns a fixed transcript viewport, composer, command popup, and status area; conversation history remains in the session when the TUI exits.
 
-The fixtures cover dark and light themes, text and image input, live and interrupted streams, usage details, MCP interactions, context settings, and compaction status. Historical messages can be listed and reprinted with `/details`; the TUI does not fold transcript rows.
+The fixtures cover dark and light themes, text and image input, live and interrupted streams, usage details, MCP interactions, context settings, and compaction status. Historical user messages can be listed and shown again in the transcript with `/details`; the TUI does not fold transcript rows.
 
 Refresh the fixtures with:
 

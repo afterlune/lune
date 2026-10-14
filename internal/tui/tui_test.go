@@ -421,8 +421,9 @@ func TestTUIModelAndEffortPickerCommandsPersistSessionSettings(t *testing.T) {
 		t.Fatalf("persisted default effort settings = %#v", saved)
 	}
 	footer := ui.renderFooter(120)
-	if !strings.Contains(footer, "tokens — · cache —") || !strings.Contains(footer, "Reasoning effort set to Default") || strings.Contains(footer, "review") {
-		t.Fatalf("compact footer should show usage and transient status without persistent settings: %q", footer)
+	if !strings.Contains(footer, "review") || !strings.Contains(footer, "Default") ||
+		!strings.Contains(footer, "Reasoning effort set to Default") || strings.Contains(footer, "tokens —") {
+		t.Fatalf("footer should separate settings, status, and available usage: %q", footer)
 	}
 }
 
@@ -657,7 +658,7 @@ func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
 	if !ui.planMode || client.PermissionMode() != core.PermissionWorkspace {
 		t.Fatalf("Plan and permission state = %v/%q, want Plan with Workspace", ui.planMode, client.PermissionMode())
 	}
-	if !strings.Contains(footer, "/plan") || !strings.Contains(footer, "permissions") {
+	if !strings.Contains(footer, "/plan") || !strings.Contains(footer, "Workspace") || !strings.Contains(footer, "modes") {
 		t.Fatalf("compact footer should retain Plan and permission shortcuts: %q", footer)
 	}
 	ui.permissionMenu = true
@@ -1170,7 +1171,14 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 	for _, size := range []struct{ width, height int }{{width: 120, height: 30}, {width: 100, height: 30}, {width: 80, height: 24}} {
 		ui := newTUIModel(&fakeResponder{}, false)
 		ui.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
-		view := ui.View().Content
+		initialView := ui.View()
+		if !initialView.AltScreen {
+			t.Errorf("%dx%d view did not request the alternate screen", size.width, size.height)
+		}
+		if ui.input.Height() != 1 {
+			t.Errorf("%dx%d empty composer height = %d, want 1", size.width, size.height, ui.input.Height())
+		}
+		view := initialView.Content
 		if got := lipgloss.Width(view); got > size.width {
 			t.Errorf("layout width = %d, terminal width = %d", got, size.width)
 		}
@@ -1185,7 +1193,11 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 			t.Fatal("focused composer did not expose a terminal cursor")
 		}
 		expectedX := inputCursor.X
-		expectedY := inputCursor.Y
+		if railWidth := ui.workspaceRailWidth(); railWidth > 0 {
+			expectedX += railWidth + 1
+		}
+		expectedY := lipgloss.Height(ui.renderHeader(size.width)) + 1 +
+			lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + inputCursor.Y
 		if cursorView.Cursor.X != expectedX || cursorView.Cursor.Y != expectedY {
 			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
 				expectedX, expectedY)
@@ -1196,6 +1208,12 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		view = ui.View().Content
 		if got := lipgloss.Height(view); got > size.height {
 			t.Errorf("layout with command suggestions height = %d, terminal height = %d", got, size.height)
+		}
+		if got := lipgloss.Height(view); got != size.height {
+			t.Errorf("layout height with suggestions = %d, want fixed terminal height %d", got, size.height)
+		}
+		if ui.input.Height() != 1 {
+			t.Errorf("single-line draft height = %d, want 1", ui.input.Height())
 		}
 	}
 }
@@ -1331,38 +1349,43 @@ func TestTUIThemeCommandSupportsAutoAndResetsSuccessfulInput(t *testing.T) {
 	}
 }
 
-func TestScrollbackFlushWaitsUntilTransientUICloses(t *testing.T) {
+func TestCommandSuggestionsOverlayKeepsTranscriptAndComposerGeometry(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
-	ui.entries = []tuiEntry{{role: "notice", text: "Permission mode changed."}}
+	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	ui.entries = []tuiEntry{{role: "assistant", text: "Latest transcript answer."}}
+	ui.refreshPanels()
+	before := ui.View()
+	bodyHeight := ui.chat.Height()
 	ui.input.SetValue("/")
 	ui.updateCommandSuggestions()
-	if command := ui.flushScrollback(); command != nil || ui.printedEntryCount != 0 {
-		t.Fatalf("flush during command predictions = (%v, %d), want deferred", command != nil, ui.printedEntryCount)
+	ui.updateLayout()
+	after := ui.View()
+	if !after.AltScreen || lipgloss.Height(after.Content) != lipgloss.Height(before.Content) || ui.chat.Height() != bodyHeight {
+		t.Fatalf("command popup changed geometry: screen %d→%d, body %d→%d", lipgloss.Height(before.Content), lipgloss.Height(after.Content), bodyHeight, ui.chat.Height())
+	}
+	plain := tuiScreenshotANSI.ReplaceAllString(after.Content, "")
+	if !strings.Contains(plain, "Latest transcript answer.") {
+		t.Fatalf("transcript disappeared while command popup was open: %q", plain)
+	}
+	if selected := ui.commandSuggestions[ui.suggestionIndex]; !strings.Contains(plain, selected) || strings.Count(plain, selected) != 1 {
+		t.Fatalf("selected command should appear exactly once in the overlay: %q / %q", selected, plain)
+	}
+	if got := ui.commandSuggestionHeight(); got != 0 {
+		t.Fatalf("command popup reserved %d rows instead of overlaying transcript", got)
+	}
+	ui.taskUsage = tokenUsageTotals{requests: 1, measured: 1, input: 1200, output: 300, total: 1500, cached: 240}
+	ui.contextWindow, ui.contextInput = 64000, 1200
+	ui.refreshPanels()
+	ui.updateLayout()
+	withUsage := ui.View()
+	if lipgloss.Height(withUsage.Content) != lipgloss.Height(before.Content) || ui.chat.Height() != bodyHeight {
+		t.Fatal("updating usage changed the fixed composer or transcript geometry")
 	}
 	ui.resetInput()
-	if command := ui.flushScrollback(); command == nil || ui.printedEntryCount != 1 {
-		t.Fatalf("flush after closing predictions = (%v, %d), want one printed entry", command != nil, ui.printedEntryCount)
-	}
-
-	ui.printedEntryCount = 0
-	ui.permissionMenu = true
-	if command := ui.flushScrollback(); command != nil || ui.printedEntryCount != 0 {
-		t.Fatalf("flush during permission menu = (%v, %d), want deferred", command != nil, ui.printedEntryCount)
-	}
-}
-
-func TestUpdateDefersScrollbackUntilTransientPanelRedraws(t *testing.T) {
-	ui := newTUIModel(&fakeResponder{}, false)
-	ui.entries = []tuiEntry{{role: "notice", text: "Permission mode changed."}}
-	ui.input.SetValue("/")
-	ui.updateCommandSuggestions()
-	_, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
-	if command == nil || ui.hasTransientPanel() || ui.printedEntryCount != 0 {
-		t.Fatalf("closing predictions = (command=%v, transient=%v, printed=%d), want redraw delay", command != nil, ui.hasTransientPanel(), ui.printedEntryCount)
-	}
-	ui.Update(flushScrollbackMsg{})
-	if ui.printedEntryCount != 1 {
-		t.Fatalf("printed entries after redraw = %d, want one", ui.printedEntryCount)
+	ui.updateLayout()
+	closed := tuiScreenshotANSI.ReplaceAllString(ui.View().Content, "")
+	if strings.Contains(closed, "/autocompact") || !strings.Contains(closed, "Latest transcript answer.") {
+		t.Fatalf("closing command popup left rows behind or hid transcript: %q", closed)
 	}
 }
 

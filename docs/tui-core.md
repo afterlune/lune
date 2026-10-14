@@ -9,11 +9,11 @@ The terminal UI is a host for `luneCore`. It does not run an agent loop or own t
 - `Run` opens the saved session and its runtime, then projects Core events into the Bubble Tea view.
 - The line-oriented CLI uses the same session runtime API.
 
-Stable conversation entries are printed once into native terminal scrollback. The live model response, input, and optional Activity & Usage details are redrawn. Use `/details` to list user messages and `/details <n>` to print one again.
+The interactive TUI owns the terminal's alternate screen so its transcript, composer, and status remain in fixed positions. Conversation history stays available in the session transcript and persists through Core when the TUI exits; it is not copied into native terminal scrollback. Use `/details` to list user messages and `/details <n>` to show one in the transcript again.
 
 ## Modes and themes
 
-`/theme` and `ui.json` support `auto`, `dark`, and `light`. Auto follows the terminal's queried foreground and background colors; dark and light are persistent manual overrides. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
+`/theme` and `ui.json` support `auto`, `dark`, and `light`. The TUI always inherits the terminal background; auto follows the terminal's queried colors, while dark and light choose the text and accent palette. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
 
 Plan mode is a separate UI state. While it is active, the host sets Core's global tool policy to `read-only` so write and command tools stay hidden and blocked; the TUI keeps the selected permission mode and restores it when Plan mode ends. The current Core API does not expose a per-turn permission intersection, so network tools use Core's read-only approval policy during Plan mode.
 

@@ -184,6 +184,7 @@ func newSessionWorkspaceFixture(theme themeName, scenario string) *tuiModel {
 	if ui.modelStreamFirstTokenRecorded {
 		ui.modelStreamFirstTokenLatency = 240 * time.Millisecond
 	}
+	ui.updateLayout()
 	ui.refreshPanels()
 	switch scenario {
 	case "activity-top":

@@ -3,6 +3,7 @@ package tui
 import (
 	"image/color"
 	"math"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,6 +13,7 @@ func TestThemeSemanticColorsStayReadableAndSubdued(t *testing.T) {
 	for _, theme := range []themeName{themeDark, themeLight} {
 		t.Run(string(theme), func(t *testing.T) {
 			colors := colorsFor(theme)
+			terminalBackground := terminalScreenshotBackground(theme)
 			semantic := map[string]string{
 				"foreground": colors.Foreground, "muted": colors.Muted, "accent": colors.Accent,
 				"secondary": colors.Secondary, "success": colors.Success, "warning": colors.Warning,
@@ -19,7 +21,7 @@ func TestThemeSemanticColorsStayReadableAndSubdued(t *testing.T) {
 				"tool": colors.Tool, "code": colors.Code,
 			}
 			for role, foreground := range semantic {
-				if ratio := themeContrastRatio(foreground, colors.Background); ratio < 4.5 {
+				if ratio := themeContrastRatio(foreground, terminalBackground); ratio < 4.5 {
 					t.Errorf("%s contrast = %.2f:1, want at least 4.5:1", role, ratio)
 				}
 				if saturation := themeHSLSaturation(foreground); saturation > 0.68 {
@@ -48,8 +50,8 @@ func TestAutoThemeUsesTerminalColorsAndManualThemesOverride(t *testing.T) {
 		t.Fatalf("resolved theme = %q, want light", got)
 	}
 	view := ui.View()
-	if colorHex(view.BackgroundColor) != "#ffffff" || colorHex(view.ForegroundColor) != "#000000" {
-		t.Fatalf("auto view colors = %s / %s, want terminal colors", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor))
+	if view.BackgroundColor != nil || colorHex(view.ForegroundColor) != "#000000" || !view.AltScreen {
+		t.Fatalf("auto view colors/background/screen = %s / %s / %v, want inherited background, terminal text, and alternate screen", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor), view.AltScreen)
 	}
 	if ui.themeColors().Assistant != "#000000" {
 		t.Fatalf("assistant color = %q, want terminal foreground", ui.themeColors().Assistant)
@@ -57,8 +59,13 @@ func TestAutoThemeUsesTerminalColorsAndManualThemesOverride(t *testing.T) {
 
 	ui.preferences.Theme = themeDark
 	view = ui.View()
-	if got := colorHex(view.BackgroundColor); got != colorsFor(themeDark).Background {
-		t.Fatalf("manual dark background = %q, want %s", got, colorsFor(themeDark).Background)
+	if view.BackgroundColor != nil || colorHex(view.ForegroundColor) != colorsFor(themeDark).Foreground {
+		t.Fatalf("manual dark view = %s / %s, want inherited background and dark foreground palette", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor))
+	}
+	ui.preferences.Theme = themeLight
+	view = ui.View()
+	if view.BackgroundColor != nil || colorHex(view.ForegroundColor) != colorsFor(themeLight).Foreground {
+		t.Fatalf("manual light view = %s / %s, want inherited background and light foreground palette", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor))
 	}
 
 	ui.preferences.Theme = themeAuto
@@ -74,36 +81,28 @@ func TestAutoThemeUsesTerminalColorsAndManualThemesOverride(t *testing.T) {
 	}
 }
 
-func TestAutoThemeWaitsForTerminalColorsBeforePrintingHistory(t *testing.T) {
+func TestAutoThemeKeepsTranscriptInAlternateScreenDuringTerminalColorQuery(t *testing.T) {
 	ui := newTUIModel(nil, false)
 	ui.entries = []tuiEntry{{role: "assistant", text: "Existing answer."}}
+	ui.refreshPanels()
 	ui.Init()
-	if ui.terminalColorsReady || ui.flushScrollback() != nil || ui.printedEntryCount != 0 {
-		t.Fatal("history was printed before terminal colors were resolved")
+	if !ui.terminalColorQueryPending || !ui.View().AltScreen || !strings.Contains(ui.View().Content, "Existing answer.") {
+		t.Fatal("TUI did not render the transcript in the alternate screen while querying terminal colors")
 	}
 	ui.Update(tea.BackgroundColorMsg{Color: color.White})
-	if ui.terminalColorsReady || ui.printedEntryCount != 0 {
+	if !ui.terminalColorQueryPending {
 		t.Fatal("one terminal color response completed the two-color query")
 	}
 	ui.Update(tea.ForegroundColorMsg{Color: color.Black})
-	if !ui.terminalColorsReady || !ui.scrollbackRedrawPending || ui.printedEntryCount != 0 {
-		t.Fatal("history flush was not deferred until after the resolved theme redraw")
-	}
-	ui.Update(flushScrollbackMsg{})
-	if ui.printedEntryCount != 1 {
-		t.Fatalf("printed history after theme redraw = %d, want one", ui.printedEntryCount)
+	if ui.terminalColorQueryPending || ui.View().BackgroundColor != nil || !strings.Contains(ui.View().Content, "Existing answer.") {
+		t.Fatal("terminal color resolution changed the inherited background or hid the transcript")
 	}
 
 	ui = newTUIModel(nil, false)
-	ui.entries = []tuiEntry{{role: "assistant", text: "Fallback answer."}}
 	ui.Init()
 	ui.Update(terminalColorTimeoutMsg{})
-	if !ui.terminalColorsReady || !ui.scrollbackRedrawPending || ui.printedEntryCount != 0 {
-		t.Fatal("unsupported terminal color query did not defer the fallback redraw")
-	}
-	ui.Update(flushScrollbackMsg{})
-	if ui.printedEntryCount != 1 {
-		t.Fatalf("printed fallback history = %d, want one", ui.printedEntryCount)
+	if ui.terminalColorQueryPending || !ui.View().AltScreen || ui.View().BackgroundColor != nil {
+		t.Fatal("unsupported terminal color query did not keep the TUI transparent and fullscreen")
 	}
 }
 

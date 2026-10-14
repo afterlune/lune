@@ -675,14 +675,9 @@ func (m *tuiModel) renderInputView() string {
 		return view
 	}
 	colors := m.themeColors()
-	chip := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(lipgloss.Color(colors.Accent))
-	base := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(lipgloss.Color(colors.Background)).Render("x")
-	basePrefix := ""
-	if marker := strings.Index(base, "x"); marker >= 0 {
-		basePrefix = base[:marker]
-	}
+	chip := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
 	for _, attachment := range m.attachments {
-		view = strings.Replace(view, attachment.Token, chip.Render(attachment.Token)+basePrefix, 1)
+		view = strings.Replace(view, attachment.Token, chip.Render(attachment.Token), 1)
 	}
 	return view
 }

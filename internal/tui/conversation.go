@@ -102,3 +102,47 @@ func formatScrollbackEntryWithColors(entry tuiEntry, width int, colors themeColo
 	}
 	return lipgloss.NewStyle().Width(max(1, width)).Render(body)
 }
+
+func formatTranscriptEntry(entry tuiEntry, colors themeColors) string {
+	text := plainConversationText(entry.text)
+	if text == "" {
+		return ""
+	}
+	bodyColor := colors.Assistant
+	prefix, prefixColor := "", colors.Muted
+	switch entry.role {
+	case "you":
+		prefix, prefixColor = "› ", colors.User
+	case "tool":
+		prefix = "• "
+	case "notice", "queued":
+		prefix = "· "
+	case "error":
+		prefix, prefixColor = "! ", colors.Error
+	case "permission":
+		prefix, prefixColor = "! ", colors.Warning
+	case "question":
+		prefix, prefixColor = "? ", colors.Warning
+	case "assistant":
+		if entry.incomplete {
+			prefix = "Partial · "
+		}
+	default:
+		bodyColor = colors.Foreground
+	}
+	body := lipgloss.NewStyle().Foreground(lipgloss.Color(bodyColor)).Render(text)
+	if prefix != "" {
+		body = lipgloss.NewStyle().Foreground(lipgloss.Color(prefixColor)).Render(prefix) + body
+	}
+	return body
+}
+
+func formatConversationTranscript(entries []tuiEntry, colors themeColors) string {
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if rendered := formatTranscriptEntry(entry, colors); rendered != "" {
+			lines = append(lines, rendered)
+		}
+	}
+	return strings.Join(lines, "\n\n")
+}

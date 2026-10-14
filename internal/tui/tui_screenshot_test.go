@@ -25,7 +25,7 @@ func TestTUIScreenshotSVGPreservesForegroundAndBold(t *testing.T) {
 	content := "\x1b[38;2;167;177;186;1m▸ YOU\x1b[22m muted marker tail\x1b[39m <body>&\x1b[0m"
 	svg := renderTUIScreenshotSVG(content, 40, 2, themeDark)
 	for _, expected := range []string{
-		`fill="#0b1117"`,
+		`fill="#101010"`,
 		`fill="#e7dfd3"`,
 		`<tspan fill="#a7b1ba" font-weight="bold">▸ YOU</tspan>`,
 		`<tspan fill="#a7b1ba"> muted marker tail</tspan>`,
@@ -96,6 +96,7 @@ func writeOrCompareTUIScreenshot(t *testing.T, screenshotDirectory, name, got st
 
 func renderTUIScreenshotSVG(content string, width, height int, theme themeName) string {
 	colors := colorsFor(theme)
+	colors.Background = terminalScreenshotBackground(theme)
 	content = strings.TrimRight(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	lines := parseTUIScreenshotLinesWithBackground(content, colors.Foreground, colors.Background)
 	const cellWidth, lineHeight, margin = 9, 18, 12
@@ -138,6 +139,13 @@ func renderTUIScreenshotSVG(content string, width, height int, theme themeName) 
 	}
 	svg.WriteString("</g></svg>\n")
 	return svg.String()
+}
+
+func terminalScreenshotBackground(theme themeName) string {
+	if theme == themeLight {
+		return "#ffffff"
+	}
+	return "#101010"
 }
 
 func renderTUIScreenshotSVGWithBackground(lines [][]tuiScreenshotRun, width, height int, colors themeColors, cellWidth, lineHeight, margin, pixelWidth, pixelHeight int) string {
