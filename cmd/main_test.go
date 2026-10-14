@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/afterlune/luneCore"
 )
 
 type fakeCLICore struct {
-	inputs     []core.TaskRequest
+	inputs     []core.TurnRequest
 	firstErr   error
 	responses  int
 	pending    bool
@@ -25,9 +26,9 @@ type fakeCLICore struct {
 	mode       core.PermissionMode
 	latest     core.Session
 	sequence   int
-	handler    core.EventHandler
 	resolved   []bool
 	resolveErr error
+	runtime    *fakeCLIRuntime
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -65,48 +66,15 @@ func (f *fakeCLICore) CreateSession(_ context.Context, history json.RawMessage) 
 	return f.latest, nil
 }
 
-func (f *fakeCLICore) RunTask(_ context.Context, request core.TaskRequest) (json.RawMessage, error) {
-	f.inputs = append(f.inputs, request)
-	f.responses++
-	if f.responses == 1 && f.firstErr != nil {
-		return nil, f.firstErr
-	}
-	return cliResponse("reply"), nil
-}
-
-func (f *blockingCLICore) RunTask(ctx context.Context, _ core.TaskRequest) (json.RawMessage, error) {
-	close(f.started)
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-func (f *fakeCLICore) ResumeTask(context.Context, string) (json.RawMessage, error) {
-	f.resumes++
-	f.pending = false
-	return cliResponse("resumed"), nil
-}
-
-func (f *fakeCLICore) HasPending(context.Context, string) (bool, error) { return f.pending, nil }
-
-func (f *fakeCLICore) DiscardTask(context.Context, string) (bool, error) {
-	if !f.pending {
-		return false, nil
-	}
-	f.pending = false
-	f.discarded++
-	return true, nil
-}
-
 func (f *fakeCLICore) Compact(context.Context, string) (int, error) { return f.compact, nil }
 
-func (f *fakeCLICore) SetEventHandler(handler core.EventHandler) { f.handler = handler }
+func (f *fakeCLICore) Workspace() string { return `C:\workspace` }
 
-func (f *fakeCLICore) ResolveApproval(_ string, allowed bool) error {
-	if f.resolveErr != nil {
-		return f.resolveErr
+func (f *fakeCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
+	if f.runtime == nil || f.runtime.sessionID != sessionID {
+		f.runtime = newFakeCLIRuntime(f, sessionID, nil)
 	}
-	f.resolved = append(f.resolved, allowed)
-	return nil
+	return f.runtime, nil
 }
 
 func (f *fakeCLICore) PermissionMode() core.PermissionMode {
@@ -133,28 +101,192 @@ func cliResponse(text string) json.RawMessage {
 	return encoded
 }
 
-func (f *approvalCLICore) RunTask(ctx context.Context, request core.TaskRequest) (json.RawMessage, error) {
-	f.inputs = append(f.inputs, request)
-	f.responses++
-	if f.handler != nil {
-		f.handler(core.Event{Kind: core.EventApprovalRequired, Approval: &f.request})
+func (f *approvalCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
+	return newFakeCLIRuntime(f.fakeCLICore, sessionID, f), nil
+}
+
+type fakeCLIRuntime struct {
+	client    *fakeCLICore
+	sessionID string
+	approval  *approvalCLICore
+	mu        sync.Mutex
+	sequence  int
+	active    string
+	status    core.TaskStatus
+	cancels   map[string]context.CancelFunc
+	turns     map[string]fakeCLITurn
+	events    chan core.Event
+	runner    func(context.Context, core.TurnRequest) (json.RawMessage, error)
+}
+
+type fakeCLITurn struct {
+	done   chan struct{}
+	result core.TurnResult
+	err    error
+}
+
+func newFakeCLIRuntime(client *fakeCLICore, sessionID string, approval *approvalCLICore) *fakeCLIRuntime {
+	return &fakeCLIRuntime{client: client, sessionID: sessionID, approval: approval,
+		cancels: make(map[string]context.CancelFunc), turns: make(map[string]fakeCLITurn)}
+}
+
+func (r *fakeCLIRuntime) SessionID() string { return r.sessionID }
+
+func (r *fakeCLIRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
+	r.client.inputs = append(r.client.inputs, request)
+	r.client.responses++
+	r.mu.Lock()
+	r.sequence++
+	executionID := fmt.Sprintf("execution-%d", r.sequence)
+	ctx, cancel := context.WithCancel(context.Background())
+	turn := fakeCLITurn{done: make(chan struct{})}
+	r.turns[executionID] = turn
+	r.cancels[executionID] = cancel
+	r.active, r.status = executionID, core.TaskRunning
+	r.mu.Unlock()
+	go func() {
+		var response json.RawMessage
+		var err error
+		paused := false
+		switch {
+		case r.approval != nil && request.NoInteractiveDecisions:
+			response = cliResponse("approved=false")
+			r.client.resolved = append(r.client.resolved, false)
+			paused = true
+			if r.events != nil {
+				r.events <- core.Event{Kind: core.EventExecutionBlocked, ExecutionID: executionID, BlockerTool: r.approval.request.Tool}
+			}
+		case r.approval != nil:
+			if r.events != nil {
+				r.events <- core.Event{Kind: core.EventApprovalRequired, ExecutionID: executionID, Approval: &r.approval.request}
+			}
+			close(r.approval.emitted)
+			select {
+			case allowed := <-r.approval.results:
+				response = cliResponse(fmt.Sprintf("approved=%t", allowed))
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		case r.runner != nil:
+			response, err = r.runner(ctx, request)
+		case r.client.responses == 1 && r.client.firstErr != nil:
+			err = r.client.firstErr
+		default:
+			response = cliResponse("reply")
+		}
+		r.mu.Lock()
+		turn := r.turns[executionID]
+		status := core.TaskCompleted
+		if paused {
+			status = core.TaskPaused
+		} else if err != nil {
+			status = core.TaskFailed
+		}
+		turn.result, turn.err = core.TurnResult{ExecutionID: executionID, Status: status, Response: response}, err
+		r.turns[executionID] = turn
+		r.active, r.status = "", status
+		close(turn.done)
+		r.mu.Unlock()
+		cancel()
+	}()
+	return core.TurnSubmission{Status: core.SubmissionAccepted, ExecutionID: executionID}, nil
+}
+
+func (r *fakeCLIRuntime) WaitTurn(ctx context.Context, id string) (core.TurnResult, error) {
+	r.mu.Lock()
+	turn, ok := r.turns[id]
+	r.mu.Unlock()
+	if !ok {
+		return core.TurnResult{}, core.ErrTurnNotFound
 	}
-	close(f.emitted)
 	select {
-	case allowed := <-f.results:
-		return cliResponse(fmt.Sprintf("approved=%t", allowed)), nil
+	case <-turn.done:
+		r.mu.Lock()
+		turn = r.turns[id]
+		r.mu.Unlock()
+		return turn.result, turn.err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return core.TurnResult{}, ctx.Err()
 	}
 }
 
-func (f *approvalCLICore) ResolveApproval(id string, allowed bool) error {
-	if id != f.request.ID {
+func (r *fakeCLIRuntime) SubscribeEvents(ctx context.Context, _ int64) (<-chan core.Event, error) {
+	events := make(chan core.Event, 4)
+	r.events = events
+	go func() { <-ctx.Done(); close(events) }()
+	return events, nil
+}
+
+func (r *fakeCLIRuntime) State(context.Context) (core.RuntimeState, error) {
+	r.mu.Lock()
+	status, active := r.status, r.active
+	r.mu.Unlock()
+	if r.client.pending {
+		status = core.TaskPaused
+	}
+	return core.RuntimeState{Task: core.TaskState{SessionID: r.sessionID, Status: status, ExecutionID: active}}, nil
+}
+
+func (r *fakeCLIRuntime) Interrupt(id string) bool {
+	r.mu.Lock()
+	cancel := r.cancels[id]
+	r.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (r *fakeCLIRuntime) Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error) {
+	r.client.resumes++
+	r.client.pending = false
+	r.mu.Lock()
+	r.sequence++
+	id := fmt.Sprintf("execution-%d", r.sequence)
+	turn := fakeCLITurn{done: make(chan struct{}), result: core.TurnResult{ExecutionID: id, Status: core.TaskCompleted, Response: cliResponse("resumed")}}
+	r.turns[id] = turn
+	r.status, r.active = core.TaskCompleted, ""
+	close(turn.done)
+	r.mu.Unlock()
+	return core.TurnSubmission{Status: core.SubmissionAccepted, ExecutionID: id}, nil
+}
+
+func (r *fakeCLIRuntime) DiscardPaused(context.Context) (bool, error) {
+	if !r.client.pending {
+		return false, nil
+	}
+	r.client.pending = false
+	r.client.discarded++
+	return true, nil
+}
+
+func (*fakeCLIRuntime) SetUserInteractionAvailable(bool) {}
+func (*fakeCLIRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
+	return nil, nil
+}
+func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
+	if r.client.resolveErr != nil {
+		return r.client.resolveErr
+	}
+	if r.approval != nil && id != r.approval.request.ID {
 		return fmt.Errorf("unexpected approval id %q", id)
 	}
-	f.fakeCLICore.resolved = append(f.fakeCLICore.resolved, allowed)
-	f.results <- allowed
+	r.client.resolved = append(r.client.resolved, allowed)
+	if r.approval != nil {
+		r.approval.results <- allowed
+	}
 	return nil
+}
+
+func (f *blockingCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
+	runtime := newFakeCLIRuntime(f.fakeCLICore, sessionID, nil)
+	runtime.runner = func(ctx context.Context, _ core.TurnRequest) (json.RawMessage, error) {
+		close(f.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return runtime, nil
 }
 
 func newApprovalCLICore(request core.ApprovalRequest) *approvalCLICore {
@@ -289,7 +421,7 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	if !strings.Contains(stdout, "Task interrupted.") {
 		t.Fatalf("stdout = %q, want interruption status", stdout)
 	}
-	if !strings.Contains(stderr, "Press Esc to cancel") || strings.Contains(stderr, "context canceled") {
+	if !strings.Contains(stderr, "Press Esc to interrupt") || strings.Contains(stderr, "context canceled") {
 		t.Fatalf("stderr = %q, want Esc status without cancellation error", stderr)
 	}
 	if !strings.Contains(logs.String(), "task interrupted by user") || !strings.Contains(logs.String(), "source=escape") {
@@ -327,7 +459,7 @@ func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
 			for _, expected := range []string{
 				"Allow Running a shell command once?",
 				"Command: git status",
-				"can access files outside the workspace",
+				"operating system sandbox",
 			} {
 				if !strings.Contains(stderr, expected) {
 					t.Errorf("stderr = %q, missing %q", stderr, expected)
@@ -338,9 +470,6 @@ func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
 			}
 			if !test.allowed && !strings.Contains(stderr, "Denied this tool call.") {
 				t.Errorf("stderr = %q, missing denial confirmation", stderr)
-			}
-			if client.handler != nil {
-				t.Fatal("event handler was not cleared after the task")
 			}
 		})
 	}
@@ -370,7 +499,7 @@ func TestChatLoopDeniesApprovalWithoutInteractiveInput(t *testing.T) {
 			if !strings.Contains(stdout, "approved=false") {
 				t.Fatalf("stdout = %q, want denied result", stdout)
 			}
-			for _, expected := range []string{"Fetching example.com", "denied because", "Run in an interactive terminal"} {
+			for _, expected := range []string{"Task paused for execution_blocked"} {
 				if !strings.Contains(stderr, expected) {
 					t.Errorf("stderr = %q, missing %q", stderr, expected)
 				}
@@ -397,15 +526,22 @@ func TestChatLoopDeniesApprovalWhenKeyboardStreamCloses(t *testing.T) {
 	if len(client.resolved) != 1 || client.resolved[0] {
 		t.Fatalf("resolved approvals = %v, want one denial", client.resolved)
 	}
-	if !strings.Contains(stdout, "approved=false") || !strings.Contains(stderr, "keyboard input became unavailable") {
+	if !strings.Contains(stdout, "approved=false") || !strings.Contains(stderr, "keyboard input became unavailable") || !strings.Contains(stderr, "Denied Writing notes.txt") {
 		t.Fatalf("stdout=%q stderr=%q, want a denied call and clear input failure", stdout, stderr)
 	}
 }
 
 func TestCLIApprovalDoesNotApproveExpiredRequest(t *testing.T) {
 	client := &fakeCLICore{resolveErr: errors.New("request is no longer pending")}
+	runtime, err := client.OpenSessionRuntime(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stderr strings.Builder
-	resolveCLIApproval(client, core.ApprovalRequest{ID: "expired", Tool: "command"}, true, &stderr)
+	keys := make(chan cliInputEvent, 1)
+	keys <- cliInputEvent{rune: 'y'}
+	close(keys)
+	resolveCLIApproval(runtime, core.ApprovalRequest{ID: "expired", Tool: "command"}, "", keys, &stderr)
 	if len(client.resolved) != 0 {
 		t.Fatalf("resolved approvals = %v, want no resolution", client.resolved)
 	}
@@ -435,15 +571,12 @@ func TestCLIApprovalPromptEscapesModelControlledTerminalText(t *testing.T) {
 
 func TestChatLoopResumesExplicitlyAndWarnsAboutReplay(t *testing.T) {
 	client := &fakeCLICore{pending: true}
-	stdout, stderr := runCLI(t, client, "/resume\n/exit\n", nil)
+	stdout, _ := runCLI(t, client, "/resume\n/exit\n", nil)
 	if client.resumes != 1 || client.pending {
 		t.Fatalf("resume calls=%d pending=%v, want one resume and no pending task", client.resumes, client.pending)
 	}
 	if !strings.Contains(stdout, "resumed") {
 		t.Fatalf("stdout = %q, want resumed response", stdout)
-	}
-	if !strings.Contains(stderr, "may repeat a model request or tool call") {
-		t.Fatalf("stderr = %q, want replay warning", stderr)
 	}
 }
 

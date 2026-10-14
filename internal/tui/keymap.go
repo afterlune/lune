@@ -83,7 +83,6 @@ var keymapActions = []keymapAction{
 	{id: "input_lowercase_word", label: "Lowercase next word", defaultKey: "alt+l", contexts: []string{"input", "session_rename"}},
 	{id: "input_capitalize_word", label: "Capitalize next word", defaultKey: "alt+c", contexts: []string{"input", "session_rename"}},
 	{id: "input_transpose_character", label: "Transpose characters", defaultKey: "ctrl+t", contexts: []string{"input", "session_rename"}},
-	{id: "input_toggle_message_fold", label: "Toggle latest long message", defaultKey: "alt+m", contexts: []string{"input", "suggestions", "vim_normal", "plan_review", "running"}},
 	{id: "input_newline", label: "Insert newline", defaultKey: "ctrl+o", contexts: []string{"input", "session_rename"}},
 	{id: "vim_insert", label: "Vim: insert mode", defaultKey: "i", contexts: []string{"vim_normal"}},
 	{id: "vim_append", label: "Vim: append mode", defaultKey: "a", contexts: []string{"vim_normal"}},

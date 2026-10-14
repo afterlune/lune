@@ -8,26 +8,19 @@ import (
 )
 
 type themeName string
-type animeLayout string
 
 const (
 	themeDark  themeName = "dark"
 	themeLight themeName = "light"
-	themeAnime themeName = "anime"
-
-	layoutFocus  animeLayout = "focus"
-	layoutStudio animeLayout = "studio"
 )
 
 type uiPreferences struct {
-	Theme            themeName         `json:"theme"`
-	AnimeLayout      animeLayout       `json:"anime_layout"`
-	Keymap           map[string]string `json:"keymap"`
-	ExpandedMessages map[string]bool   `json:"expanded_messages,omitempty"`
+	Theme  themeName         `json:"theme"`
+	Keymap map[string]string `json:"keymap"`
 }
 
 func defaultUIPreferences() uiPreferences {
-	return uiPreferences{Theme: themeDark, AnimeLayout: layoutFocus, Keymap: defaultKeymap()}
+	return uiPreferences{Theme: themeDark, Keymap: defaultKeymap()}
 }
 
 func userPreferencesPath() (string, error) {
@@ -60,14 +53,8 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return prefs, err
 	}
-	if stored.Theme == themeDark || stored.Theme == themeLight || stored.Theme == themeAnime {
+	if stored.Theme == themeDark || stored.Theme == themeLight {
 		prefs.Theme = stored.Theme
-	}
-	if stored.AnimeLayout == layoutFocus || stored.AnimeLayout == layoutStudio {
-		prefs.AnimeLayout = stored.AnimeLayout
-	}
-	if stored.ExpandedMessages != nil {
-		prefs.ExpandedMessages = stored.ExpandedMessages
 	}
 	if stored.Keymap != nil {
 		bindings, err := normalizeKeymap(stored.Keymap)
@@ -82,6 +69,9 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 func saveUIPreferences(path string, prefs uiPreferences) error {
 	if path == "" {
 		return errors.New("user preferences path is unavailable")
+	}
+	if prefs.Theme != themeDark && prefs.Theme != themeLight {
+		prefs.Theme = themeDark
 	}
 	if prefs.Keymap == nil {
 		prefs.Keymap = defaultKeymap()

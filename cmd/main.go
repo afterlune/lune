@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/afterlune/luneCore"
@@ -27,11 +28,6 @@ func run() (runErr error) {
 	if err != nil {
 		return fmt.Errorf("get workspace: %w", err)
 	}
-	client, err := core.New(core.Config{Workspace: workspace})
-	if err != nil {
-		return err
-	}
-	defer func() { runErr = errors.Join(runErr, client.Close()) }()
 	if tui.UseTUI(os.Stdin, os.Stdout) {
 		logPath := filepath.Join(workspace, ".luneagent", "agent.log")
 		logFile, err := newRotatingLogWriter(logPath, tuiLogMaxBytes, tuiLogBackupCount)
@@ -42,9 +38,31 @@ func run() (runErr error) {
 		previousLogger := slog.Default()
 		defer slog.SetDefault(previousLogger)
 		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		client, err := newCore(workspace)
+		if err != nil {
+			return err
+		}
+		defer func() { runErr = errors.Join(runErr, client.Close()) }()
 		return tui.Run(client)
 	}
-	return runCoreChatLoop(client, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardInputWatcher)
+	client, err := newCore(workspace)
+	if err != nil {
+		return err
+	}
+	defer func() { runErr = errors.Join(runErr, client.Close()) }()
+	return runCoreChatLoop(coreCLIApplication{Core: client}, bufio.NewReader(os.Stdin), os.Stdout, os.Stderr, startKeyboardInputWatcher)
+}
+
+func newCore(workspace string) (*core.Core, error) {
+	helperName := "lune-sandbox"
+	if runtime.GOOS == "windows" {
+		helperName += ".exe"
+	}
+	helperPath := filepath.Join(workspace, "bin", helperName)
+	if _, err := os.Stat(helperPath); err != nil {
+		helperPath = ""
+	}
+	return core.New(core.Config{Workspace: workspace, Logger: slog.Default(), SandboxHelperPath: helperPath})
 }
 
 func startKeyboardInputWatcher() (<-chan cliInputEvent, func(), error) {

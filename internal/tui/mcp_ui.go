@@ -534,7 +534,7 @@ func (m *tuiModel) rejectMCPInteraction(id string) {
 }
 
 func (m *tuiModel) sendMCPInteractionResponse(id, action string, content map[string]any) error {
-	if m.client == nil {
+	if m.runtime == nil {
 		return errors.New("MCP client is unavailable")
 	}
 	response := map[string]any{"action": action}
@@ -545,7 +545,7 @@ func (m *tuiModel) sendMCPInteractionResponse(id, action string, content map[str
 	if err != nil {
 		return err
 	}
-	return m.client.ResolveUserInteraction(id, data)
+	return m.runtime.ResolveUserInteraction(id, data)
 }
 
 func (m *tuiModel) finishMCPInteraction(message string, addNotice bool) {

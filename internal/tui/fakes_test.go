@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sync"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/afterlune/luneCore"
 )
 
 type fakeResponder struct {
-	inputs           []core.TaskRequest
+	inputs           []core.TurnRequest
 	firstErr         error
 	responses        int
 	pending          bool
@@ -30,6 +33,8 @@ type fakeResponder struct {
 	interactionIDs   []string
 	interactionJSON  []json.RawMessage
 	interactionReady bool
+	runtimeMu        sync.Mutex
+	runtimes         map[string]*fakeSessionRuntime
 }
 
 type blockingResponder struct {
@@ -39,10 +44,9 @@ type blockingResponder struct {
 
 type fakeResumableResponder = fakeResponder
 
-func (f *fakeResponder) Workspace() string                 { return "/workspace" }
-func (f *fakeResponder) SetEventHandler(core.EventHandler) {}
+func (f *fakeResponder) Workspace() string { return "/workspace" }
 
-func (f *fakeResponder) RunTask(_ context.Context, request core.TaskRequest) (json.RawMessage, error) {
+func (f *fakeResponder) runTask(_ context.Context, request core.TurnRequest) (json.RawMessage, error) {
 	f.inputs = append(f.inputs, request)
 	f.responses++
 	if f.responses == 1 && f.firstErr != nil {
@@ -51,7 +55,7 @@ func (f *fakeResponder) RunTask(_ context.Context, request core.TaskRequest) (js
 	return json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"reply"}]}]}`), nil
 }
 
-func (f *blockingResponder) RunTask(ctx context.Context, _ core.TaskRequest) (json.RawMessage, error) {
+func (f *blockingResponder) runTask(ctx context.Context, _ core.TurnRequest) (json.RawMessage, error) {
 	close(f.started)
 	<-ctx.Done()
 	return nil, ctx.Err()
@@ -238,4 +242,221 @@ func (f *fakeResponder) ResolveUserInteraction(id string, response json.RawMessa
 	f.interactionIDs = append(f.interactionIDs, id)
 	f.interactionJSON = append(f.interactionJSON, append(json.RawMessage(nil), response...))
 	return f.mcpActionErr
+}
+
+func runTUICommands(model tea.Model, command tea.Cmd) tea.Model {
+	commands := []tea.Cmd{command}
+	for steps := 0; len(commands) > 0 && steps < 128; steps++ {
+		command := commands[0]
+		commands = commands[1:]
+		if command == nil {
+			continue
+		}
+		message := command()
+		value := reflect.ValueOf(message)
+		if value.IsValid() && value.Kind() == reflect.Slice && value.Type().Name() == "sequenceMsg" {
+			for index := value.Len() - 1; index >= 0; index-- {
+				if next, ok := value.Index(index).Interface().(tea.Cmd); ok {
+					commands = append([]tea.Cmd{next}, commands...)
+				}
+			}
+			continue
+		}
+		var next tea.Cmd
+		model, next = model.Update(message)
+		if next != nil {
+			commands = append(commands, next)
+		}
+	}
+	return model
+}
+
+func (f *fakeResponder) OpenSessionRuntime(_ context.Context, sessionID string) (SessionRuntime, error) {
+	f.runtimeMu.Lock()
+	defer f.runtimeMu.Unlock()
+	if f.runtimes == nil {
+		f.runtimes = make(map[string]*fakeSessionRuntime)
+	}
+	if runtime := f.runtimes[sessionID]; runtime != nil {
+		return runtime, nil
+	}
+	runtime := newFakeSessionRuntime(f, sessionID, f.runTask)
+	f.runtimes[sessionID] = runtime
+	return runtime, nil
+}
+
+func (f *blockingResponder) OpenSessionRuntime(_ context.Context, sessionID string) (SessionRuntime, error) {
+	return newFakeSessionRuntime(f.fakeResponder, sessionID, f.runTask), nil
+}
+
+type fakeSessionRuntime struct {
+	owner     *fakeResponder
+	sessionID string
+	runner    func(context.Context, core.TurnRequest) (json.RawMessage, error)
+	mu        sync.Mutex
+	sequence  int
+	active    string
+	status    core.TaskStatus
+	cancels   map[string]context.CancelFunc
+	turns     map[string]fakeTurn
+	queue     []core.QueuedTurnState
+}
+
+type fakeTurn struct {
+	done   chan struct{}
+	result core.TurnResult
+	err    error
+}
+
+func newFakeSessionRuntime(owner *fakeResponder, sessionID string, runner func(context.Context, core.TurnRequest) (json.RawMessage, error)) *fakeSessionRuntime {
+	return &fakeSessionRuntime{
+		owner: owner, sessionID: sessionID, runner: runner,
+		cancels: make(map[string]context.CancelFunc), turns: make(map[string]fakeTurn),
+	}
+}
+
+func (r *fakeSessionRuntime) SessionID() string { return r.sessionID }
+
+func (r *fakeSessionRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, mode core.SubmissionMode) (core.TurnSubmission, error) {
+	if mode == core.QueueInput {
+		r.mu.Lock()
+		id := fmt.Sprintf("queue-%d", len(r.queue)+1)
+		position := int64(len(r.queue) + 1)
+		r.owner.inputs = append(r.owner.inputs, request)
+		r.queue = append(r.queue, core.QueuedTurnState{QueueID: id, ExecutionID: id, Position: int64(len(r.queue) + 1), Status: "queued"})
+		r.mu.Unlock()
+		return core.TurnSubmission{Status: core.SubmissionQueued, QueueID: id, ExecutionID: id, Position: position}, nil
+	}
+	r.mu.Lock()
+	r.sequence++
+	executionID := fmt.Sprintf("execution-%d", r.sequence)
+	ctx, cancel := context.WithCancel(context.Background())
+	turn := fakeTurn{done: make(chan struct{})}
+	r.turns[executionID] = turn
+	r.cancels[executionID] = cancel
+	r.active = executionID
+	r.status = core.TaskRunning
+	r.mu.Unlock()
+	go func() {
+		response, err := r.runner(ctx, request)
+		r.mu.Lock()
+		turn := r.turns[executionID]
+		turn.result = core.TurnResult{ExecutionID: executionID, Response: response, Status: core.TaskCompleted}
+		turn.err = err
+		if err != nil {
+			turn.result.Status = core.TaskFailed
+		}
+		r.turns[executionID] = turn
+		r.status = turn.result.Status
+		if r.active == executionID {
+			r.active = ""
+		}
+		close(turn.done)
+		r.mu.Unlock()
+		cancel()
+	}()
+	return core.TurnSubmission{Status: core.SubmissionAccepted, ExecutionID: executionID}, nil
+}
+
+func (r *fakeSessionRuntime) WaitTurn(ctx context.Context, executionID string) (core.TurnResult, error) {
+	r.mu.Lock()
+	turn, ok := r.turns[executionID]
+	r.mu.Unlock()
+	if !ok {
+		return core.TurnResult{}, core.ErrTurnNotFound
+	}
+	select {
+	case <-turn.done:
+		r.mu.Lock()
+		turn = r.turns[executionID]
+		r.mu.Unlock()
+		return turn.result, turn.err
+	case <-ctx.Done():
+		return core.TurnResult{}, ctx.Err()
+	}
+}
+
+func (r *fakeSessionRuntime) SubscribeEvents(ctx context.Context, _ int64) (<-chan core.Event, error) {
+	events := make(chan core.Event)
+	go func() {
+		<-ctx.Done()
+		close(events)
+	}()
+	return events, nil
+}
+
+func (r *fakeSessionRuntime) State(context.Context) (core.RuntimeState, error) {
+	r.mu.Lock()
+	status, active := r.status, r.active
+	queue := append([]core.QueuedTurnState(nil), r.queue...)
+	r.mu.Unlock()
+	if r.owner.pending {
+		status = core.TaskPaused
+	}
+	return core.RuntimeState{Task: core.TaskState{SessionID: r.sessionID, ExecutionID: active, Status: status}, Queue: queue}, nil
+}
+
+func (r *fakeSessionRuntime) Interrupt(executionID string) bool {
+	r.mu.Lock()
+	cancel := r.cancels[executionID]
+	for index, queued := range r.queue {
+		if queued.ExecutionID == executionID {
+			r.queue = append(r.queue[:index], r.queue[index+1:]...)
+			r.mu.Unlock()
+			return true
+		}
+	}
+	r.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (r *fakeSessionRuntime) Recover(_ context.Context, _ ...core.ExecutionOptions) (core.TurnSubmission, error) {
+	response, err := r.owner.ResumeTask(context.Background(), r.sessionID)
+	r.mu.Lock()
+	r.sequence++
+	executionID := fmt.Sprintf("execution-%d", r.sequence)
+	turn := fakeTurn{done: make(chan struct{}), result: core.TurnResult{ExecutionID: executionID, Response: response, Status: core.TaskCompleted}, err: err}
+	r.turns[executionID] = turn
+	r.status, r.active = core.TaskCompleted, ""
+	close(turn.done)
+	r.mu.Unlock()
+	return core.TurnSubmission{Status: core.SubmissionAccepted, ExecutionID: executionID}, nil
+}
+
+func (r *fakeSessionRuntime) DiscardPaused(context.Context) (bool, error) {
+	return r.owner.DiscardTask(context.Background(), r.sessionID)
+}
+
+func (r *fakeSessionRuntime) SetUserInteractionAvailable(available bool) {
+	r.owner.SetUserInteractionAvailable(available)
+}
+
+func (r *fakeSessionRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
+	return nil, nil
+}
+
+func (r *fakeSessionRuntime) ResolveApproval(id string, allowed bool) error {
+	return r.owner.ResolveApproval(id, allowed)
+}
+
+func (*fakeSessionRuntime) ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error {
+	return nil
+}
+func (*fakeSessionRuntime) ResolveAcceptance(context.Context, core.AcceptanceResolution) error {
+	return nil
+}
+
+func (r *fakeSessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {
+	return r.owner.ResolveUserInteraction(id, response)
+}
+
+func (*fakeSessionRuntime) ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error {
+	return nil
+}
+func (*fakeSessionRuntime) ImplementPlan(context.Context, string, core.PlanImplementationMode, ...core.PlanAuthorization) (core.PlanImplementation, error) {
+	return core.PlanImplementation{}, nil
 }

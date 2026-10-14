@@ -4,19 +4,14 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/afterlune/luneCore"
+	core "github.com/afterlune/luneCore"
 )
 
-type Client interface {
+// CoreClient contains host level operations. Task execution and user decisions
+// belong to a session-bound SessionRuntime.
+type CoreClient interface {
 	Workspace() string
-	SetEventHandler(core.EventHandler)
-	RunTask(context.Context, core.TaskRequest) (json.RawMessage, error)
-	ResumeTask(context.Context, string) (json.RawMessage, error)
-	HasPending(context.Context, string) (bool, error)
-	PendingHistory(context.Context, string) (json.RawMessage, error)
-	PendingPlanMode(context.Context, string) (bool, error)
-	DiscardTask(context.Context, string) (bool, error)
-	Compact(context.Context, string) (int, error)
+	OpenSessionRuntime(context.Context, string) (SessionRuntime, error)
 	CreateSession(context.Context, json.RawMessage) (core.Session, error)
 	LatestSession(context.Context) (core.Session, bool, error)
 	ListSessions(context.Context, int, bool) ([]core.Session, error)
@@ -32,12 +27,30 @@ type Client interface {
 	ProjectAttachmentLimits() core.AttachmentLimits
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
-	ResolveApproval(string, bool) error
+	Compact(context.Context, string) (int, error)
 	MCPServers() []core.MCPServerStatus
 	EnableMCPServer(string) error
 	DisableMCPServer(string) error
 	AuthenticateMCPServer(context.Context, string) error
 	OpenMCPURL(string, string) error
+}
+
+// SessionRuntime is the session-scoped task, event, and interaction API.
+type SessionRuntime interface {
+	SessionID() string
+	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
+	WaitTurn(context.Context, string) (core.TurnResult, error)
+	SubscribeEvents(context.Context, int64) (<-chan core.Event, error)
+	State(context.Context) (core.RuntimeState, error)
+	Interrupt(string) bool
+	Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error)
+	DiscardPaused(context.Context) (bool, error)
 	SetUserInteractionAvailable(bool)
+	PendingRequests(context.Context) ([]core.PendingRequest, error)
+	ResolveApproval(string, bool) error
+	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
+	ResolveAcceptance(context.Context, core.AcceptanceResolution) error
 	ResolveUserInteraction(string, json.RawMessage) error
+	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
+	ImplementPlan(context.Context, string, core.PlanImplementationMode, ...core.PlanAuthorization) (core.PlanImplementation, error)
 }

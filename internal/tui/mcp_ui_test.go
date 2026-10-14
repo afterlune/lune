@@ -14,6 +14,15 @@ import (
 	"github.com/charmbracelet/colorprofile"
 )
 
+func newMCPInteractionUI(client *fakeResponder) *tuiModel {
+	ui := newTUIModel(client, false)
+	ui.sessionID = "mcp-interaction"
+	runtime, _ := client.OpenSessionRuntime(context.Background(), ui.sessionID)
+	ui.runtime = runtime
+	ui.runtimeSessionID = ui.sessionID
+	return ui
+}
+
 func TestTUIMCPCommands(t *testing.T) {
 	client := &fakeResponder{mcpServers: []core.MCPServerStatus{
 		{Name: "docs", Transport: "streamable-http", Endpoint: "https://mcp.example.test/v1/mcp", Enabled: true, Connected: true, ToolCount: 3},
@@ -96,7 +105,7 @@ func TestTUIMCPAuthCanBeCancelled(t *testing.T) {
 
 func TestTUIMCPFormAcceptDeclineAndValidation(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, false)
+	ui := newMCPInteractionUI(client)
 	request := core.UserInteractionRequest{ID: "interaction-1", ServerName: "docs", Request: json.RawMessage(`{
 		"method":"elicitation/create","params":{"mode":"form","message":"Enter the account email.","requestedSchema":{"type":"object","properties":{"email":{"type":"string","format":"email","title":"Email"},"code":{"type":"string","title":"Code"}},"required":["email","code"]}}
 	}`)}
@@ -140,7 +149,7 @@ func TestTUIMCPFormAcceptDeclineAndValidation(t *testing.T) {
 
 func TestTUIMCPUnsupportedInteractionIsDeclined(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, false)
+	ui := newMCPInteractionUI(client)
 	ui.beginMCPInteraction(core.UserInteractionRequest{
 		ID: "unsupported", ServerName: "docs", Request: json.RawMessage(`{"method":"sampling/createMessage","params":{}}`),
 	})
@@ -151,7 +160,7 @@ func TestTUIMCPUnsupportedInteractionIsDeclined(t *testing.T) {
 
 func TestTUIMCPConcurrentInteractionDoesNotReplaceActiveForm(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, false)
+	ui := newMCPInteractionUI(client)
 	ui.beginMCPInteraction(core.UserInteractionRequest{
 		ID: "active", ServerName: "docs", Request: json.RawMessage(`{"method":"elicitation/create","params":{"mode":"url","url":"https://accounts.example.test/consent"}}`),
 	})
@@ -168,7 +177,7 @@ func TestTUIMCPConcurrentInteractionDoesNotReplaceActiveForm(t *testing.T) {
 
 func TestTUIMCPURLRequiresConfirmationAndHidesQuery(t *testing.T) {
 	client := &fakeResponder{}
-	ui := newTUIModel(client, false)
+	ui := newMCPInteractionUI(client)
 	ui.beginMCPInteraction(core.UserInteractionRequest{
 		ID: "url-1", ServerName: "docs", Request: json.RawMessage(`{"method":"elicitation/create","params":{"mode":"url","message":"Grant access to documents.","url":"https://accounts.example.test/consent?state=secret#private"}}`),
 	})
@@ -194,7 +203,7 @@ func TestTUIMCPURLRequiresConfirmationAndHidesQuery(t *testing.T) {
 
 func TestTUIMCPURLOpenFailureKeepsConfirmationOpen(t *testing.T) {
 	client := &fakeResponder{mcpActionErr: errors.New("browser unavailable")}
-	ui := newTUIModel(client, false)
+	ui := newMCPInteractionUI(client)
 	ui.beginMCPInteraction(core.UserInteractionRequest{
 		ID: "url-2", ServerName: "docs", Request: json.RawMessage(`{"method":"elicitation/create","params":{"mode":"url","url":"https://accounts.example.test/consent"}}`),
 	})
@@ -288,6 +297,10 @@ func newMCPScreenshotFixture(theme themeName, scenario string) *tuiModel {
 	}}
 	ui := newConversationFixture(theme, "short")
 	ui.client = client
+	ui.sessionID = "mcp-screenshot"
+	runtime, _ := client.OpenSessionRuntime(context.Background(), ui.sessionID)
+	ui.runtime = runtime
+	ui.runtimeSessionID = ui.sessionID
 	ui.colorProfile = colorprofile.TrueColor
 	switch scenario {
 	case "list":

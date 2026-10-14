@@ -137,20 +137,9 @@ func TestTUIInterruptedStreamIsMarkedPartial(t *testing.T) {
 	if !strings.Contains(plainTUIView(ui), "Partial") || !strings.Contains(ui.status, "Task paused") {
 		t.Fatalf("interrupted stream view/status = %q / %q", plainTUIView(ui), ui.status)
 	}
-	foundPartialLabel := false
-	conversation, _, _ := ui.renderConversation()
-	for _, line := range parseTUIScreenshotLines(conversation, colorsFor(themeDark).Foreground) {
-		for _, run := range line {
-			if run.text == "Partial" {
-				if run.foreground != colorsFor(themeDark).Muted || run.bold {
-					t.Fatalf("partial label style = %#v, want muted regular text", run)
-				}
-				foundPartialLabel = true
-			}
-		}
-	}
-	if !foundPartialLabel {
-		t.Fatal("interrupted streamed response has no Partial role label")
+	printed := tuiScreenshotANSI.ReplaceAllString(formatScrollbackEntry(ui.entries[0], 80, themeDark), "")
+	if !strings.Contains(printed, "Partial · The answer is still being generated") {
+		t.Fatalf("interrupted scrollback entry = %q, want Partial marker", printed)
 	}
 }
 
@@ -212,9 +201,13 @@ func TestTUIStreamIgnoresOtherAgentsSessionsAndTasks(t *testing.T) {
 }
 
 func newStreamingTUI() *tuiModel {
-	ui := newTUIModel(&fakeResponder{}, false)
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
 	ui.preferences.Theme = themeDark
 	ui.sessionID = "session-current"
+	runtime, _ := client.OpenSessionRuntime(context.Background(), ui.sessionID)
+	ui.runtime = runtime
+	ui.runtimeSessionID = ui.sessionID
 	ui.running = true
 	ui.status = "Working… Press Esc to interrupt."
 	ui.Update(tea.WindowSizeMsg{Width: 120, Height: 30})

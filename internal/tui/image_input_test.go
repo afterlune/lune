@@ -155,7 +155,9 @@ func TestBuildTaskInputWithImagesPreservesTextOrderAndPortableData(t *testing.T)
 func TestTUIClipboardImagePasteSubmitsStructuredImageInPlanMode(t *testing.T) {
 	data := testPNG(t, 8, 5)
 	client := &fakeResponder{}
+	client.mode = core.PermissionReadOnly
 	ui := newTUIModel(client, false)
+	ui.sessionID = "session-1"
 	ui.clipboardReader = fakeClipboardImageReader{payload: clipboardImagePayload{Image: data}}
 	ui.clipboardTextReader = func() (string, error) { return "", nil }
 	ui.planMode = true
@@ -175,10 +177,10 @@ func TestTUIClipboardImagePasteSubmitsStructuredImageInPlanMode(t *testing.T) {
 	if command == nil {
 		t.Fatal("image-only plan message did not start a task")
 	}
-	updated, _ = updated.Update(command())
+	updated = runTUICommands(updated, command)
 	ui = updated.(*tuiModel)
-	if len(client.inputs) != 1 || !client.inputs[0].PlanMode {
-		t.Fatalf("submitted requests = %#v, want one Plan mode request", client.inputs)
+	if len(client.inputs) != 1 || client.PermissionMode() != core.PermissionReadOnly {
+		t.Fatalf("submitted requests = %#v permission=%q, want one read-only Plan mode request", client.inputs, client.PermissionMode())
 	}
 	input := string(client.inputs[0].Input.Raw)
 	if !strings.Contains(input, `"type":"input_image"`) || !strings.Contains(input, base64.StdEncoding.EncodeToString(data)) {
@@ -325,25 +327,25 @@ func TestTUIQueuedInputKeepsImagesWithoutRetainingEncodedRequest(t *testing.T) {
 	}
 	attachment.Token = imageAttachmentToken(1, attachment)
 	client := &fakeResponder{}
+	client.mode = core.PermissionReadOnly
 	ui := newTUIModel(client, false)
+	ui.sessionID = "session-1"
 	ui.planMode = true
 	ui.attachments = []imageAttachment{attachment}
 	ui.input.SetValue("Review this " + attachment.Token)
-	ui.enqueueInput()
-	if len(ui.queued) != 1 || len(ui.queued[0].attachments) != 1 {
-		t.Fatalf("queued message does not hold raw attachment separately: %#v", ui.queued)
-	}
-	if ui.queued[0].planMode != true {
-		t.Fatal("queued image did not preserve Plan mode")
-	}
-
-	updated, command := ui.startQueuedInput()
+	updated, command := ui.enqueueInput()
 	if command == nil {
-		t.Fatal("queued image did not start")
+		t.Fatal("queued image was not submitted to Core")
 	}
-	updated, _ = updated.Update(command())
-	if len(client.inputs) != 1 || !client.inputs[0].PlanMode || !strings.Contains(string(client.inputs[0].Input.Raw), `"type":"input_image"`) {
+	updated = runTUICommands(updated, command)
+	ui = updated.(*tuiModel)
+	if len(client.inputs) != 1 || !strings.Contains(string(client.inputs[0].Input.Raw), `"type":"input_image"`) {
 		t.Fatalf("queued image request = %#v", client.inputs)
+	}
+	runtime := client.runtimes[ui.sessionID]
+	state, err := runtime.State(context.Background())
+	if err != nil || len(state.Queue) != 1 {
+		t.Fatalf("Core queue state = %#v, err=%v; want one persisted queued turn", state, err)
 	}
 }
 

@@ -1,12 +1,12 @@
 module github.com/afterlune/lune
 
-go 1.26.5
+go 1.26.9
 
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.10
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/afterlune/luneCore v0.1.0
+	github.com/afterlune/luneCore v0.1.1-0.20261014110413-b2628bdf7917
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/afterlune/luneGraph v0.0.0-20261008085435-d4d35e1c76cd // indirect
+	github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -43,7 +43,7 @@ require (
 	golang.design/x/x11 v0.2.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	modernc.org/libc v1.75.7 // indirect

@@ -21,27 +21,20 @@ import (
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type tuiEntry struct {
-	role        string
-	text        string
-	err         bool
-	incomplete  bool
-	activityID  string
-	collapseKey string
+	role       string
+	text       string
+	err        bool
+	incomplete bool
+	activityID string
 }
 
 type transcriptEntry struct {
 	Role string
 	Text string
-}
-
-type queuedInput struct {
-	text        string
-	display     string
-	attachments []imageAttachment
-	planMode    bool
 }
 
 type inputSnapshot struct {
@@ -58,6 +51,14 @@ type tuiActivity struct {
 
 type toolActivityMsg struct{ event core.ToolCall }
 type coreEventMsg struct{ event core.Event }
+type runtimeEventMsg struct {
+	event  core.Event
+	events <-chan core.Event
+}
+type runtimeStreamReadyMsg struct {
+	events <-chan core.Event
+	err    error
+}
 
 type toolApprovalRequestMsg struct {
 	request core.ApprovalRequest
@@ -69,14 +70,27 @@ type taskFinishedMsg struct {
 	result taskResult
 }
 
+type turnSubmittedMsg struct {
+	submission core.TurnSubmission
+	err        error
+	resetUsage bool
+}
+
 type taskResult struct {
-	response json.RawMessage
-	notice   string
-	err      error
+	response        json.RawMessage
+	coreResult      core.TaskResult
+	notice          string
+	targetSessionID string
+	err             error
 }
 
 type tuiModel struct {
-	client              Client
+	client              CoreClient
+	runtime             SessionRuntime
+	runtimeSessionID    string
+	runtimeCancel       context.CancelFunc
+	eventCursor         int64
+	runningExecutionID  string
 	sessionID           string
 	workspace           string
 	input               textarea.Model
@@ -89,10 +103,9 @@ type tuiModel struct {
 	activity            viewport.Model
 
 	entries                       []tuiEntry
+	printedEntryCount             int
 	activities                    []tuiActivity
 	teamActivities                []tuiTeamActivity
-	chatClickTargets              map[int]string
-	foldableMessages              []string
 	commandSuggestions            []string
 	suggestionIndex               int
 	keymapOpen                    bool
@@ -110,6 +123,7 @@ type tuiModel struct {
 	effortIndex                   int
 	sessionSettings               core.SessionSettings
 	pendingApproval               *toolApprovalRequestMsg
+	pendingRequest                *core.PendingRequest
 	pendingMCPInteraction         *mcpInteractionState
 	mcpCommandPending             bool
 	mcpAuthCancel                 context.CancelFunc
@@ -119,11 +133,12 @@ type tuiModel struct {
 	renamingSession               bool
 	sessionList                   []core.Session
 	sessionIndex                  int
-	queued                        []queuedInput
+	queued                        []core.QueuedTurnState
 	detailsOpen                   bool
 	planMode                      bool
 	planReview                    bool
 	taskPlanMode                  bool
+	permissionMode                core.PermissionMode
 	vimMode                       bool
 	vimNormal                     bool
 	vimPendingDelete              bool
@@ -148,13 +163,20 @@ type tuiModel struct {
 	modelStreamItems              map[string]int
 	modelStreamCurrent            []int
 	modelStreamLast               []int
+	activeExecutions              map[string]bool
+	pendingRequests               []core.PendingRequest
+	proposedPlan                  *core.ProposedPlan
+	planSourceExecutionID         string
+	planAuthorization             core.PlanAuthorization
+	exitConfirm                   bool
+	exitAfterTask                 bool
+	runtimeTask                   bool
 	width                         int
 	height                        int
 	pending                       bool
 	running                       bool
 	cancel                        context.CancelFunc
 	cancelled                     bool
-	abandonOnFinish               bool
 	status                        string
 	preferences                   uiPreferences
 	preferencesPath               string
@@ -194,7 +216,7 @@ type tokenUsageTotals struct {
 	cached         int64
 }
 
-const defaultInputPlaceholder = "Ask anything, or paste ResponseInput JSON..."
+const defaultInputPlaceholder = "Ask Lune to do anything"
 
 const (
 	sessionRailMinWidth   = 24
@@ -218,7 +240,7 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/effort", usage: "/effort [value]", description: "Choose reasoning effort."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
-	{name: "/fold", usage: "/fold [n]", description: "List or toggle a long user message."},
+	{name: "/details", usage: "/details [n]", description: "Show a long message or activity entry in terminal history."},
 	{name: "/fork", usage: "/fork", description: "Start a new session from completed history."},
 	{name: "/goal", usage: "/goal [text|clear]", description: "Show, set, or clear the goal for future tasks."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
@@ -227,11 +249,12 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/mcp", usage: "/mcp <list|enable|disable|auth> [name]", description: "Manage configured Model Context Protocol servers."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set the permission mode."},
-	{name: "/plan", usage: "/plan", description: "Toggle Plan mode."},
-	{name: "/queue", usage: "/queue", description: "Review or edit queued messages."},
+	{name: "/plan", usage: "/plan", description: "Switch Core to read-only plan mode or review a plan."},
+	{name: "/queue", usage: "/queue", description: "Review or cancel turns in the Core queue."},
 	{name: "/resume", usage: "/resume", description: "Choose a session to resume."},
 	{name: "/rewind", usage: "/rewind <n>", description: "Remove the latest n user turns."},
 	{name: "/theme", usage: "/theme [value]", description: "Show or change the theme."},
+	{name: "/usage", usage: "/usage", description: "Show token usage, cache hits, and activity."},
 	{name: "/vim", usage: "/vim", description: "Toggle Vim input mode."},
 }
 
@@ -262,9 +285,9 @@ type tuiPermissionOption struct {
 
 var tuiPermissionOptions = []tuiPermissionOption{
 	{mode: core.PermissionReadOnly, label: "Read-only", description: "Read workspace files; ask before web; block writes and shell"},
-	{mode: core.PermissionWorkspace, label: "Workspace", description: "Workspace file access; shell/web need approval (shell can reach outside)"},
-	{mode: core.PermissionAsk, label: "Ask", description: "Ask before writes, shell, web, and other non-read tools"},
-	{mode: core.PermissionFullAccess, label: "Full access", description: "Allow all tools; shell can access files outside the workspace"},
+	{mode: core.PermissionWorkspace, label: "Workspace", description: "Workspace file operations and sandboxed commands; network needs plan approval"},
+	{mode: core.PermissionAsk, label: "Ask", description: "Read workspace files; approve other tool operations in the plan"},
+	{mode: core.PermissionFullAccess, label: "Full access", description: "Current-user files and network stay in the OS sandbox; high-risk commands need plan approval"},
 }
 
 func UseTUI(stdin, stdout *os.File) bool {
@@ -279,38 +302,29 @@ func isTerminal(file *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func Run(client Client) error {
-	workspace := client.Workspace()
+func Run(client *core.Core) error {
+	app := coreApplication{Core: client}
+	workspace := app.Workspace()
 	ctx := context.Background()
-	saved, found, err := client.LatestSession(ctx)
+	saved, found, err := app.LatestSession(ctx)
 	if err != nil {
 		return fmt.Errorf("load latest session: %w", err)
 	}
 	if !found {
-		saved, err = client.CreateSession(ctx, json.RawMessage("null"))
+		saved, err = app.CreateSession(ctx, json.RawMessage("null"))
 		if err != nil {
 			return fmt.Errorf("create session: %w", err)
 		}
 	}
-	pending, err := client.HasPending(ctx, saved.ID)
+	runtime, err := app.OpenSessionRuntime(ctx, saved.ID)
 	if err != nil {
-		return fmt.Errorf("inspect session task: %w", err)
+		return fmt.Errorf("open session runtime: %w", err)
 	}
-	var pendingHistory json.RawMessage
-	if pending {
-		pendingHistory, err = client.PendingHistory(ctx, saved.ID)
-		if err != nil {
-			return fmt.Errorf("restore interrupted session history: %w", err)
-		}
+	state, err := runtime.State(ctx)
+	if err != nil {
+		return fmt.Errorf("inspect session runtime: %w", err)
 	}
-	planMode := false
-	if pending {
-		planMode, err = client.PendingPlanMode(ctx, saved.ID)
-		if err != nil {
-			return fmt.Errorf("inspect paused task mode: %w", err)
-		}
-	}
-	ui := newTUIModel(client, pending)
+	ui := newTUIModel(app, state.Task.Status == core.TaskPaused)
 	preferences, preferencesPath, preferencesErr := loadUserPreferences()
 	ui.preferences = preferences
 	ui.preferencesPath = preferencesPath
@@ -322,26 +336,38 @@ func Run(client Client) error {
 	}
 	ui.sessionID = saved.ID
 	ui.workspace = workspace
-	ui.planMode = planMode
+	ui.runtime = runtime
+	ui.runtimeSessionID = saved.ID
+	ui.pending = state.Task.Status == core.TaskPaused
+	ui.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	ui.runningExecutionID = state.Task.ExecutionID
+	ui.activeExecutions = make(map[string]bool)
+	if state.Task.ExecutionID != "" {
+		ui.activeExecutions[state.Task.ExecutionID] = true
+	}
+	for _, queued := range state.Queue {
+		if queued.ExecutionID != "" {
+			ui.activeExecutions[queued.ExecutionID] = true
+		}
+	}
 	ui.restoreSessionState(saved)
 	ui.refreshSessionRail(saved.ID)
-	if pending && len(pendingHistory) > 0 {
-		ui.entries = transcriptEntries(pendingHistory, workspace)
-	}
 	ui.updateLayout()
 	ui.refreshPanels()
 	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
-	client.SetEventHandler(func(event core.Event) { program.Send(coreEventMsg{event: event}) })
-	client.SetUserInteractionAvailable(true)
+	ui.startRuntimeEvents()
+	runtime.SetUserInteractionAvailable(true)
 	defer func() {
 		if ui.mcpAuthCancel != nil {
 			ui.mcpAuthCancel()
 		}
 		if ui.pendingMCPInteraction != nil {
-			_ = client.ResolveUserInteraction(ui.pendingMCPInteraction.request.ID, json.RawMessage(`{"action":"cancel"}`))
+			_ = runtime.ResolveUserInteraction(ui.pendingMCPInteraction.request.ID, json.RawMessage(`{"action":"cancel"}`))
 		}
-		client.SetUserInteractionAvailable(false)
-		client.SetEventHandler(nil)
+		if ui.runtimeCancel != nil {
+			ui.runtimeCancel()
+		}
+		runtime.SetUserInteractionAvailable(false)
 	}()
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("run TUI: %w", err)
@@ -349,10 +375,10 @@ func Run(client Client) error {
 	return nil
 }
 
-func newTUIModel(client Client, pending bool) *tuiModel {
+func newTUIModel(client CoreClient, pending bool) *tuiModel {
 	input := textarea.New()
 	input.Placeholder = defaultInputPlaceholder
-	input.Prompt = "┃ "
+	input.Prompt = "› "
 	input.ShowLineNumbers = false
 	input.DynamicHeight = true
 	input.MinHeight = 2
@@ -377,9 +403,11 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 		status:              "Ready",
 		preferences:         defaultUIPreferences(),
 		agentUsage:          make(map[string]agentUsageSummary), agentUsageComplete: true,
+		activeExecutions: make(map[string]bool),
 	}
 	if client != nil {
 		model.attachmentLimits = normalizeAttachmentLimits(client.ProjectAttachmentLimits())
+		model.permissionMode = client.PermissionMode()
 	}
 	model.chat.SoftWrap = true
 	model.activity.SoftWrap = true
@@ -389,9 +417,166 @@ func newTUIModel(client Client, pending bool) *tuiModel {
 	return model
 }
 
-func (m *tuiModel) Init() tea.Cmd { return textarea.Blink }
+func (m *tuiModel) Init() tea.Cmd {
+	commands := []tea.Cmd{textarea.Blink, m.subscribeRuntime(), m.flushScrollback()}
+	if m.running && m.runningExecutionID != "" {
+		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
+	}
+	return tea.Batch(commands...)
+}
+
+func (m *tuiModel) startRuntimeEvents() {
+	if m.runtime != nil {
+		m.runtime.SetUserInteractionAvailable(true)
+	}
+}
+
+func (m *tuiModel) subscribeRuntime() tea.Cmd {
+	if m.runtime == nil || m.runtimeSessionID != m.sessionID {
+		return nil
+	}
+	if m.runtimeCancel != nil {
+		m.runtimeCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.runtimeCancel = cancel
+	runtime := m.runtime
+	cursor := m.eventCursor
+	return func() tea.Msg {
+		events, err := runtime.SubscribeEvents(ctx, cursor)
+		return runtimeStreamReadyMsg{events: events, err: err}
+	}
+}
+
+func nextRuntimeEvent(events <-chan core.Event) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		event, ok := <-events
+		if !ok {
+			return runtimeEventMsg{events: nil}
+		}
+		return runtimeEventMsg{event: event, events: events}
+	}
+}
+
+func waitForTurn(runtime SessionRuntime, executionID string) tea.Cmd {
+	if runtime == nil || executionID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		result, err := runtime.WaitTurn(context.Background(), executionID)
+		return taskFinishedMsg{result: taskResult{response: result.Response, coreResult: result, err: err}}
+	}
+}
+
+func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, resetUsage bool) (tea.Model, tea.Cmd) {
+	if m.runtime == nil || m.runtimeSessionID != m.sessionID {
+		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
+			m.status = "Could not open the session runtime."
+			m.addEntry("error", err.Error(), true)
+			return m, nil
+		}
+	}
+	if mode == core.StartIfIdle {
+		m.resetModelStream()
+		m.modelStreamFirstTokenLatency = 0
+		m.modelStreamFirstTokenRecorded = false
+		if resetUsage {
+			m.taskUsage = tokenUsageTotals{}
+		}
+		m.running = true
+		m.runtimeTask = true
+		m.cancelled = false
+		m.status = "Working… Press Esc to interrupt."
+	} else {
+		m.status = "Turn added to the Core queue."
+	}
+	runtime := m.runtime
+	request := core.TurnRequest{Input: input}
+	return m, func() tea.Msg {
+		submission, err := runtime.SubmitTurn(context.Background(), request, mode)
+		return turnSubmittedMsg{submission: submission, err: err, resetUsage: resetUsage}
+	}
+}
+
+func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if m.runtimeCancel != nil {
+		m.runtimeCancel()
+		m.runtimeCancel = nil
+	}
+	if m.runtime != nil {
+		m.runtime.SetUserInteractionAvailable(false)
+	}
+	runtime, err := m.client.OpenSessionRuntime(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	m.runtime = runtime
+	m.runtimeSessionID = sessionID
+	m.sessionID = sessionID
+	m.eventCursor = 0
+	m.runtime.SetUserInteractionAvailable(true)
+	m.activeExecutions = make(map[string]bool)
+	state, err := runtime.State(ctx)
+	if err != nil {
+		return err
+	}
+	m.queued = append(m.queued[:0], state.Queue...)
+	m.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	m.pending = state.Task.Status == core.TaskPaused
+	m.runningExecutionID = ""
+	if state.Task.ExecutionID != "" {
+		m.runningExecutionID = state.Task.ExecutionID
+		if m.running {
+			m.activeExecutions[state.Task.ExecutionID] = true
+		}
+	}
+	for _, queued := range state.Queue {
+		if queued.ExecutionID != "" {
+			m.activeExecutions[queued.ExecutionID] = true
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) refreshRuntimeProjection() error {
+	if m.runtime == nil || m.runtimeSessionID != m.sessionID {
+		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
+			return err
+		}
+	}
+	state, err := m.runtime.State(context.Background())
+	if err != nil {
+		return err
+	}
+	m.queued = append(m.queued[:0], state.Queue...)
+	m.pending = state.Task.Status == core.TaskPaused
+	m.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	if m.running && state.Task.ExecutionID != "" {
+		m.runningExecutionID = state.Task.ExecutionID
+		m.activeExecutions[state.Task.ExecutionID] = true
+	}
+	return nil
+}
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	model, command := m.update(message)
+	scrollback := m.flushScrollback()
+	if scrollback == nil {
+		return model, command
+	}
+	if command == nil {
+		return model, scrollback
+	}
+	return model, tea.Sequence(scrollback, command)
+}
+
+func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.ColorProfileMsg:
 		m.colorProfile = message.Profile
@@ -404,53 +589,30 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPanels()
 		return m, nil
 	case coreEventMsg:
-		var command tea.Cmd
-		switch message.event.Kind {
-		case core.EventTaskStarted:
-			if message.event.SessionID == m.sessionID {
-				m.startModelStream(message.event)
-				m.contextWindow = message.event.ContextWindow
-				m.contextInput = 0
-				m.contextEstimated = false
-			}
-		case core.EventTaskFinished:
-			m.finishModelStreamEvent(message.event)
-		case core.EventModelStream:
-			return m, m.queueModelStreamEvent(message.event)
-		case core.EventToolStarted, core.EventToolFinished:
-			m.updateToolActivity(message.event.Tool)
-		case core.EventAgentStarted, core.EventAgentFinished:
-			m.updateTeamActivity(message.event)
-		case core.EventApprovalRequired:
-			if message.event.Approval != nil {
-				request := toolApprovalRequestMsg{request: *message.event.Approval}
-				m.pendingApproval = &request
-				m.status = "Permission required: " + m.keyLabel("approve_tool") + " approve, " + m.keyLabel("deny_tool") + " deny."
-				m.addEntry("permission", formatToolApprovalWithKeys(request.request, m.workspace, m.keyLabel("approve_tool"), m.keyLabel("deny_tool")), true)
-			}
-		case core.EventApprovalCancelled:
-			if m.pendingApproval != nil && m.pendingApproval.request.ID == message.event.ApprovalID {
-				m.pendingApproval = nil
-				m.status = "Tool approval cancelled."
-			}
-		case core.EventUserInteractionRequired:
-			if message.event.Interaction != nil {
-				command = m.beginMCPInteraction(*message.event.Interaction)
-			}
-		case core.EventUserInteractionCancelled:
-			if m.pendingMCPInteraction != nil && m.pendingMCPInteraction.request.ID == message.event.InteractionID {
-				m.finishMCPInteraction("MCP interaction cancelled because its task ended.", false)
-			}
-		case core.EventUsage:
-			m.updateModelUsage(message.event.Usage, message.event.AgentID, message.event.ModelProfile,
-				message.event.Provider, message.event.Model, message.event.ContextWindow, message.event.EstimatedInputTokens)
-		case core.EventContextCompaction:
-			if message.event.SessionID == "" || message.event.SessionID == m.sessionID {
-				m.updateContextCompaction(message.event)
-			}
+		return m, m.handleRuntimeEvent(message.event)
+	case runtimeStreamReadyMsg:
+		if message.err != nil {
+			m.status = "Could not subscribe to session events: " + message.err.Error()
+			return m, nil
 		}
-		m.refreshPanels()
-		return m, command
+		return m, nextRuntimeEvent(message.events)
+	case runtimeEventMsg:
+		if message.events == nil {
+			if m.runtimeCancel != nil {
+				m.status = "Session event stream ended."
+			}
+			return m, nil
+		}
+		if message.event.Cursor > 0 {
+			if message.event.Cursor <= m.eventCursor {
+				return m, nextRuntimeEvent(message.events)
+			}
+			m.eventCursor = message.event.Cursor
+		}
+		if message.event.ExecutionID != "" && !m.activeExecutions[message.event.ExecutionID] {
+			return m, nextRuntimeEvent(message.events)
+		}
+		return m, tea.Batch(m.handleRuntimeEvent(message.event), nextRuntimeEvent(message.events))
 	case mcpCommandResultMsg:
 		m.finishMCPCommand(message)
 		m.refreshPanels()
@@ -486,12 +648,43 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			message.contextWindow, message.estimatedInputTokens)
 		m.refreshPanels()
 		return m, nil
+	case turnSubmittedMsg:
+		if message.err != nil {
+			m.running = false
+			m.runtimeTask = false
+			m.addEntry("error", "Could not submit turn: "+message.err.Error(), true)
+			m.status = "Turn was not accepted."
+			return m, nil
+		}
+		if message.submission.ExecutionID != "" {
+			m.activeExecutions[message.submission.ExecutionID] = true
+		}
+		if message.submission.Status == core.SubmissionQueued {
+			m.status = fmt.Sprintf("Turn queued at position %d.", message.submission.Position)
+			if err := m.refreshRuntimeProjection(); err != nil {
+				m.addEntry("error", err.Error(), true)
+			}
+			m.refreshPanels()
+			return m, nil
+		}
+		m.running = true
+		m.runtimeTask = true
+		m.runningExecutionID = message.submission.ExecutionID
+		return m, waitForTurn(m.runtime, message.submission.ExecutionID)
 	case taskFinishedMsg:
+		m.runtimeTask = false
+		m.runningExecutionID = ""
 		m.finishTask(message.result)
 		m.refreshSessionRail(m.sessionID)
 		m.refreshPanels()
-		if len(m.queued) > 0 && !m.planReview {
-			return m.startQueuedInput()
+		if err := m.refreshRuntimeProjection(); err != nil {
+			m.addEntry("error", "Could not refresh task state: "+err.Error(), true)
+		}
+		if m.running && m.runningExecutionID != "" {
+			return m, waitForTurn(m.runtime, m.runningExecutionID)
+		}
+		if m.exitAfterTask {
+			return m, tea.Quit
 		}
 		return m, nil
 	case imageInputReadyMsg:
@@ -533,11 +726,22 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if updated, command, handled := m.handleNarrowSessionSwitcherClick(message); handled {
 			return updated, command
 		}
-		if m.handleConversationClick(message) {
-			return m, nil
-		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.exitConfirm {
+			switch message.String() {
+			case "esc":
+				m.exitConfirm = false
+				m.status = "Exit cancelled."
+				return m, nil
+			case "i":
+				return m.confirmExit(true)
+			case "w":
+				return m.confirmExit(false)
+			default:
+				return m, nil
+			}
+		}
 		if m.pendingMCPInteraction != nil {
 			return m.handleMCPInteractionKey(message)
 		}
@@ -580,11 +784,6 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				return m, nil
 			}
-		}
-		if m.matchesKey("input_toggle_message_fold", message) && !m.sessionPicker && !m.modelPicker &&
-			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
-			m.toggleLatestLongMessage()
-			return m, nil
 		}
 		if m.matchesKey("jump_chat_bottom", message) && !m.sessionPicker && !m.modelPicker &&
 			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
@@ -720,14 +919,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.matchesKey("interrupt_send", message) {
 			if m.running {
 				if strings.TrimSpace(m.input.Value()) != "" {
-					queuedBefore := len(m.queued)
-					m.enqueueInput()
-					if len(m.queued) == queuedBefore {
-						return m, nil
-					}
+					return m.enqueueInput()
 				}
-				m.addEntry("notice", "Abandoning the current task; completed tool side effects are not rolled back.", true)
-				m.abandonOnFinish = true
 				m.interrupt()
 				return m, nil
 			}
@@ -918,9 +1111,85 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
+	if event.SessionID != "" && event.SessionID != m.sessionID {
+		return nil
+	}
+	var command tea.Cmd
+	switch event.Kind {
+	case core.EventTaskStarted:
+		if event.ExecutionID == m.runningExecutionID {
+			m.startModelStream(event)
+			m.contextWindow = event.ContextWindow
+			m.contextInput = 0
+			m.contextEstimated = false
+		}
+	case core.EventTaskQueued:
+		m.status = "Turn queued."
+	case core.EventTaskFinished:
+		m.finishModelStreamEvent(event)
+		if event.ExecutionID != "" {
+			delete(m.activeExecutions, event.ExecutionID)
+		}
+	case core.EventModelStream:
+		return m.queueModelStreamEvent(event)
+	case core.EventToolStarted, core.EventToolFinished:
+		m.updateToolActivity(event.Tool)
+	case core.EventAgentStarted, core.EventAgentFinished:
+		m.updateTeamActivity(event)
+	case core.EventApprovalRequired:
+		if event.Approval != nil {
+			request := toolApprovalRequestMsg{request: *event.Approval}
+			m.pendingApproval = &request
+			m.status = "Permission required: " + m.keyLabel("approve_tool") + " approve, " + m.keyLabel("deny_tool") + " deny."
+			m.addEntry("permission", formatToolApprovalWithKeys(request.request, m.workspace, m.keyLabel("approve_tool"), m.keyLabel("deny_tool")), true)
+		}
+	case core.EventApprovalCancelled:
+		if m.pendingApproval != nil && m.pendingApproval.request.ID == event.ApprovalID {
+			m.pendingApproval = nil
+			m.status = "Tool approval cancelled."
+		}
+	case core.EventUserInteractionRequired:
+		if event.Interaction != nil {
+			command = m.beginMCPInteraction(*event.Interaction)
+		}
+	case core.EventUserInteractionCancelled:
+		if m.pendingMCPInteraction != nil && m.pendingMCPInteraction.request.ID == event.InteractionID {
+			m.finishMCPInteraction("MCP interaction cancelled because its task ended.", false)
+		}
+	case core.EventUsage:
+		m.updateModelUsage(event.Usage, event.AgentID, event.ModelProfile,
+			event.Provider, event.Model, event.ContextWindow, event.EstimatedInputTokens)
+	case core.EventContextCompaction:
+		m.updateContextCompaction(event)
+	case core.EventRuntimeStreamFailed:
+		m.status = "Session event stream failed: " + event.Err
+	case core.EventAcceptanceRequired:
+		m.status = "Acceptance decision required. Use /continue to review it."
+	case core.EventExecutionBlocked:
+		m.status = "Execution blocked. Review the blocker and create a new read-only plan."
+	case core.EventModelRecoveryRequired, core.EventToolRecoveryRequired:
+		m.status = "Recovery decision required. Use /continue to review it."
+	}
+	m.refreshPanels()
+	return command
+}
+
 func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	raw := m.input.Value()
 	line := strings.TrimSpace(raw)
+	if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingUserQuestion && line != "" && !strings.HasPrefix(line, "/") {
+		return m.answerUserQuestion(line)
+	}
+	if strings.HasPrefix(line, "/continue ") {
+		return m.continueTask(line)
+	}
+	if strings.HasPrefix(line, "/plan replan") {
+		return m.replanAfterBlocker(line)
+	}
+	if model, command, handled := m.updatePlanAuthorization(line); handled {
+		return model, command
+	}
 	if len(m.attachments) > 0 && strings.HasPrefix(line, "/") {
 		m.status = "Remove attached images before running a slash command."
 		return m, nil
@@ -943,13 +1212,17 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.resetInput()
 		return m, nil
 	case "/exit":
-		return m, tea.Quit
+		return m.requestExit()
+	case "/exit confirm":
+		return m.confirmExit(true)
+	case "/exit wait":
+		return m.confirmExit(false)
 	case "/resume":
 		return m.openSessionPicker()
 	case "/fork":
 		return m.forkSession()
-	case "/fold":
-		return m.showFoldableMessages()
+	case "/details":
+		return m.showMessageDetails(line)
 	case "/goal":
 		return m.showGoal()
 	case "/rewind":
@@ -958,7 +1231,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	case "/queue":
 		return m.openQueuePicker()
 	case "/continue":
-		return m.continueTask()
+		return m.continueTask(line)
 	case "/new":
 		return m.newSession()
 	case "/discard":
@@ -979,11 +1252,16 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.openEffortPicker()
 	case "/plan":
 		return m.togglePlanMode()
+	case "/usage":
+		m.detailsOpen = !m.detailsOpen
+		m.refreshPanels()
+		m.status = "Usage details toggled."
+		m.resetInput()
+		return m, nil
 	case "/vim":
 		return m.toggleVimMode()
 	case "/theme":
-		m.status = fmt.Sprintf("Current theme: %s%s.",
-			m.preferences.Theme, animeLayoutLabel(m.preferences))
+		m.status = fmt.Sprintf("Current theme: %s. Use /theme dark or /theme light to change it.", m.preferences.Theme)
 		return m, nil
 	case "/keymap":
 		return m.openKeymapEditor()
@@ -1007,8 +1285,8 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(line, "/goal ") || strings.HasPrefix(line, "/goal\t") {
 		return m.setGoalFromCommand(line)
 	}
-	if strings.HasPrefix(line, "/fold ") || strings.HasPrefix(line, "/fold\t") {
-		return m.toggleLongMessageFromCommand(line)
+	if strings.HasPrefix(line, "/details ") || strings.HasPrefix(line, "/details\t") {
+		return m.showMessageDetails(line)
 	}
 	if strings.HasPrefix(line, "/model ") || strings.HasPrefix(line, "/model\t") {
 		return m.setModelFromCommand(line)
@@ -1046,19 +1324,63 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.status = "Could not inspect paused task."
 		return m, nil
 	} else if pending {
-		if err := m.branchPausedSession(); err != nil {
-			m.addEntry("error", err.Error(), true)
-			m.status = "Could not start a new session branch."
-			return m, nil
-		}
+		m.status = "A task is paused. Use /continue or /discard before starting another turn."
+		m.addEntry("notice", m.status, false)
+		return m, nil
 	}
 	m.addEntry("you", inputTranscriptText(input, raw), false)
 	m.resetInput()
 	m.cancelled = false
-	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: m.planMode})
-		return taskResult{response: response, err: err}
-	}, true)
+	return m.submitTurn(input, core.StartIfIdle, true)
+}
+
+func (m *tuiModel) requestExit() (tea.Model, tea.Cmd) {
+	if m.runtime == nil {
+		return m, tea.Quit
+	}
+	state, err := m.runtime.State(context.Background())
+	if err != nil {
+		m.status = "Could not inspect running turns before exit."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
+		m.exitConfirm = true
+		m.status = fmt.Sprintf("Active work and %d queued turn(s) · /exit confirm interrupts and cancels queued turns · /exit wait finishes them · Esc returns.", len(state.Queue))
+		m.resetInput()
+		return m, nil
+	}
+	return m, tea.Quit
+}
+
+func (m *tuiModel) confirmExit(cancelQueued bool) (tea.Model, tea.Cmd) {
+	if m.runtime == nil {
+		return m, tea.Quit
+	}
+	state, err := m.runtime.State(context.Background())
+	if err != nil {
+		m.addEntry("error", "Could not inspect the Core queue: "+err.Error(), true)
+		return m, nil
+	}
+	if cancelQueued {
+		for _, queued := range state.Queue {
+			m.runtime.Interrupt(queued.ExecutionID)
+		}
+	}
+	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
+		if cancelQueued {
+			m.runtime.Interrupt(state.Task.ExecutionID)
+		}
+		m.exitConfirm = false
+		m.exitAfterTask = true
+		m.running = true
+		m.runtimeTask = true
+		m.runningExecutionID = state.Task.ExecutionID
+		m.activeExecutions[state.Task.ExecutionID] = true
+		m.status = "Waiting for Core to stop before exit…"
+		return m, waitForTurn(m.runtime, state.Task.ExecutionID)
+	}
+	return m, tea.Quit
 }
 
 func (m *tuiModel) showGoal() (tea.Model, tea.Cmd) {
@@ -1296,52 +1618,45 @@ func (m *tuiModel) setGoalFromCommand(line string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) showFoldableMessages() (tea.Model, tea.Cmd) {
-	m.refreshPanels()
-	if len(m.foldableMessages) == 0 {
-		m.status = "No long user messages to fold."
-		m.addEntry("notice", m.status, false)
+func (m *tuiModel) showMessageDetails(line string) (tea.Model, tea.Cmd) {
+	var messages []tuiEntry
+	for _, entry := range m.entries {
+		if entry.role == "you" {
+			messages = append(messages, entry)
+		}
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 1 {
+		if len(messages) == 0 {
+			m.status = "No user messages to show."
+			m.addEntry("notice", m.status, false)
+		} else {
+			lines := []string{"User messages · use /details <n> to show one in terminal history:"}
+			for index, entry := range messages {
+				preview := strings.Join(strings.Fields(entry.text), " ")
+				if runes := []rune(preview); len(runes) > 72 {
+					preview = string(runes[:69]) + "…"
+				}
+				lines = append(lines, fmt.Sprintf("%d · %s", index+1, preview))
+			}
+			m.addEntry("notice", strings.Join(lines, "\n"), false)
+			m.status = "Choose a message with /details <n>."
+		}
 		m.resetInput()
 		return m, nil
 	}
-	lines := []string{"Long user messages:"}
-	for index, key := range m.foldableMessages {
-		state, preview := "collapsed", ""
-		if m.preferences.ExpandedMessages[key] {
-			state = "expanded"
-		}
-		for _, entry := range m.entries {
-			if entry.collapseKey != key {
-				continue
-			}
-			preview = strings.Join(strings.Fields(entry.text), " ")
-			if runes := []rune(preview); len(runes) > 72 {
-				preview = string(runes[:69]) + "…"
-			}
-			break
-		}
-		lines = append(lines, fmt.Sprintf("%d · %s · %s", index+1, state, preview))
-	}
-	lines = append(lines, "Use /fold <n> to toggle a message.")
-	m.addEntry("notice", strings.Join(lines, "\n"), false)
-	m.status = "Choose a long user message with /fold <n>."
-	m.resetInput()
-	return m, nil
-}
-
-func (m *tuiModel) toggleLongMessageFromCommand(line string) (tea.Model, tea.Cmd) {
-	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		m.status = "Use /fold <n> to toggle a listed long user message."
+		m.status = "Use /details <n> to show a user message in terminal history."
 		return m, nil
 	}
 	index, err := strconv.Atoi(fields[1])
-	if err != nil || index < 1 || index > len(m.foldableMessages) {
-		m.status = "Unknown long user message. Use /fold to list available messages."
+	if err != nil || index < 1 || index > len(messages) {
+		m.status = "Unknown message number. Use /details to list user messages."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	m.toggleMessageExpansion(m.foldableMessages[index-1])
+	m.addEntry("notice", fmt.Sprintf("User message %d:\n%s", index, messages[index-1].text), false)
+	m.status = fmt.Sprintf("Displayed user message %d in terminal history.", index)
 	m.resetInput()
 	return m, nil
 }
@@ -1506,48 +1821,25 @@ func reasoningEffortLabel(value string) string {
 
 func (m *tuiModel) setThemeFromCommand(line string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(line)
-	if len(fields) < 2 || len(fields) > 3 {
-		m.status = "Theme selection was not recognized."
+	if len(fields) != 2 {
+		m.status = "Use /theme dark or /theme light."
 		return m, nil
 	}
 	theme := themeName(strings.ToLower(fields[1]))
-	switch theme {
-	case themeDark, themeLight:
-		if len(fields) != 2 {
-			m.status = "Theme selection was not recognized."
-			return m, nil
-		}
-		m.preferences.Theme = theme
-	case themeAnime:
-		if len(fields) == 3 {
-			layout := animeLayout(strings.ToLower(fields[2]))
-			if layout != layoutFocus && layout != layoutStudio {
-				m.status = "Anime layout must be focus or studio."
-				return m, nil
-			}
-			m.preferences.AnimeLayout = layout
-		}
-		m.preferences.Theme = themeAnime
-	default:
-		m.status = "Theme selection was not recognized."
+	if theme != themeDark && theme != themeLight {
+		m.status = "Theme must be dark or light."
 		return m, nil
 	}
+	m.preferences.Theme = theme
 	if err := saveUIPreferences(m.preferencesPath, m.preferences); err != nil {
 		m.status = "Theme changed for this session; preference could not be saved."
 	} else {
-		m.status = "Theme set to " + string(m.preferences.Theme) + animeLayoutLabel(m.preferences) + "."
+		m.status = "Theme set to " + string(m.preferences.Theme) + "."
 	}
 	applyTextareaTheme(&m.input, m.preferences.Theme)
 	m.updateLayout()
 	m.refreshPanels()
 	return m, nil
-}
-
-func animeLayoutLabel(preferences uiPreferences) string {
-	if preferences.Theme != themeAnime {
-		return ""
-	}
-	return " · " + string(preferences.AnimeLayout)
 }
 
 func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
@@ -1567,16 +1859,18 @@ func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	display := inputTranscriptText(input, raw)
-	m.queued = append(m.queued, queuedInput{
-		text: raw, display: display, attachments: shallowCopyImageAttachments(m.attachments), planMode: m.planMode,
-	})
-	m.addEntry("queued", display, false)
-	m.status = fmt.Sprintf("Queued %d message(s). %s adds another · %s interrupts and sends.", len(m.queued), m.keyLabel("send"), m.keyLabel("interrupt_send"))
+	m.addEntry("you", display, false)
+	m.status = "Queueing this turn in Core…"
 	m.resetInput()
-	return m, nil
+	return m.submitTurn(input, core.QueueInput, false)
 }
 
 func (m *tuiModel) openQueuePicker() (tea.Model, tea.Cmd) {
+	if err := m.refreshRuntimeProjection(); err != nil {
+		m.status = "Could not load the Core queue."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
 	if len(m.queued) == 0 {
 		m.status = "No queued messages."
 		m.resetInput()
@@ -1584,7 +1878,7 @@ func (m *tuiModel) openQueuePicker() (tea.Model, tea.Cmd) {
 	}
 	m.queuePicker = true
 	m.queueIndex = min(m.queueIndex, len(m.queued)-1)
-	m.status = "Queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " edit · " + m.keyLabel("queue_remove") + " removes · Esc closes."
+	m.status = "Core queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " details · " + m.keyLabel("queue_remove") + " cancel."
 	m.resetInput()
 	return m, nil
 }
@@ -1595,17 +1889,8 @@ func (m *tuiModel) editQueuedInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	queued := m.queued[m.queueIndex]
-	m.queued = append(m.queued[:m.queueIndex], m.queued[m.queueIndex+1:]...)
-	m.removeQueuedEntry(queued.display)
-	m.setInputValue(queued.text)
-	m.attachments = shallowCopyImageAttachments(queued.attachments)
-	m.nextAttachmentID = nextImageAttachmentID(m.attachments)
-	m.planMode = queued.planMode
-	m.queuePicker = false
-	m.status = "Editing a queued message; Enter resubmits it."
-	m.updateCommandSuggestions()
-	m.updateLayout()
-	m.refreshPanels()
+	m.addEntry("notice", fmt.Sprintf("Queued turn %d · %s · execution %s", queued.Position, queued.Status, queued.ExecutionID), false)
+	m.status = "Queued input is managed by Core and cannot be edited here."
 	return m, nil
 }
 
@@ -1613,102 +1898,138 @@ func (m *tuiModel) deleteQueuedInput() {
 	if m.queueIndex < 0 || m.queueIndex >= len(m.queued) {
 		return
 	}
-	text := m.queued[m.queueIndex].display
-	m.queued = append(m.queued[:m.queueIndex], m.queued[m.queueIndex+1:]...)
-	m.removeQueuedEntry(text)
+	queued := m.queued[m.queueIndex]
+	if m.runtime == nil || !m.runtime.Interrupt(queued.ExecutionID) {
+		m.status = "Core could not cancel this queued turn."
+		return
+	}
+	if err := m.refreshRuntimeProjection(); err != nil {
+		m.status = "Turn cancellation was requested, but the queue could not be refreshed."
+		return
+	}
 	if len(m.queued) == 0 {
 		m.queuePicker = false
-		m.status = "Queue is empty."
+		m.status = "Queued turn cancelled."
 	} else {
 		m.queueIndex = min(m.queueIndex, len(m.queued)-1)
-		m.status = fmt.Sprintf("%d message(s) remain queued.", len(m.queued))
+		m.status = fmt.Sprintf("Queued turn cancelled · %d remain.", len(m.queued))
 	}
 	m.refreshPanels()
-}
-
-func (m *tuiModel) removeQueuedEntry(text string) {
-	for index := len(m.entries) - 1; index >= 0; index-- {
-		if m.entries[index].role == "queued" && m.entries[index].text == text {
-			m.entries = append(m.entries[:index], m.entries[index+1:]...)
-			return
-		}
-	}
 }
 
 func (m *tuiModel) clearQueue() {
 	m.queued = nil
 	m.queuePicker = false
 	m.queueIndex = 0
-	kept := m.entries[:0]
-	for _, entry := range m.entries {
-		if entry.role != "queued" {
-			kept = append(kept, entry)
-		}
-	}
-	m.entries = kept
 	m.refreshPanels()
 }
 
-func (m *tuiModel) startQueuedInput() (tea.Model, tea.Cmd) {
-	if len(m.queued) == 0 {
-		return m, nil
-	}
-	queued := m.queued[0]
-	m.queued = m.queued[1:]
-	input, inputErr := draftTaskInput(queued.text, queued.attachments)
-	if inputErr != nil {
-		m.queued = append([]queuedInput{queued}, m.queued...)
-		m.addEntry("error", "Queued image message could not be prepared: "+inputErr.Error(), true)
-		m.refreshPanels()
-		if len(m.queued) > 0 {
-			return m.startQueuedInput()
-		}
-		return m, nil
-	}
-	if pending, err := m.hasPending(); err != nil {
-		m.queued = append([]queuedInput{queued}, m.queued...)
-		m.addEntry("error", "Could not inspect paused task: "+err.Error(), true)
-		return m, nil
-	} else if pending {
-		if m.abandonOnFinish {
-			if _, err := m.client.DiscardTask(context.Background(), m.sessionID); err != nil {
-				m.queued = append([]queuedInput{queued}, m.queued...)
-				m.addEntry("error", "Could not discard interrupted task: "+err.Error(), true)
-				return m, nil
-			}
-			m.pending = false
-			m.abandonOnFinish = false
-		} else if err := m.branchPausedSession(); err != nil {
-			m.queued = append([]queuedInput{queued}, m.queued...)
-			m.addEntry("error", "Could not branch paused task: "+err.Error(), true)
-			return m, nil
-		}
-	}
-	for index := len(m.entries) - 1; index >= 0; index-- {
-		if m.entries[index].role == "queued" && m.entries[index].text == queued.display {
-			m.entries[index].role = "you"
-			break
-		}
-	}
-	m.planMode = queued.planMode
-	m.cancelled = false
-	m.resetInput()
-	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: queued.planMode})
-		return taskResult{response: response, err: err}
-	}, true)
+func (m *tuiModel) acceptPlan() (tea.Model, tea.Cmd) {
+	return m.implementProposedPlan(core.PlanImplementSameContext)
 }
 
-func (m *tuiModel) acceptPlan() (tea.Model, tea.Cmd) {
+func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.Model, tea.Cmd) {
+	if m.runtime == nil || m.proposedPlan == nil || m.planSourceExecutionID == "" {
+		m.status = "There is no completed plan to implement."
+		return m, nil
+	}
+	runtime := m.runtime
+	client := m.client
+	sourceID := m.planSourceExecutionID
+	authorization := m.planAuthorization
 	m.planReview = false
-	m.planMode = false
-	m.addEntry("you", "Implement the approved plan.", false)
 	m.resetInput()
-	input, _ := core.NewTaskInput("Implement the approved plan.")
-	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.RunTask(ctx, core.TaskRequest{SessionID: m.sessionID, Input: input, PlanMode: false})
-		return taskResult{response: response, err: err}
-	}, true)
+	m.running = true
+	m.runtimeTask = true
+	m.status = "Starting the approved plan…"
+	return m, func() tea.Msg {
+		implementation, err := runtime.ImplementPlan(context.Background(), sourceID, mode, authorization)
+		if err != nil {
+			return taskFinishedMsg{result: taskResult{err: err}}
+		}
+		waitRuntime := runtime
+		if implementation.SessionID != runtime.SessionID() {
+			waitRuntime, err = client.OpenSessionRuntime(context.Background(), implementation.SessionID)
+			if err != nil {
+				return taskFinishedMsg{result: taskResult{targetSessionID: implementation.SessionID, err: err}}
+			}
+		}
+		result, err := waitRuntime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)
+		return taskFinishedMsg{result: taskResult{response: result.Response, coreResult: result, targetSessionID: implementation.SessionID, err: err}}
+	}
+}
+
+func (m *tuiModel) updatePlanAuthorization(line string) (tea.Model, tea.Cmd, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || fields[0] != "/plan" || !m.planReview {
+		return m, nil, false
+	}
+	switch {
+	case len(fields) == 2 && fields[1] == "implement":
+		model, command := m.implementProposedPlan(core.PlanImplementSameContext)
+		return model, command, true
+	case len(fields) == 3 && fields[1] == "implement" && fields[2] == "new":
+		model, command := m.implementProposedPlan(core.PlanImplementNewContext)
+		return model, command, true
+	case len(fields) == 3 && fields[1] == "implement" && fields[2] == "same":
+		model, command := m.implementProposedPlan(core.PlanImplementSameContext)
+		return model, command, true
+	case len(fields) == 2 && fields[1] == "stay":
+		m.planReview = false
+		m.proposedPlan = nil
+		m.status = "Plan saved in the conversation; permission remains read-only."
+	case len(fields) == 2 && fields[1] == "allow-network":
+		m.planAuthorization.AllowNetwork = !m.planAuthorization.AllowNetwork
+		m.status = fmt.Sprintf("Plan network access: %t.", m.planAuthorization.AllowNetwork)
+	case len(fields) == 3 && fields[1] == "allow-tool":
+		m.planAuthorization.AllowedTools = appendUnique(m.planAuthorization.AllowedTools, fields[2])
+		m.status = "Allowed tool added to this plan."
+	case len(fields) >= 3 && fields[1] == "allow-command":
+		command := strings.TrimSpace(strings.TrimPrefix(line, "/plan allow-command"))
+		m.planAuthorization.ApprovedHighRiskCommands = appendUnique(m.planAuthorization.ApprovedHighRiskCommands, command)
+		m.status = "Exact high-risk command added to this plan."
+	case len(fields) >= 3 && fields[1] == "allow-path":
+		path := fields[2]
+		if !filepath.IsAbs(path) {
+			m.status = "Approved paths must be absolute."
+			return m, nil, true
+		}
+		access := publictool.PathReadWrite
+		if len(fields) >= 4 && fields[3] == "read" {
+			access = publictool.PathRead
+		} else if len(fields) >= 4 && fields[3] != "read_write" {
+			m.status = "Path access must be read or read_write."
+			return m, nil, true
+		}
+		m.planAuthorization.Paths = append(m.planAuthorization.Paths, publictool.PathGrant{Path: path, Access: access})
+		m.status = "Path grant added to this plan."
+	default:
+		m.status = "Plan options: /plan allow-network, allow-path <absolute-path> [read|read_write], allow-tool <name>, allow-command <exact>, implement [same|new], stay."
+	}
+	m.resetInput()
+	return m, nil, true
+}
+
+func appendUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
@@ -1717,11 +2038,23 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		m.addEntry("notice", m.status, false)
 		return m, nil
 	}
+	mode := m.currentPermissionMode()
+	coreMode := mode
+	if !m.planMode {
+		coreMode = core.PermissionReadOnly
+	} else if coreMode == "" {
+		coreMode = core.PermissionWorkspace
+	}
+	if err := m.client.SetPermissionMode(coreMode); err != nil {
+		m.status = "Could not change Core permission mode."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
 	m.planMode = !m.planMode
 	if m.planMode {
-		m.status = "Plan mode · read-only tools only; permission still controls approval for visible tools."
+		m.status = "Plan mode · tools are restricted to read-only."
 	} else {
-		m.status = "Build mode."
+		m.status = "Plan mode off · " + permissionModeLabel(mode) + " permissions restored."
 	}
 	m.addEntry("notice", m.status, false)
 	m.resetInput()
@@ -1825,7 +2158,7 @@ func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
 	}
 	m.permissionIndex = 0
 	for index, option := range tuiPermissionOptions {
-		if option.mode == m.client.PermissionMode() {
+		if option.mode == m.currentPermissionMode() {
 			m.permissionIndex = index
 			break
 		}
@@ -1845,7 +2178,7 @@ func (m *tuiModel) cyclePermissionMode() (tea.Model, tea.Cmd) {
 	}
 	currentIndex := -1
 	for index, option := range tuiPermissionOptions {
-		if option.mode == m.client.PermissionMode() {
+		if option.mode == m.currentPermissionMode() {
 			currentIndex = index
 			break
 		}
@@ -1886,11 +2219,28 @@ func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput boo
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	if err := m.client.SetPermissionMode(mode); err != nil {
+	valid := false
+	for _, option := range tuiPermissionOptions {
+		if option.mode == mode {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		m.status = "Unknown permission mode."
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
+	coreMode := mode
+	if m.planMode {
+		coreMode = core.PermissionReadOnly
+	}
+	if err := m.client.SetPermissionMode(coreMode); err != nil {
 		m.status = err.Error()
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
+	m.permissionMode = mode
 	m.permissionMenu = false
 	if resetInput {
 		m.resetInput()
@@ -1899,14 +2249,23 @@ func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput boo
 		m.updateLayout()
 	}
 	m.status = fmt.Sprintf("Permission mode: %s.", permissionModeLabel(mode))
-	notice := fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode))
 	if m.planMode {
-		m.status += " Plan still caps tools at read-only."
-		notice += " Plan mode only exposes read-only tools; this setting controls approval for visible tools such as web."
+		m.status += " Plan mode still limits tools to read-only."
 	}
+	notice := fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode))
 	m.addEntry("notice", notice, false)
 	m.refreshPanels()
 	return m, nil
+}
+
+func (m *tuiModel) currentPermissionMode() core.PermissionMode {
+	if m.permissionMode != "" {
+		return m.permissionMode
+	}
+	if m.client != nil {
+		return m.client.PermissionMode()
+	}
+	return core.PermissionReadOnly
 }
 
 func permissionModeLabel(mode core.PermissionMode) string {
@@ -1923,11 +2282,11 @@ func permissionModeDescription(mode core.PermissionMode) string {
 	case core.PermissionReadOnly:
 		return "Read workspace files; ask before web; block writes and shell"
 	case core.PermissionWorkspace:
-		return "Workspace file operations; commands and web need approval"
+		return "Workspace file operations and sandboxed commands; network and external paths need plan approval"
 	case core.PermissionAsk:
-		return "Read workspace files; ask before every other tool"
+		return "Read workspace files; approve other tool operations in the plan"
 	case core.PermissionFullAccess:
-		return "Allow all tools; shell can access paths outside the workspace"
+		return "Current-user files and network stay in the OS sandbox; high-risk commands need plan approval"
 	default:
 		return ""
 	}
@@ -1939,8 +2298,8 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 	}
 	request := m.pendingApproval
 	m.pendingApproval = nil
-	if m.client != nil {
-		if err := m.client.ResolveApproval(request.request.ID, approved); err != nil {
+	if m.runtime != nil {
+		if err := m.runtime.ResolveApproval(request.request.ID, approved); err != nil {
 			m.status = "Could not resolve tool approval: " + err.Error()
 			m.addEntry("error", m.status, true)
 			return
@@ -1979,6 +2338,10 @@ func formatToolApprovalWithKeys(request core.ApprovalRequest, workspace, approve
 }
 
 func (m *tuiModel) openSessionPicker() (tea.Model, tea.Cmd) {
+	if m.running || len(m.queued) > 0 {
+		m.status = "Interrupt the active turn and clear queued work before switching sessions."
+		return m, nil
+	}
 	m.showArchived = false
 	if err := m.reloadSessionList(m.sessionID); err != nil {
 		m.status = "Could not load sessions."
@@ -2152,42 +2515,29 @@ func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
 		m.sessionPicker = false
 		return m, nil
 	}
+	if m.running || len(m.queued) > 0 {
+		m.status = "Interrupt the active turn and clear queued work before switching sessions."
+		return m, nil
+	}
 	saved := m.sessionList[m.sessionIndex]
-	m.sessionID = saved.ID
-	m.clearQueue()
-	m.restoreSessionState(saved)
-	m.planMode = false
-	m.planReview = false
-	m.pending = false
-	if pending, err := m.hasPending(); err != nil {
+	if err := m.bindSessionRuntime(context.Background(), saved.ID); err != nil {
 		m.sessionPicker = false
-		m.status = "Could not inspect paused task."
+		m.status = "Could not open the selected session."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
-	} else {
-		m.pending = pending
 	}
-	if m.pending {
-		planMode, err := m.client.PendingPlanMode(context.Background(), m.sessionID)
-		if err != nil {
-			m.sessionPicker = false
-			m.status = "Could not inspect paused task mode."
-			m.addEntry("error", err.Error(), true)
-			return m, nil
-		}
-		m.planMode = planMode
-	}
-	if m.pending {
-		if history, err := m.client.PendingHistory(context.Background(), m.sessionID); err == nil && len(history) > 0 {
-			m.entries = transcriptEntries(history, m.workspace)
-		}
-	}
+	m.restoreSessionState(saved)
+	m.planReview = false
 	m.sessionPicker = false
 	m.status = "Session restored."
 	m.resetInput()
 	m.refreshPanels()
 	m.updateLayout()
-	return m, nil
+	commands := []tea.Cmd{m.subscribeRuntime()}
+	if m.running && m.runningExecutionID != "" {
+		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
+	}
+	return m, tea.Batch(commands...)
 }
 
 func (m *tuiModel) beginSessionRename() (tea.Model, tea.Cmd) {
@@ -2263,7 +2613,6 @@ func (m *tuiModel) deleteSelectedSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	m.forgetExpandedMessages(saved.ID)
 	m.deleteConfirm = false
 	if saved.ID == m.sessionID {
 		m.sessionPicker = false
@@ -2299,40 +2648,201 @@ func (m *tuiModel) deleteSelectedSession() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) continueTask() (tea.Model, tea.Cmd) {
-	if m.client == nil {
-		m.status = "Task recovery is unavailable."
-		m.addEntry("error", m.status, true)
-		return m, nil
+func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
+	if m.runtime == nil || m.runtimeSessionID != m.sessionID {
+		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
+			m.status = "Task recovery is unavailable."
+			m.addEntry("error", err.Error(), true)
+			return m, nil
+		}
 	}
-	pending, err := m.client.HasPending(context.Background(), m.sessionID)
+	requests, err := m.runtime.PendingRequests(context.Background())
 	if err != nil {
-		m.status = "Could not inspect interrupted task."
+		m.status = "Could not inspect pending task decisions."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	if !pending {
-		m.pending = false
-		m.status = "No paused task in this session."
-		m.addEntry("notice", m.status, false)
-		m.resetInput()
-		return m, nil
+	m.pendingRequests = requests
+	if len(requests) == 0 {
+		state, stateErr := m.runtime.State(context.Background())
+		if stateErr != nil {
+			m.addEntry("error", stateErr.Error(), true)
+			return m, nil
+		}
+		if state.Task.Status != core.TaskPaused {
+			m.pending = false
+			m.status = "No paused task in this session."
+			m.resetInput()
+			return m, nil
+		}
+		return m.startRecovery(nil)
 	}
+	request := requests[0]
+	if m.pendingRequest != nil && m.pendingRequest.Kind == request.Kind {
+		request = *m.pendingRequest
+	}
+	m.pendingRequest = &request
 	m.pending = true
-	planMode, err := m.client.PendingPlanMode(context.Background(), m.sessionID)
-	if err != nil {
-		m.status = "Could not inspect paused task mode."
+	switch request.Kind {
+	case core.PendingApproval:
+		if request.Approval != nil {
+			m.pendingApproval = &toolApprovalRequestMsg{request: *request.Approval}
+			m.status = "Approve or deny the pending tool call."
+			m.addEntry("permission", formatToolApprovalWithKeys(*request.Approval, m.workspace, m.keyLabel("approve_tool"), m.keyLabel("deny_tool")), true)
+		}
+	case core.PendingUserQuestion:
+		if request.UserQuestion != nil {
+			question := request.UserQuestion
+			text := question.Question
+			if len(question.Options) > 0 {
+				text += "\nOptions: " + strings.Join(question.Options, " · ")
+			}
+			m.status = "Answer the question, then press Enter."
+			m.addEntry("question", text, true)
+		}
+	case core.PendingAcceptanceRequest:
+		if request.Acceptance != nil {
+			m.status = "Acceptance decision required: /continue confirm or /continue revise."
+			m.addEntry("notice", acceptanceSummary(*request.Acceptance), true)
+		}
+	case core.PendingToolRecovery:
+		m.status = "A tool may have run before interruption: /continue retry or /continue skip."
+		for _, pending := range requests {
+			if pending.ToolRecovery != nil {
+				m.addEntry("notice", fmt.Sprintf("Tool recovery: %s · invocation %s", pending.ToolRecovery.Tool, pending.ToolRecovery.InvocationID), true)
+			}
+		}
+	case core.PendingModelRecoveryRequest:
+		m.status = "Model request recovery required: /continue retry when the provider is ready."
+		if request.ModelRecovery != nil {
+			failure := request.ModelRecovery.Failure
+			detail := string(failure.Category)
+			if failure.Code != "" {
+				detail += " · " + failure.Code
+			}
+			if failure.StatusCode != 0 {
+				detail += fmt.Sprintf(" · HTTP %d", failure.StatusCode)
+			}
+			if !failure.RetryNotBefore.IsZero() {
+				detail += " · retry after " + failure.RetryNotBefore.Local().Format("15:04:05")
+			}
+			m.addEntry("notice", "Model request failed: "+detail, true)
+		}
+	case core.PendingExecutionBlocker:
+		m.planMode = true
+		m.status = "Execution blocked: use /plan replan [feedback] or /discard."
+		if request.Blocker != nil {
+			m.addEntry("error", request.Blocker.Tool+": "+request.Blocker.Reason, true)
+		}
+	case core.PendingUserInteraction:
+		if request.Interaction != nil {
+			return m, m.beginMCPInteraction(*request.Interaction)
+		}
+	default:
+		m.status = "This task is waiting for a Core decision."
+	}
+	m.resetInput()
+	return m, nil
+}
+
+func (m *tuiModel) answerUserQuestion(answer string) (tea.Model, tea.Cmd) {
+	if m.pendingRequest == nil || m.pendingRequest.UserQuestion == nil || m.runtime == nil {
+		return m, nil
+	}
+	question := *m.pendingRequest.UserQuestion
+	if len(question.Options) > 0 && !containsString(question.Options, answer) {
+		m.status = "Choose one of the listed options or enter a matching answer."
+		return m, nil
+	}
+	if err := m.runtime.ResolveUserQuestion(context.Background(), core.UserQuestionAnswer{
+		RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer,
+	}); err != nil {
+		m.status = "Could not submit the answer."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	m.planMode = planMode
-	m.addEntry("notice", "Continuing the paused task; a model request or tool call may repeat.", true)
+	m.addEntry("you", answer, false)
+	m.pendingRequest = nil
+	m.pending = false
 	m.resetInput()
-	m.cancelled = false
-	return m.startTask(func(ctx context.Context) taskResult {
-		response, err := m.client.ResumeTask(ctx, m.sessionID)
-		return taskResult{response: response, err: err}
-	}, false)
+	return m.waitForRecoveredExecution(question.ExecutionID)
+}
+
+func (m *tuiModel) startRecovery(options *core.ExecutionOptions) (tea.Model, tea.Cmd) {
+	if m.runtime == nil {
+		return m, nil
+	}
+	runtime := m.runtime
+	var command tea.Cmd = func() tea.Msg {
+		var submission core.TurnSubmission
+		var err error
+		if options == nil {
+			submission, err = runtime.Recover(context.Background())
+		} else {
+			submission, err = runtime.Recover(context.Background(), *options)
+		}
+		if err != nil {
+			return taskFinishedMsg{result: taskResult{err: err}}
+		}
+		return turnSubmittedMsg{submission: submission}
+	}
+	m.running = true
+	m.runtimeTask = true
+	m.status = "Recovering the paused task…"
+	m.resetInput()
+	return m, command
+}
+
+func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea.Cmd) {
+	if executionID == "" {
+		return m, nil
+	}
+	m.running = true
+	m.runtimeTask = true
+	m.runningExecutionID = executionID
+	m.activeExecutions[executionID] = true
+	m.status = "Continuing after your answer…"
+	return m, waitForTurn(m.runtime, executionID)
+}
+
+func acceptanceSummary(pending core.PendingAcceptance) string {
+	var lines []string
+	if pending.Candidate != "" {
+		lines = append(lines, pending.Candidate)
+	}
+	for _, criterion := range pending.Criteria {
+		lines = append(lines, "• "+criterion.Description)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
+	if m.pendingRequest == nil || m.pendingRequest.Blocker == nil || m.runtime == nil {
+		m.status = "There is no blocked execution to re-plan."
+		return m, nil
+	}
+	feedback := strings.TrimSpace(strings.TrimPrefix(line, "/plan replan"))
+	if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	if _, err := m.runtime.DiscardPaused(context.Background()); err != nil {
+		m.addEntry("error", "Could not discard the blocked execution: "+err.Error(), true)
+		return m, nil
+	}
+	m.pendingRequest = nil
+	m.pending = false
+	m.planMode = true
+	if feedback == "" {
+		feedback = "Create a revised plan that avoids the blocked operation."
+	}
+	input, err := core.NewTaskInput(feedback)
+	if err != nil {
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
+	m.addEntry("you", feedback, false)
+	return m.submitTurn(input, core.StartIfIdle, true)
 }
 
 func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
@@ -2342,7 +2852,11 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	m.sessionID = saved.ID
+	if err := m.bindSessionRuntime(context.Background(), saved.ID); err != nil {
+		m.status = "Session was created, but its runtime could not be opened."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
 	m.sessionSettings = saved.Settings
 	m.clearQueue()
 	m.entries = nil
@@ -2360,7 +2874,6 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.contextEstimated = false
 	m.taskUsage = tokenUsageTotals{}
 	m.sessionUsage = tokenUsageTotals{}
-	m.planMode = false
 	m.planReview = false
 	m.pending = false
 	m.status = "New session."
@@ -2368,7 +2881,7 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.resetInput()
 	m.refreshPanels()
 	m.updateLayout()
-	return m, nil
+	return m, m.subscribeRuntime()
 }
 
 func (m *tuiModel) forkSession() (tea.Model, tea.Cmd) {
@@ -2378,10 +2891,13 @@ func (m *tuiModel) forkSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
-	m.sessionID = branch.ID
+	if err := m.bindSessionRuntime(context.Background(), branch.ID); err != nil {
+		m.status = "Session was forked, but its runtime could not be opened."
+		m.addEntry("error", err.Error(), true)
+		return m, nil
+	}
 	m.restoreSessionState(branch)
 	m.clearQueue()
-	m.planMode = false
 	m.planReview = false
 	m.pending = false
 	m.status = "Forked session history into a new session."
@@ -2389,7 +2905,7 @@ func (m *tuiModel) forkSession() (tea.Model, tea.Cmd) {
 	m.resetInput()
 	m.refreshPanels()
 	m.updateLayout()
-	return m, nil
+	return m, m.subscribeRuntime()
 }
 
 func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
@@ -2423,23 +2939,10 @@ func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) branchPausedSession() error {
-	branch, err := m.client.ForkSession(context.Background(), m.sessionID)
-	if err != nil {
-		return err
-	}
-	m.sessionID = branch.ID
-	m.restoreSessionState(branch)
-	m.refreshSessionRail(m.sessionID)
-	m.pending = false
-	m.status = "Started a new branch from the last completed turn."
-	m.addEntry("notice", "Started a new branch from completed history; the paused task remains in its original session.", false)
-	return nil
-}
-
 func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
+	m.printedEntryCount = 0
 	m.activities = nil
 	m.teamActivities = nil
 	m.modelStreamFirstTokenLatency = 0
@@ -2678,12 +3181,19 @@ func (m *tuiModel) compact() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
-	if m.client == nil {
+	if m.runtime == nil && m.sessionID != "" {
+		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
+			m.status = "Task recovery is unavailable."
+			m.addEntry("error", err.Error(), true)
+			return m, nil
+		}
+	}
+	if m.runtime == nil {
 		m.status = "Task recovery is unavailable."
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	discarded, err := m.client.DiscardTask(context.Background(), m.sessionID)
+	discarded, err := m.runtime.DiscardPaused(context.Background())
 	if err != nil {
 		m.status = "Could not discard interrupted task."
 		m.addEntry("error", err.Error(), true)
@@ -2696,9 +3206,8 @@ func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
 	}
 	m.addEntry("notice", m.status, false)
 	m.resetInput()
-	if len(m.queued) > 0 {
-		return m.startQueuedInput()
-	}
+	m.pendingRequest = nil
+	_ = m.refreshRuntimeProjection()
 	return m, nil
 }
 
@@ -2713,12 +3222,20 @@ func (m *tuiModel) resetInput() {
 }
 
 func (m *tuiModel) hasPending() (bool, error) {
-	if m.client == nil {
+	if m.runtime == nil && m.sessionID != "" {
+		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
+			return false, err
+		}
+	}
+	if m.runtime == nil {
 		return false, nil
 	}
-	pending, err := m.client.HasPending(context.Background(), m.sessionID)
-	m.pending = pending
-	return pending, err
+	state, err := m.runtime.State(context.Background())
+	if err != nil {
+		return false, err
+	}
+	m.pending = state.Task.Status == core.TaskPaused
+	return m.pending, nil
 }
 
 func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUsage bool) (tea.Model, tea.Cmd) {
@@ -2740,6 +3257,14 @@ func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUs
 }
 
 func (m *tuiModel) interrupt() {
+	if m.running && m.runtimeTask && m.runtime != nil && m.runningExecutionID != "" && !m.cancelled {
+		m.cancelled = true
+		m.status = "Interrupt requested…"
+		if !m.runtime.Interrupt(m.runningExecutionID) {
+			m.status = "Core could not interrupt the current turn."
+		}
+		return
+	}
 	if m.running && m.cancel != nil && !m.cancelled {
 		m.cancelled = true
 		m.status = "Cancelling task…"
@@ -2750,6 +3275,13 @@ func (m *tuiModel) interrupt() {
 func (m *tuiModel) finishTask(result taskResult) {
 	m.running = false
 	m.pendingApproval = nil
+	m.runtimeTask = false
+	if executionID := result.coreResult.ExecutionID; executionID != "" {
+		delete(m.activeExecutions, executionID)
+		if m.runningExecutionID == executionID {
+			m.runningExecutionID = ""
+		}
+	}
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
@@ -2769,21 +3301,21 @@ func (m *tuiModel) finishTask(result taskResult) {
 	if result.notice != "" {
 		m.addEntry("notice", result.notice, false)
 	}
+	if result.targetSessionID != "" && result.targetSessionID != m.sessionID {
+		saved, err := m.client.GetSession(context.Background(), result.targetSessionID)
+		if err != nil {
+			m.addEntry("error", "Plan started in a new session, but the session could not be loaded: "+err.Error(), true)
+		} else if err := m.bindSessionRuntime(context.Background(), saved.ID); err != nil {
+			m.addEntry("error", "Plan started in a new session, but its runtime could not be opened: "+err.Error(), true)
+		} else {
+			m.restoreSessionState(saved)
+			m.status = "Plan implementation moved to a new session."
+		}
+	}
 
 	pending, pendingErr := m.hasPending()
 	if pendingErr != nil {
 		m.addEntry("error", "Could not inspect interrupted task: "+pendingErr.Error(), true)
-	}
-	if m.abandonOnFinish {
-		if pending && m.client != nil {
-			if _, err := m.client.DiscardTask(context.Background(), m.sessionID); err != nil {
-				m.addEntry("error", "Could not discard interrupted task: "+err.Error(), true)
-			} else {
-				pending = false
-				m.pending = false
-			}
-		}
-		m.abandonOnFinish = false
 	}
 	if m.cancelled {
 		if pending {
@@ -2794,14 +3326,17 @@ func (m *tuiModel) finishTask(result taskResult) {
 	} else if result.err != nil {
 		m.status = "Task failed."
 		m.addEntry("error", result.err.Error(), true)
+	} else if result.coreResult.Status == core.TaskPaused {
+		m.status = "Task paused and waiting for a decision. Use /continue to review it."
 	} else {
 		m.status = "Completed."
 	}
-	if m.taskPlanMode && !m.cancelled && result.err == nil && result.response != nil {
+	if !m.cancelled && result.err == nil && result.coreResult.ProposedPlan != nil {
 		m.planReview = true
-		m.status = "Plan ready · Enter accepts · type feedback to revise · Esc cancels."
-	} else if m.taskPlanMode && result.err != nil {
-		m.planMode = false
+		m.proposedPlan = result.coreResult.ProposedPlan
+		m.planSourceExecutionID = result.coreResult.ExecutionID
+		m.planAuthorization = core.PlanAuthorization{}
+		m.status = "Plan ready · /plan allow-* grants capabilities · /plan implement starts it · type feedback to revise."
 	}
 	m.cancelled = false
 }
@@ -3075,10 +3610,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 			}
 		}
 	}
-	if entryIndex >= 0 {
-		m.entries[entryIndex].text = entryText
-		m.entries[entryIndex].err = activity.status == "failed"
-	} else {
+	if activity.status != "running" && entryIndex < 0 {
 		m.entries = append(m.entries, tuiEntry{
 			role: "tool", text: entryText, err: activity.status == "failed", activityID: event.ID,
 		})
@@ -3198,28 +3730,7 @@ func (m *tuiModel) addEntry(role, text string, isError bool) {
 }
 
 func (m *tuiModel) refreshPanels() {
-	chatAtBottom := m.chat.AtBottom()
-	activityAtBottom := m.activity.AtBottom()
-	m.ensureMessageCollapseKeys()
-	conversation, clickTargets, foldable := m.renderConversation()
-	m.chat.SoftWrap = false // Conversation lines are wrapped before they reach the viewport.
-	m.chat.SetContent(conversation)
-	m.chatClickTargets = clickTargets
-	m.foldableMessages = foldable
 	m.activity.SetContent(m.activityDetailsContent())
-	if m.modernConversation() {
-		m.updateLayout()
-	}
-	if chatAtBottom {
-		m.chat.GotoBottom()
-	} else {
-		m.chat.SetYOffset(m.chat.YOffset())
-	}
-	if activityAtBottom {
-		m.activity.GotoBottom()
-	} else {
-		m.activity.SetYOffset(m.activity.YOffset())
-	}
 }
 
 func (m *tuiModel) activityDetailsContent() string {
@@ -3278,7 +3789,7 @@ func (m *tuiModel) activityDetailsContent() string {
 	activities.WriteString(m.sessionUsage.String("Session"))
 	activities.WriteString(fmt.Sprintf("\nMetered requests: task %d/%d · session %d/%d", m.taskUsage.measured, m.taskUsage.requests, m.sessionUsage.measured, m.sessionUsage.requests))
 	if m.client != nil {
-		activities.WriteString("\nPermissions: " + permissionModeLabel(m.client.PermissionMode()))
+		activities.WriteString("\nPermissions: " + permissionModeLabel(m.currentPermissionMode()))
 	}
 	return activities.String()
 }
@@ -3372,23 +3883,6 @@ func (m *tuiModel) updateLayout() {
 		m.activity.SetHeight(max(1, bodyHeight-4))
 		return
 	}
-	if m.studioLayout() && m.studioWide() {
-		sidebarWidth := 36
-		m.chat.SetWidth(max(1, contentWidth-sidebarWidth-1))
-		m.chat.SetHeight(bodyHeight)
-		artHeight := m.studioArtHeight(bodyHeight)
-		m.activity.SetWidth(sidebarWidth)
-		m.activity.SetHeight(max(1, bodyHeight-artHeight))
-		return
-	}
-	if m.studioLayout() {
-		chatHeight := max(1, (bodyHeight-2)*2/3)
-		m.chat.SetWidth(contentWidth)
-		m.chat.SetHeight(chatHeight)
-		m.activity.SetWidth(contentWidth)
-		m.activity.SetHeight(max(1, bodyHeight-chatHeight-2))
-		return
-	}
 	m.chat.SetWidth(contentWidth)
 	m.chat.SetHeight(bodyHeight)
 	m.activity.SetWidth(max(1, contentWidth-2))
@@ -3426,21 +3920,6 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 	input.SetStyles(styles)
 }
 
-func (m *tuiModel) studioLayout() bool {
-	return m.preferences.Theme == themeAnime && m.preferences.AnimeLayout == layoutStudio
-}
-
-func (m *tuiModel) studioWide() bool {
-	return m.studioLayout() && m.width >= 120 && m.height >= 30
-}
-
-func (m *tuiModel) studioArtHeight(bodyHeight int) int {
-	if m.studioWide() && m.canRenderColorArt() && bodyHeight >= 14 {
-		return 8
-	}
-	return 0
-}
-
 func (m *tuiModel) commandSuggestionHeight() int {
 	if m.planReview {
 		return 2
@@ -3475,35 +3954,138 @@ func (m *tuiModel) commandSuggestionHeight() int {
 
 func (m *tuiModel) View() tea.View {
 	width := max(1, m.width)
-	if m.modernConversation() && m.wideConversation() {
-		return m.renderSessionWorkspace(width)
-	}
-	header := m.renderHeader(width)
 	colors := colorsFor(m.preferences.Theme)
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
-	body := m.renderBody(width)
-	suggestions := m.renderCommandSuggestions()
-	footer := m.renderFooter(width)
-	parts := []string{header, body, divider, m.renderInputView()}
-	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" {
-		parts = append(parts, auxiliary)
+	var before []string
+	if len(m.entries) == 0 && !m.running && strings.TrimSpace(m.input.Value()) == "" {
+		before = append(before, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Lune"))
+		before = append(before, "Ready to work in "+m.workspace+".")
+		before = append(before, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("Use /help to see commands."))
 	}
-	parts = append(parts, footer)
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	if live := m.liveOutput(); live != "" {
+		limit := max(2, m.height-9)
+		before = append(before, tailTerminalLines(live, limit))
+	}
+	if m.detailsOpen {
+		before = append(before, "Activity & usage\n"+tailTerminalLines(m.activityDetailsContent(), min(16, max(4, m.height/2))))
+	}
+	if auxiliary := m.renderAuxiliaryPanel(m.renderCommandSuggestions()); auxiliary != "" {
+		before = append(before, auxiliary)
+	}
+	input := m.renderInputView()
+	content := strings.Join(before, "\n")
+	if content != "" {
+		content += "\n"
+	}
+	content += input
+	footer := m.renderInlineFooter(width, colors)
+	content += "\n" + footer
 	view := tea.NewView(content)
-	view.BackgroundColor = backgroundColor(colors.Background)
-	view.ForegroundColor = backgroundColor(colors.Foreground)
-	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
 	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
-		cursor.Y += lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(divider)
+		if len(before) > 0 {
+			cursor.Y += lipgloss.Height(strings.Join(before, "\n")) + 1
+		}
 		view.Cursor = cursor
 	}
 	return view
 }
 
+func (m *tuiModel) liveOutput() string {
+	var lines []string
+	indices := m.modelStreamCurrent
+	if len(indices) == 0 && m.runtimeTask {
+		indices = m.modelStreamLast
+	}
+	seen := make(map[int]bool, len(indices))
+	for _, index := range indices {
+		if index >= 0 && index < len(m.entries) && !seen[index] {
+			seen[index] = true
+			lines = append(lines, plainConversationText(m.entries[index].text))
+		}
+	}
+	if len(lines) > 0 {
+		return strings.Join(lines, "\n")
+	}
+	for index := len(m.activities) - 1; index >= 0; index-- {
+		if m.activities[index].status == "running" {
+			return m.activities[index].summary + "…"
+		}
+	}
+	return ""
+}
+
+func tailTerminalLines(content string, limit int) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) > limit {
+		lines = append([]string{"…"}, lines[len(lines)-limit+1:]...)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderInlineFooter(width int, colors themeColors) string {
+	model := m.sessionSettings.ModelProfile
+	if model == "" {
+		model = "default model"
+	}
+	effort := reasoningEffortLabel(m.sessionSettings.ReasoningEffort)
+	mode := permissionModeLabel(core.PermissionReadOnly)
+	if m.client != nil {
+		mode = permissionModeLabel(m.currentPermissionMode())
+	}
+	left := model + " · " + effort + " · " + mode
+	if context := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); context != "" {
+		left += " · " + context
+	}
+	status := m.status
+	if status == "Ready" {
+		status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · /plan · /permissions"
+	} else if m.running {
+		status = "Working · " + m.keyLabel("interrupt_or_copy") + " interrupt · /queue"
+	} else if m.pending {
+		status = "Paused · /continue to review · /discard"
+	}
+	usage := "tokens — · cache —"
+	if m.taskUsage.requests > 0 {
+		usage = fmt.Sprintf("in %d · out %d · reason %d · total %d · cache %s",
+			m.taskUsage.input, m.taskUsage.output, m.taskUsage.reasoning, m.taskUsage.total,
+			cacheHitRate(m.taskUsage.input, m.taskUsage.cached))
+	}
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	return style.Render(fitTerminalText(left+"   "+status, width) + "\n" + fitTerminalText(usage, width))
+}
+
+func (m *tuiModel) flushScrollback() tea.Cmd {
+	if m.printedEntryCount > len(m.entries) {
+		m.printedEntryCount = 0
+	}
+	limit := len(m.entries)
+	for _, index := range m.modelStreamCurrent {
+		if index >= m.printedEntryCount && index < limit {
+			limit = index
+		}
+	}
+	if m.runtimeTask {
+		for _, index := range m.modelStreamLast {
+			if index >= m.printedEntryCount && index < limit {
+				limit = index
+			}
+		}
+	}
+	if limit <= m.printedEntryCount {
+		return nil
+	}
+	commands := make([]tea.Cmd, 0, limit-m.printedEntryCount)
+	for _, entry := range m.entries[m.printedEntryCount:limit] {
+		text := formatScrollbackEntry(entry, m.width, m.preferences.Theme)
+		commands = append(commands, tea.Println(text))
+	}
+	m.printedEntryCount = limit
+	return tea.Sequence(commands...)
+}
+
 func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
 	switch {
+	case m.exitConfirm:
+		return "Interrupt and cancel the queued turns [i] · wait for completion [w] · return [esc]"
 	case m.pendingMCPInteraction != nil:
 		return m.renderMCPInteraction()
 	case m.keymapOpen:
@@ -3596,23 +4178,11 @@ func (m *tuiModel) renderHeader(width int) string {
 		return left + strings.Repeat(" ", gap) + lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(right)
 	}
 	headerText := "☾ Lune Agent"
-	if m.preferences.Theme == themeAnime {
-		headerText += " · Anime / " + string(m.preferences.AnimeLayout)
-	}
 	headerText += " · " + stateName(m.visualState())
 	if m.sessionID != "" {
 		headerText += "  ·  " + m.sessionID[:min(8, len(m.sessionID))]
 	}
-	header := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(headerText)
-	if m.preferences.Theme == themeAnime && !m.studioLayout() && width >= 80 && m.height >= 24 {
-		avatar := m.renderAvatar(8, 4)
-		if m.canRenderColorArt() {
-			return lipgloss.JoinHorizontal(lipgloss.Center, header, "   ", avatar)
-		}
-		header = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(
-			stateGlyph(m.visualState()) + " " + headerText)
-	}
-	return header
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(headerText)
 }
 
 func (m *tuiModel) renderFooter(width int) string {
@@ -3651,9 +4221,6 @@ func (m *tuiModel) renderFooter(width int) string {
 		if m.running && m.modelStreamFirstTokenRecorded {
 			status += " · first token " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String()
 		}
-		if len(m.foldableMessages) > 0 && !m.detailsOpen {
-			status += " · " + m.keyLabel("input_toggle_message_fold") + " fold latest long message"
-		}
 		if !m.chat.AtBottom() && !m.detailsOpen {
 			status += " · " + m.keyLabel("jump_chat_bottom") + " back to latest"
 		}
@@ -3682,9 +4249,9 @@ func (m *tuiModel) renderFooter(width int) string {
 		mode = "PLAN · read-only tools"
 	}
 	metrics := mode
-	metrics += " · " + string(m.preferences.Theme) + animeLayoutLabel(m.preferences)
+	metrics += " · " + string(m.preferences.Theme)
 	if m.client != nil {
-		metrics += " · " + permissionModeLabel(m.client.PermissionMode())
+		metrics += " · " + permissionModeLabel(m.currentPermissionMode())
 	}
 	if m.sessionSettings.ModelProfile != "" {
 		metrics += " · " + m.sessionSettings.ModelProfile
@@ -3749,7 +4316,7 @@ func fitTerminalText(value string, width int) string {
 
 func (m *tuiModel) renderQueuePicker() string {
 	colors := colorsFor(m.preferences.Theme)
-	lines := []string{"Queued messages · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " edit · " + m.keyLabel("queue_remove") + " removes · Esc closes"}
+	lines := []string{"Core queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " details · " + m.keyLabel("queue_remove") + " cancel · Esc close"}
 	start := max(0, m.queueIndex-4)
 	end := min(len(m.queued), start+8)
 	if end == len(m.queued) {
@@ -3757,11 +4324,7 @@ func (m *tuiModel) renderQueuePicker() string {
 	}
 	for index, item := range m.queued[start:end] {
 		index += start
-		preview := strings.Join(strings.Fields(item.display), " ")
-		if len([]rune(preview)) > 64 {
-			preview = string([]rune(preview)[:61]) + "..."
-		}
-		line := fmt.Sprintf("  %d. %s", index+1, preview)
+		line := fmt.Sprintf("  %d. %-8s execution %s", item.Position, item.Status, item.ExecutionID)
 		if index == m.queueIndex {
 			line = "›" + strings.TrimPrefix(line, " ")
 			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
@@ -3951,7 +4514,7 @@ func (m *tuiModel) renderPermissionMenu() string {
 	colors := colorsFor(m.preferences.Theme)
 	mode := core.PermissionReadOnly
 	if m.client != nil {
-		mode = m.client.PermissionMode()
+		mode = m.currentPermissionMode()
 	}
 	lines := []string{"Permission mode · current: " + permissionModeLabel(mode)}
 	if m.planMode {
@@ -3996,22 +4559,6 @@ func (m *tuiModel) renderBody(width int) string {
 		content := lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
 		return lipgloss.NewStyle().Width(max(1, width-2)).Height(bodyHeight - 2).
 			Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colors.Accent)).Render(content)
-	}
-	if m.studioWide() {
-		sidebar := m.activity.View()
-		if artHeight := m.studioArtHeight(m.chat.Height()); artHeight > 0 {
-			art := m.renderAvatar(20, artHeight)
-			sidebar = lipgloss.JoinVertical(lipgloss.Left, art, sidebar)
-		}
-		separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(
-			strings.TrimSuffix(strings.Repeat("│\n", max(1, m.chat.Height())), "\n"))
-		return lipgloss.JoinHorizontal(lipgloss.Top, m.chat.View(), separator, sidebar)
-	}
-	if m.studioLayout() {
-		separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
-		label := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).
-			Render("STUDIO · " + stateName(m.visualState()) + " · single agent")
-		return lipgloss.JoinVertical(lipgloss.Left, m.chat.View(), separator, label, m.activity.View())
 	}
 	return m.chat.View()
 }

@@ -11,24 +11,30 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"unicode"
 
 	"github.com/afterlune/luneCore"
 )
 
-type coreOperation func(context.Context) (json.RawMessage, error)
+type cliRuntime interface {
+	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
+	WaitTurn(context.Context, string) (core.TurnResult, error)
+	SubscribeEvents(context.Context, int64) (<-chan core.Event, error)
+	State(context.Context) (core.RuntimeState, error)
+	Interrupt(string) bool
+	Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error)
+	DiscardPaused(context.Context) (bool, error)
+	PendingRequests(context.Context) ([]core.PendingRequest, error)
+	ResolveApproval(string, bool) error
+	SetUserInteractionAvailable(bool)
+}
 
 type cliCore interface {
+	Workspace() string
 	LatestSession(context.Context) (core.Session, bool, error)
 	CreateSession(context.Context, json.RawMessage) (core.Session, error)
-	RunTask(context.Context, core.TaskRequest) (json.RawMessage, error)
-	ResumeTask(context.Context, string) (json.RawMessage, error)
-	HasPending(context.Context, string) (bool, error)
-	DiscardTask(context.Context, string) (bool, error)
+	OpenSessionRuntime(context.Context, string) (cliRuntime, error)
 	Compact(context.Context, string) (int, error)
-	SetEventHandler(core.EventHandler)
-	ResolveApproval(string, bool) error
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 }
@@ -87,6 +93,10 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 	}
 	sessionID := saved.ID
 	workspace := saved.Workspace
+	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("open session runtime: %w", err)
+	}
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -108,12 +118,17 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 			} else {
 				sessionID = saved.ID
 				workspace = saved.Workspace
-				fmt.Fprintln(stdout, "New session.")
+				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
+				if err != nil {
+					fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
+				} else {
+					fmt.Fprintln(stdout, "New session.")
+				}
 			}
 		case line == "/permissions" || strings.HasPrefix(line, "/permissions "):
 			handleCoreCLIPermissions(client, line, stdout, stderr)
 		case line == "/discard":
-			discarded, err := client.DiscardTask(ctx, sessionID)
+			discarded, err := runtime.DiscardPaused(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: discard task: %v\n", err)
 			} else if discarded {
@@ -122,15 +137,23 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 				fmt.Fprintln(stdout, "No interrupted task to discard.")
 			}
 		case line == "/resume":
-			pending, err := client.HasPending(ctx, sessionID)
+			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
-			} else if !pending {
+			} else if state.Task.Status != core.TaskPaused {
 				fmt.Fprintln(stdout, "No interrupted task to resume.")
 			} else {
-				fmt.Fprintln(stderr, "Warning: recovery may repeat a model request or tool call.")
-				response, callErr, interrupted := respondCoreWithKeys(client, workspace, func(callCtx context.Context) (json.RawMessage, error) { return client.ResumeTask(callCtx, sessionID) }, watchKeys, stderr)
-				if err := printCoreTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
+				requests, requestErr := runtime.PendingRequests(ctx)
+				if requestErr != nil {
+					fmt.Fprintf(stderr, "error: inspect task decisions: %v\n", requestErr)
+					continue
+				}
+				if len(requests) > 0 {
+					fmt.Fprintf(stderr, "Task is paused for %s. Use the TUI to resolve it.\n", requests[0].Kind)
+					continue
+				}
+				result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{}, true, watchKeys, stderr)
+				if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
 					return err
 				}
 			}
@@ -147,20 +170,20 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 		case strings.HasPrefix(line, "/"):
 			fmt.Fprintf(stderr, "Unknown command %q. Available commands: %s\n", line, strings.Join(cliCommandNames(), " "))
 		default:
-			pending, err := client.HasPending(ctx, sessionID)
+			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
-			} else if pending {
+			} else if state.Task.Status == core.TaskPaused {
 				fmt.Fprintln(stderr, "An interrupted task is pending. Use /resume or /discard first.")
+			} else if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
+				fmt.Fprintln(stderr, "A turn is already running or queued in this session.")
 			} else {
 				input, err := core.ParseTaskInput(line)
 				if err != nil {
 					fmt.Fprintf(stderr, "error: %v\n", err)
 				} else {
-					response, callErr, interrupted := respondCoreWithKeys(client, workspace, func(callCtx context.Context) (json.RawMessage, error) {
-						return client.RunTask(callCtx, core.TaskRequest{SessionID: sessionID, Input: input})
-					}, watchKeys, stderr)
-					if err := printCoreTaskResult(stdout, stderr, response, callErr, interrupted); err != nil {
+					result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input}, false, watchKeys, stderr)
+					if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
 						return err
 					}
 				}
@@ -191,13 +214,9 @@ func handleCoreCLIPermissions(client cliCore, line string, stdout, stderr io.Wri
 	fmt.Fprintf(stdout, "Permission mode set to %s.\n", mode)
 }
 
-func respondCoreWithKeys(client cliCore, workspace string, operation coreOperation, watchKeys keyEventWatcher, stderr io.Writer) (json.RawMessage, error, bool) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.TurnRequest, resume bool, watchKeys keyEventWatcher, stderr io.Writer) (core.TurnResult, error, bool) {
 	var keyEvents <-chan cliInputEvent
 	stopWatching := func() {}
-	noInteractiveReason := atomic.Value{}
-	noInteractiveReason.Store("stdin is not an interactive terminal")
 	if watchKeys != nil {
 		var err error
 		keyEvents, stopWatching, err = watchKeys()
@@ -207,108 +226,90 @@ func respondCoreWithKeys(client cliCore, workspace string, operation coreOperati
 		if err != nil {
 			fmt.Fprintf(stderr, "warning: keyboard input unavailable: %v\n", err)
 			keyEvents = nil
-			noInteractiveReason.Store("keyboard input is unavailable")
 		}
 	}
 	defer stopWatching()
 
-	interactive := atomic.Bool{}
-	interactive.Store(keyEvents != nil)
-	approvalEvents := make(chan core.ApprovalRequest, 1)
-	client.SetEventHandler(func(event core.Event) {
-		switch event.Kind {
-		case core.EventContextCompaction:
-			if event.Compaction != nil {
-				writeCLICompactionStatus(stderr, *event.Compaction)
-			}
-		case core.EventApprovalRequired:
-			if event.Approval == nil {
-				return
-			}
-			request := *event.Approval
-			if !interactive.Load() {
-				denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
-				return
-			}
-			select {
-			case approvalEvents <- request:
-			case <-ctx.Done():
-				_ = client.ResolveApproval(request.ID, false)
-			}
+	streamCtx, stopStream := context.WithCancel(context.Background())
+	defer stopStream()
+	events, err := runtime.SubscribeEvents(streamCtx, 0)
+	if err != nil {
+		return core.TurnResult{}, err, false
+	}
+	runtime.SetUserInteractionAvailable(false)
+	request.NoInteractiveDecisions = keyEvents == nil
+	var submission core.TurnSubmission
+	if resume {
+		submission, err = runtime.Recover(context.Background())
+	} else {
+		submission, err = runtime.SubmitTurn(context.Background(), request, core.StartIfIdle)
+	}
+	if err != nil {
+		return core.TurnResult{}, err, false
+	}
+	if keyEvents != nil {
+		if _, err := fmt.Fprintln(stderr, "Working... Press Esc to interrupt."); err != nil {
+			runtime.Interrupt(submission.ExecutionID)
+			return core.TurnResult{}, err, true
 		}
-	})
-	defer client.SetEventHandler(nil)
-
-	if keyEvents == nil {
-		response, err := operation(ctx)
-		return response, err, false
 	}
-	if _, err := fmt.Fprintln(stderr, "Working... Press Esc to cancel."); err != nil {
-		return nil, err, false
+	type waitResult struct {
+		result core.TurnResult
+		err    error
 	}
-	type result struct {
-		response json.RawMessage
-		err      error
-	}
-	done := make(chan result, 1)
-	go func() { response, err := operation(ctx); done <- result{response: response, err: err} }()
+	done := make(chan waitResult, 1)
+	go func() {
+		result, waitErr := runtime.WaitTurn(context.Background(), submission.ExecutionID)
+		done <- waitResult{result: result, err: waitErr}
+	}()
+	interrupted := false
 	for {
 		select {
 		case result := <-done:
-			return result.response, result.err, false
-		case request := <-approvalEvents:
-			if !interactive.Load() {
-				denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
+			if result.result.Status == core.TaskPaused && result.err == nil {
+				result.err = core.ErrTaskPaused
+			}
+			return result.result, result.err, interrupted
+		case event, ok := <-events:
+			if !ok {
+				return core.TurnResult{}, errors.New("session event stream closed"), interrupted
+			}
+			if event.ExecutionID != "" && event.ExecutionID != submission.ExecutionID {
 				continue
 			}
-			if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(request, workspace)); err != nil {
-				cancel()
-				result := <-done
-				return result.response, err, true
-			}
-			approvalAnswered := false
-			for !approvalAnswered {
-				select {
-				case result := <-done:
-					return result.response, result.err, false
-				case event, ok := <-keyEvents:
-					if !ok || event.err != nil {
-						keyEvents = nil
-						interactive.Store(false)
-						noInteractiveReason.Store("keyboard input became unavailable")
-						denyCLIApproval(client, request, workspace, noInteractiveReason.Load().(string), stderr)
-						approvalAnswered = true
-						continue
-					}
-					if event.escape {
-						cancel()
-						slog.Warn("task interrupted by user", "source", "escape")
-						result := <-done
-						return result.response, result.err, true
-					}
-					switch unicode.ToLower(event.rune) {
-					case 'y':
-						resolveCLIApproval(client, request, true, stderr)
-						approvalAnswered = true
-					case 'n':
-						resolveCLIApproval(client, request, false, stderr)
-						approvalAnswered = true
+			switch event.Kind {
+			case core.EventContextCompaction:
+				if event.Compaction != nil {
+					writeCLICompactionStatus(stderr, *event.Compaction)
+				}
+			case core.EventApprovalRequired:
+				if event.Approval != nil {
+					if keyEvents == nil {
+						if err := runtime.ResolveApproval(event.Approval.ID, false); err != nil {
+							fmt.Fprintf(stderr, "error: deny approval: %v\n", err)
+							runtime.Interrupt(submission.ExecutionID)
+						} else {
+							fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(*event.Approval, workspace))
+						}
+					} else if err := resolveCLIApproval(runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
+						runtime.Interrupt(submission.ExecutionID)
 					}
 				}
+			case core.EventUserQuestionRequired, core.EventUserInteractionRequired, core.EventAcceptanceRequired,
+				core.EventToolRecoveryRequired, core.EventModelRecoveryRequired, core.EventExecutionBlocked:
+				fmt.Fprintf(stderr, "Task paused for %s. Use /resume to inspect it.\n", event.Kind)
 			}
-		case event, ok := <-keyEvents:
-			if !ok || event.err != nil {
+		case key, ok := <-keyEvents:
+			if !ok || key.err != nil {
 				keyEvents = nil
-				interactive.Store(false)
-				noInteractiveReason.Store("keyboard input became unavailable")
-				fmt.Fprintln(stderr, "warning: keyboard input ended; pending approvals will be denied")
+				fmt.Fprintln(stderr, "warning: keyboard input became unavailable; future approvals will be denied")
 				continue
 			}
-			if event.escape {
-				cancel()
-				slog.Warn("task interrupted by user", "source", "escape")
-				result := <-done
-				return result.response, result.err, true
+			if key.escape {
+				interrupted = runtime.Interrupt(submission.ExecutionID)
+				if interrupted {
+					slog.Warn("task interrupted by user", "source", "escape")
+				}
 			}
 		}
 	}
@@ -342,26 +343,50 @@ func compactCLITokens(tokens int64) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-func resolveCLIApproval(client cliCore, request core.ApprovalRequest, allowed bool, stderr io.Writer) {
-	if err := client.ResolveApproval(request.ID, allowed); err != nil {
-		fmt.Fprintln(stderr, "Approval request is no longer pending; it was not approved.")
-		return
+func resolveCLIApproval(runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
+	if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(request, workspace)); err != nil {
+		return err
 	}
-	if allowed {
-		fmt.Fprintln(stderr, "Approved this tool call once.")
+	for key := range keys {
+		if key.err != nil {
+			err := runtime.ResolveApproval(request.ID, false)
+			if err == nil {
+				fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(request, workspace))
+			} else {
+				fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
+			}
+			return err
+		}
+		if key.escape {
+			return errors.New("approval interrupted")
+		}
+		var allowed bool
+		switch unicode.ToLower(key.rune) {
+		case 'y':
+			allowed = true
+		case 'n':
+			allowed = false
+		default:
+			continue
+		}
+		if err := runtime.ResolveApproval(request.ID, allowed); err != nil {
+			fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
+			return fmt.Errorf("resolve approval: %w", err)
+		}
+		if allowed {
+			_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
+		} else {
+			_, _ = fmt.Fprintln(stderr, "Denied this tool call.")
+		}
+		return nil
+	}
+	err := runtime.ResolveApproval(request.ID, false)
+	if err == nil {
+		fmt.Fprintf(stderr, "Denied %s because interactive keyboard input became unavailable.\n", cliApprovalSummary(request, workspace))
 	} else {
-		fmt.Fprintln(stderr, "Denied this tool call.")
+		fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
 	}
-}
-
-func denyCLIApproval(client cliCore, request core.ApprovalRequest, workspace, reason string, stderr io.Writer) {
-	fmt.Fprintf(stderr, "Approval required for %s; denied because %s. Run in an interactive terminal to approve, or explicitly set /permissions full-access.\n",
-		cliApprovalSummary(request, workspace),
-		reason,
-	)
-	if err := client.ResolveApproval(request.ID, false); err != nil {
-		fmt.Fprintln(stderr, "Approval request is no longer pending.")
-	}
+	return err
 }
 
 func formatCLIToolApproval(request core.ApprovalRequest, workspace string) string {
@@ -373,7 +398,7 @@ func formatCLIToolApproval(request core.ApprovalRequest, workspace string) strin
 		var command string
 		_ = json.Unmarshal(args["command"], &command)
 		details = "\nCommand: " + cleanCLIInlineText(command)
-		warning = "\nApproved shell commands run as your user and can access files outside the workspace."
+		warning = "\nCore runs commands inside the operating system sandbox."
 	}
 	return fmt.Sprintf("Allow %s once?%s%s\nPress Y to approve once, N to deny, or Esc to interrupt the task.",
 		cliApprovalSummary(request, workspace), details, warning)

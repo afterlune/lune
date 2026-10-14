@@ -6,7 +6,7 @@ import (
 )
 
 func TestThemeSemanticColorsStayReadableAndSubdued(t *testing.T) {
-	for _, theme := range []themeName{themeDark, themeLight, themeAnime} {
+	for _, theme := range []themeName{themeDark, themeLight} {
 		t.Run(string(theme), func(t *testing.T) {
 			colors := colorsFor(theme)
 			semantic := map[string]string{
