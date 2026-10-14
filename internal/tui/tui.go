@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"math"
 	"net/url"
 	"os"
@@ -70,6 +71,9 @@ type taskFinishedMsg struct {
 	result taskResult
 }
 
+type flushScrollbackMsg struct{}
+type terminalColorTimeoutMsg struct{}
+
 type turnSubmittedMsg struct {
 	submission core.TurnSubmission
 	err        error
@@ -104,6 +108,7 @@ type tuiModel struct {
 
 	entries                       []tuiEntry
 	printedEntryCount             int
+	scrollbackRedrawPending       bool
 	activities                    []tuiActivity
 	teamActivities                []tuiTeamActivity
 	commandSuggestions            []string
@@ -180,6 +185,12 @@ type tuiModel struct {
 	status                        string
 	preferences                   uiPreferences
 	preferencesPath               string
+	terminalBackground            color.Color
+	terminalForeground            color.Color
+	terminalBackgroundReceived    bool
+	terminalForegroundReceived    bool
+	terminalColorQueryPending     bool
+	terminalColorsReady           bool
 	colorProfile                  colorprofile.Profile
 }
 
@@ -253,7 +264,7 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/queue", usage: "/queue", description: "Review or cancel turns in the Core queue."},
 	{name: "/resume", usage: "/resume", description: "Choose a session to resume."},
 	{name: "/rewind", usage: "/rewind <n>", description: "Remove the latest n user turns."},
-	{name: "/theme", usage: "/theme [value]", description: "Show or change the theme."},
+	{name: "/theme", usage: "/theme [auto|dark|light]", description: "Follow terminal colors or choose a fixed theme."},
 	{name: "/usage", usage: "/usage", description: "Show token usage, cache hits, and activity."},
 	{name: "/vim", usage: "/vim", description: "Toggle Vim input mode."},
 }
@@ -328,8 +339,8 @@ func Run(client *core.Core) error {
 	preferences, preferencesPath, preferencesErr := loadUserPreferences()
 	ui.preferences = preferences
 	ui.preferencesPath = preferencesPath
-	applyTextareaTheme(&ui.input, preferences.Theme)
-	ui.applyMCPInteractionTheme(preferences.Theme)
+	applyTextareaTheme(&ui.input, ui.resolvedTheme())
+	ui.applyMCPInteractionTheme(ui.resolvedTheme())
 	ui.applyKeymap()
 	if preferencesErr != nil {
 		ui.status = "Some UI preferences were invalid; defaults were used where needed."
@@ -402,6 +413,7 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 		pending:             pending,
 		status:              "Ready",
 		preferences:         defaultUIPreferences(),
+		terminalColorsReady: true,
 		agentUsage:          make(map[string]agentUsageSummary), agentUsageComplete: true,
 		activeExecutions: make(map[string]bool),
 	}
@@ -418,7 +430,11 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 }
 
 func (m *tuiModel) Init() tea.Cmd {
-	commands := []tea.Cmd{textarea.Blink, m.subscribeRuntime(), m.flushScrollback()}
+	commands := []tea.Cmd{textarea.Blink, m.subscribeRuntime()}
+	if m.preferences.Theme == themeAuto {
+		commands = append(commands, m.requestTerminalColors())
+	}
+	commands = append(commands, m.flushScrollback())
 	if m.running && m.runningExecutionID != "" {
 		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
 	}
@@ -565,7 +581,19 @@ func (m *tuiModel) refreshRuntimeProjection() error {
 }
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := message.(flushScrollbackMsg); ok {
+		m.scrollbackRedrawPending = false
+	}
+	transientBeforeUpdate := m.hasTransientPanel()
+	terminalColorsWereReady := m.terminalColorsReady
 	model, command := m.update(message)
+	terminalColorsResolved := !terminalColorsWereReady && m.terminalColorsReady
+	if (transientBeforeUpdate && !m.hasTransientPanel() || terminalColorsResolved) && !m.scrollbackRedrawPending {
+		// Let Bubble Tea render the dismissed panel before inserting scrollback above the view.
+		m.scrollbackRedrawPending = true
+		redraw := tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return flushScrollbackMsg{} })
+		return model, tea.Batch(command, redraw)
+	}
 	scrollback := m.flushScrollback()
 	if scrollback == nil {
 		return model, command
@@ -578,6 +606,33 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case flushScrollbackMsg:
+		return m, nil
+	case terminalColorTimeoutMsg:
+		if m.terminalColorQueryPending {
+			m.terminalColorQueryPending = false
+			m.terminalColorsReady = true
+			if m.preferences.Theme == themeAuto {
+				m.applyResolvedTheme()
+			}
+		}
+		return m, nil
+	case tea.BackgroundColorMsg:
+		m.terminalBackground = message.Color
+		if m.preferences.Theme == themeAuto {
+			m.terminalBackgroundReceived = true
+			m.finishTerminalColorQueryIfReady()
+			m.applyResolvedTheme()
+		}
+		return m, nil
+	case tea.ForegroundColorMsg:
+		m.terminalForeground = message.Color
+		if m.preferences.Theme == themeAuto {
+			m.terminalForegroundReceived = true
+			m.finishTerminalColorQueryIfReady()
+			m.applyResolvedTheme()
+		}
+		return m, nil
 	case tea.ColorProfileMsg:
 		m.colorProfile = message.Profile
 		m.updateLayout()
@@ -1261,7 +1316,8 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	case "/vim":
 		return m.toggleVimMode()
 	case "/theme":
-		m.status = fmt.Sprintf("Current theme: %s. Use /theme dark or /theme light to change it.", m.preferences.Theme)
+		m.status = fmt.Sprintf("Current theme: %s. Use /theme auto, /theme dark, or /theme light to change it.", m.themePreferenceLabel())
+		m.resetInput()
 		return m, nil
 	case "/keymap":
 		return m.openKeymapEditor()
@@ -1822,24 +1878,65 @@ func reasoningEffortLabel(value string) string {
 func (m *tuiModel) setThemeFromCommand(line string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(line)
 	if len(fields) != 2 {
-		m.status = "Use /theme dark or /theme light."
+		m.status = "Use /theme auto, /theme dark, or /theme light."
 		return m, nil
 	}
 	theme := themeName(strings.ToLower(fields[1]))
-	if theme != themeDark && theme != themeLight {
-		m.status = "Theme must be dark or light."
+	if theme != themeAuto && theme != themeDark && theme != themeLight {
+		m.status = "Theme must be auto, dark, or light."
 		return m, nil
 	}
 	m.preferences.Theme = theme
 	if err := saveUIPreferences(m.preferencesPath, m.preferences); err != nil {
 		m.status = "Theme changed for this session; preference could not be saved."
 	} else {
-		m.status = "Theme set to " + string(m.preferences.Theme) + "."
+		m.status = "Theme set to " + string(theme) + "."
 	}
-	applyTextareaTheme(&m.input, m.preferences.Theme)
-	m.updateLayout()
-	m.refreshPanels()
+	if theme == themeAuto {
+		m.terminalBackgroundReceived = false
+		m.terminalForegroundReceived = false
+		m.terminalColorQueryPending = true
+		m.terminalColorsReady = false
+	} else {
+		m.terminalColorQueryPending = false
+		m.terminalColorsReady = true
+	}
+	m.applyResolvedTheme()
+	m.resetInput()
+	if theme == themeAuto {
+		return m, m.requestTerminalColorCommands()
+	}
 	return m, nil
+}
+
+func (m *tuiModel) themePreferenceLabel() string {
+	if m.preferences.Theme == themeAuto {
+		return "auto (" + string(m.resolvedTheme()) + ")"
+	}
+	return string(m.preferences.Theme)
+}
+
+func (m *tuiModel) requestTerminalColors() tea.Cmd {
+	m.terminalBackgroundReceived = false
+	m.terminalForegroundReceived = false
+	m.terminalColorQueryPending = true
+	m.terminalColorsReady = false
+	return m.requestTerminalColorCommands()
+}
+
+func (m *tuiModel) requestTerminalColorCommands() tea.Cmd {
+	return tea.Batch(
+		tea.RequestBackgroundColor,
+		tea.RequestForegroundColor,
+		tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return terminalColorTimeoutMsg{} }),
+	)
+}
+
+func (m *tuiModel) finishTerminalColorQueryIfReady() {
+	if m.terminalColorQueryPending && m.terminalBackgroundReceived && m.terminalForegroundReceived {
+		m.terminalColorQueryPending = false
+		m.terminalColorsReady = true
+	}
 }
 
 func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
@@ -2450,7 +2547,7 @@ func (m *tuiModel) handleNarrowSessionSwitcherClick(message tea.MouseClickMsg) (
 }
 
 func (m *tuiModel) renderSessionRail(width, height int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	lines := []string{
 		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Sessions"),
 		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("click · /resume"),
@@ -3292,7 +3389,9 @@ func (m *tuiModel) finishTask(result taskResult) {
 	if result.response != nil {
 		responseText, responseErr = responseDisplayText(result.response)
 	}
-	streamedFinal := m.finishModelStream(responseText, result.err == nil && !m.cancelled)
+	taskFailed := result.coreResult.Status == core.TaskFailed
+	taskCancelled := m.cancelled || result.coreResult.Status == core.TaskCancelled
+	streamedFinal := m.finishModelStream(responseText, result.err == nil && !taskFailed && !taskCancelled)
 	if responseErr != nil {
 		m.addEntry("error", responseErr.Error(), true)
 	} else if responseText != "" && !streamedFinal {
@@ -3317,21 +3416,27 @@ func (m *tuiModel) finishTask(result taskResult) {
 	if pendingErr != nil {
 		m.addEntry("error", "Could not inspect interrupted task: "+pendingErr.Error(), true)
 	}
-	if m.cancelled {
+	if taskCancelled {
 		if pending {
 			m.status = "Task paused. Use /continue to resume or type a new message to branch."
 		} else {
 			m.status = "Task cancelled."
 		}
-	} else if result.err != nil {
+	} else if result.err != nil || taskFailed {
 		m.status = "Task failed."
-		m.addEntry("error", result.err.Error(), true)
+		if failure := result.coreResult.ModelFailure; failure != nil {
+			m.addEntry("error", modelFailureSummary(failure), true)
+		} else if result.err != nil {
+			m.addEntry("error", result.err.Error(), true)
+		} else {
+			m.addEntry("error", "Task failed. Core did not provide a failure reason.", true)
+		}
 	} else if result.coreResult.Status == core.TaskPaused {
 		m.status = "Task paused and waiting for a decision. Use /continue to review it."
 	} else {
 		m.status = "Completed."
 	}
-	if !m.cancelled && result.err == nil && result.coreResult.ProposedPlan != nil {
+	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.ProposedPlan != nil {
 		m.planReview = true
 		m.proposedPlan = result.coreResult.ProposedPlan
 		m.planSourceExecutionID = result.coreResult.ExecutionID
@@ -3339,6 +3444,20 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.status = "Plan ready · /plan allow-* grants capabilities · /plan implement starts it · type feedback to revise."
 	}
 	m.cancelled = false
+}
+
+func modelFailureSummary(failure *core.ModelFailure) string {
+	if failure == nil {
+		return "Model request failed."
+	}
+	detail := "Model request failed: " + string(failure.Category)
+	if failure.Code != "" {
+		detail += " · " + failure.Code
+	}
+	if failure.StatusCode != 0 {
+		detail += fmt.Sprintf(" · HTTP %d", failure.StatusCode)
+	}
+	return detail
 }
 
 func (m *tuiModel) updateCommandSuggestions() {
@@ -3734,7 +3853,7 @@ func (m *tuiModel) refreshPanels() {
 }
 
 func (m *tuiModel) activityDetailsContent() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	var activities strings.Builder
 	if len(m.activities) == 0 {
 		activities.WriteString("No tool activity yet.")
@@ -3954,7 +4073,7 @@ func (m *tuiModel) commandSuggestionHeight() int {
 
 func (m *tuiModel) View() tea.View {
 	width := max(1, m.width)
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	var before []string
 	if len(m.entries) == 0 && !m.running && strings.TrimSpace(m.input.Value()) == "" {
 		before = append(before, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Lune"))
@@ -3980,6 +4099,13 @@ func (m *tuiModel) View() tea.View {
 	footer := m.renderInlineFooter(width, colors)
 	content += "\n" + footer
 	view := tea.NewView(content)
+	if m.preferences.Theme == themeAuto {
+		view.BackgroundColor = m.terminalBackground
+		view.ForegroundColor = m.terminalForeground
+	} else {
+		view.BackgroundColor = backgroundColor(colors.Background)
+		view.ForegroundColor = backgroundColor(colors.Foreground)
+	}
 	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		if len(before) > 0 {
 			cursor.Y += lipgloss.Height(strings.Join(before, "\n")) + 1
@@ -4057,6 +4183,10 @@ func (m *tuiModel) flushScrollback() tea.Cmd {
 	if m.printedEntryCount > len(m.entries) {
 		m.printedEntryCount = 0
 	}
+	if m.scrollbackRedrawPending || m.hasTransientPanel() ||
+		(m.preferences.Theme == themeAuto && !m.terminalColorsReady) {
+		return nil
+	}
 	limit := len(m.entries)
 	for _, index := range m.modelStreamCurrent {
 		if index >= m.printedEntryCount && index < limit {
@@ -4075,11 +4205,18 @@ func (m *tuiModel) flushScrollback() tea.Cmd {
 	}
 	commands := make([]tea.Cmd, 0, limit-m.printedEntryCount)
 	for _, entry := range m.entries[m.printedEntryCount:limit] {
-		text := formatScrollbackEntry(entry, m.width, m.preferences.Theme)
+		text := formatScrollbackEntryWithColors(entry, m.width, m.themeColors())
 		commands = append(commands, tea.Println(text))
 	}
 	m.printedEntryCount = limit
 	return tea.Sequence(commands...)
+}
+
+func (m *tuiModel) hasTransientPanel() bool {
+	return m.detailsOpen || m.exitConfirm || m.keymapOpen || m.sessionPicker ||
+		m.modelPicker || m.effortPicker || m.queuePicker || m.planReview ||
+		m.permissionMenu || m.pendingApproval != nil || m.pendingRequest != nil ||
+		m.pendingMCPInteraction != nil || len(m.commandSuggestions) > 0
 }
 
 func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
@@ -4108,7 +4245,7 @@ func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
 }
 
 func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	header := m.renderHeader(width)
 	headerRule := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
 	body := m.renderSessionWorkspaceBody(width)
@@ -4136,7 +4273,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 }
 
 func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
 	leftPadding := strings.Repeat(" ", m.sessionRailWidth())
 	content = lipgloss.NewStyle().Width(centerWidth).Render(content)
@@ -4154,7 +4291,7 @@ func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
 }
 
 func (m *tuiModel) renderHeader(width int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	if m.modernConversation() {
 		state := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(stateName(m.visualState()))
 		brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Render("☾ Lune")
@@ -4186,7 +4323,7 @@ func (m *tuiModel) renderHeader(width int) string {
 }
 
 func (m *tuiModel) renderFooter(width int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	if m.modernConversation() {
 		metrics := ""
 		if !m.wideConversation() {
@@ -4249,7 +4386,7 @@ func (m *tuiModel) renderFooter(width int) string {
 		mode = "PLAN · read-only tools"
 	}
 	metrics := mode
-	metrics += " · " + string(m.preferences.Theme)
+	metrics += " · " + m.themePreferenceLabel()
 	if m.client != nil {
 		metrics += " · " + permissionModeLabel(m.currentPermissionMode())
 	}
@@ -4315,7 +4452,7 @@ func fitTerminalText(value string, width int) string {
 }
 
 func (m *tuiModel) renderQueuePicker() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	lines := []string{"Core queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " details · " + m.keyLabel("queue_remove") + " cancel · Esc close"}
 	start := max(0, m.queueIndex-4)
 	end := min(len(m.queued), start+8)
@@ -4335,13 +4472,13 @@ func (m *tuiModel) renderQueuePicker() string {
 }
 
 func (m *tuiModel) renderPlanReview() string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorsFor(m.preferences.Theme).Warning)).Render(
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(m.themeColors().Warning)).Render(
 		"Plan review · Enter accepts · type feedback and Enter to revise · Esc cancels",
 	)
 }
 
 func (m *tuiModel) renderCommandSuggestions() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	if m.permissionMenu || len(m.commandSuggestions) == 0 {
 		return ""
 	}
@@ -4375,7 +4512,7 @@ func commandSuggestionRange(index, total int) (int, int) {
 }
 
 func (m *tuiModel) renderKeymapEditor() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	count := len(keymapActions) + 1
 	rows := m.keymapEditorRows()
 	start := max(0, m.keymapIndex-rows/2)
@@ -4419,7 +4556,7 @@ func (m *tuiModel) keymapEditorHeight() int {
 }
 
 func (m *tuiModel) renderSessionPicker() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	if m.renamingSession {
 		return strings.Join([]string{"Rename session · Enter save · empty clears · Esc cancel", "Title is limited to 120 characters."}, "\n")
 	}
@@ -4475,7 +4612,7 @@ func sessionDisplayTitle(saved core.Session) string {
 }
 
 func (m *tuiModel) renderModelPicker() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	lines := []string{"Model profile · current: " + m.sessionSettings.ModelProfile}
 	start := max(0, m.modelIndex-4)
 	end := min(len(m.modelOptions), start+8)
@@ -4496,7 +4633,7 @@ func (m *tuiModel) renderModelPicker() string {
 }
 
 func (m *tuiModel) renderEffortPicker() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	lines := []string{"Reasoning effort · current: " + reasoningEffortLabel(m.sessionSettings.ReasoningEffort)}
 	for index, value := range reasoningEffortOptions {
 		line := "  " + reasoningEffortLabel(value)
@@ -4511,7 +4648,7 @@ func (m *tuiModel) renderEffortPicker() string {
 }
 
 func (m *tuiModel) renderPermissionMenu() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	mode := core.PermissionReadOnly
 	if m.client != nil {
 		mode = m.currentPermissionMode()
@@ -4533,7 +4670,7 @@ func (m *tuiModel) renderPermissionMenu() string {
 }
 
 func (m *tuiModel) renderBody(width int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	if m.modernConversation() {
 		if m.wideConversation() {
 			return m.renderSessionWorkspaceBody(width)
@@ -4564,7 +4701,7 @@ func (m *tuiModel) renderBody(width int) string {
 }
 
 func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	bodyHeight := m.availableBodyHeight(width, 1, 2)
 	railWidth := m.sessionRailWidth()
 	centerWidth := max(1, width-railWidth-1)
@@ -4590,7 +4727,7 @@ func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
 }
 
 func (m *tuiModel) activityDrawerHeading() string {
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(
 		m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " close",

@@ -674,7 +674,7 @@ func (m *tuiModel) renderInputView() string {
 	if len(m.attachments) == 0 {
 		return view
 	}
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	chip := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(lipgloss.Color(colors.Accent))
 	base := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(lipgloss.Color(colors.Background)).Render("x")
 	basePrefix := ""

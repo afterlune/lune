@@ -61,6 +61,38 @@ func TestTUIRecordsFirstTokenLatencyWhenTextBecomesVisible(t *testing.T) {
 	}
 }
 
+func TestTUITaskFailureStatusUsesCoreOutcome(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.finishTask(taskResult{coreResult: core.TurnResult{Status: core.TaskFailed}})
+	if ui.status != "Task failed." || !strings.Contains(strings.Join(entryTexts(ui.entries), "\n"), "Core did not provide a failure reason") {
+		t.Fatalf("failed task without details = status %q, entries %#v", ui.status, ui.entries)
+	}
+	if strings.Contains(plainTUIView(ui), "Completed") {
+		t.Fatal("failed task was rendered as completed")
+	}
+
+	ui = newTUIModel(&fakeResponder{}, false)
+	ui.finishTask(taskResult{coreResult: core.TurnResult{
+		Status:       core.TaskFailed,
+		ModelFailure: &core.ModelFailure{Category: "authentication", Code: "invalid_key", StatusCode: 401},
+	}})
+	if got := strings.Join(entryTexts(ui.entries), "\n"); !strings.Contains(got, "authentication") || !strings.Contains(got, "invalid_key") || !strings.Contains(got, "HTTP 401") {
+		t.Fatalf("model failure summary = %q", got)
+	}
+
+	ui = newTUIModel(&fakeResponder{}, false)
+	ui.finishTask(taskResult{coreResult: core.TurnResult{Status: core.TaskCancelled}})
+	if ui.status != "Task cancelled." {
+		t.Fatalf("cancelled task status = %q", ui.status)
+	}
+
+	ui = newTUIModel(&fakeResponder{}, false)
+	ui.finishTask(taskResult{coreResult: core.TurnResult{Status: core.TaskPaused}})
+	if !strings.Contains(ui.status, "Task paused") {
+		t.Fatalf("paused task status = %q", ui.status)
+	}
+}
+
 func TestTUIStreamKeepsPartialMarkdownAndNormalizesSplitLineEndings(t *testing.T) {
 	ui := newStreamingTUI()
 	for _, delta := range []string{

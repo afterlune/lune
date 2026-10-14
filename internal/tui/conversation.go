@@ -12,7 +12,7 @@ const (
 )
 
 func (m *tuiModel) modernConversation() bool {
-	return m.preferences.Theme == themeDark || m.preferences.Theme == themeLight
+	return m.resolvedTheme() == themeDark || m.resolvedTheme() == themeLight
 }
 
 func (m *tuiModel) wideConversation() bool {
@@ -73,7 +73,10 @@ func stripPairedAsterisks(line string) string {
 }
 
 func formatScrollbackEntry(entry tuiEntry, width int, theme themeName) string {
-	colors := colorsFor(theme)
+	return formatScrollbackEntryWithColors(entry, width, colorsFor(theme))
+}
+
+func formatScrollbackEntryWithColors(entry tuiEntry, width int, colors themeColors) string {
 	body := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Render(entry.text)
 	prefix, color := "", colors.Muted
 	switch entry.role {

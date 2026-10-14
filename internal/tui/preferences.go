@@ -10,6 +10,7 @@ import (
 type themeName string
 
 const (
+	themeAuto  themeName = "auto"
 	themeDark  themeName = "dark"
 	themeLight themeName = "light"
 )
@@ -20,7 +21,7 @@ type uiPreferences struct {
 }
 
 func defaultUIPreferences() uiPreferences {
-	return uiPreferences{Theme: themeDark, Keymap: defaultKeymap()}
+	return uiPreferences{Theme: themeAuto, Keymap: defaultKeymap()}
 }
 
 func userPreferencesPath() (string, error) {
@@ -53,7 +54,7 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return prefs, err
 	}
-	if stored.Theme == themeDark || stored.Theme == themeLight {
+	if stored.Theme == themeAuto || stored.Theme == themeDark || stored.Theme == themeLight {
 		prefs.Theme = stored.Theme
 	}
 	if stored.Keymap != nil {
@@ -70,8 +71,8 @@ func saveUIPreferences(path string, prefs uiPreferences) error {
 	if path == "" {
 		return errors.New("user preferences path is unavailable")
 	}
-	if prefs.Theme != themeDark && prefs.Theme != themeLight {
-		prefs.Theme = themeDark
+	if prefs.Theme != themeAuto && prefs.Theme != themeDark && prefs.Theme != themeLight {
+		prefs.Theme = themeAuto
 	}
 	if prefs.Keymap == nil {
 		prefs.Keymap = defaultKeymap()

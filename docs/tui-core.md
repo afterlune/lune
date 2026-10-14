@@ -13,7 +13,7 @@ Stable conversation entries are printed once into native terminal scrollback. Th
 
 ## Modes and themes
 
-Only `dark` and `light` are accepted by `/theme` and `ui.json`. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
+`/theme` and `ui.json` support `auto`, `dark`, and `light`. Auto follows the terminal's queried foreground and background colors; dark and light are persistent manual overrides. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
 
 Plan mode is a separate UI state. While it is active, the host sets Core's global tool policy to `read-only` so write and command tools stay hidden and blocked; the TUI keeps the selected permission mode and restores it when Plan mode ends. The current Core API does not expose a per-turn permission intersection, so network tools use Core's read-only approval policy during Plan mode.
 

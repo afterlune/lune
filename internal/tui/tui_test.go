@@ -1282,18 +1282,22 @@ func TestUIPreferencesDefaultsLegacyKeymapAndFallsBackOnInvalidBindings(t *testi
 	}
 }
 
-func TestTUIThemeCommandOnlySupportsDarkAndLight(t *testing.T) {
+func TestTUIThemeCommandSupportsAutoAndResetsSuccessfulInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings", "ui.json")
 	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferences.Theme = themeDark
 	ui.preferencesPath = path
 	ui.input.SetValue("/theme")
 	ui.submit()
-	if !strings.Contains(ui.status, "/theme dark") || !strings.Contains(ui.status, "/theme light") {
+	if !strings.Contains(ui.status, "/theme auto") || !strings.Contains(ui.status, "/theme dark") || !strings.Contains(ui.status, "/theme light") {
 		t.Fatalf("bare theme command should list supported themes: %q", ui.status)
+	}
+	if ui.input.Value() != "" {
+		t.Fatalf("bare theme command left input behind: %q", ui.input.Value())
 	}
 	ui.input.SetValue("/theme anime studio")
 	ui.submit()
-	if ui.preferences.Theme != themeDark || !strings.Contains(ui.status, "Use /theme dark or /theme light") {
+	if ui.preferences.Theme != themeDark || !strings.Contains(ui.status, "Use /theme auto") || ui.input.Value() != "/theme anime studio" {
 		t.Fatalf("unsupported theme changed preferences: %#v status=%q", ui.preferences, ui.status)
 	}
 	ui.input.SetValue("/")
@@ -1311,9 +1315,54 @@ func TestTUIThemeCommandOnlySupportsDarkAndLight(t *testing.T) {
 	if ui.preferences.Theme != themeLight {
 		t.Fatalf("theme = %q, want light", ui.preferences.Theme)
 	}
+	if ui.input.Value() != "" || len(ui.commandSuggestions) != 0 {
+		t.Fatalf("successful theme command left draft or suggestions: %q / %#v", ui.input.Value(), ui.commandSuggestions)
+	}
 	loaded, err := loadUIPreferences(path)
 	if err != nil || loaded.Theme != themeLight {
 		t.Fatalf("persisted theme = %#v, %v", loaded, err)
+	}
+
+	ui.input.SetValue("/theme auto")
+	ui.submit()
+	loaded, err = loadUIPreferences(path)
+	if err != nil || ui.preferences.Theme != themeAuto || loaded.Theme != themeAuto || ui.input.Value() != "" {
+		t.Fatalf("auto theme = %#v, loaded=%#v, input=%q, err=%v", ui.preferences, loaded, ui.input.Value(), err)
+	}
+}
+
+func TestScrollbackFlushWaitsUntilTransientUICloses(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.entries = []tuiEntry{{role: "notice", text: "Permission mode changed."}}
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	if command := ui.flushScrollback(); command != nil || ui.printedEntryCount != 0 {
+		t.Fatalf("flush during command predictions = (%v, %d), want deferred", command != nil, ui.printedEntryCount)
+	}
+	ui.resetInput()
+	if command := ui.flushScrollback(); command == nil || ui.printedEntryCount != 1 {
+		t.Fatalf("flush after closing predictions = (%v, %d), want one printed entry", command != nil, ui.printedEntryCount)
+	}
+
+	ui.printedEntryCount = 0
+	ui.permissionMenu = true
+	if command := ui.flushScrollback(); command != nil || ui.printedEntryCount != 0 {
+		t.Fatalf("flush during permission menu = (%v, %d), want deferred", command != nil, ui.printedEntryCount)
+	}
+}
+
+func TestUpdateDefersScrollbackUntilTransientPanelRedraws(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.entries = []tuiEntry{{role: "notice", text: "Permission mode changed."}}
+	ui.input.SetValue("/")
+	ui.updateCommandSuggestions()
+	_, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	if command == nil || ui.hasTransientPanel() || ui.printedEntryCount != 0 {
+		t.Fatalf("closing predictions = (command=%v, transient=%v, printed=%d), want redraw delay", command != nil, ui.hasTransientPanel(), ui.printedEntryCount)
+	}
+	ui.Update(flushScrollbackMsg{})
+	if ui.printedEntryCount != 1 {
+		t.Fatalf("printed entries after redraw = %d, want one", ui.printedEntryCount)
 	}
 }
 

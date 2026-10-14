@@ -1,6 +1,11 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"fmt"
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 type themeColors struct {
 	Background string
@@ -34,6 +39,59 @@ func colorsFor(theme themeName) themeColors {
 			Assistant: "#e7dfd3", Tool: "#c7b39a", Code: "#d4ad7a",
 		}
 	}
+}
+
+func (m *tuiModel) resolvedTheme() themeName {
+	switch m.preferences.Theme {
+	case themeLight, themeDark:
+		return m.preferences.Theme
+	default:
+		if m.terminalBackground != nil {
+			if !colorIsDark(m.terminalBackground) {
+				return themeLight
+			}
+		} else if m.terminalForeground != nil && colorIsDark(m.terminalForeground) {
+			return themeLight
+		}
+		return themeDark
+	}
+}
+
+func (m *tuiModel) themeColors() themeColors {
+	colors := colorsFor(m.resolvedTheme())
+	if m.preferences.Theme == themeAuto {
+		if m.terminalBackground != nil {
+			colors.Background = colorHex(m.terminalBackground)
+		}
+		if m.terminalForeground != nil {
+			colors.Foreground = colorHex(m.terminalForeground)
+			colors.Assistant = colors.Foreground
+		}
+	}
+	return colors
+}
+
+func (m *tuiModel) applyResolvedTheme() {
+	applyTextareaTheme(&m.input, m.resolvedTheme())
+	m.applyMCPInteractionTheme(m.resolvedTheme())
+	m.updateLayout()
+	m.refreshPanels()
+}
+
+func colorIsDark(value color.Color) bool {
+	if value == nil {
+		return true
+	}
+	r, g, b, _ := value.RGBA()
+	return (0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)) < 0x8000
+}
+
+func colorHex(value color.Color) string {
+	if value == nil {
+		return ""
+	}
+	r, g, b, _ := value.RGBA()
+	return fmt.Sprintf("#%02x%02x%02x", r>>8, g>>8, b>>8)
 }
 
 func (m *tuiModel) styled(color string) lipgloss.Style {

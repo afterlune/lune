@@ -255,7 +255,7 @@ func (m *tuiModel) beginMCPInteraction(request core.UserInteractionRequest) tea.
 		m.rejectMCPInteraction(request.ID)
 		return nil
 	}
-	state.input = newMCPTextInput(m.preferences.Theme)
+	state.input = newMCPTextInput(m.resolvedTheme())
 	if len(state.fields) > 0 {
 		setMCPFieldPlaceholder(&state.input, state.fields[0])
 		state.input.SetValue(state.fields[0].value)
@@ -581,7 +581,7 @@ func (m *tuiModel) renderMCPInteraction() string {
 	if state == nil {
 		return ""
 	}
-	colors := colorsFor(m.preferences.Theme)
+	colors := m.themeColors()
 	var lines []string
 	lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Bold(true).Render("The MCP server needs your input · "+cleanInlineText(state.request.ServerName)))
 	if state.message != "" {

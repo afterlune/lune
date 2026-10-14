@@ -254,7 +254,7 @@ func runTUICommands(model tea.Model, command tea.Cmd) tea.Model {
 		}
 		message := command()
 		value := reflect.ValueOf(message)
-		if value.IsValid() && value.Kind() == reflect.Slice && value.Type().Name() == "sequenceMsg" {
+		if value.IsValid() && value.Kind() == reflect.Slice && (value.Type().Name() == "sequenceMsg" || value.Type().Name() == "BatchMsg") {
 			for index := value.Len() - 1; index >= 0; index-- {
 				if next, ok := value.Index(index).Interface().(tea.Cmd); ok {
 					commands = append([]tea.Cmd{next}, commands...)
