@@ -94,7 +94,7 @@ var keymapActions = []keymapAction{
 	{id: "input_lowercase_word", label: "Lowercase next word", defaultKey: "alt+l", contexts: []string{"input", "session_rename", "question_input"}},
 	{id: "input_capitalize_word", label: "Capitalize next word", defaultKey: "alt+c", contexts: []string{"input", "session_rename", "question_input"}},
 	{id: "input_transpose_character", label: "Transpose characters", defaultKey: "ctrl+t", contexts: []string{"input", "session_rename", "question_input"}},
-	{id: "input_newline", label: "Insert newline", defaultKey: "ctrl+o", contexts: []string{"input", "session_rename", "question_input"}},
+	{id: "input_newline", label: "Insert newline", defaultKey: "shift+enter", contexts: []string{"input", "session_rename", "question_input"}},
 	{id: "vim_insert", label: "Vim: insert mode", defaultKey: "i", contexts: []string{"vim_normal"}},
 	{id: "vim_append", label: "Vim: append mode", defaultKey: "a", contexts: []string{"vim_normal"}},
 	{id: "vim_left", label: "Vim: move left", defaultKey: "h", contexts: []string{"vim_normal"}},

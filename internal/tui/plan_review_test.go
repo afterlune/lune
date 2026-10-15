@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,7 +31,9 @@ func planReviewFixture() (*tuiModel, *recordingPlanRuntime) {
 	ui.sessionID = "session-1"
 	ui.runtimeSessionID = ui.sessionID
 	ui.runtime = runtime
-	ui.planMode = true
+	if err := ui.setPlanMode(true); err != nil {
+		panic(err)
+	}
 	ui.planReview = true
 	ui.proposedPlan = &core.ProposedPlan{Text: "## Build it"}
 	ui.planSourceExecutionID = "source-execution"
@@ -153,6 +156,9 @@ func TestTUIPlanChoicesDispatchAndKeepReadOnly(t *testing.T) {
 			if runtime.mode != test.mode {
 				t.Fatalf("implementation mode = %q, want %q", runtime.mode, test.mode)
 			}
+			if ui.planMode || ui.currentPermissionMode() != core.PermissionWorkspace || ui.client.PermissionMode() != core.PermissionWorkspace {
+				t.Fatalf("implementation did not exit Plan and restore permission: plan=%v active=%q", ui.planMode, ui.currentPermissionMode())
+			}
 		})
 	}
 
@@ -171,12 +177,25 @@ func TestTUIPlanChoicesDispatchAndKeepReadOnly(t *testing.T) {
 	}
 }
 
-func TestTUISubmitsPlanModeWithoutChangingPermission(t *testing.T) {
+func TestTUIPlanImplementationDoesNotStartIfPermissionRestoreFails(t *testing.T) {
+	ui, runtime := planReviewFixture()
+	client := ui.client.(*fakeResponder)
+	client.permissionErr = errors.New("permission store unavailable")
+
+	_, command := ui.implementProposedPlan(core.PlanImplementSameContext)
+	if command != nil || !ui.planMode || !ui.planReview || runtime.mode != "" || client.PermissionMode() != core.PermissionReadOnly {
+		t.Fatalf("implementation ran despite restore failure: command=%v plan=%v review=%v runtime=%q permission=%q",
+			command != nil, ui.planMode, ui.planReview, runtime.mode, client.PermissionMode())
+	}
+}
+
+func TestTUISubmitsPlanModeWithReadOnlyPermission(t *testing.T) {
 	client := &fakeResponder{}
 	ui := newTUIModel(client, false)
 	ui.sessionID = "session-1"
-	ui.planMode = true
-	initialPermission := client.PermissionMode()
+	if err := ui.setPlanMode(true); err != nil {
+		t.Fatal(err)
+	}
 	runtime, err := client.OpenSessionRuntime(context.Background(), ui.sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -192,8 +211,8 @@ func TestTUISubmitsPlanModeWithoutChangingPermission(t *testing.T) {
 	if len(client.inputs) != 1 || !client.inputs[0].PlanMode {
 		t.Fatalf("submitted task = %#v, want PlanMode true", client.inputs)
 	}
-	if client.PermissionMode() != initialPermission {
-		t.Fatalf("Plan mode changed active permission from %q to %q", initialPermission, client.PermissionMode())
+	if client.PermissionMode() != core.PermissionReadOnly || ui.permissionModeBeforePlan != core.PermissionWorkspace {
+		t.Fatalf("Plan mode permissions = active:%q saved:%q, want read-only with Workspace saved", client.PermissionMode(), ui.permissionModeBeforePlan)
 	}
 }
 

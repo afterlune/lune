@@ -99,3 +99,52 @@ func TestQuestionNumericLabelIsNotRemapped(t *testing.T) {
 		t.Fatal("selected label was interpreted as an option number")
 	}
 }
+
+func TestQuestionChoiceUIRequiresAtLeastTwoOptions(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		options    []core.UserQuestionOption
+		wantChoice bool
+	}{
+		{name: "no options"},
+		{name: "one option", options: []core.UserQuestionOption{{Label: "Only suggestion"}}},
+		{name: "two options", options: []core.UserQuestionOption{{Label: "Alpha"}, {Label: "Beta"}}, wantChoice: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ui := newTUIModel(&fakeResponder{}, false)
+			ui.openQuestion(core.UserQuestionRequest{Question: "What should we do?", Options: test.options})
+			view := plainTUIView(ui)
+			if ui.question.notes == test.wantChoice {
+				t.Fatalf("free-text focus = %v, want %v", ui.question.notes, !test.wantChoice)
+			}
+			if got := strings.Contains(view, "None of the above"); got != test.wantChoice {
+				t.Fatalf("choice fallback visible = %v, want %v: %q", got, test.wantChoice, view)
+			}
+			if len(test.options) == 1 && strings.Contains(view, "Only suggestion") {
+				t.Fatalf("single option should not be presented as a choice: %q", view)
+			}
+			if test.wantChoice && (!strings.Contains(view, "Alpha") || !strings.Contains(view, "Beta")) {
+				t.Fatalf("two-option question omitted choices: %q", view)
+			}
+		})
+	}
+}
+
+func TestSingleOptionQuestionAcceptsFreeTextWithoutSelectingOption(t *testing.T) {
+	ui, runtime := questionFixture()
+	question := *ui.pendingRequest.UserQuestion
+	question.Options = []core.UserQuestionOption{{Label: "Only suggestion"}}
+	ui.pendingRequest.UserQuestion = &question
+	ui.question.request = question
+	ui.question.notes = true
+	ui.question.input.SetValue("Use the standard approach")
+
+	_, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if command == nil {
+		t.Fatal("free-text answer was not submitted")
+	}
+	ui.Update(command())
+	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answer != "Use the standard approach" {
+		t.Fatalf("resolved answer = %#v, want free text without the lone suggestion", runtime.resolvedQuestions)
+	}
+}

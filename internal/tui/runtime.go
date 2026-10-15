@@ -59,6 +59,13 @@ func waitForTurn(runtime SessionRuntime, executionID string) tea.Cmd {
 }
 
 func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, resetUsage bool) (tea.Model, tea.Cmd) {
+	if m.planMode {
+		if err := m.setPlanMode(true); err != nil {
+			m.status = "Could not lock permissions to Read-only: " + err.Error()
+			m.addEntry("error", m.status, true)
+			return m, nil
+		}
+	}
 	if m.runtime == nil || m.runtimeSessionID != m.sessionID {
 		if err := m.bindSessionRuntime(context.Background(), m.sessionID); err != nil {
 			m.status = "Could not open the session runtime."
@@ -288,8 +295,12 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 			m.addEntry("notice", "Model request failed: "+detail, true)
 		}
 	case core.PendingExecutionBlocker:
-		m.planMode = true
-		m.status = "Execution blocked: use /plan replan [feedback] or /discard."
+		if err := m.setPlanMode(true); err != nil {
+			m.status = "Execution blocked; could not lock permissions to Read-only: " + err.Error()
+			m.addEntry("error", m.status, true)
+		} else {
+			m.status = "Execution blocked: use /plan replan [feedback] or /discard."
+		}
 		if request.Blocker != nil {
 			m.addEntry("error", request.Blocker.Tool+": "+request.Blocker.Reason, true)
 		}
@@ -391,7 +402,7 @@ func pendingRequestSummary(request core.PendingRequest) string {
 			question := strings.TrimSpace(request.UserQuestion.Question)
 			if question != "" {
 				text := "Waiting for your answer: " + question
-				if len(request.UserQuestion.Options) > 0 {
+				if len(request.UserQuestion.Options) >= 2 {
 					text += "\n" + formatUserQuestionOptions(request.UserQuestion.Options)
 				}
 				return text + "\nEnter an answer to continue."
@@ -422,6 +433,9 @@ func pendingRequestSummary(request core.PendingRequest) string {
 }
 
 func formatUserQuestionOptions(options []core.UserQuestionOption) string {
+	if len(options) < 2 {
+		return ""
+	}
 	lines := make([]string, 1, len(options)+1)
 	lines[0] = "Options:"
 	for index, option := range options {
@@ -444,10 +458,14 @@ func (m *tuiModel) answerUserQuestion(answer string) (tea.Model, tea.Cmd) {
 	}
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		m.question.err = "Choose an option or enter an answer."
+		if len(question.Options) >= 2 {
+			m.question.err = "Choose an option or enter an answer."
+		} else {
+			m.question.err = "Enter an answer."
+		}
 		return m, nil
 	}
-	if i, err := strconv.Atoi(answer); numbered && err == nil && i >= 1 && i <= len(question.Options) {
+	if i, err := strconv.Atoi(answer); numbered && len(question.Options) >= 2 && err == nil && i >= 1 && i <= len(question.Options) {
 		answer = question.Options[i-1].Label
 	}
 	m.question.submitting = true
@@ -498,6 +516,11 @@ func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
 		m.status = "There is no blocked execution to re-plan."
 		return m, nil
 	}
+	if err := m.setPlanMode(true); err != nil {
+		m.status = "Could not lock permissions to Read-only: " + err.Error()
+		m.addEntry("error", m.status, true)
+		return m, nil
+	}
 	feedback := strings.TrimSpace(strings.TrimPrefix(line, "/plan replan"))
 	if _, err := m.runtime.DiscardPaused(context.Background()); err != nil {
 		m.addEntry("error", "Could not discard the blocked execution: "+err.Error(), true)
@@ -505,7 +528,6 @@ func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
 	}
 	m.pendingRequest = nil
 	m.pending = false
-	m.planMode = true
 	if feedback == "" {
 		feedback = "Create a revised plan that avoids the blocked operation."
 	}

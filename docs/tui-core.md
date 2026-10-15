@@ -14,7 +14,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 
 ## Questions and execution records
 
-Clarification questions occupy a dedicated bottom panel. Up/Down or number keys select a suggested answer; Enter submits it, Tab switches to notes, and typing directly starts a custom answer. Esc hides the panel without answering; `/continue` reopens it. PgUp/PgDn scroll long questions. Submission is asynchronous and locked until its result arrives; errors preserve the draft and refresh the current wait identity. The ordinary composer draft is kept separately.
+Clarification questions occupy a dedicated bottom panel. With at least two suggested answers, Up/Down or number keys select an answer; Enter submits it, and Tab toggles notes. With fewer than two answers, the panel opens directly as a free-text question without a choice list. Esc hides the panel without answering; `/continue` reopens it. PgUp/PgDn scroll long questions. Submission is asynchronous and locked until its result arrives; errors preserve the draft and refresh the current wait identity. The ordinary composer draft is kept separately.
 
 Tool calls appear individually in chronological order. Commands show their actual command text, execution status and exit code; successful file edits show a bounded diff. The default preview contains three lines. F4 focuses the records, Up/Down selects a record, and Enter expands or collapses it. These keys and the question controls can be changed with `/keymap`. Background command polls update the original record instead of creating extra rows.
 
@@ -24,9 +24,9 @@ Markdown tables use terminal cell widths and wrap inside their columns. Narrow w
 
 ## Modes and themes
 
-`/theme` and `ui.json` support `auto`, `dark`, and `light`. The TUI always inherits the terminal background; auto follows the terminal's queried colors, while dark and light choose the text and accent palette. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
+`/theme` and `ui.json` support `auto`, `dark`, and `light`. The TUI always inherits the terminal background; auto follows the terminal's queried colors, while dark and light choose the text and accent palette. `Shift+Enter` inserts a newline; Enter submits. `Shift+Tab` and `/permissions <mode>` change the active permission choice outside Plan mode.
 
-Plan mode is a separate UI state. While it is active, the host sets Core's global tool policy to `read-only` so write and command tools stay hidden and blocked; the TUI keeps the selected permission mode and restores it when Plan mode ends. The current Core API does not expose a per-turn permission intersection, so network tools use Core's read-only approval policy during Plan mode.
+Plan mode locks Core's global tool policy to `read-only`, hiding and blocking write and command tools. The TUI remembers the previous permission mode and restores it when Plan mode ends; permission changes are disabled while it is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. The current Core API does not expose a per-turn permission intersection, so network tools use Core's read-only approval policy during Plan mode.
 
 ## Run and build
 

@@ -21,6 +21,7 @@ type fakeResponder struct {
 	compact          int
 	compactErr       error
 	mode             core.PermissionMode
+	permissionErr    error
 	contextDefaults  core.ContextDefaults
 	attachmentLimits core.AttachmentLimits
 	sessions         map[string]core.Session
@@ -216,8 +217,14 @@ func (f *fakeResponder) PermissionMode() core.PermissionMode {
 	return f.mode
 }
 
-func (f *fakeResponder) SetPermissionMode(mode core.PermissionMode) error { f.mode = mode; return nil }
-func (f *fakeResponder) ResolveApproval(string, bool) error               { return nil }
+func (f *fakeResponder) SetPermissionMode(mode core.PermissionMode) error {
+	if f.permissionErr != nil {
+		return f.permissionErr
+	}
+	f.mode = mode
+	return nil
+}
+func (f *fakeResponder) ResolveApproval(string, bool) error { return nil }
 func (f *fakeResponder) MCPServers() []core.MCPServerStatus {
 	return append([]core.MCPServerStatus(nil), f.mcpServers...)
 }

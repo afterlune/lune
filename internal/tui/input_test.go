@@ -36,12 +36,12 @@ func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 	}
 }
 
-func TestTUICtrlOInsertsNewline(t *testing.T) {
+func TestTUIShiftEnterInsertsNewline(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.input.SetValue("first")
-	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
 	if !strings.Contains(ui.input.Value(), "\n") {
-		t.Fatalf("input = %q, Ctrl+O should insert a newline", ui.input.Value())
+		t.Fatalf("input = %q, Shift+Enter should insert a newline", ui.input.Value())
 	}
 }
 

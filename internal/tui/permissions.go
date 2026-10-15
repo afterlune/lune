@@ -49,10 +49,15 @@ func (m *tuiModel) selectPlanReviewOption() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) keepPlanReadOnly() {
+	if err := m.setPlanMode(true); err != nil {
+		m.status = "Could not lock permissions to Read-only: " + err.Error()
+		m.addEntry("error", m.status, true)
+		return
+	}
 	m.planReview = false
 	m.proposedPlan = nil
 	m.planAuthorization = core.PlanAuthorization{}
-	m.status = "Plan saved; permission remains " + permissionModeLabel(m.currentPermissionMode()) + "."
+	m.status = "Plan saved · Read-only permissions remain locked."
 	m.updateLayout()
 }
 
@@ -60,6 +65,13 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 	if m.runtime == nil || m.proposedPlan == nil || m.planSourceExecutionID == "" {
 		m.status = "There is no completed plan to implement."
 		return m, nil
+	}
+	if m.planMode {
+		if err := m.setPlanMode(false); err != nil {
+			m.status = "Could not restore permissions before implementation: " + err.Error()
+			m.addEntry("error", m.status, true)
+			return m, nil
+		}
 	}
 	runtime := m.runtime
 	client := m.client
@@ -165,18 +177,66 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		m.addEntry("notice", m.status, false)
 		return m, nil
 	}
-	m.planMode = !m.planMode
-	if m.planMode {
-		m.status = "Plan mode · tools are restricted to read-only."
-	} else {
-		m.status = "Plan mode off · " + permissionModeLabel(m.currentPermissionMode()) + " permissions remain active."
+	enable := !m.planMode
+	if err := m.setPlanMode(enable); err != nil {
+		m.status = "Could not change Plan mode: " + err.Error()
+		m.addEntry("error", m.status, true)
+		return m, nil
 	}
-	m.addEntry("notice", m.status, false)
+	if enable {
+		m.status = "Ready"
+		m.addEntry("notice", "Plan mode enabled · Read-only permissions locked.", false)
+	} else {
+		m.status = "Ready"
+		m.addEntry("notice", "Plan mode off · "+permissionModeLabel(m.currentPermissionMode())+" permissions restored.", false)
+	}
 	m.resetInput()
 	return m, nil
 }
 
+func (m *tuiModel) setPlanMode(enabled bool) error {
+	if m.client == nil {
+		return fmt.Errorf("permission settings are unavailable")
+	}
+	if enabled {
+		if !m.planMode {
+			m.permissionModeBeforePlan = m.currentPermissionMode()
+			if m.permissionModeBeforePlan == "" {
+				m.permissionModeBeforePlan = m.client.PermissionMode()
+			}
+		} else if m.permissionModeBeforePlan == "" {
+			m.permissionModeBeforePlan = m.currentPermissionMode()
+		}
+		if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+			return err
+		}
+		m.permissionMode = core.PermissionReadOnly
+		m.planMode = true
+		return nil
+	}
+	if !m.planMode {
+		return nil
+	}
+	restore := m.permissionModeBeforePlan
+	if restore == "" {
+		restore = core.PermissionReadOnly
+	}
+	if err := m.client.SetPermissionMode(restore); err != nil {
+		return err
+	}
+	m.permissionMode = restore
+	m.permissionModeBeforePlan = ""
+	m.planMode = false
+	return nil
+}
+
 func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
+	if m.planMode {
+		m.permissionMenu = false
+		m.status = "Permissions are locked to Read-only while Plan mode is active."
+		m.resetInput()
+		return m, nil
+	}
 	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
@@ -197,6 +257,10 @@ func (m *tuiModel) openPermissionMenu() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) cyclePermissionMode() (tea.Model, tea.Cmd) {
+	if m.planMode {
+		m.status = "Ready"
+		return m, nil
+	}
 	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)
@@ -240,6 +304,10 @@ func (m *tuiModel) applyPermissionMode(mode core.PermissionMode) (tea.Model, tea
 }
 
 func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput bool) (tea.Model, tea.Cmd) {
+	if m.planMode && mode != core.PermissionReadOnly {
+		m.status = "Permissions are locked to Read-only while Plan mode is active."
+		return m, nil
+	}
 	if m.client == nil {
 		m.status = "Permission settings are unavailable."
 		m.addEntry("error", m.status, true)

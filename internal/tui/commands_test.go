@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,7 +236,7 @@ func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
 	}
 }
 
-func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
+func TestTUIPlanCommandLocksAndRestoresPermissionMode(t *testing.T) {
 	client := &fakeResponder{}
 	ui := newTUIModel(client, false)
 	initialPermissionMode := client.PermissionMode()
@@ -249,55 +250,60 @@ func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
 	if !finished.planMode {
 		t.Fatalf("plan mode=%v, want enabled", finished.planMode)
 	}
-	if finished.currentPermissionMode() != initialPermissionMode || client.PermissionMode() != initialPermissionMode {
-		t.Fatalf("Plan/permission state = %q/%q, want both to preserve active mode %q", finished.currentPermissionMode(), client.PermissionMode(), initialPermissionMode)
+	if finished.currentPermissionMode() != core.PermissionReadOnly || client.PermissionMode() != core.PermissionReadOnly || finished.permissionModeBeforePlan != initialPermissionMode {
+		t.Fatalf("Plan permission state = active:%q core:%q saved:%q, want read-only with %q saved", finished.currentPermissionMode(), client.PermissionMode(), finished.permissionModeBeforePlan, initialPermissionMode)
 	}
 	if finished.input.Value() != "" {
 		t.Fatalf("/plan input = %q, want cleared", finished.input.Value())
 	}
 
-	finished.input.SetValue("/plan")
-	finished.submit()
+	finished.togglePlanMode()
 	if finished.planMode {
 		t.Fatalf("second /plan should return to build mode: plan=%v", finished.planMode)
 	}
+	if finished.currentPermissionMode() != initialPermissionMode || client.PermissionMode() != initialPermissionMode {
+		t.Fatalf("permission after Plan exit = active:%q core:%q, want %q", finished.currentPermissionMode(), client.PermissionMode(), initialPermissionMode)
+	}
 }
 
-func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
+func TestTUIPlanModeBlocksPermissionChanges(t *testing.T) {
 	client := &fakeResponder{}
 	ui := newTUIModel(client, false)
-	ui.planMode = true
+	if err := ui.setPlanMode(true); err != nil {
+		t.Fatal(err)
+	}
 
 	footer := ui.renderFooter(200)
-	if !ui.planMode || client.PermissionMode() != core.PermissionWorkspace {
-		t.Fatalf("Plan and permission state = %v/%q, want Plan with Workspace", ui.planMode, client.PermissionMode())
+	if !ui.planMode || client.PermissionMode() != core.PermissionReadOnly {
+		t.Fatalf("Plan and permission state = %v/%q, want Plan with Read-only", ui.planMode, client.PermissionMode())
 	}
-	if !strings.Contains(footer, "/plan") || !strings.Contains(footer, "Workspace") || !strings.Contains(footer, "modes") {
-		t.Fatalf("compact footer should retain Plan and permission shortcuts: %q", footer)
+	if !strings.Contains(footer, "/plan") || !strings.Contains(footer, "Read-only") || !strings.Contains(footer, "permissions locked") || strings.Contains(footer, "modes") {
+		t.Fatalf("compact footer should show the locked Plan permission: %q", footer)
 	}
-	ui.permissionMenu = true
-	menu := ui.renderPermissionMenu()
-	if !strings.Contains(menu, "Permission mode · current: Workspace") || !strings.Contains(menu, "Plan caps tools at read-only") || !strings.Contains(menu, "approval for visible tools") {
-		t.Fatalf("Plan permission menu should explain the effective tool cap: %q", menu)
+	_, _ = ui.openPermissionMenu()
+	if ui.permissionMenu || !strings.Contains(ui.status, "locked to Read-only") {
+		t.Fatalf("permission menu opened during Plan mode: open=%v status=%q", ui.permissionMenu, ui.status)
 	}
-	if got, want := ui.commandSuggestionHeight(), len(tuiPermissionOptions)+3; got != want {
-		t.Fatalf("permission menu height = %d, want %d with Plan hint", got, want)
+	if menu := ui.renderPermissionMenu(); !strings.Contains(menu, "Read-only (locked by Plan)") {
+		t.Fatalf("permission menu view omitted the Plan lock: %q", menu)
 	}
 
-	ui.permissionMenu = false
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if !ui.planMode || ui.currentPermissionMode() != core.PermissionAsk || client.PermissionMode() != core.PermissionAsk {
+	if !ui.planMode || ui.currentPermissionMode() != core.PermissionReadOnly || client.PermissionMode() != core.PermissionReadOnly {
 		t.Fatalf("Plan/permission state after Shift+Tab: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
 	}
-	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "modes") {
-		t.Fatalf("permission cycling should restore the common footer hints: status=%q footer=%q", ui.status, ui.renderFooter(200))
+	ui.applyPermissionMode(core.PermissionFullAccess)
+	if !ui.planMode || client.PermissionMode() != core.PermissionReadOnly {
+		t.Fatalf("/permissions changed the active Plan permission: plan=%v core=%q", ui.planMode, client.PermissionMode())
 	}
-	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if !ui.planMode || ui.currentPermissionMode() != core.PermissionFullAccess || client.PermissionMode() != core.PermissionFullAccess {
-		t.Fatalf("full-access selection should preserve Plan mode: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
-	}
-	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "Full access") {
-		t.Fatalf("permission mode should remain visible with the common footer: status=%q footer=%q", ui.status, ui.renderFooter(200))
+}
+
+func TestTUIPlanModeDoesNotEnableWhenReadOnlyCannotBeSet(t *testing.T) {
+	client := &fakeResponder{permissionErr: errors.New("permission store unavailable")}
+	ui := newTUIModel(client, false)
+	ui.togglePlanMode()
+	if ui.planMode || client.PermissionMode() != core.PermissionWorkspace {
+		t.Fatalf("failed Plan enable changed state: plan=%v permission=%q", ui.planMode, client.PermissionMode())
 	}
 }
 

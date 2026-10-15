@@ -165,6 +165,7 @@ type tuiModel struct {
 	planReview                    bool
 	planReviewIndex               int
 	permissionMode                core.PermissionMode
+	permissionModeBeforePlan      core.PermissionMode
 	vimMode                       bool
 	vimNormal                     bool
 	vimPendingDelete              bool

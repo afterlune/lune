@@ -60,7 +60,11 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 		prefs.Theme = stored.Theme
 	}
 	if stored.Keymap != nil {
-		bindings, err := normalizeKeymap(stored.Keymap)
+		storedKeymap := cloneKeymap(stored.Keymap)
+		if storedKeymap["input_newline"] == "ctrl+o" {
+			storedKeymap["input_newline"] = "shift+enter"
+		}
+		bindings, err := normalizeKeymap(storedKeymap)
 		if err != nil {
 			return prefs, err
 		}

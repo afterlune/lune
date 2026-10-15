@@ -51,3 +51,27 @@ func TestUIPreferencesDefaultsLegacyKeymapAndFallsBackOnInvalidBindings(t *testi
 		t.Fatalf("invalid keymap fallback = %#v, %v; want default bindings and preserved theme", prefs, err)
 	}
 }
+
+func TestUIPreferencesMigratesOldNewlineDefaultAndPreservesCustomBindings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ui.json")
+	legacy := []byte("{\"keymap\":{\"input_newline\":\"ctrl+o\",\"toggle_activity\":\"ctrl+g\"}}")
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := loadUIPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prefs.Keymap["input_newline"] != "shift+enter" || prefs.Keymap["toggle_activity"] != "ctrl+g" {
+		t.Fatalf("migrated keymap = %#v, want Shift+Enter newline and retained custom binding", prefs.Keymap)
+	}
+
+	custom := []byte("{\"keymap\":{\"input_newline\":\"alt+enter\"}}")
+	if err := os.WriteFile(path, custom, 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err = loadUIPreferences(path)
+	if err != nil || prefs.Keymap["input_newline"] != "alt+enter" {
+		t.Fatalf("custom newline binding = %#v, %v; want alt+enter", prefs.Keymap, err)
+	}
+}

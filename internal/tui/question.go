@@ -40,6 +40,10 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	if m.question != nil && sameQuestion(m.question.request, request) {
 		m.question.request = request
 		m.question.selected = min(m.question.selected, len(request.Options))
+		if len(request.Options) < 2 {
+			m.question.notes = true
+			m.question.input.Focus()
+		}
 		m.questionOpen = true
 		m.updateLayout()
 		return
@@ -55,7 +59,7 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	input.SetVirtualCursor(true)
 	input.SetWidth(max(1, m.width-2))
 	applyTextareaTheme(&input, m.resolvedTheme())
-	m.question = &questionPanel{request: request, input: input, notes: len(request.Options) == 0}
+	m.question = &questionPanel{request: request, input: input, notes: len(request.Options) < 2}
 	if m.question.notes {
 		m.question.input.Focus()
 	}
@@ -85,6 +89,7 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 	}
+	hasChoices := len(q.request.Options) >= 2
 	switch {
 	case m.matchesKey("chat_scroll_up", key):
 		q.manualScroll = true
@@ -93,6 +98,9 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		q.manualScroll = true
 		q.scroll += max(1, m.height/3)
 	case m.matchesKey("question_notes", key):
+		if !hasChoices {
+			return m, nil
+		}
 		q.notes = !q.notes
 		q.manualScroll = false
 		if q.notes {
@@ -100,15 +108,15 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		q.input.Blur()
 		return m, nil
-	case !q.notes && m.matchesKey("question_previous", key):
+	case hasChoices && !q.notes && m.matchesKey("question_previous", key):
 		q.selected = max(0, q.selected-1)
 		q.manualScroll = false
-	case !q.notes && m.matchesKey("question_next", key):
+	case hasChoices && !q.notes && m.matchesKey("question_next", key):
 		q.selected = min(len(q.request.Options), q.selected+1)
 		q.manualScroll = false
 	case m.matchesKey("send", key):
 		answer := strings.TrimSpace(q.input.Value())
-		if q.selected < len(q.request.Options) {
+		if hasChoices && q.selected < len(q.request.Options) {
 			label := q.request.Options[q.selected].Label
 			if answer != "" {
 				answer = label + "\n\n" + answer
@@ -119,9 +127,11 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.answerUserQuestion(answer)
 	default:
 		if !q.notes {
-			if n, err := strconv.Atoi(key.String()); err == nil && n > 0 && n <= len(q.request.Options)+1 {
-				q.selected = n - 1
-				return m, nil
+			if hasChoices {
+				if n, err := strconv.Atoi(key.String()); err == nil && n > 0 && n <= len(q.request.Options)+1 {
+					q.selected = n - 1
+					return m, nil
+				}
 			}
 			if key.Text == "" {
 				return m, nil
@@ -149,33 +159,30 @@ func (m *tuiModel) renderQuestion() string {
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 	lines := []string{muted.Render("Question"), accent.Render(wrapDisplayText(q.request.Question, max(1, m.width-2)))}
 	count := len(q.request.Options)
-	// Keep the selected choice visible even on short terminals.
-	start := 0
-	end := count + 1
+	hasChoices := count >= 2
 	focusLine := 0
-	if count == 0 {
-		start = 0
-		end = 0
-	}
-	for i := start; i < end; i++ {
-		label, description := "None of the above", "Type your own answer in notes"
-		if i < count {
-			label = q.request.Options[i].Label
-			description = q.request.Options[i].Description
-		}
-		prefix := "  "
-		if i == q.selected {
-			prefix = "› "
-		}
-		row := fmt.Sprintf("%s%d. %s", prefix, i+1, label)
-		row = wrapDisplayText(row, max(1, m.width-2))
-		if i == q.selected {
-			focusLine = len(strings.Split(strings.Join(lines, "\n"), "\n"))
-			row = accent.Render(row)
-		}
-		lines = append(lines, row)
-		if description != "" {
-			lines = append(lines, muted.Render(wrapDisplayText("     "+description, max(1, m.width-2))))
+	if hasChoices {
+		// Keep the selected choice visible even on short terminals.
+		for i := 0; i <= count; i++ {
+			label, description := "None of the above", "Type your own answer in notes"
+			if i < count {
+				label = q.request.Options[i].Label
+				description = q.request.Options[i].Description
+			}
+			prefix := "  "
+			if i == q.selected {
+				prefix = "› "
+			}
+			row := fmt.Sprintf("%s%d. %s", prefix, i+1, label)
+			row = wrapDisplayText(row, max(1, m.width-2))
+			if i == q.selected {
+				focusLine = len(strings.Split(strings.Join(lines, "\n"), "\n"))
+				row = accent.Render(row)
+			}
+			lines = append(lines, row)
+			if description != "" {
+				lines = append(lines, muted.Render(wrapDisplayText("     "+description, max(1, m.width-2))))
+			}
 		}
 	}
 	if q.notes {
@@ -185,7 +192,14 @@ func (m *tuiModel) renderQuestion() string {
 	if q.err != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error)).Render(wrapDisplayText(q.err, max(1, m.width-2))))
 	}
-	hint := m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · " + m.keyLabel("question_notes") + " notes · " + m.keyLabel("send") + " submit · Esc hide"
+	hint := m.keyLabel("send") + " submit · Esc hide"
+	if hasChoices {
+		if q.notes {
+			hint = m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · " + m.keyLabel("question_notes") + " choices · " + m.keyLabel("send") + " submit · Esc hide"
+		} else {
+			hint = m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · " + m.keyLabel("question_notes") + " notes · " + m.keyLabel("send") + " submit · Esc hide"
+		}
+	}
 	if q.submitting {
 		hint = "Submitting answer…"
 	}

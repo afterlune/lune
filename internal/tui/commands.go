@@ -33,7 +33,7 @@ var tuiCommands = []tuiCommandSpec{
 	{name: "/mcp", usage: "/mcp <list|enable|disable|auth> [name]", description: "Manage configured Model Context Protocol servers."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set the permission mode."},
-	{name: "/plan", usage: "/plan", description: "Switch Core to read-only plan mode or review a plan."},
+	{name: "/plan", usage: "/plan", description: "Lock permissions to read-only plan mode or review a plan."},
 	{name: "/queue", usage: "/queue", description: "Review or cancel turns in the Core queue."},
 	{name: "/resume", usage: "/resume", description: "Choose a session to resume."},
 	{name: "/rewind", usage: "/rewind <n>", description: "Remove the latest n user turns."},

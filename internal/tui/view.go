@@ -262,7 +262,11 @@ func (m *tuiModel) renderFooter(width int) string {
 	case m.pending:
 		status = "Paused · /continue resume · /discard"
 	case m.status == "Ready":
-		status = "Ready · " + m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + m.keyLabel("cycle_permissions") + " modes · " +
+		permissionHint := m.keyLabel("cycle_permissions") + " modes"
+		if m.planMode {
+			permissionHint = "permissions locked"
+		}
+		status = "Ready · " + m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + permissionHint + " · " +
 			m.keyLabel("search_open") + " find · " + m.keyLabel("focus_activity") + " tools · /usage · /plan"
 	}
 	if m.vimMode {
@@ -533,14 +537,14 @@ func (m *tuiModel) renderEffortPicker() string {
 
 func (m *tuiModel) renderPermissionMenu() string {
 	colors := m.themeColors()
+	if m.planMode {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("Permission mode · Read-only (locked by Plan)\nExit Plan mode with /plan before changing permissions.")
+	}
 	mode := core.PermissionReadOnly
 	if m.client != nil {
 		mode = m.currentPermissionMode()
 	}
 	lines := []string{"Permission mode · current: " + permissionModeLabel(mode)}
-	if m.planMode {
-		lines = append(lines, "Plan caps tools at read-only; permission controls approval for visible tools such as web.")
-	}
 	for index, option := range tuiPermissionOptions {
 		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
 		if index == m.permissionIndex {

@@ -55,8 +55,8 @@ The tool permission setting has four modes:
 Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. In the TUI, `Shift+Tab` cycles through the four modes and `/permissions <mode>` selects one directly.
 自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。TUI 中按 `Shift+Tab` 循环切换四档，也可用 `/permissions <mode>` 直接选择。
 
-Plan mode is independent of the permission setting: it limits the visible tools to read-only tools, while the active permission mode can still require approval for a tool such as web access.
-Plan 模式与权限档位相互独立：Plan 模式只向模型提供只读工具；当前权限档位仍可能要求对 web 访问等工具进行授权。
+Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` and `Shift+Tab` cannot raise access while Plan mode is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. Read-only web tools still require approval.
+Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 和 `Shift+Tab` 均不能提高权限。在计划审查中选择实施时，会先退出 Plan 模式并恢复之前的档位，再启动实施。只读 web 工具仍需授权。
 
 ## Conventions / 约定
 

@@ -160,7 +160,9 @@ func TestTUIClipboardImagePasteSubmitsStructuredImageInPlanMode(t *testing.T) {
 	ui.sessionID = "session-1"
 	ui.clipboardReader = fakeClipboardImageReader{payload: clipboardImagePayload{Image: data}}
 	ui.clipboardTextReader = func() (string, error) { return "", nil }
-	ui.planMode = true
+	if err := ui.setPlanMode(true); err != nil {
+		t.Fatal(err)
+	}
 
 	updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: 'v', Mod: tea.ModCtrl}))
 	if command == nil {
@@ -330,7 +332,9 @@ func TestTUIQueuedInputKeepsImagesWithoutRetainingEncodedRequest(t *testing.T) {
 	client.mode = core.PermissionReadOnly
 	ui := newTUIModel(client, false)
 	ui.sessionID = "session-1"
-	ui.planMode = true
+	if err := ui.setPlanMode(true); err != nil {
+		t.Fatal(err)
+	}
 	ui.attachments = []imageAttachment{attachment}
 	ui.input.SetValue("Review this " + attachment.Token)
 	updated, command := ui.enqueueInput()
