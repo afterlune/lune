@@ -193,7 +193,13 @@ func TestTUIEscapeCancelsActiveTask(t *testing.T) {
 		t.Fatal("accepted turn did not start waiting for Core")
 	}
 	done := make(chan tea.Msg, 1)
-	go func() { done <- waitCommand() }()
+	go func() {
+		msg := waitCommand()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			msg = batch[0]()
+		}
+		done <- msg
+	}()
 	<-client.started
 	finished.update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
 	finished.update(<-done)

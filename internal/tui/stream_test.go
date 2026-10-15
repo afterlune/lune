@@ -91,6 +91,12 @@ func TestTUITaskFailureStatusUsesCoreOutcome(t *testing.T) {
 	if !strings.Contains(ui.status, "Task paused") {
 		t.Fatalf("paused task status = %q", ui.status)
 	}
+
+	ui = newTUIModel(&fakeResponder{}, false)
+	ui.finishTask(taskResult{response: json.RawMessage(`{"output":[]}`), coreResult: core.TurnResult{Status: core.TaskCompleted}})
+	if !strings.Contains(strings.Join(entryTexts(ui.entries), "\n"), "no displayable response") {
+		t.Fatalf("empty successful response did not explain the result: %#v", ui.entries)
+	}
 }
 
 func TestTUIStreamKeepsPartialMarkdownAndNormalizesSplitLineEndings(t *testing.T) {
@@ -277,4 +283,38 @@ func countAssistantEntries(entries []tuiEntry) int {
 		}
 	}
 	return count
+}
+
+func TestEmptyResponsesDoNotDuplicateTheFinalAnswer(t *testing.T) {
+	ui := newStreamingTUI()
+	streamModelText(ui, "task-1", "lead", "answer", "Hello once")
+	streamModelBoundary(ui, "task-1", "completed")
+	// Criteria and acceptance tools can finish without any displayable text.
+	streamModelBoundary(ui, "task-1", "completed")
+	streamModelBoundary(ui, "task-1", "completed")
+	ui.finishTask(taskResult{response: json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello once"}]}]}`)})
+	if countAssistantEntries(ui.entries) != 1 {
+		t.Fatalf("duplicated final: %#v", ui.entries)
+	}
+}
+
+func TestInternalReviewTextDoesNotEnterConversation(t *testing.T) {
+	ui := newStreamingTUI()
+	event := streamModelEvent(ui.sessionID, "task-1", "lead", "review", "private reviewer verdict", "text_delta")
+	event.Stream.Purpose = "acceptance"
+	ui.Update(coreEventMsg{event: event})
+	ui.flushModelStreamEvents()
+	if len(ui.entries) != 0 {
+		t.Fatalf("internal review leaked: %#v", ui.entries)
+	}
+}
+
+func TestDuplicateTaskResultDoesNotAppendAnotherAnswer(t *testing.T) {
+	ui := newStreamingTUI()
+	result := taskResult{coreResult: core.TaskResult{ExecutionID: "execution-1", Status: core.TaskCompleted}, response: json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"One final answer"}]}]}`)}
+	ui.Update(taskFinishedMsg{result: result})
+	ui.Update(taskFinishedMsg{result: result})
+	if countAssistantEntries(ui.entries) != 1 {
+		t.Fatalf("duplicated completion: %#v", ui.entries)
+	}
 }

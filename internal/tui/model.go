@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type tuiEntry struct {
@@ -35,6 +36,7 @@ type inputSnapshot struct {
 }
 
 type tuiActivity struct {
+	details  *publictool.ExecutionDetails
 	callID   string
 	summary  string
 	status   string
@@ -63,6 +65,15 @@ type toolApprovalCancelledMsg struct{ requestID string }
 
 type taskFinishedMsg struct {
 	result taskResult
+}
+
+type pausedTaskDetailsMsg struct {
+	state        core.TaskState
+	sessionID    string
+	paused       bool
+	requests     []core.PendingRequest
+	budgetReason core.BudgetReason
+	err          error
 }
 
 type terminalColorTimeoutMsg struct{}
@@ -135,6 +146,10 @@ type tuiModel struct {
 	sessionSettings               core.SessionSettings
 	pendingApproval               *toolApprovalRequestMsg
 	pendingRequest                *core.PendingRequest
+	question                      *questionPanel
+	questionOpen                  bool
+	finishedTasks                 map[string]bool
+	taskStartedAt                 time.Time
 	pendingMCPInteraction         *mcpInteractionState
 	mcpCommandPending             bool
 	mcpAuthCancel                 context.CancelFunc
@@ -164,6 +179,7 @@ type tuiModel struct {
 	contextInput                  int64
 	contextEstimated              bool
 	modelStreamTaskID             string
+	modelStreamRequestID          string
 	modelStreamStartedAt          time.Time
 	modelStreamFirstTokenLatency  time.Duration
 	modelStreamFirstTokenRecorded bool
@@ -355,7 +371,12 @@ func (m *tuiModel) Init() tea.Cmd {
 		commands = append(commands, m.requestTerminalColors())
 	}
 	if m.running && m.runningExecutionID != "" {
-		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
+		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID), taskClock(m.sessionID))
+	}
+	if m.pending {
+		if command := m.inspectPausedTask(""); command != nil {
+			commands = append(commands, command)
+		}
 	}
 	return tea.Batch(commands...)
 }

@@ -54,7 +54,7 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		}
 	}
 	appendEntry := func(entry tuiEntry) {
-		text := plainConversationText(entry.text)
+		text := renderConversationText(entry.text, max(1, m.chat.Width()-2))
 		if text == "" {
 			return
 		}
@@ -96,29 +96,11 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 			continue
 		}
 
-		groupStart := index
-		for index < len(m.entries) && m.entries[index].role == "tool" {
-			index++
-		}
-		group := toolActivityGroup{start: groupStart, end: index}
-		group.key = toolActivityGroupKey(m.entries, groupStart)
-		count := group.end - group.start
-		marker := "▸"
-		if m.activityFocus && groupNumber == m.activityFocusIndex {
-			marker = "▶"
-		}
+		selected := m.activityFocus && groupNumber == m.activityFocusIndex
 		groupNumber++
-		if m.activityExpanded[group.key] {
-			appendEntry(tuiEntry{role: "tool", text: fmt.Sprintf("%s Tool activity (%d)", marker, count)})
-			for toolIndex := group.start; toolIndex < group.end; toolIndex++ {
-				activity := m.entries[toolIndex]
-				activity.text = "  • " + activity.text
-				appendEntry(activity)
-			}
-		} else {
-			label := marker + " " + m.collapsedToolGroupLabel(group)
-			appendEntry(tuiEntry{role: "tool", text: label})
-		}
+		key := toolActivityGroupKey(m.entries, index)
+		lines = m.appendToolTranscript(lines, entry, selected, m.activityExpanded[key])
+		index++
 		if index < len(m.entries) {
 			appendSpacer()
 		}
@@ -168,9 +150,7 @@ func (m *tuiModel) toolActivityGroups() []toolActivityGroup {
 			continue
 		}
 		start := index
-		for index < len(m.entries) && m.entries[index].role == "tool" {
-			index++
-		}
+		index++
 		groups = append(groups, toolActivityGroup{
 			key: toolActivityGroupKey(m.entries, start), start: start, end: index,
 		})
@@ -637,7 +617,9 @@ func transcriptRoleStyle(role string, colors themeColors) lipgloss.Style {
 		color = colors.User
 	case "tool", "notice", "queued":
 		color = colors.Muted
-	case "error":
+	case "tool_done", "diff_added":
+		color = colors.Success
+	case "error", "diff_removed":
 		color = colors.Error
 	case "permission", "question":
 		color = colors.Warning

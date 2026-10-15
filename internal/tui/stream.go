@@ -17,7 +17,11 @@ func (m *tuiModel) startModelStream(event core.Event) {
 	if event.SessionID != m.sessionID || event.TaskID == "" {
 		return
 	}
+	if m.modelStreamTaskID == event.TaskID {
+		return
+	}
 	m.resetModelStream()
+	m.taskStartedAt = time.Now()
 	m.modelStreamTaskID = event.TaskID
 	m.modelStreamStartedAt = time.Now()
 	m.modelStreamFirstTokenLatency = 0
@@ -27,6 +31,9 @@ func (m *tuiModel) startModelStream(event core.Event) {
 func (m *tuiModel) queueModelStreamEvent(event core.Event) tea.Cmd {
 	if event.SessionID != m.sessionID || event.TaskID == "" || event.TaskID != m.modelStreamTaskID ||
 		m.modelStreamClosed || event.AgentID != "lead" || event.Stream == nil {
+		return nil
+	}
+	if event.Stream.Purpose == "criteria" || event.Stream.Purpose == "acceptance" {
 		return nil
 	}
 	switch event.Stream.Type {
@@ -68,6 +75,11 @@ func (m *tuiModel) flushModelStreamEvents() bool {
 	for _, event := range events {
 		if event.TaskID != m.modelStreamTaskID || event.Stream == nil {
 			continue
+		}
+		if event.Stream.RequestID != "" && event.Stream.RequestID != m.modelStreamRequestID {
+			flushDelta()
+			m.closeModelStreamResponse(false, true)
+			m.modelStreamRequestID = event.Stream.RequestID
 		}
 		switch event.Stream.Type {
 		case "text_delta":
@@ -132,7 +144,7 @@ func (m *tuiModel) closeModelStreamResponse(incomplete, replaceLast bool) bool {
 			}
 		}
 	}
-	if replaceLast {
+	if replaceLast && len(m.modelStreamCurrent) > 0 {
 		m.modelStreamLast = append(m.modelStreamLast[:0], m.modelStreamCurrent...)
 	}
 	m.modelStreamCurrent = nil
@@ -196,6 +208,7 @@ func (m *tuiModel) reconcileModelStreamFinal(finalText string) bool {
 func (m *tuiModel) resetModelStream() {
 	m.modelStreamToken++
 	m.modelStreamTaskID = ""
+	m.modelStreamRequestID = ""
 	m.modelStreamStartedAt = time.Time{}
 	m.modelStreamClosed = false
 	m.modelStreamPending = nil

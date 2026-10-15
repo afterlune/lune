@@ -62,6 +62,11 @@ func (m *tuiModel) updateLayout() {
 	contentWidth := max(1, m.width)
 	inputWidth := contentWidth
 	m.input.SetWidth(inputWidth)
+	if m.question != nil {
+		m.question.input.KeyMap = m.input.KeyMap
+		m.question.input.SetWidth(max(1, inputWidth-2))
+		applyTextareaTheme(&m.question.input, m.resolvedTheme())
+	}
 	m.updateMCPInteractionWidth(inputWidth)
 	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), 1)
 	m.chat.SoftWrap = true
@@ -72,7 +77,11 @@ func (m *tuiModel) updateLayout() {
 }
 
 func (m *tuiModel) availableBodyHeight(contentWidth, footerHeight, dividerCount int) int {
-	bodyHeight := max(1, m.height-dividerCount-m.input.Height()-m.commandSuggestionHeight()-footerHeight)
+	inputHeight := m.input.Height()
+	if m.questionOpen && m.question != nil {
+		inputHeight = lipgloss.Height(m.renderQuestion())
+	}
+	bodyHeight := max(1, m.height-dividerCount-inputHeight-m.commandSuggestionHeight()-footerHeight)
 	if m.searchOpen {
 		bodyHeight = max(1, bodyHeight-1)
 	}
@@ -172,13 +181,16 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	centerWidth := max(1, width)
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
 	input := m.renderWorkspaceRow(m.renderInputView(), centerWidth)
+	if m.questionOpen && m.question != nil {
+		input = m.renderWorkspaceRow(m.renderQuestion(), centerWidth)
+	}
 	suggestions := m.renderCommandSuggestions()
 	parts := []string{body}
 	if m.searchOpen {
 		parts = append(parts, m.renderWorkspaceRow(m.renderTranscriptSearch(), centerWidth))
 	}
 	parts = append(parts, m.renderWorkspaceRow(divider, centerWidth), input)
-	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" && auxiliary != suggestions {
+	if auxiliary := m.renderAuxiliaryPanel(suggestions); !m.questionOpen && auxiliary != "" && auxiliary != suggestions {
 		parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
 	}
 	parts = append(parts, m.renderWorkspaceRow(m.renderFooter(centerWidth), centerWidth))
@@ -187,7 +199,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeAllMotion
-	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.activeCursor(); cursor != nil && !m.questionOpen && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(body)
 		if m.searchOpen {
 			cursor.Y++
@@ -241,8 +253,10 @@ func (m *tuiModel) renderFooter(width int) string {
 		status = m.mcpAuthFooter()
 	case m.pendingApproval != nil:
 		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
+	case m.questionOpen:
+		status = "Waiting for your answer"
 	case m.running:
-		status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt", len(m.queued), m.keyLabel("interrupt_send"))
+		status = fmt.Sprintf("Working (%s) · %d queued · Esc interrupt", m.taskElapsed(), len(m.queued))
 	case m.pending:
 		status = "Paused · /continue resume · /discard"
 	case m.status == "Ready":

@@ -12,6 +12,16 @@ The command entry point delegates process setup to `internal/app`. The app selec
 
 The interactive TUI owns the terminal's alternate screen so its transcript, composer, and status remain in fixed positions. Conversation history stays available in the session transcript and persists through Core when the TUI exits; it is not copied into native terminal scrollback. Use `/details` to list user messages and `/details <n>` to show one in the transcript again.
 
+## Questions and execution records
+
+Clarification questions occupy a dedicated bottom panel. Up/Down or number keys select a suggested answer; Enter submits it, Tab switches to notes, and typing directly starts a custom answer. Esc hides the panel without answering; `/continue` reopens it. PgUp/PgDn scroll long questions. Submission is asynchronous and locked until its result arrives; errors preserve the draft and refresh the current wait identity. The ordinary composer draft is kept separately.
+
+Tool calls appear individually in chronological order. Commands show their actual command text, execution status and exit code; successful file edits show a bounded diff. The default preview contains three lines. F4 focuses the records, Up/Down selects a record, and Enter expands or collapses it. These keys and the question controls can be changed with `/keymap`. Background command polls update the original record instead of creating extra rows.
+
+Core supplies transient tool arguments and structured execution details through `EventToolDetails`; the durable lifecycle log omits these payloads. The TUI strips terminal control sequences before displaying output. Historical records show the information actually saved in the session; missing output is not reconstructed. Model stream events carry request identity and purpose, allowing internal criteria/acceptance output to stay outside the conversation and final responses to reconcile with streamed messages.
+
+Markdown tables use terminal cell widths and wrap inside their columns. Narrow windows display table rows as labelled records instead. Code fences remain literal.
+
 ## Modes and themes
 
 `/theme` and `ui.json` support `auto`, `dark`, and `light`. The TUI always inherits the terminal background; auto follows the terminal's queried colors, while dark and light choose the text and accent palette. `Shift+Tab` and `/permissions <mode>` change the active permission choice.
@@ -25,6 +35,14 @@ Run the command entry point; Go compiles the app, CLI, TUI, and Core adapters th
 ```powershell
 go run ./cmd
 ```
+
+When developing corresponding Core changes in the sibling `../luneCore` checkout, use a local workspace:
+
+```powershell
+go work init . ../luneCore
+```
+
+`go.work` and `go.work.sum` are local development files. Publish the Core revision and update the application's module requirement before releasing a standalone application checkout. The question API now uses labelled options with descriptions and requires `ExecutionID` when resolving an answer; older paused-question checkpoints need to be discarded and the task started again.
 
 Build the sandbox helper and standalone executable for the current platform:
 

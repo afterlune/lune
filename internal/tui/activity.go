@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func (m *tuiModel) updateContextCompaction(event core.Event) {
@@ -210,31 +211,37 @@ func cacheHitRate(inputTokens, cachedTokens int64) string {
 }
 
 func (m *tuiModel) updateToolActivity(event core.ToolCall) {
-	summary := humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+	if (event.Name == "command_status" || event.Name == "command_stop") && event.Details == nil {
+		return
+	}
+	key := activityKey(event)
 	index := -1
-	for i := len(m.activities) - 1; i >= 0; i-- {
-		if event.ID != "" && m.activities[i].callID == event.ID {
+	for i := range m.activities {
+		if key != "" && m.activities[i].callID == key {
 			index = i
 			break
 		}
 	}
-	if event.Started {
-		activity := tuiActivity{callID: event.ID, summary: summary, status: "running"}
-		if index >= 0 {
-			m.activities[index] = activity
-		} else {
-			m.activities = append(m.activities, activity)
-			index = len(m.activities) - 1
+	if index < 0 {
+		index = len(m.activities)
+		m.activities = append(m.activities, tuiActivity{callID: key, status: "running"})
+	}
+	activity := &m.activities[index]
+	if len(event.Arguments) > 0 && string(event.Arguments) != "null" || activity.summary == "" {
+		activity.summary = humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+	}
+	if event.Details != nil {
+		keepCurrent := false
+		if activity.details != nil && activity.details.Command != nil && event.Details.Command != nil {
+			previous, next := activity.details.Command, event.Details.Command
+			// A start receipt can arrive after the final process notification.
+			keepCurrent = !previous.Command.Status.Active() && next.Command.Status.Active() || next.EndCursor < previous.EndCursor
 		}
-	} else {
-		if index < 0 {
-			m.activities = append(m.activities, tuiActivity{callID: event.ID, summary: summary})
-			index = len(m.activities) - 1
+		if !keepCurrent {
+			activity.details = event.Details
 		}
-		activity := &m.activities[index]
-		if summary != "" {
-			activity.summary = summary
-		}
+	}
+	if !event.Started {
 		activity.duration = event.Duration
 		switch {
 		case event.Canceled:
@@ -245,38 +252,41 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 			activity.status = "done"
 		}
 	}
-
-	activity := m.activities[index]
-	entryIndex := -1
-	if event.ID != "" {
-		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].activityID == event.ID {
-				entryIndex = i
-				break
-			}
+	if activity.details != nil && activity.details.Command != nil {
+		c := activity.details.Command.Command
+		switch c.Status {
+		case publictool.CommandRunning, publictool.CommandStopping:
+			activity.status = "running"
+		case publictool.CommandSucceeded:
+			activity.status = "done"
+		case publictool.CommandFailed:
+			activity.status = "failed"
+		default:
+			activity.status = string(c.Status)
 		}
 	}
-	entryText := activity.summary + " · " + activity.status
-	if activity.status != "running" && activity.duration > 0 {
-		entryText += " · " + activity.duration.Round(time.Millisecond).String()
+	entryIndex := -1
+	for i := range m.entries {
+		if key != "" && m.entries[i].activityID == key {
+			entryIndex = i
+			break
+		}
 	}
+	text := toolActivityTitle(*activity)
+	m.clearTranscriptSelection()
 	if entryIndex < 0 {
-		m.clearTranscriptSelection()
-		m.entries = append(m.entries, tuiEntry{role: "tool", text: entryText, err: activity.status == "failed", activityID: event.ID})
+		m.entries = append(m.entries, tuiEntry{role: "tool", text: text, err: activity.status == "failed", activityID: key})
 	} else {
-		m.clearTranscriptSelection()
-		m.entries[entryIndex].text = entryText
+		m.entries[entryIndex].text = text
 		m.entries[entryIndex].err = activity.status == "failed"
-	}
-	if len(m.activities) > 200 {
-		m.activities = append([]tuiActivity(nil), m.activities[len(m.activities)-200:]...)
 	}
 }
 
 func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...string) string {
 	var args struct {
-		Path string `json:"path"`
-		URL  string `json:"url"`
+		Path    string `json:"path"`
+		URL     string `json:"url"`
+		Command string `json:"command"`
 	}
 	_ = json.Unmarshal(arguments, &args)
 	path := safeDisplayPath(args.Path)
@@ -307,7 +317,7 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 			summary = "Fetching a web page"
 		}
 	case "command":
-		summary = "Running a shell command"
+		summary = "Running " + safeToolText(args.Command)
 	case "html":
 		summary = "Processing web content"
 	}

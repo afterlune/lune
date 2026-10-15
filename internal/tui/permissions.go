@@ -261,12 +261,9 @@ func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput boo
 		m.updateCommandSuggestions()
 		m.updateLayout()
 	}
-	m.status = fmt.Sprintf("Permission mode: %s.", permissionModeLabel(mode))
-	if m.planMode {
-		m.status += " Plan mode still limits tools to read-only."
-	}
-	notice := fmt.Sprintf("Permission mode: %s. %s", permissionModeLabel(mode), permissionModeDescription(mode))
-	m.addEntry("notice", notice, false)
+	// The active mode is already visible in the footer metadata. Keep the
+	// keyboard hints stable and avoid adding every Shift+Tab change to chat.
+	m.status = "Ready"
 	m.refreshPanels()
 	return m, nil
 }
@@ -288,21 +285,6 @@ func permissionModeLabel(mode core.PermissionMode) string {
 		}
 	}
 	return string(mode)
-}
-
-func permissionModeDescription(mode core.PermissionMode) string {
-	switch mode {
-	case core.PermissionReadOnly:
-		return "Read workspace files; ask before web; block writes and shell"
-	case core.PermissionWorkspace:
-		return "Workspace file operations and sandboxed commands; network and external paths need plan approval"
-	case core.PermissionAsk:
-		return "Read workspace files; approve other tool operations in the plan"
-	case core.PermissionFullAccess:
-		return "Current-user files and network stay in the OS sandbox; high-risk commands need plan approval"
-	default:
-		return ""
-	}
 }
 
 func (m *tuiModel) resolveToolApproval(approved bool) {

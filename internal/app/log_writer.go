@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -32,6 +33,9 @@ func newRotatingLogWriter(path string, maxBytes int64, backups int) (*rotatingLo
 	}
 	if backups < 0 {
 		return nil, errors.New("log backup count must not be negative")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 	w := &rotatingLogWriter{path: path, maxBytes: maxBytes, backups: backups}
 	if err := w.openCurrent(); err != nil {

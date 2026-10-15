@@ -41,7 +41,7 @@ func TestTranscriptSearchEscapeRestoresCollapsedActivity(t *testing.T) {
 		t.Fatal("search should reveal collapsed tool activity")
 	}
 	ui.handleTranscriptSearchKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if ui.searchOpen || ui.activityExpanded["call-1"] || !strings.Contains(ui.chat.GetContent(), "▸") {
+	if ui.searchOpen || ui.activityExpanded["call-1"] || !strings.Contains(ui.chat.GetContent(), "Reading private.txt") {
 		t.Fatalf("Esc should restore prior transcript disclosure state: open=%v expanded=%v content=%q", ui.searchOpen, ui.activityExpanded, ui.chat.GetContent())
 	}
 }
@@ -140,7 +140,7 @@ func TestCollapsedToolActivityExpandsWithoutPayload(t *testing.T) {
 		{role: "tool", activityID: "call-2", text: "Searching project files · running"},
 	}
 	content, _ := ui.transcriptContent()
-	if !strings.Contains(content, "Tool activity (2)") || strings.Contains(content, "  • Reading a.go") {
+	if strings.Contains(content, "Tool activity (2)") || !strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching project files") {
 		t.Fatalf("collapsed activity = %q", content)
 	}
 	ui.activityFocus = true

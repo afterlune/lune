@@ -224,8 +224,8 @@ func TestTUIShiftTabCyclesPermissionModesAndKeepsDraft(t *testing.T) {
 			t.Fatalf("mode switch cleared input draft: %q", ui.input.Value())
 		}
 	}
-	if !strings.Contains(ui.View().Content, "Workspace") || !strings.Contains(ui.status, "Workspace") {
-		t.Fatalf("view/status should show active mode: view=%q status=%q", ui.View().Content, ui.status)
+	if !strings.Contains(ui.renderFooter(200), "Workspace") || ui.status != "Ready" || len(ui.entries) != 0 {
+		t.Fatalf("mode should stay in footer without adding transcript details: footer=%q status=%q entries=%#v", ui.renderFooter(200), ui.status, ui.entries)
 	}
 
 	ui.running = true
@@ -289,15 +289,34 @@ func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
 	if !ui.planMode || ui.currentPermissionMode() != core.PermissionAsk || client.PermissionMode() != core.PermissionReadOnly {
 		t.Fatalf("Plan/permission state after Shift+Tab: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
 	}
-	if !strings.Contains(ui.status, "Plan mode still limits tools to read-only") {
-		t.Fatalf("permission status should explain Plan's tool cap: %q", ui.status)
+	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "modes") {
+		t.Fatalf("permission cycling should restore the common footer hints: status=%q footer=%q", ui.status, ui.renderFooter(200))
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	if !ui.planMode || ui.currentPermissionMode() != core.PermissionFullAccess || client.PermissionMode() != core.PermissionReadOnly {
 		t.Fatalf("full-access selection should preserve Plan mode: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
 	}
-	if !strings.Contains(ui.status, "Plan mode still limits tools to read-only") {
-		t.Fatalf("full-access status should explain Plan's tool cap: %q", ui.status)
+	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "Full access") {
+		t.Fatalf("permission mode should remain visible with the common footer: status=%q footer=%q", ui.status, ui.renderFooter(200))
+	}
+}
+
+func TestTUIPermissionCycleDoesNotAppendDetails(t *testing.T) {
+	client := &fakeResponder{}
+	ui := newTUIModel(client, false)
+	initialEntries := len(ui.entries)
+	for _, want := range []string{"Ask", "Full access", "Read-only", "Workspace"} {
+		ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+		if got := permissionModeLabel(ui.currentPermissionMode()); got != want {
+			t.Fatalf("permission mode = %q, want %q", got, want)
+		}
+		if len(ui.entries) != initialEntries {
+			t.Fatalf("permission cycle appended transcript details: %#v", ui.entries[initialEntries:])
+		}
+		footer := ui.renderFooter(200)
+		if !strings.Contains(footer, want) || !strings.Contains(footer, "enter send") || !strings.Contains(footer, "modes") {
+			t.Fatalf("permission cycle should retain mode and common hints: %q", footer)
+		}
 	}
 }
 

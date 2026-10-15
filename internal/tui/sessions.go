@@ -221,6 +221,10 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
+	m.question = nil
+	m.questionOpen = false
+	m.pendingRequest = nil
+	m.finishedTasks = nil
 	m.sessionSettings = saved.Settings
 	m.clearQueue()
 	m.entries = nil
@@ -309,6 +313,10 @@ func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) restoreSessionState(saved core.Session) {
+	m.question = nil
+	m.questionOpen = false
+	m.pendingRequest = nil
+	m.finishedTasks = nil
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
 	m.activities = nil

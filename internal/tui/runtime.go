@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -75,6 +77,7 @@ func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, re
 		m.runtimeTask = true
 		m.cancelled = false
 		m.status = "Working… Press Esc to interrupt."
+		m.taskStartedAt = time.Now()
 	} else {
 		m.status = "Turn added to the Core queue."
 	}
@@ -171,7 +174,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 		}
 	case core.EventModelStream:
 		return m.queueModelStreamEvent(event)
-	case core.EventToolStarted, core.EventToolFinished:
+	case core.EventCommandStarted, core.EventCommandFinished:
+		command = m.readCommandDetails(event.CommandID)
+	case core.EventToolStarted, core.EventToolFinished, core.EventToolDetails:
 		m.updateToolActivity(event.Tool)
 	case core.EventAgentStarted, core.EventAgentFinished:
 		m.updateTeamActivity(event)
@@ -229,6 +234,10 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 	}
 	m.pendingRequests = requests
 	if len(requests) == 0 {
+		m.question = nil
+		m.questionOpen = false
+		m.pendingRequest = nil
+		m.updateLayout()
 		state, stateErr := m.runtime.State(context.Background())
 		if stateErr != nil {
 			m.addEntry("error", stateErr.Error(), true)
@@ -243,9 +252,7 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 		return m.startRecovery(nil)
 	}
 	request := requests[0]
-	if m.pendingRequest != nil && m.pendingRequest.Kind == request.Kind {
-		request = *m.pendingRequest
-	}
+
 	m.pendingRequest = &request
 	m.pending = true
 	switch request.Kind {
@@ -257,13 +264,7 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 		}
 	case core.PendingUserQuestion:
 		if request.UserQuestion != nil {
-			question := request.UserQuestion
-			text := question.Question
-			if len(question.Options) > 0 {
-				text += "\nOptions: " + strings.Join(question.Options, " · ")
-			}
-			m.status = "Answer the question, then press Enter."
-			m.addEntry("question", text, true)
+			m.openQuestion(*request.UserQuestion)
 		}
 	case core.PendingAcceptanceRequest:
 		if request.Acceptance != nil {
@@ -310,27 +311,158 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *tuiModel) inspectPausedTask(budgetReason core.BudgetReason) tea.Cmd {
+	if m.runtime == nil {
+		return nil
+	}
+	runtime := m.runtime
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		ctx := context.Background()
+		state, err := runtime.State(ctx)
+		if err != nil {
+			return pausedTaskDetailsMsg{sessionID: sessionID, paused: true, budgetReason: budgetReason, err: err}
+		}
+		if state.Task.Status != core.TaskPaused {
+			return pausedTaskDetailsMsg{sessionID: sessionID, state: state.Task}
+		}
+		requests, err := runtime.PendingRequests(ctx)
+		return pausedTaskDetailsMsg{sessionID: sessionID, paused: true, requests: requests, budgetReason: budgetReason, err: err}
+	}
+}
+
+func (m *tuiModel) showPausedTaskDetails(message pausedTaskDetailsMsg) {
+	if message.sessionID != m.sessionID || !message.paused || !m.pending {
+		return
+	}
+	if message.err != nil {
+		m.addEntry("error", "Could not inspect the paused task: "+message.err.Error(), true)
+	}
+
+	for _, request := range message.requests {
+		if request.Kind == core.PendingUserQuestion {
+			copy := request
+			m.pendingRequest = &copy
+			if copy.UserQuestion != nil {
+				m.openQuestion(*copy.UserQuestion)
+			}
+			return
+		}
+	}
+	m.question = nil
+	m.questionOpen = false
+	m.pendingRequest = nil
+	m.updateLayout()
+	m.addEntry("notice", pausedTaskSummary(message.budgetReason, message.requests), false)
+}
+
+func pausedTaskSummary(reason core.BudgetReason, requests []core.PendingRequest) string {
+	lines := make([]string, 0, len(requests)+2)
+	if reason != "" {
+		lines = append(lines, "Task paused: "+budgetPauseDescription(reason)+".")
+	}
+	for _, request := range requests {
+		if detail := pendingRequestSummary(request); detail != "" {
+			lines = append(lines, detail)
+		}
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "Task paused, but no specific reason was reported.")
+	}
+	lines = append(lines, "Use /continue to review or resume, or /discard to abandon the paused task.")
+	return strings.Join(lines, "\n")
+}
+
+func budgetPauseDescription(reason core.BudgetReason) string {
+	switch reason {
+	case core.BudgetMaxSteps:
+		return "the step limit was reached"
+	case core.BudgetMaxInvocations:
+		return "the tool invocation limit was reached"
+	case core.BudgetMaxTokens:
+		return "the token budget was reached"
+	default:
+		return "the execution limit was reached (" + string(reason) + ")"
+	}
+}
+
+func pendingRequestSummary(request core.PendingRequest) string {
+	switch request.Kind {
+	case core.PendingApproval:
+		if request.Approval != nil {
+			return "Waiting for approval of " + request.Approval.Tool + ". Use /continue to review it."
+		}
+		return "Waiting for a tool approval. Use /continue to review it."
+	case core.PendingUserQuestion:
+		if request.UserQuestion != nil {
+			question := strings.TrimSpace(request.UserQuestion.Question)
+			if question != "" {
+				text := "Waiting for your answer: " + question
+				if len(request.UserQuestion.Options) > 0 {
+					text += "\n" + formatUserQuestionOptions(request.UserQuestion.Options)
+				}
+				return text + "\nEnter an answer to continue."
+			}
+		}
+		return "Waiting for your answer. Use /continue to review the question."
+	case core.PendingAcceptanceRequest:
+		return "Waiting for an acceptance decision. Use /continue confirm or /continue revise."
+	case core.PendingToolRecovery:
+		if request.ToolRecovery != nil && request.ToolRecovery.Tool != "" {
+			return "Tool " + request.ToolRecovery.Tool + " may have run before the pause. Use /continue retry or /continue skip."
+		}
+		return "A tool may have run before the pause. Use /continue retry or /continue skip."
+	case core.PendingModelRecoveryRequest:
+		if request.ModelRecovery != nil {
+			detail := strings.TrimPrefix(modelFailureSummary(&request.ModelRecovery.Failure), "Model request failed: ")
+			return "The model request failed (" + detail + "). Use /continue retry when ready."
+		}
+		return "A model request failed. Use /continue retry when ready."
+	case core.PendingExecutionBlocker:
+		if request.Blocker != nil {
+			return "Execution blocked by " + request.Blocker.Tool + ": " + request.Blocker.Reason + ". Use /plan replan or /discard."
+		}
+		return "Execution is blocked. Use /plan replan or /discard."
+	case core.PendingUserInteraction:
+		return "Waiting for an external sign-in or confirmation. Use /continue to review it."
+	default:
+		return "Task is waiting for a Core decision. Use /continue to review it."
+	}
+}
+
+func formatUserQuestionOptions(options []core.UserQuestionOption) string {
+	lines := make([]string, 1, len(options)+1)
+	lines[0] = "Options:"
+	for index, option := range options {
+		lines = append(lines, fmt.Sprintf("%d. %s", index+1, option.Label))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m *tuiModel) answerUserQuestion(answer string) (tea.Model, tea.Cmd) {
 	if m.pendingRequest == nil || m.pendingRequest.UserQuestion == nil || m.runtime == nil {
 		return m, nil
 	}
 	question := *m.pendingRequest.UserQuestion
-	if len(question.Options) > 0 && !containsString(question.Options, answer) {
-		m.status = "Choose one of the listed options or enter a matching answer."
+	numbered := !m.questionOpen
+	if m.question == nil || !sameQuestion(m.question.request, question) {
+		m.openQuestion(question)
+	}
+	if m.question.submitting {
 		return m, nil
 	}
-	if err := m.runtime.ResolveUserQuestion(context.Background(), core.UserQuestionAnswer{
-		RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer,
-	}); err != nil {
-		m.status = "Could not submit the answer."
-		m.addEntry("error", err.Error(), true)
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		m.question.err = "Choose an option or enter an answer."
 		return m, nil
 	}
-	m.addEntry("you", answer, false)
-	m.pendingRequest = nil
-	m.pending = false
-	m.resetInput()
-	return m.waitForRecoveredExecution(question.ExecutionID)
+	if i, err := strconv.Atoi(answer); numbered && err == nil && i >= 1 && i <= len(question.Options) {
+		answer = question.Options[i-1].Label
+	}
+	m.question.submitting = true
+	m.question.err = ""
+	m.question.fromComposer = numbered
+	return m, m.submitQuestionAnswer(question, answer)
 }
 
 func (m *tuiModel) startRecovery(options *core.ExecutionOptions) (tea.Model, tea.Cmd) {
@@ -367,7 +499,7 @@ func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea
 	m.runningExecutionID = executionID
 	m.activeExecutions[executionID] = true
 	m.status = "Continuing after your answer…"
-	return m, waitForTurn(m.runtime, executionID)
+	return m, tea.Batch(waitForTurn(m.runtime, executionID), taskClock(m.sessionID))
 }
 
 func acceptanceSummary(pending core.PendingAcceptance) string {
@@ -466,6 +598,8 @@ func (m *tuiModel) discard() (tea.Model, tea.Cmd) {
 	m.addEntry("notice", m.status, false)
 	m.resetInput()
 	m.pendingRequest = nil
+	m.question = nil
+	m.questionOpen = false
 	_ = m.refreshRuntimeProjection()
 	return m, nil
 }
@@ -500,6 +634,7 @@ func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUs
 	m.cancelled = false
 	m.taskPlanMode = m.planMode
 	m.status = "Working… Press Esc to interrupt."
+	m.taskStartedAt = time.Now()
 	return m, func() tea.Msg {
 		return taskFinishedMsg{result: operation(ctx)}
 	}
@@ -522,6 +657,17 @@ func (m *tuiModel) interrupt() {
 }
 
 func (m *tuiModel) finishTask(result taskResult) {
+	if id := result.coreResult.ExecutionID; id != "" {
+		if m.finishedTasks[id] {
+			return
+		}
+		if result.coreResult.Status == core.TaskCompleted || result.coreResult.Status == core.TaskFailed {
+			if m.finishedTasks == nil {
+				m.finishedTasks = make(map[string]bool)
+			}
+			m.finishedTasks[id] = true
+		}
+	}
 	m.running = false
 	m.pendingApproval = nil
 	m.runtimeTask = false
@@ -548,6 +694,8 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.addEntry("error", responseErr.Error(), true)
 	} else if responseText != "" && !streamedFinal {
 		m.addEntry("assistant", responseText, false)
+	} else if responseText == "" && !streamedFinal && result.notice == "" && result.coreResult.Status == core.TaskCompleted && result.coreResult.ProposedPlan == nil {
+		m.addEntry("notice", "Task completed, but it returned no displayable response.", false)
 	}
 	if result.notice != "" {
 		m.addEntry("notice", result.notice, false)
@@ -584,7 +732,7 @@ func (m *tuiModel) finishTask(result taskResult) {
 			m.addEntry("error", "Task failed. Core did not provide a failure reason.", true)
 		}
 	} else if result.coreResult.Status == core.TaskPaused {
-		m.status = "Task paused and waiting for a decision. Use /continue to review it."
+		m.status = "Task paused. See the conversation for the reason and next steps."
 	} else {
 		m.status = "Completed."
 	}

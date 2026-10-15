@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -16,6 +17,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case taskClockMsg:
+		if message.sessionID == m.sessionID && m.running {
+			return m, taskClock(m.sessionID)
+		}
+		return m, nil
 	case terminalColorTimeoutMsg:
 		if m.terminalColorQueryPending {
 			m.terminalColorQueryPending = false
@@ -71,7 +77,16 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.eventCursor = message.event.Cursor
 		}
-		if message.event.ExecutionID != "" && !m.activeExecutions[message.event.ExecutionID] {
+		// Admission and event delivery are independent. A fresh task-start can
+		// arrive before SubmitTurn returns; bind it without replaying older tasks.
+		if message.event.Kind == core.EventTaskStarted && m.running && m.runningExecutionID == "" && (message.event.OccurredAt.IsZero() || !message.event.OccurredAt.Before(m.taskStartedAt)) {
+			m.runningExecutionID = message.event.ExecutionID
+			if m.activeExecutions == nil {
+				m.activeExecutions = make(map[string]bool)
+			}
+			m.activeExecutions[message.event.ExecutionID] = true
+		}
+		if message.event.ExecutionID != "" && !m.activeExecutions[message.event.ExecutionID] && message.event.Kind != core.EventToolDetails && message.event.Kind != core.EventCommandFinished {
 			return m, nextRuntimeEvent(message.events)
 		}
 		return m, tea.Batch(m.handleRuntimeEvent(message.event), nextRuntimeEvent(message.events))
@@ -88,6 +103,18 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.flushModelStreamEvents() {
 			m.refreshPanels()
 		}
+		return m, nil
+	case commandDetailsMsg:
+		if message.sessionID != m.sessionID {
+			return m, nil
+		}
+		if message.err != nil {
+			m.status = "Could not read command output: " + message.err.Error()
+			return m, nil
+		}
+		output := message.output
+		m.updateToolActivity(core.ToolCall{InvocationID: output.Command.InvocationID, Name: "command", Details: &publictool.ExecutionDetails{Command: &output}})
+		m.refreshPanels()
 		return m, nil
 	case toolActivityMsg:
 		m.updateToolActivity(message.event)
@@ -132,8 +159,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = true
 		m.runtimeTask = true
 		m.runningExecutionID = message.submission.ExecutionID
-		return m, waitForTurn(m.runtime, message.submission.ExecutionID)
+		return m, tea.Batch(waitForTurn(m.runtime, message.submission.ExecutionID), taskClock(m.sessionID))
 	case taskFinishedMsg:
+		if m.finishedTasks[message.result.coreResult.ExecutionID] {
+			return m, nil
+		}
 		m.runtimeTask = false
 		m.runningExecutionID = ""
 		m.finishTask(message.result)
@@ -147,6 +177,47 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.exitAfterTask {
 			return m, tea.Quit
 		}
+		if m.pending {
+			return m, m.inspectPausedTask(message.result.coreResult.BudgetReason)
+		}
+		return m, nil
+	case questionAnsweredMsg:
+		if message.sessionID != m.sessionID || m.question == nil || !sameQuestion(m.question.request, message.question) {
+			return m, nil
+		}
+		m.question.submitting = false
+		if message.err != nil {
+			m.question.err = "Could not submit answer: " + message.err.Error()
+			m.updateLayout()
+			return m, m.inspectPausedTask("")
+		}
+		m.addEntry("question", message.question.Question, false)
+		m.addEntry("you", message.answer, false)
+		if m.question.fromComposer {
+			m.resetInput()
+		}
+		m.question = nil
+		m.questionOpen = false
+		m.pendingRequest = nil
+		m.pending = false
+		m.updateLayout()
+		return m.waitForRecoveredExecution(message.question.ExecutionID)
+	case pausedTaskDetailsMsg:
+		if message.sessionID == m.sessionID && !message.paused && message.err == nil && m.question != nil {
+			m.question = nil
+			m.questionOpen = false
+			m.pendingRequest = nil
+			m.pending = false
+			m.updateLayout()
+			m.refreshPanels()
+			if message.state.Status == core.TaskRunning {
+				return m.waitForRecoveredExecution(message.state.ExecutionID)
+			}
+			m.status = "Question is no longer pending."
+			return m, nil
+		}
+		m.showPausedTaskDetails(message)
+		m.refreshPanels()
 		return m, nil
 	case imageInputReadyMsg:
 		m.applyImageInputResult(message)
@@ -155,6 +226,18 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPanels()
 		return m, nil
 	case tea.PasteMsg:
+		if m.questionOpen && m.question != nil {
+			if m.question.submitting {
+				return m, nil
+			}
+			m.question.notes = true
+			m.question.selected = len(m.question.request.Options)
+			m.question.input.Focus()
+			var cmd tea.Cmd
+			m.question.input, cmd = m.question.input.Update(message)
+			m.updateLayout()
+			return m, cmd
+		}
 		if m.pendingMCPInteraction != nil {
 			return m, m.updateMCPInteractionInput(message)
 		}
@@ -200,6 +283,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.questionOpen && m.question != nil {
+			return m.handleQuestionKey(message)
+		}
 		if m.exitConfirm {
 			switch message.String() {
 			case "esc":
@@ -645,6 +731,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, command
 	default:
+		if m.questionOpen && m.question != nil {
+			var cmd tea.Cmd
+			m.question.input, cmd = m.question.input.Update(message)
+			return m, cmd
+		}
 		command := m.updateInput(message)
 		m.updateCommandSuggestions()
 		m.updateLayout()

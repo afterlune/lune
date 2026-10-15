@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+func TestRotatingLogWriterCreatesFirstRunDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".luneagent", "agent.log")
+	writer, err := newRotatingLogWriter(path, 1024, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("first run\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertLogContents(t, path, "first run\n")
+}
+
 func TestRotatingLogWriterAppendsAndKeepsNewestBackups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.log")
 	writer, err := newRotatingLogWriter(path, 4, 2)
@@ -108,9 +123,13 @@ func TestRotatingLogWriterSerializesConcurrentWrites(t *testing.T) {
 }
 
 func TestNewRotatingLogWriterReturnsOpenErrors(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing", "agent.log")
+	parent := filepath.Join(t.TempDir(), "parent-is-a-file")
+	if err := os.WriteFile(parent, []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "agent.log")
 	if _, err := newRotatingLogWriter(path, 1024, 3); err == nil {
-		t.Fatal("newRotatingLogWriter succeeded with a missing parent directory")
+		t.Fatal("newRotatingLogWriter succeeded with a file as its parent")
 	}
 	if _, err := newRotatingLogWriter(filepath.Join(t.TempDir(), "agent.log"), 0, 3); err == nil {
 		t.Fatal("newRotatingLogWriter accepted a non-positive size limit")

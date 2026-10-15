@@ -290,16 +290,19 @@ func (f *blockingResponder) OpenSessionRuntime(_ context.Context, sessionID stri
 }
 
 type fakeSessionRuntime struct {
-	owner     *fakeResponder
-	sessionID string
-	runner    func(context.Context, core.TurnRequest) (json.RawMessage, error)
-	mu        sync.Mutex
-	sequence  int
-	active    string
-	status    core.TaskStatus
-	cancels   map[string]context.CancelFunc
-	turns     map[string]fakeTurn
-	queue     []core.QueuedTurnState
+	owner              *fakeResponder
+	sessionID          string
+	runner             func(context.Context, core.TurnRequest) (json.RawMessage, error)
+	mu                 sync.Mutex
+	sequence           int
+	active             string
+	status             core.TaskStatus
+	cancels            map[string]context.CancelFunc
+	turns              map[string]fakeTurn
+	queue              []core.QueuedTurnState
+	pendingRequests    []core.PendingRequest
+	pendingRequestsErr error
+	resolvedQuestions  []core.UserQuestionAnswer
 }
 
 type fakeTurn struct {
@@ -436,14 +439,15 @@ func (r *fakeSessionRuntime) SetUserInteractionAvailable(available bool) {
 }
 
 func (r *fakeSessionRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
-	return nil, nil
+	return append([]core.PendingRequest(nil), r.pendingRequests...), r.pendingRequestsErr
 }
 
 func (r *fakeSessionRuntime) ResolveApproval(id string, allowed bool) error {
 	return r.owner.ResolveApproval(id, allowed)
 }
 
-func (*fakeSessionRuntime) ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error {
+func (r *fakeSessionRuntime) ResolveUserQuestion(_ context.Context, answer core.UserQuestionAnswer) error {
+	r.resolvedQuestions = append(r.resolvedQuestions, answer)
 	return nil
 }
 func (*fakeSessionRuntime) ResolveAcceptance(context.Context, core.AcceptanceResolution) error {
