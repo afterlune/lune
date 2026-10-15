@@ -18,7 +18,7 @@ Clarification questions occupy a dedicated bottom panel. Up/Down or number keys 
 
 Tool calls appear individually in chronological order. Commands show their actual command text, execution status and exit code; successful file edits show a bounded diff. The default preview contains three lines. F4 focuses the records, Up/Down selects a record, and Enter expands or collapses it. These keys and the question controls can be changed with `/keymap`. Background command polls update the original record instead of creating extra rows.
 
-Core supplies transient tool arguments and structured execution details through `EventToolDetails`; the durable lifecycle log omits these payloads. The TUI strips terminal control sequences before displaying output. Historical records show the information actually saved in the session; missing output is not reconstructed. Model stream events carry request identity and purpose, allowing internal criteria/acceptance output to stay outside the conversation and final responses to reconcile with streamed messages.
+Core supplies transient tool arguments and structured execution details through `EventToolDetails`; the durable lifecycle log omits these payloads. The TUI strips terminal control sequences before displaying output. Historical records show the information actually saved in the session; missing output is not reconstructed. Model stream events carry request identity and purpose so final responses can reconcile with streamed messages.
 
 Markdown tables use terminal cell widths and wrap inside their columns. Narrow windows display table rows as labelled records instead. Code fences remain literal.
 

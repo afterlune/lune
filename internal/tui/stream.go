@@ -33,9 +33,6 @@ func (m *tuiModel) queueModelStreamEvent(event core.Event) tea.Cmd {
 		m.modelStreamClosed || event.AgentID != "lead" || event.Stream == nil {
 		return nil
 	}
-	if event.Stream.Purpose == "criteria" || event.Stream.Purpose == "acceptance" {
-		return nil
-	}
 	switch event.Stream.Type {
 	case "text_delta":
 		if event.Stream.Delta == "" {

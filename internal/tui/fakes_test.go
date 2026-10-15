@@ -450,10 +450,6 @@ func (r *fakeSessionRuntime) ResolveUserQuestion(_ context.Context, answer core.
 	r.resolvedQuestions = append(r.resolvedQuestions, answer)
 	return nil
 }
-func (*fakeSessionRuntime) ResolveAcceptance(context.Context, core.AcceptanceResolution) error {
-	return nil
-}
-
 func (r *fakeSessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {
 	return r.owner.ResolveUserInteraction(id, response)
 }

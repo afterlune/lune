@@ -207,8 +207,6 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 		m.updateContextCompaction(event)
 	case core.EventRuntimeStreamFailed:
 		m.status = "Session event stream failed: " + event.Err
-	case core.EventAcceptanceRequired:
-		m.status = "Acceptance decision required. Use /continue to review it."
 	case core.EventExecutionBlocked:
 		m.status = "Execution blocked. Review the blocker and create a new read-only plan."
 	case core.EventModelRecoveryRequired, core.EventToolRecoveryRequired:
@@ -265,11 +263,6 @@ func (m *tuiModel) continueTask(line string) (tea.Model, tea.Cmd) {
 	case core.PendingUserQuestion:
 		if request.UserQuestion != nil {
 			m.openQuestion(*request.UserQuestion)
-		}
-	case core.PendingAcceptanceRequest:
-		if request.Acceptance != nil {
-			m.status = "Acceptance decision required: /continue confirm or /continue revise."
-			m.addEntry("notice", acceptanceSummary(*request.Acceptance), true)
 		}
 	case core.PendingToolRecovery:
 		m.status = "A tool may have run before interruption: /continue retry or /continue skip."
@@ -405,8 +398,6 @@ func pendingRequestSummary(request core.PendingRequest) string {
 			}
 		}
 		return "Waiting for your answer. Use /continue to review the question."
-	case core.PendingAcceptanceRequest:
-		return "Waiting for an acceptance decision. Use /continue confirm or /continue revise."
 	case core.PendingToolRecovery:
 		if request.ToolRecovery != nil && request.ToolRecovery.Tool != "" {
 			return "Tool " + request.ToolRecovery.Tool + " may have run before the pause. Use /continue retry or /continue skip."
@@ -500,17 +491,6 @@ func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea
 	m.activeExecutions[executionID] = true
 	m.status = "Continuing after your answer…"
 	return m, tea.Batch(waitForTurn(m.runtime, executionID), taskClock(m.sessionID))
-}
-
-func acceptanceSummary(pending core.PendingAcceptance) string {
-	var lines []string
-	if pending.Candidate != "" {
-		lines = append(lines, pending.Candidate)
-	}
-	for _, criterion := range pending.Criteria {
-		lines = append(lines, "• "+criterion.Description)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {

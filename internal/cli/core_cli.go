@@ -295,7 +295,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 						runtime.Interrupt(submission.ExecutionID)
 					}
 				}
-			case core.EventUserQuestionRequired, core.EventUserInteractionRequired, core.EventAcceptanceRequired,
+			case core.EventUserQuestionRequired, core.EventUserInteractionRequired,
 				core.EventToolRecoveryRequired, core.EventModelRecoveryRequired, core.EventExecutionBlocked:
 				fmt.Fprintf(stderr, "Task paused for %s. Use /resume to inspect it.\n", event.Kind)
 			}

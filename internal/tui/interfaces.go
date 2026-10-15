@@ -49,7 +49,6 @@ type SessionRuntime interface {
 	PendingRequests(context.Context) ([]core.PendingRequest, error)
 	ResolveApproval(string, bool) error
 	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
-	ResolveAcceptance(context.Context, core.AcceptanceResolution) error
 	ResolveUserInteraction(string, json.RawMessage) error
 	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
 	ImplementPlan(context.Context, string, core.PlanImplementationMode, ...core.PlanAuthorization) (core.PlanImplementation, error)

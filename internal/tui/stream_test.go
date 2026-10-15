@@ -289,23 +289,12 @@ func TestEmptyResponsesDoNotDuplicateTheFinalAnswer(t *testing.T) {
 	ui := newStreamingTUI()
 	streamModelText(ui, "task-1", "lead", "answer", "Hello once")
 	streamModelBoundary(ui, "task-1", "completed")
-	// Criteria and acceptance tools can finish without any displayable text.
+	// Repeated empty completion boundaries must not duplicate the final response.
 	streamModelBoundary(ui, "task-1", "completed")
 	streamModelBoundary(ui, "task-1", "completed")
 	ui.finishTask(taskResult{response: json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello once"}]}]}`)})
 	if countAssistantEntries(ui.entries) != 1 {
 		t.Fatalf("duplicated final: %#v", ui.entries)
-	}
-}
-
-func TestInternalReviewTextDoesNotEnterConversation(t *testing.T) {
-	ui := newStreamingTUI()
-	event := streamModelEvent(ui.sessionID, "task-1", "lead", "review", "private reviewer verdict", "text_delta")
-	event.Stream.Purpose = "acceptance"
-	ui.Update(coreEventMsg{event: event})
-	ui.flushModelStreamEvents()
-	if len(ui.entries) != 0 {
-		t.Fatalf("internal review leaked: %#v", ui.entries)
 	}
 }
 
