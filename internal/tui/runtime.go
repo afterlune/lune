@@ -745,12 +745,20 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.status = "Completed."
 	}
 	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.Status == core.TaskCompleted && proposal != nil {
+		if m.searchOpen {
+			m.closeTranscriptSearch(false)
+		}
+		m.detailsOpen = false
+		m.activityFocus = false
+		m.keymapOpen = false
+		m.keymapCapture = ""
 		m.planReview = true
 		m.planReviewIndex = 0
 		m.proposedPlan = proposal
 		m.planSourceExecutionID = result.coreResult.ExecutionID
 		m.planAuthorization = core.PlanAuthorization{}
-		m.status = "Plan ready · /plan allow-* grants capabilities · /plan implement starts it · type feedback to revise."
+		m.status = "Plan ready · choose an action."
+		m.updateLayout()
 	}
 	m.cancelled = false
 }

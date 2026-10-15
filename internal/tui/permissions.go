@@ -55,10 +55,9 @@ func (m *tuiModel) keepPlanReadOnly() {
 		return
 	}
 	m.planReview = false
-	m.proposedPlan = nil
-	m.planAuthorization = core.PlanAuthorization{}
-	m.status = "Plan saved · Read-only permissions remain locked."
+	m.status = "Plan saved · Read-only permissions remain locked. Use /plan allow-* to authorize or /plan implement to start."
 	m.updateLayout()
+	m.refreshPanels()
 }
 
 func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.Model, tea.Cmd) {
@@ -78,6 +77,7 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 	sourceID := m.planSourceExecutionID
 	authorization := m.planAuthorization
 	m.planReview = false
+	m.clearPendingPlan()
 	m.resetInput()
 	m.running = true
 	m.runtimeTask = true
@@ -102,7 +102,7 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 
 func (m *tuiModel) updatePlanAuthorization(line string) (tea.Model, tea.Cmd, bool) {
 	fields := strings.Fields(line)
-	if len(fields) == 0 || fields[0] != "/plan" || !m.planReview {
+	if len(fields) == 0 || fields[0] != "/plan" || !m.planMode || m.proposedPlan == nil {
 		return m, nil, false
 	}
 	switch {
@@ -147,6 +147,13 @@ func (m *tuiModel) updatePlanAuthorization(line string) (tea.Model, tea.Cmd, boo
 	}
 	m.resetInput()
 	return m, nil, true
+}
+
+func (m *tuiModel) clearPendingPlan() {
+	m.proposedPlan = nil
+	m.planSourceExecutionID = ""
+	m.planAuthorization = core.PlanAuthorization{}
+	m.planReview = false
 }
 
 func appendUnique(values []string, value string) []string {

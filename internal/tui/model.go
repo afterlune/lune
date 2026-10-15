@@ -18,16 +18,18 @@ import (
 )
 
 type tuiEntry struct {
-	role       string
-	text       string
-	err        bool
-	incomplete bool
-	activityID string
+	role            string
+	text            string
+	err             bool
+	incomplete      bool
+	activityID      string
+	activityGroupID string
 }
 
 type transcriptEntry struct {
-	Role string
-	Text string
+	Role            string
+	Text            string
+	ActivityGroupID string
 }
 
 type inputSnapshot struct {
@@ -38,6 +40,7 @@ type inputSnapshot struct {
 type tuiActivity struct {
 	details  *publictool.ExecutionDetails
 	callID   string
+	groupID  string
 	summary  string
 	status   string
 	duration time.Duration

@@ -52,6 +52,27 @@ func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
 	}
 }
 
+func TestTUIRestoredHistoryCollapsesToolCallsByUserTurn(t *testing.T) {
+	history := json.RawMessage(`[
+		{"type":"message","role":"user","content":"Inspect the project."},
+		{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"main.go\"}"},
+		{"type":"function_call","call_id":"call-2","name":"grep","arguments":"{\"pattern\":\"TODO\"}"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Found two TODOs."}]}
+	]`)
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.entries = transcriptEntries(history)
+	content, _ := ui.transcriptContent()
+	if len(ui.toolActivityGroups()) != 1 || strings.Contains(content, "Reading main.go") || !strings.Contains(content, "Searching project files") || !strings.Contains(content, "Found two TODOs.") {
+		t.Fatalf("restored collapsed transcript = groups:%d content:%q", len(ui.toolActivityGroups()), content)
+	}
+	ui.activityFocus = true
+	ui.toggleFocusedActivity()
+	content, _ = ui.transcriptContent()
+	if !strings.Contains(content, "Reading main.go · done") || !strings.Contains(content, "Searching project files · done") {
+		t.Fatalf("restored expanded transcript = %q", content)
+	}
+}
+
 func TestTUIShowsAutomaticCompactionProgressAndFailure(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.sessionID = "session-compaction"

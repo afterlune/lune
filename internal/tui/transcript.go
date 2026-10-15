@@ -40,13 +40,18 @@ type transcriptVisualLine struct {
 }
 
 type toolActivityGroup struct {
-	key   string
-	start int
-	end   int
+	key     string
+	start   int
+	entries []int
 }
 
 func (m *tuiModel) transcriptLines() []transcriptLine {
 	lines := make([]transcriptLine, 0, len(m.entries)*2)
+	groups := m.toolActivityGroups()
+	groupAt := make(map[int]toolActivityGroup, len(groups))
+	for _, group := range groups {
+		groupAt[group.start] = group
+	}
 	groupNumber := 0
 	appendText := func(value, role string) {
 		for _, line := range strings.Split(value, "\n") {
@@ -96,10 +101,14 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 			continue
 		}
 
+		group, first := groupAt[index]
+		if !first {
+			index++
+			continue
+		}
 		selected := m.activityFocus && groupNumber == m.activityFocusIndex
 		groupNumber++
-		key := toolActivityGroupKey(m.entries, index)
-		lines = m.appendToolTranscript(lines, entry, selected, m.activityExpanded[key])
+		lines = m.appendToolActivityGroup(lines, group, selected, m.activityExpanded[group.key])
 		index++
 		if index < len(m.entries) {
 			appendSpacer()
@@ -109,19 +118,28 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 }
 
 func (m *tuiModel) collapsedToolGroupLabel(group toolActivityGroup) string {
-	count := group.end - group.start
-	if count == 1 {
-		return m.entries[group.start].text
+	activities := m.toolActivitiesForGroup(group)
+	title := "Tool activity"
+	if activity, ok := m.latestToolActivity(group); ok {
+		title = toolActivityTitle(activity)
+	} else if len(group.entries) > 0 {
+		title = m.entries[group.entries[len(group.entries)-1]].text
 	}
-	labels := make([]string, 0, min(count, 3))
-	for index := group.start; index < group.end && len(labels) < 3; index++ {
-		labels = append(labels, m.entries[index].text)
+	count := len(activities)
+	if count == 0 {
+		count = len(group.entries)
 	}
-	label := fmt.Sprintf("Tool activity (%d) · %s", count, strings.Join(labels, "; "))
-	return fitTerminalText(label, 180)
+	if count > 1 {
+		title += fmt.Sprintf(" · %d steps", count)
+	}
+	title += " · " + m.keyLabel("focus_activity") + " then " + m.keyLabel("activity_toggle")
+	return fitTerminalText(title, max(1, m.chat.Width()-4))
 }
 
 func toolActivityGroupKey(entries []tuiEntry, start int) string {
+	if start >= 0 && start < len(entries) && entries[start].activityGroupID != "" {
+		return entries[start].activityGroupID
+	}
 	if start >= 0 && start < len(entries) && entries[start].activityID != "" {
 		return entries[start].activityID
 	}
@@ -144,18 +162,67 @@ func (m *tuiModel) transcriptContent() (string, []string) {
 
 func (m *tuiModel) toolActivityGroups() []toolActivityGroup {
 	var groups []toolActivityGroup
+	groupIndexes := make(map[string]int)
 	for index := 0; index < len(m.entries); {
 		if m.entries[index].role != "tool" {
 			index++
 			continue
 		}
-		start := index
+		key := toolActivityGroupKey(m.entries, index)
+		if groupIndex, exists := groupIndexes[key]; exists {
+			groups[groupIndex].entries = append(groups[groupIndex].entries, index)
+			index++
+			continue
+		}
+		groupIndexes[key] = len(groups)
 		index++
 		groups = append(groups, toolActivityGroup{
-			key: toolActivityGroupKey(m.entries, start), start: start, end: index,
+			key: key, start: index - 1, entries: []int{index - 1},
 		})
 	}
 	return groups
+}
+
+func (m *tuiModel) toolActivitiesForGroup(group toolActivityGroup) []tuiActivity {
+	activities := make([]tuiActivity, 0, len(group.entries))
+	for _, activity := range m.activities {
+		if activity.groupID == group.key || activity.groupID == "" && activity.callID == group.key {
+			activities = append(activities, activity)
+		}
+	}
+	return activities
+}
+
+func (m *tuiModel) hasCollapsedRunningToolActivity() bool {
+	for _, group := range m.toolActivityGroups() {
+		if m.activityExpanded[group.key] {
+			continue
+		}
+		if activity, ok := m.latestToolActivity(group); ok && activity.status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *tuiModel) latestToolActivity(group toolActivityGroup) (tuiActivity, bool) {
+	for index := len(group.entries) - 1; index >= 0; index-- {
+		entryIndex := group.entries[index]
+		if entryIndex < 0 || entryIndex >= len(m.entries) || m.entries[entryIndex].activityID == "" {
+			continue
+		}
+		callID := m.entries[entryIndex].activityID
+		for _, activity := range m.activities {
+			if activity.callID == callID {
+				return activity, true
+			}
+		}
+	}
+	activities := m.toolActivitiesForGroup(group)
+	if len(activities) == 0 {
+		return tuiActivity{}, false
+	}
+	return activities[len(activities)-1], true
 }
 
 func (m *tuiModel) toggleFocusedActivity() {

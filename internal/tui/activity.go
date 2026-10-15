@@ -215,6 +215,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 		return
 	}
 	key := activityKey(event)
+	groupID := toolActivityGroupID(event, key, m.runningExecutionID, len(m.activities))
 	index := -1
 	for i := range m.activities {
 		if key != "" && m.activities[i].callID == key {
@@ -222,11 +223,17 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 			break
 		}
 	}
+	if index >= 0 && strings.HasPrefix(groupID, "call:") && m.activities[index].groupID != "" {
+		groupID = m.activities[index].groupID
+	}
 	if index < 0 {
 		index = len(m.activities)
-		m.activities = append(m.activities, tuiActivity{callID: key, status: "running"})
+		m.activities = append(m.activities, tuiActivity{callID: key, groupID: groupID, status: "running"})
 	}
 	activity := &m.activities[index]
+	if groupID != "" {
+		activity.groupID = groupID
+	}
 	if len(event.Arguments) > 0 && string(event.Arguments) != "null" || activity.summary == "" {
 		activity.summary = humanizedToolSummary(event.Name, event.Arguments, m.workspace)
 	}
@@ -267,7 +274,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	}
 	entryIndex := -1
 	for i := range m.entries {
-		if key != "" && m.entries[i].activityID == key {
+		if groupID != "" && m.entries[i].role == "tool" && m.entries[i].activityGroupID == groupID {
 			entryIndex = i
 			break
 		}
@@ -275,11 +282,29 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	text := toolActivityTitle(*activity)
 	m.clearTranscriptSelection()
 	if entryIndex < 0 {
-		m.entries = append(m.entries, tuiEntry{role: "tool", text: text, err: activity.status == "failed", activityID: key})
+		m.entries = append(m.entries, tuiEntry{role: "tool", text: text, err: activity.status == "failed", activityID: key, activityGroupID: groupID})
 	} else {
 		m.entries[entryIndex].text = text
 		m.entries[entryIndex].err = activity.status == "failed"
+		m.entries[entryIndex].activityID = key
 	}
+}
+
+func toolActivityGroupID(event core.ToolCall, key, currentExecutionID string, activityCount int) string {
+	executionID := event.ExecutionID
+	if event.Details != nil && event.Details.Command != nil && event.Details.Command.Command.ExecutionID != "" {
+		executionID = event.Details.Command.Command.ExecutionID
+	}
+	if executionID == "" {
+		executionID = currentExecutionID
+	}
+	if executionID != "" {
+		return "execution:" + executionID
+	}
+	if key != "" {
+		return "call:" + key
+	}
+	return fmt.Sprintf("activity:%d", activityCount)
 }
 
 func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...string) string {

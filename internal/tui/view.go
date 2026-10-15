@@ -78,7 +78,9 @@ func (m *tuiModel) updateLayout() {
 
 func (m *tuiModel) availableBodyHeight(contentWidth, footerHeight, dividerCount int) int {
 	inputHeight := m.input.Height()
-	if m.questionOpen && m.question != nil {
+	if m.planReview {
+		inputHeight = 0
+	} else if m.questionOpen && m.question != nil {
 		inputHeight = lipgloss.Height(m.renderQuestion())
 	}
 	bodyHeight := max(1, m.height-dividerCount-inputHeight-m.commandSuggestionHeight()-footerHeight)
@@ -116,7 +118,7 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 
 func (m *tuiModel) commandSuggestionHeight() int {
 	if m.planReview {
-		return len(planReviewChoices) + 2
+		return lipgloss.Height(m.renderWorkspaceRow(m.renderPlanReview(), max(1, m.width)))
 	}
 	if m.queuePicker {
 		return min(len(m.queued), 8) + 1
@@ -191,9 +193,14 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	if m.searchOpen {
 		parts = append(parts, m.renderWorkspaceRow(m.renderTranscriptSearch(), centerWidth))
 	}
-	parts = append(parts, m.renderWorkspaceRow(divider, centerWidth), input)
-	if auxiliary := m.renderAuxiliaryPanel(suggestions); !m.questionOpen && auxiliary != "" && auxiliary != suggestions {
-		parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
+	parts = append(parts, m.renderWorkspaceRow(divider, centerWidth))
+	if m.planReview && !m.questionOpen {
+		parts = append(parts, m.renderWorkspaceRow(m.renderPlanReview(), centerWidth))
+	} else {
+		parts = append(parts, input)
+		if auxiliary := m.renderAuxiliaryPanel(suggestions); !m.questionOpen && auxiliary != "" && auxiliary != suggestions {
+			parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
+		}
 	}
 	parts = append(parts, m.renderWorkspaceRow(m.renderFooter(centerWidth), centerWidth))
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -201,7 +208,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	view.ForegroundColor = backgroundColor(colors.Foreground)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeAllMotion
-	if cursor := m.activeCursor(); cursor != nil && !m.questionOpen && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+	if cursor := m.activeCursor(); cursor != nil && !m.planReview && !m.questionOpen && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
 		cursor.Y += lipgloss.Height(body)
 		if m.searchOpen {
 			cursor.Y++
@@ -245,6 +252,8 @@ func (m *tuiModel) renderFooter(width int) string {
 	switch {
 	case m.detailsOpen:
 		status = "Activity & usage · " + m.keyLabel("toggle_activity") + " or Esc close"
+	case m.planReview:
+		status = "Plan review · Read-only permissions"
 	case m.activityFocus:
 		status = "Tool activity · " + m.keyLabel("activity_previous") + "/" + m.keyLabel("activity_next") + " select · Enter expand · Esc return"
 	case m.searchOpen:
@@ -354,7 +363,7 @@ func (m *tuiModel) renderPlanReview() string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" choose · type feedback to revise · Esc stay read-only")
+	lines = append(lines, m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" choose · Esc stay read-only")
 	return strings.Join(lines, "\n")
 }
 

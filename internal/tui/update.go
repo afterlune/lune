@@ -22,6 +22,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.windowTitleFrame = (m.windowTitleFrame + 1) % len(windowTitleSpinner)
+		if m.hasCollapsedRunningToolActivity() {
+			m.refreshPanels()
+		}
 		return m, nextWindowTitleTick(message.sessionID, message.token)
 	case sessionWindowTitleMsg:
 		if message.sessionID == m.sessionID && message.revision == m.windowTitleRevision && message.err == nil {
@@ -254,6 +257,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingMCPInteraction != nil {
 			return m, m.updateMCPInteractionInput(message)
 		}
+		if m.planReview {
+			return m, nil
+		}
 		if m.canAttachImages() {
 			if paths, ok := parsePastedImagePaths(message.Content, m.workspace); ok {
 				return m, m.loadPastedImagePaths(paths, message.Content)
@@ -323,6 +329,25 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.keymapOpen {
 			return m.handleKeymapKey(message)
+		}
+		if m.planReview {
+			switch {
+			case m.matchesKey("picker_previous", message):
+				m.planReviewIndex = max(0, m.planReviewIndex-1)
+				m.updateLayout()
+				return m, nil
+			case m.matchesKey("picker_next", message):
+				m.planReviewIndex = min(len(planReviewChoices)-1, m.planReviewIndex+1)
+				m.updateLayout()
+				return m, nil
+			case m.matchesKey("send", message):
+				return m.selectPlanReviewOption()
+			case message.String() == "esc":
+				m.keepPlanReadOnly()
+				return m, nil
+			default:
+				return m, nil
+			}
 		}
 		if m.searchOpen {
 			return m.handleTranscriptSearchKey(message)
@@ -429,18 +454,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleActivityFocus()
 			return m, nil
 		}
-		if m.planReview && strings.TrimSpace(m.input.Value()) == "" {
-			if m.matchesKey("picker_previous", message) {
-				m.planReviewIndex = max(0, m.planReviewIndex-1)
-				m.updateLayout()
-				return m, nil
-			}
-			if m.matchesKey("picker_next", message) {
-				m.planReviewIndex = min(len(planReviewChoices)-1, m.planReviewIndex+1)
-				m.updateLayout()
-				return m, nil
-			}
-		}
 		if !(m.running && message.String() == "esc") && !m.sessionPicker && !m.modelPicker && !m.effortPicker && !m.queuePicker && !m.permissionMenu {
 			if handled, command := m.handleVimKey(message); handled {
 				m.updateLayout()
@@ -475,9 +488,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.pendingApproval != nil {
 				return m, nil
 			}
-			if m.planReview && strings.TrimSpace(m.input.Value()) == "" && len(m.attachments) == 0 {
-				return m.selectPlanReviewOption()
-			}
 			if len(m.commandSuggestions) > 0 {
 				index := min(m.suggestionIndex, len(m.commandSuggestions)-1)
 				m.setInputValue(m.commandSuggestions[index])
@@ -489,10 +499,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.queuePicker = false
 				m.status = "Queue selection closed."
 				m.updateLayout()
-				return m, nil
-			}
-			if m.planReview {
-				m.keepPlanReadOnly()
 				return m, nil
 			}
 			if m.sessionPicker {
@@ -787,9 +793,6 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.status = "Wait for the MCP operation to finish before starting a task."
 		return m, nil
 	}
-	if m.planReview && (line != "" || len(m.attachments) > 0) && !strings.HasPrefix(line, "/") {
-		m.planReview = false
-	}
 	switch line {
 	case "":
 		if len(m.attachments) == 0 {
@@ -924,6 +927,9 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.addEntry("notice", m.status, false)
 		return m, nil
 	}
+	if m.proposedPlan != nil {
+		m.clearPendingPlan()
+	}
 	m.addEntry("you", inputTranscriptText(input, raw), false)
 	m.resetInput()
 	m.cancelled = false
@@ -987,9 +993,6 @@ func (m *tuiModel) handleVimKey(message tea.KeyPressMsg) (bool, tea.Cmd) {
 		return false, nil
 	}
 	keyName := message.String()
-	if keyName == "esc" && m.planReview {
-		return false, nil
-	}
 	if !m.vimNormal && keyName == "esc" {
 		m.vimNormal = true
 		m.status = "Vim normal mode · " + m.keyLabel("vim_insert") + " insert · " + m.keyLabel("vim_left") + "/" + m.keyLabel("vim_down") + "/" + m.keyLabel("vim_up") + "/" + m.keyLabel("vim_right") + " move · " + m.keyLabel("send") + " sends."

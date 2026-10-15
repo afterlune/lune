@@ -8,16 +8,21 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
 )
 
 type recordingPlanRuntime struct {
 	*fakeSessionRuntime
-	mode core.PlanImplementationMode
+	mode          core.PlanImplementationMode
+	authorization core.PlanAuthorization
 }
 
-func (r *recordingPlanRuntime) ImplementPlan(_ context.Context, _ string, mode core.PlanImplementationMode, _ ...core.PlanAuthorization) (core.PlanImplementation, error) {
+func (r *recordingPlanRuntime) ImplementPlan(_ context.Context, _ string, mode core.PlanImplementationMode, authorization ...core.PlanAuthorization) (core.PlanImplementation, error) {
 	r.mode = mode
+	if len(authorization) > 0 {
+		r.authorization = authorization[0]
+	}
 	return core.PlanImplementation{
 		SessionID:  r.sessionID,
 		Submission: core.TurnSubmission{ExecutionID: "plan-execution"},
@@ -70,6 +75,24 @@ func TestTUIRecognizedPlanHidesWrapperAndOpensThreeChoices(t *testing.T) {
 	}
 	if strings.Contains(ui.renderPlanReview(), "<proposed_plan>") {
 		t.Fatal("plan tags leaked into the review panel")
+	}
+}
+
+func TestTUIPlanReviewFitsTerminalSizesWithoutComposer(t *testing.T) {
+	for _, size := range []struct{ width, height int }{{120, 30}, {80, 24}, {48, 18}} {
+		ui, _ := planReviewFixture()
+		ui.input.SetValue("hidden draft")
+		ui.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		view := ui.View()
+		if got := lipgloss.Width(view.Content); got > size.width {
+			t.Errorf("%dx%d plan review width = %d", size.width, size.height, got)
+		}
+		if got := lipgloss.Height(view.Content); got > size.height {
+			t.Errorf("%dx%d plan review height = %d", size.width, size.height, got)
+		}
+		if view.Cursor != nil || strings.Contains(view.Content, "hidden draft") {
+			t.Errorf("%dx%d plan review exposed composer: cursor=%v", size.width, size.height, view.Cursor)
+		}
 	}
 }
 
@@ -148,6 +171,10 @@ func TestTUIPlanChoicesDispatchAndKeepReadOnly(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ui, runtime := planReviewFixture()
 			ui.planReviewIndex = test.index
+			ui.input.SetValue("feedback must not be submitted")
+			if view := ui.View().Content; strings.Contains(view, "feedback must not be submitted") {
+				t.Fatalf("composer was visible during plan review: %q", view)
+			}
 			updated, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 			if command == nil {
 				t.Fatal("selecting an implementation option returned no command")
@@ -169,7 +196,7 @@ func TestTUIPlanChoicesDispatchAndKeepReadOnly(t *testing.T) {
 		t.Fatalf("selected option = %d, want stay read-only", ui.planReviewIndex)
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if ui.planReview || ui.proposedPlan != nil || !ui.planMode || runtime.mode != "" {
+	if ui.planReview || ui.proposedPlan == nil || ui.planSourceExecutionID != "source-execution" || !ui.planMode || runtime.mode != "" {
 		t.Fatalf("stay state = review:%v plan:%v planMode:%v implementation:%q", ui.planReview, ui.proposedPlan, ui.planMode, runtime.mode)
 	}
 	if len(ui.entries) != 1 || ui.entries[0].text != "## Build it" {
@@ -216,19 +243,40 @@ func TestTUISubmitsPlanModeWithReadOnlyPermission(t *testing.T) {
 	}
 }
 
-func TestTUIPlanReviewEscapeStaysReadOnlyAndFeedbackRemainsAvailable(t *testing.T) {
-	ui, _ := planReviewFixture()
+func TestTUIPlanReviewIsSelectionOnlyAndEscapeKeepsPendingPlan(t *testing.T) {
+	ui, runtime := planReviewFixture()
 	ui.queued = []core.QueuedTurnState{{ExecutionID: "queued"}}
+	ui.planAuthorization.AllowedTools = []string{"read_file"}
+	ui.input.SetValue("hidden draft")
+	if view := ui.View().Content; strings.Contains(view, "hidden draft") || strings.Contains(view, "type feedback") {
+		t.Fatalf("review exposed composer or feedback prompt: %q", view)
+	}
+	ui.Update(tea.PasteMsg{Content: "pasted feedback"})
+	if ui.input.Value() != "hidden draft" {
+		t.Fatalf("paste changed composer during review: %q", ui.input.Value())
+	}
+	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	if ui.input.Value() != "hidden draft" {
+		t.Fatalf("typed key changed composer during review: %q", ui.input.Value())
+	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if ui.planReview || !ui.planMode || len(ui.queued) != 1 {
+	if ui.planReview || !ui.planMode || len(ui.queued) != 1 || ui.proposedPlan == nil || !containsString(ui.planAuthorization.AllowedTools, "read_file") {
 		t.Fatalf("escape changed plan or queue state: review=%v plan=%v queued=%d", ui.planReview, ui.planMode, len(ui.queued))
 	}
 
-	ui, _ = planReviewFixture()
-	ui.input.SetValue("Add a rollback step")
-	_, command := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if command == nil || ui.planReview {
-		t.Fatalf("feedback did not leave review for revision: review=%v command=%v", ui.planReview, command != nil)
+	ui.input.SetValue("/plan allow-network")
+	ui.submit()
+	if !ui.planAuthorization.AllowNetwork || ui.proposedPlan == nil {
+		t.Fatalf("authorization after closing review = network:%v plan:%v", ui.planAuthorization.AllowNetwork, ui.proposedPlan)
+	}
+	ui.input.SetValue("/plan implement")
+	updated, command := ui.submit()
+	if command == nil {
+		t.Fatal("implementation command was unavailable after closing review")
+	}
+	runTUICommands(updated, command)
+	if runtime.mode != core.PlanImplementSameContext || !runtime.authorization.AllowNetwork {
+		t.Fatalf("post-review implementation = mode:%q network:%v", runtime.mode, runtime.authorization.AllowNetwork)
 	}
 }
 

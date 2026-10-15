@@ -36,9 +36,10 @@ func TestTUIQuestionAndExecutionSVGs(t *testing.T) {
 					ui.question = nil
 					ui.pending = false
 					code := 1
-					output := publictool.CommandOutput{Command: publictool.CommandInfo{InvocationID: "command-1", Command: "go test ./internal/tui", Status: publictool.CommandFailed, ExitCode: &code}, Output: "--- FAIL: TestLayout\n    layout_test.go:42: column width mismatch\nFAIL\nadditional diagnostics\nlast diagnostic"}
-					ui.updateToolActivity(core.ToolCall{ID: "command-1", InvocationID: "command-1", Name: "command", Details: &publictool.ExecutionDetails{Command: &output}})
-					ui.updateToolActivity(core.ToolCall{ID: "edit-1", InvocationID: "edit-1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"internal/tui/layout.go"}`), Details: &publictool.ExecutionDetails{Changes: []publictool.FileChange{{Path: "internal/tui/layout.go", Added: 1, Removed: 1, Lines: []publictool.DiffLine{{Kind: "context", OldLine: 40, NewLine: 40, Text: "func contentWidth(width int) int {"}, {Kind: "removed", OldLine: 41, Text: "    return width"}, {Kind: "added", NewLine: 41, Text: "    return max(1, width - 2)"}, {Kind: "context", OldLine: 42, NewLine: 42, Text: "}"}}}}}})
+					executionID := "execution-1"
+					output := publictool.CommandOutput{Command: publictool.CommandInfo{ExecutionID: executionID, InvocationID: "command-1", Command: "go test ./internal/tui", Status: publictool.CommandFailed, ExitCode: &code}, Output: "--- FAIL: TestLayout\n    layout_test.go:42: column width mismatch\nFAIL\nadditional diagnostics\nlast diagnostic"}
+					ui.updateToolActivity(core.ToolCall{ExecutionID: executionID, ID: "edit-1", InvocationID: "edit-1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"internal/tui/layout.go"}`), Details: &publictool.ExecutionDetails{Changes: []publictool.FileChange{{Path: "internal/tui/layout.go", Added: 1, Removed: 1, Lines: []publictool.DiffLine{{Kind: "context", OldLine: 40, NewLine: 40, Text: "func contentWidth(width int) int {"}, {Kind: "removed", OldLine: 41, Text: "    return width"}, {Kind: "added", NewLine: 41, Text: "    return max(1, width - 2)"}, {Kind: "context", OldLine: 42, NewLine: 42, Text: "}"}}}}}})
+					ui.updateToolActivity(core.ToolCall{ExecutionID: executionID, ID: "command-1", InvocationID: "command-1", Name: "command", Details: &publictool.ExecutionDetails{Command: &output}})
 					ui.status = "Completed."
 				case "table":
 					ui.questionOpen = false

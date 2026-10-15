@@ -129,47 +129,69 @@ func activityDetailLines(activity tuiActivity) []transcriptLine {
 	return lines
 }
 
-func (m *tuiModel) appendToolTranscript(lines []transcriptLine, entry tuiEntry, selected, expanded bool) []transcriptLine {
-	var activity tuiActivity
-	for _, a := range m.activities {
-		if a.callID == entry.activityID {
-			activity = a
-			break
-		}
-	}
-	role := "tool"
-	if activity.status == "failed" {
-		role = "error"
-	} else if activity.status == "done" {
-		role = "tool_done"
-	}
-	marker := "• "
-	if selected {
-		marker = "› "
-	}
-	title := entry.text
-	if activity.callID != "" {
-		title = toolActivityTitle(activity)
-	}
-	for i, line := range strings.Split(safeToolText(title), "\n") {
-		if i == 0 {
-			line = marker + line
-		} else {
-			line = "  " + line
-		}
-		lines = append(lines, transcriptLine{text: line, role: role})
-	}
-	details := activityDetailLines(activity)
-	limit := len(details)
+func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolActivityGroup, selected, expanded bool) []transcriptLine {
+	activities := m.toolActivitiesForGroup(group)
 	if !expanded {
-		limit = min(3, limit)
+		role := "tool"
+		marker := "· "
+		if latest, ok := m.latestToolActivity(group); ok {
+			role = activityTranscriptRole(latest)
+			if latest.status == "running" {
+				marker = windowTitleSpinner[m.windowTitleFrame%len(windowTitleSpinner)] + " "
+			} else {
+				marker = activityBadge(latest.status) + " "
+			}
+		}
+		if selected {
+			marker = "› "
+		}
+		lines = append(lines, transcriptLine{text: marker + m.collapsedToolGroupLabel(group), role: role})
+		return lines
 	}
-	for _, line := range details[:limit] {
-		line.text = "  │ " + line.text
-		lines = append(lines, line)
+	if len(activities) == 0 {
+		for position, entryIndex := range group.entries {
+			if entryIndex < 0 || entryIndex >= len(m.entries) {
+				continue
+			}
+			marker := "  "
+			if position == 0 && selected {
+				marker = "› "
+			}
+			lines = append(lines, transcriptLine{text: marker + safeToolText(m.entries[entryIndex].text), role: "tool"})
+		}
+		return lines
 	}
-	if hidden := len(details) - limit; hidden > 0 {
-		lines = append(lines, transcriptLine{text: fmt.Sprintf("  └ +%d lines · %s select · %s expand", hidden, m.keyLabel("focus_activity"), m.keyLabel("activity_toggle")), role: "tool"})
+	for index, activity := range activities {
+		marker := "  "
+		if index == 0 && selected {
+			marker = "› "
+		} else if index == 0 {
+			marker = "• "
+		}
+		role := activityTranscriptRole(activity)
+		for lineIndex, title := range strings.Split(safeToolText(toolActivityTitle(activity)), "\n") {
+			if lineIndex > 0 {
+				title = "  " + title
+			} else {
+				title = marker + title
+			}
+			lines = append(lines, transcriptLine{text: title, role: role})
+		}
+		for _, detail := range activityDetailLines(activity) {
+			detail.text = "  │ " + detail.text
+			lines = append(lines, detail)
+		}
 	}
 	return lines
+}
+
+func activityTranscriptRole(activity tuiActivity) string {
+	switch activity.status {
+	case "failed":
+		return "error"
+	case "done":
+		return "tool_done"
+	default:
+		return "tool"
+	}
 }

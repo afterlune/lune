@@ -22,7 +22,7 @@ func TestToolDetailsMergeLifecycleAndRetainPreview(t *testing.T) {
 			ui.updateToolActivity(details)
 		}
 		text, _ := ui.transcriptContent()
-		if len(ui.entries) != 1 || !strings.Contains(text, "main.go") || !strings.Contains(text, "+2 lines") || strings.Contains(text, "five") {
+		if len(ui.entries) != 1 || !strings.Contains(text, "main.go") || strings.Contains(text, "  │ one") || strings.Contains(text, "  │ five") || !strings.Contains(text, "f4 then enter") {
 			t.Fatalf("preview=%q entries=%#v", text, ui.entries)
 		}
 		ui.toggleFocusedActivity()

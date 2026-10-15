@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func TestTranscriptSearchExpandsToolRowsAndPreservesComposerDraft(t *testing.T) {
@@ -135,18 +137,24 @@ func TestCopySelectionCommandPersistsPolicy(t *testing.T) {
 
 func TestCollapsedToolActivityExpandsWithoutPayload(t *testing.T) {
 	ui := newTUIModel(nil, false)
-	ui.entries = []tuiEntry{
-		{role: "tool", activityID: "call-1", text: "Reading a.go · done"},
-		{role: "tool", activityID: "call-2", text: "Searching project files · running"},
-	}
+	ui.runningExecutionID = "execution-1"
+	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Started: true}})
+	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Duration: 12, Details: &publictool.ExecutionDetails{Output: "first file contents"}}})
+	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-2", Name: "web_search", Started: true}})
+	ui.entries = append(ui.entries, tuiEntry{role: "assistant", text: "Final answer remains visible."})
 	content, _ := ui.transcriptContent()
-	if strings.Contains(content, "Tool activity (2)") || !strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching project files") {
+	if len(ui.entries) != 2 || strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching the web") || !strings.Contains(content, "Final answer remains visible.") {
 		t.Fatalf("collapsed activity = %q", content)
+	}
+	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Duration: 20}})
+	content, _ = ui.transcriptContent()
+	if !strings.Contains(content, "Reading a.go · done") || strings.Contains(content, "Searching the web · running") {
+		t.Fatalf("collapsed activity did not follow the latest event: %q", content)
 	}
 	ui.activityFocus = true
 	ui.toggleFocusedActivity()
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Reading a.go · done") || !strings.Contains(content, "Searching project files · running") {
+	if !strings.Contains(content, "Reading a.go · done") || !strings.Contains(content, "Searching the web · running") || !strings.Contains(content, "first file contents") {
 		t.Fatalf("expanded activity = %q", content)
 	}
 }

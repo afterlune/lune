@@ -395,6 +395,7 @@ func loadUsageTotals(totals core.UsageTotals) tokenUsageTotals {
 func transcriptFromHistory(history json.RawMessage, workspace ...string) []transcriptEntry {
 	items := rawHistoryItems(history)
 	var entries []transcriptEntry
+	turn := 0
 	for _, item := range items {
 		var value struct {
 			Type      string          `json:"type"`
@@ -410,6 +411,7 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 		case "message":
 			role := "notice"
 			if value.Role == "user" {
+				turn++
 				role = "you"
 			} else if value.Role == "assistant" {
 				role = "assistant"
@@ -424,7 +426,10 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 				_ = json.Unmarshal(arguments, &text)
 				arguments = json.RawMessage(text)
 			}
-			entries = append(entries, transcriptEntry{Role: "tool", Text: humanizedToolSummary(value.Name, arguments, workspace...) + " · done"})
+			entries = append(entries, transcriptEntry{
+				Role: "tool", Text: humanizedToolSummary(value.Name, arguments, workspace...) + " · done",
+				ActivityGroupID: "history-turn:" + strconv.Itoa(turn),
+			})
 		}
 	}
 	return entries
@@ -434,7 +439,7 @@ func transcriptEntries(history json.RawMessage, workspace ...string) []tuiEntry 
 	saved := transcriptFromHistory(history, workspace...)
 	entries := make([]tuiEntry, 0, len(saved))
 	for _, entry := range saved {
-		entries = append(entries, tuiEntry{role: entry.Role, text: entry.Text})
+		entries = append(entries, tuiEntry{role: entry.Role, text: entry.Text, activityGroupID: entry.ActivityGroupID})
 	}
 	return entries
 }
