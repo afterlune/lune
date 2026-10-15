@@ -82,7 +82,7 @@ func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, re
 		m.status = "Turn added to the Core queue."
 	}
 	runtime := m.runtime
-	request := core.TurnRequest{Input: input}
+	request := core.TurnRequest{Input: input, PlanMode: m.planMode}
 	return m, func() tea.Msg {
 		submission, err := runtime.SubmitTurn(context.Background(), request, mode)
 		return turnSubmittedMsg{submission: submission, err: err, resetUsage: resetUsage}
@@ -478,7 +478,7 @@ func (m *tuiModel) startRecovery(options *core.ExecutionOptions) (tea.Model, tea
 	m.runtimeTask = true
 	m.status = "Recovering the paused task…"
 	m.resetInput()
-	return m, command
+	return m, tea.Batch(command, m.startWindowTitleAnimation())
 }
 
 func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea.Cmd) {
@@ -490,7 +490,7 @@ func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea
 	m.runningExecutionID = executionID
 	m.activeExecutions[executionID] = true
 	m.status = "Continuing after your answer…"
-	return m, tea.Batch(waitForTurn(m.runtime, executionID), taskClock(m.sessionID))
+	return m, tea.Batch(waitForTurn(m.runtime, executionID), taskClock(m.sessionID), m.startWindowTitleAnimation())
 }
 
 func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
@@ -499,10 +499,6 @@ func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	feedback := strings.TrimSpace(strings.TrimPrefix(line, "/plan replan"))
-	if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-		m.addEntry("error", err.Error(), true)
-		return m, nil
-	}
 	if _, err := m.runtime.DiscardPaused(context.Background()); err != nil {
 		m.addEntry("error", "Could not discard the blocked execution: "+err.Error(), true)
 		return m, nil
@@ -612,12 +608,12 @@ func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUs
 	m.cancel = cancel
 	m.running = true
 	m.cancelled = false
-	m.taskPlanMode = m.planMode
 	m.status = "Working… Press Esc to interrupt."
 	m.taskStartedAt = time.Now()
-	return m, func() tea.Msg {
+	operationCmd := tea.Cmd(func() tea.Msg {
 		return taskFinishedMsg{result: operation(ctx)}
-	}
+	})
+	return m, tea.Batch(operationCmd, m.startWindowTitleAnimation())
 }
 
 func (m *tuiModel) interrupt() {
@@ -669,12 +665,22 @@ func (m *tuiModel) finishTask(result taskResult) {
 	}
 	taskFailed := result.coreResult.Status == core.TaskFailed
 	taskCancelled := m.cancelled || result.coreResult.Status == core.TaskCancelled
+	proposal := result.coreResult.ProposedPlan
+	if planText, ok := proposedPlanText(responseText); ok {
+		if proposal == nil && result.coreResult.Status == core.TaskCompleted && !taskFailed && !taskCancelled && result.err == nil {
+			proposal = &core.ProposedPlan{Text: planText}
+		}
+		responseText = stripProposedPlanTags(responseText)
+	}
+	if proposal != nil && strings.TrimSpace(responseText) == "" {
+		responseText = proposal.Text
+	}
 	streamedFinal := m.finishModelStream(responseText, result.err == nil && !taskFailed && !taskCancelled)
 	if responseErr != nil {
 		m.addEntry("error", responseErr.Error(), true)
 	} else if responseText != "" && !streamedFinal {
 		m.addEntry("assistant", responseText, false)
-	} else if responseText == "" && !streamedFinal && result.notice == "" && result.coreResult.Status == core.TaskCompleted && result.coreResult.ProposedPlan == nil {
+	} else if responseText == "" && !streamedFinal && result.notice == "" && result.coreResult.Status == core.TaskCompleted && proposal == nil {
 		m.addEntry("notice", "Task completed, but it returned no displayable response.", false)
 	}
 	if result.notice != "" {
@@ -716,9 +722,10 @@ func (m *tuiModel) finishTask(result taskResult) {
 	} else {
 		m.status = "Completed."
 	}
-	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.ProposedPlan != nil {
+	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.Status == core.TaskCompleted && proposal != nil {
 		m.planReview = true
-		m.proposedPlan = result.coreResult.ProposedPlan
+		m.planReviewIndex = 0
+		m.proposedPlan = proposal
 		m.planSourceExecutionID = result.coreResult.ExecutionID
 		m.planAuthorization = core.PlanAuthorization{}
 		m.status = "Plan ready · /plan allow-* grants capabilities · /plan implement starts it · type feedback to revise."

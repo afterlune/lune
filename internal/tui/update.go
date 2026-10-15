@@ -17,6 +17,18 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case windowTitleTickMsg:
+		if message.sessionID != m.sessionID || message.token != m.windowTitleAnimationToken || !m.running || m.hasPendingUserQuestion() {
+			return m, nil
+		}
+		m.windowTitleFrame = (m.windowTitleFrame + 1) % len(windowTitleSpinner)
+		return m, nextWindowTitleTick(message.sessionID, message.token)
+	case sessionWindowTitleMsg:
+		if message.sessionID == m.sessionID && message.revision == m.windowTitleRevision && message.err == nil {
+			m.windowTitle = message.title
+			m.windowTitleRevision++
+		}
+		return m, nil
 	case taskClockMsg:
 		if message.sessionID == m.sessionID && m.running {
 			return m, taskClock(m.sessionID)
@@ -159,7 +171,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = true
 		m.runtimeTask = true
 		m.runningExecutionID = message.submission.ExecutionID
-		return m, tea.Batch(waitForTurn(m.runtime, message.submission.ExecutionID), taskClock(m.sessionID))
+		return m, tea.Batch(waitForTurn(m.runtime, message.submission.ExecutionID), taskClock(m.sessionID), m.startWindowTitleAnimation())
 	case taskFinishedMsg:
 		if m.finishedTasks[message.result.coreResult.ExecutionID] {
 			return m, nil
@@ -167,20 +179,21 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtimeTask = false
 		m.runningExecutionID = ""
 		m.finishTask(message.result)
+		windowTitleCmd := m.loadSessionWindowTitle()
 		m.refreshPanels()
 		if err := m.refreshRuntimeProjection(); err != nil {
 			m.addEntry("error", "Could not refresh task state: "+err.Error(), true)
 		}
 		if m.running && m.runningExecutionID != "" {
-			return m, waitForTurn(m.runtime, m.runningExecutionID)
+			return m, tea.Batch(waitForTurn(m.runtime, m.runningExecutionID), windowTitleCmd)
 		}
 		if m.exitAfterTask {
 			return m, tea.Quit
 		}
 		if m.pending {
-			return m, m.inspectPausedTask(message.result.coreResult.BudgetReason)
+			return m, tea.Batch(windowTitleCmd, m.inspectPausedTask(message.result.coreResult.BudgetReason))
 		}
-		return m, nil
+		return m, windowTitleCmd
 	case questionAnsweredMsg:
 		if message.sessionID != m.sessionID || m.question == nil || !sameQuestion(m.question.request, message.question) {
 			return m, nil
@@ -416,6 +429,18 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleActivityFocus()
 			return m, nil
 		}
+		if m.planReview && strings.TrimSpace(m.input.Value()) == "" {
+			if m.matchesKey("picker_previous", message) {
+				m.planReviewIndex = max(0, m.planReviewIndex-1)
+				m.updateLayout()
+				return m, nil
+			}
+			if m.matchesKey("picker_next", message) {
+				m.planReviewIndex = min(len(planReviewChoices)-1, m.planReviewIndex+1)
+				m.updateLayout()
+				return m, nil
+			}
+		}
 		if !(m.running && message.String() == "esc") && !m.sessionPicker && !m.modelPicker && !m.effortPicker && !m.queuePicker && !m.permissionMenu {
 			if handled, command := m.handleVimKey(message); handled {
 				m.updateLayout()
@@ -450,8 +475,8 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.pendingApproval != nil {
 				return m, nil
 			}
-			if m.planReview && strings.TrimSpace(m.input.Value()) == "" {
-				return m.acceptPlan()
+			if m.planReview && strings.TrimSpace(m.input.Value()) == "" && len(m.attachments) == 0 {
+				return m.selectPlanReviewOption()
 			}
 			if len(m.commandSuggestions) > 0 {
 				index := min(m.suggestionIndex, len(m.commandSuggestions)-1)
@@ -467,11 +492,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.planReview {
-				m.planReview = false
-				m.planMode = false
-				m.clearQueue()
-				m.status = "Plan cancelled."
-				m.updateLayout()
+				m.keepPlanReadOnly()
 				return m, nil
 			}
 			if m.sessionPicker {
@@ -766,7 +787,7 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		m.status = "Wait for the MCP operation to finish before starting a task."
 		return m, nil
 	}
-	if m.planReview && line != "" && !strings.HasPrefix(line, "/") {
+	if m.planReview && (line != "" || len(m.attachments) > 0) && !strings.HasPrefix(line, "/") {
 		m.planReview = false
 	}
 	switch line {
@@ -953,7 +974,7 @@ func (m *tuiModel) confirmExit(cancelQueued bool) (tea.Model, tea.Cmd) {
 		m.runningExecutionID = state.Task.ExecutionID
 		m.activeExecutions[state.Task.ExecutionID] = true
 		m.status = "Waiting for Core to stop before exit…"
-		return m, waitForTurn(m.runtime, state.Task.ExecutionID)
+		return m, tea.Batch(waitForTurn(m.runtime, state.Task.ExecutionID), m.startWindowTitleAnimation())
 	}
 	return m, tea.Quit
 }

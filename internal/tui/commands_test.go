@@ -249,8 +249,8 @@ func TestTUIPlanCommandRemainsSeparateFromPermissionMode(t *testing.T) {
 	if !finished.planMode {
 		t.Fatalf("plan mode=%v, want enabled", finished.planMode)
 	}
-	if finished.currentPermissionMode() != initialPermissionMode || client.PermissionMode() != core.PermissionReadOnly {
-		t.Fatalf("Plan/permission state = %q/%q, want independent active mode %q with Core enforcing read-only tools", finished.currentPermissionMode(), client.PermissionMode(), initialPermissionMode)
+	if finished.currentPermissionMode() != initialPermissionMode || client.PermissionMode() != initialPermissionMode {
+		t.Fatalf("Plan/permission state = %q/%q, want both to preserve active mode %q", finished.currentPermissionMode(), client.PermissionMode(), initialPermissionMode)
 	}
 	if finished.input.Value() != "" {
 		t.Fatalf("/plan input = %q, want cleared", finished.input.Value())
@@ -286,14 +286,14 @@ func TestTUIPlanModeExplainsPermissionScope(t *testing.T) {
 
 	ui.permissionMenu = false
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if !ui.planMode || ui.currentPermissionMode() != core.PermissionAsk || client.PermissionMode() != core.PermissionReadOnly {
+	if !ui.planMode || ui.currentPermissionMode() != core.PermissionAsk || client.PermissionMode() != core.PermissionAsk {
 		t.Fatalf("Plan/permission state after Shift+Tab: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
 	}
 	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "modes") {
 		t.Fatalf("permission cycling should restore the common footer hints: status=%q footer=%q", ui.status, ui.renderFooter(200))
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if !ui.planMode || ui.currentPermissionMode() != core.PermissionFullAccess || client.PermissionMode() != core.PermissionReadOnly {
+	if !ui.planMode || ui.currentPermissionMode() != core.PermissionFullAccess || client.PermissionMode() != core.PermissionFullAccess {
 		t.Fatalf("full-access selection should preserve Plan mode: plan=%v active=%q core=%q", ui.planMode, ui.currentPermissionMode(), client.PermissionMode())
 	}
 	if ui.status != "Ready" || !strings.Contains(ui.renderFooter(200), "Full access") {

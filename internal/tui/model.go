@@ -163,7 +163,7 @@ type tuiModel struct {
 	detailsOpen                   bool
 	planMode                      bool
 	planReview                    bool
-	taskPlanMode                  bool
+	planReviewIndex               int
 	permissionMode                core.PermissionMode
 	vimMode                       bool
 	vimNormal                     bool
@@ -188,6 +188,10 @@ type tuiModel struct {
 	modelStreamTick               bool
 	modelStreamToken              uint64
 	modelStreamItems              map[string]int
+	modelStreamTagFilters         map[string]*proposedPlanTagStreamFilter
+	modelStreamTagFilterOrder     []string
+	modelStreamRawPending         map[string]string
+	modelStreamRawEntries         map[int]string
 	modelStreamCurrent            []int
 	modelStreamLast               []int
 	activeExecutions              map[string]bool
@@ -202,6 +206,10 @@ type tuiModel struct {
 	height                        int
 	pending                       bool
 	running                       bool
+	windowTitle                   string
+	windowTitleFrame              int
+	windowTitleAnimationToken     uint64
+	windowTitleRevision           uint64
 	cancel                        context.CancelFunc
 	cancelled                     bool
 	status                        string
@@ -372,6 +380,9 @@ func (m *tuiModel) Init() tea.Cmd {
 	}
 	if m.running && m.runningExecutionID != "" {
 		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID), taskClock(m.sessionID))
+	}
+	if m.running {
+		commands = append(commands, m.startWindowTitleAnimation())
 	}
 	if m.pending {
 		if command := m.inspectPausedTask(""); command != nil {

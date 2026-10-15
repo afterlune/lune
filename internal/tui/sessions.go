@@ -98,6 +98,9 @@ func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
 	if m.running && m.runningExecutionID != "" {
 		commands = append(commands, waitForTurn(m.runtime, m.runningExecutionID))
 	}
+	if m.running {
+		commands = append(commands, m.startWindowTitleAnimation())
+	}
 	return m, tea.Batch(commands...)
 }
 
@@ -124,6 +127,10 @@ func (m *tuiModel) saveSessionRename() (tea.Model, tea.Cmd) {
 		m.status = "Session title could not be saved."
 		m.addEntry("error", err.Error(), true)
 		return m, nil
+	}
+	saved.Title = title
+	if saved.ID == m.sessionID {
+		m.setSessionWindowTitle(saved)
 	}
 	m.renamingSession = false
 	m.input.Placeholder = defaultInputPlaceholder
@@ -221,6 +228,7 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
+	m.setSessionWindowTitle(saved)
 	m.question = nil
 	m.questionOpen = false
 	m.pendingRequest = nil
@@ -313,6 +321,7 @@ func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) restoreSessionState(saved core.Session) {
+	m.setSessionWindowTitle(saved)
 	m.question = nil
 	m.questionOpen = false
 	m.pendingRequest = nil

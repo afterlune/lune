@@ -13,6 +13,36 @@ const modelStreamRefreshInterval = 32 * time.Millisecond
 
 type modelStreamFlushMsg struct{ token uint64 }
 
+type proposedPlanTagStreamFilter struct {
+	pending string
+}
+
+func (f *proposedPlanTagStreamFilter) write(text string) string {
+	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
+	f.pending += text
+	var visible strings.Builder
+	for len(f.pending) > 0 {
+		switch {
+		case strings.HasPrefix(f.pending, openTag):
+			f.pending = f.pending[len(openTag):]
+		case strings.HasPrefix(f.pending, closeTag):
+			f.pending = f.pending[len(closeTag):]
+		case strings.HasPrefix(openTag, f.pending), strings.HasPrefix(closeTag, f.pending):
+			return visible.String()
+		default:
+			visible.WriteByte(f.pending[0])
+			f.pending = f.pending[1:]
+		}
+	}
+	return visible.String()
+}
+
+func (f *proposedPlanTagStreamFilter) flush() string {
+	visible := f.pending
+	f.pending = ""
+	return visible
+}
+
 func (m *tuiModel) startModelStream(event core.Event) {
 	if event.SessionID != m.sessionID || event.TaskID == "" {
 		return
@@ -116,6 +146,31 @@ func (m *tuiModel) appendModelStreamText(itemKey, text string) bool {
 	if text == "" {
 		return false
 	}
+	if m.modelStreamTagFilters == nil {
+		m.modelStreamTagFilters = make(map[string]*proposedPlanTagStreamFilter)
+	}
+	filter := m.modelStreamTagFilters[itemKey]
+	if filter == nil {
+		filter = &proposedPlanTagStreamFilter{}
+		m.modelStreamTagFilters[itemKey] = filter
+		m.modelStreamTagFilterOrder = append(m.modelStreamTagFilterOrder, itemKey)
+	}
+	if m.modelStreamRawPending == nil {
+		m.modelStreamRawPending = make(map[string]string)
+	}
+	m.modelStreamRawPending[itemKey] += text
+	visible := filter.write(text)
+	if visible == "" {
+		return false
+	}
+	m.appendVisibleModelStreamText(itemKey, visible)
+	return true
+}
+
+func (m *tuiModel) appendVisibleModelStreamText(itemKey, text string) {
+	if text == "" {
+		return
+	}
 	m.clearTranscriptSelection()
 	if m.modelStreamItems == nil {
 		m.modelStreamItems = make(map[string]int)
@@ -128,10 +183,28 @@ func (m *tuiModel) appendModelStreamText(itemKey, text string) bool {
 		m.modelStreamCurrent = append(m.modelStreamCurrent, index)
 	}
 	m.entries[index].text += text
-	return true
+	if m.modelStreamRawEntries == nil {
+		m.modelStreamRawEntries = make(map[int]string)
+	}
+	if m.modelStreamRawPending != nil {
+		m.modelStreamRawEntries[index] += m.modelStreamRawPending[itemKey]
+		m.modelStreamRawPending[itemKey] = ""
+	}
+}
+
+func (m *tuiModel) flushModelStreamTagFilters() {
+	for _, itemKey := range m.modelStreamTagFilterOrder {
+		if filter := m.modelStreamTagFilters[itemKey]; filter != nil {
+			m.appendVisibleModelStreamText(itemKey, filter.flush())
+		}
+	}
+	m.modelStreamTagFilters = nil
+	m.modelStreamTagFilterOrder = nil
+	m.modelStreamRawPending = nil
 }
 
 func (m *tuiModel) closeModelStreamResponse(incomplete, replaceLast bool) bool {
+	m.flushModelStreamTagFilters()
 	changed := false
 	if incomplete {
 		for _, index := range m.modelStreamCurrent {
@@ -154,16 +227,24 @@ func (m *tuiModel) finishModelStreamEvent(event core.Event) {
 		return
 	}
 	m.flushModelStreamEvents()
-	if len(m.modelStreamCurrent) > 0 {
-		m.closeModelStreamResponse(event.Status != core.TaskCompleted, true)
-	}
+	m.closeModelStreamResponse(event.Status != core.TaskCompleted, true)
 	m.modelStreamClosed = true
 }
 
 func (m *tuiModel) finishModelStream(finalText string, taskSucceeded bool) bool {
 	m.flushModelStreamEvents()
+	m.flushModelStreamTagFilters()
 	if len(m.modelStreamCurrent) > 0 {
 		m.closeModelStreamResponse(!taskSucceeded, true)
+	}
+	if strings.TrimSpace(finalText) == "" {
+		for _, index := range m.modelStreamLast {
+			if index >= 0 && index < len(m.entries) {
+				if raw := m.modelStreamRawEntries[index]; raw != "" {
+					m.entries[index].text = raw
+				}
+			}
+		}
 	}
 	reconciled := m.reconcileModelStreamFinal(finalText)
 	m.resetModelStream()
@@ -211,6 +292,10 @@ func (m *tuiModel) resetModelStream() {
 	m.modelStreamPending = nil
 	m.modelStreamTick = false
 	m.modelStreamItems = nil
+	m.modelStreamTagFilters = nil
+	m.modelStreamTagFilterOrder = nil
+	m.modelStreamRawPending = nil
+	m.modelStreamRawEntries = nil
 	m.modelStreamCurrent = nil
 	m.modelStreamLast = nil
 }

@@ -26,8 +26,34 @@ var tuiPermissionOptions = []tuiPermissionOption{
 	{mode: core.PermissionFullAccess, label: "Full access", description: "Current-user files and network stay in the OS sandbox; high-risk commands need plan approval"},
 }
 
+var planReviewChoices = [...]string{
+	"Implement in this session",
+	"Implement in a new session",
+	"Stay read-only",
+}
+
 func (m *tuiModel) acceptPlan() (tea.Model, tea.Cmd) {
 	return m.implementProposedPlan(core.PlanImplementSameContext)
+}
+
+func (m *tuiModel) selectPlanReviewOption() (tea.Model, tea.Cmd) {
+	switch min(max(m.planReviewIndex, 0), len(planReviewChoices)-1) {
+	case 0:
+		return m.acceptPlan()
+	case 1:
+		return m.implementProposedPlan(core.PlanImplementNewContext)
+	default:
+		m.keepPlanReadOnly()
+		return m, nil
+	}
+}
+
+func (m *tuiModel) keepPlanReadOnly() {
+	m.planReview = false
+	m.proposedPlan = nil
+	m.planAuthorization = core.PlanAuthorization{}
+	m.status = "Plan saved; permission remains " + permissionModeLabel(m.currentPermissionMode()) + "."
+	m.updateLayout()
 }
 
 func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.Model, tea.Cmd) {
@@ -44,7 +70,7 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 	m.running = true
 	m.runtimeTask = true
 	m.status = "Starting the approved plan…"
-	return m, func() tea.Msg {
+	implementationCmd := tea.Cmd(func() tea.Msg {
 		implementation, err := runtime.ImplementPlan(context.Background(), sourceID, mode, authorization)
 		if err != nil {
 			return taskFinishedMsg{result: taskResult{err: err}}
@@ -58,7 +84,8 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 		}
 		result, err := waitRuntime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)
 		return taskFinishedMsg{result: taskResult{response: result.Response, coreResult: result, targetSessionID: implementation.SessionID, err: err}}
-	}
+	})
+	return m, tea.Batch(implementationCmd, m.startWindowTitleAnimation())
 }
 
 func (m *tuiModel) updatePlanAuthorization(line string) (tea.Model, tea.Cmd, bool) {
@@ -77,9 +104,7 @@ func (m *tuiModel) updatePlanAuthorization(line string) (tea.Model, tea.Cmd, boo
 		model, command := m.implementProposedPlan(core.PlanImplementSameContext)
 		return model, command, true
 	case len(fields) == 2 && fields[1] == "stay":
-		m.planReview = false
-		m.proposedPlan = nil
-		m.status = "Plan saved in the conversation; permission remains read-only."
+		m.keepPlanReadOnly()
 	case len(fields) == 2 && fields[1] == "allow-network":
 		m.planAuthorization.AllowNetwork = !m.planAuthorization.AllowNetwork
 		m.status = fmt.Sprintf("Plan network access: %t.", m.planAuthorization.AllowNetwork)
@@ -140,23 +165,11 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		m.addEntry("notice", m.status, false)
 		return m, nil
 	}
-	mode := m.currentPermissionMode()
-	coreMode := mode
-	if !m.planMode {
-		coreMode = core.PermissionReadOnly
-	} else if coreMode == "" {
-		coreMode = core.PermissionWorkspace
-	}
-	if err := m.client.SetPermissionMode(coreMode); err != nil {
-		m.status = "Could not change Core permission mode."
-		m.addEntry("error", err.Error(), true)
-		return m, nil
-	}
 	m.planMode = !m.planMode
 	if m.planMode {
 		m.status = "Plan mode · tools are restricted to read-only."
 	} else {
-		m.status = "Plan mode off · " + permissionModeLabel(mode) + " permissions restored."
+		m.status = "Plan mode off · " + permissionModeLabel(m.currentPermissionMode()) + " permissions remain active."
 	}
 	m.addEntry("notice", m.status, false)
 	m.resetInput()
@@ -244,11 +257,7 @@ func (m *tuiModel) changePermissionMode(mode core.PermissionMode, resetInput boo
 		m.addEntry("error", m.status, true)
 		return m, nil
 	}
-	coreMode := mode
-	if m.planMode {
-		coreMode = core.PermissionReadOnly
-	}
-	if err := m.client.SetPermissionMode(coreMode); err != nil {
+	if err := m.client.SetPermissionMode(mode); err != nil {
 		m.status = err.Error()
 		m.addEntry("error", m.status, true)
 		return m, nil

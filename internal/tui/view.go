@@ -116,7 +116,7 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 
 func (m *tuiModel) commandSuggestionHeight() int {
 	if m.planReview {
-		return 2
+		return len(planReviewChoices) + 2
 	}
 	if m.queuePicker {
 		return min(len(m.queued), 8) + 1
@@ -147,7 +147,9 @@ func (m *tuiModel) commandSuggestionHeight() int {
 }
 
 func (m *tuiModel) View() tea.View {
-	return m.renderSessionWorkspace(max(1, m.width))
+	view := m.renderSessionWorkspace(max(1, m.width))
+	view.WindowTitle = m.windowTitleText()
+	return view
 }
 
 func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
@@ -337,9 +339,19 @@ func (m *tuiModel) renderQueuePicker() string {
 }
 
 func (m *tuiModel) renderPlanReview() string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(m.themeColors().Warning)).Render(
-		"Plan review · Enter accepts · type feedback and Enter to revise · Esc cancels",
-	)
+	colors := m.themeColors()
+	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Warning)).Render("Plan ready · choose an action")}
+	selected := min(max(m.planReviewIndex, 0), len(planReviewChoices)-1)
+	for index, option := range planReviewChoices {
+		line := "  " + option
+		if index == selected {
+			line = "› " + option
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" choose · type feedback to revise · Esc stay read-only")
+	return strings.Join(lines, "\n")
 }
 
 func (m *tuiModel) renderCommandSuggestions() string {

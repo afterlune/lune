@@ -107,6 +107,9 @@ func TestSessionPickerArchivesRenamesAndDeletesCurrentSession(t *testing.T) {
 	if client.sessions["current"].Title != "Renamed review" || ui.renamingSession {
 		t.Fatalf("renamed session = %#v, editing=%v", client.sessions["current"], ui.renamingSession)
 	}
+	if got := ui.View().WindowTitle; got != "Renamed review" {
+		t.Fatalf("renamed current session window title = %q", got)
+	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'd'}))
 	if !ui.deleteConfirm {
 		t.Fatal("d should request delete confirmation")
@@ -117,6 +120,9 @@ func TestSessionPickerArchivesRenamesAndDeletesCurrentSession(t *testing.T) {
 	}
 	if ui.sessionID == "current" || ui.sessionPicker {
 		t.Fatalf("current session was not replaced after deletion: id=%q picker=%v", ui.sessionID, ui.sessionPicker)
+	}
+	if got := ui.View().WindowTitle; got != defaultWindowTitle {
+		t.Fatalf("new session window title = %q, want %q", got, defaultWindowTitle)
 	}
 }
 
@@ -137,6 +143,9 @@ func TestSessionPickerCanOpenArchivedOnlySessionWithoutUnarchiving(t *testing.T)
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if ui.sessionID != "archived" || !client.sessions["archived"].Archived {
 		t.Fatalf("restoring archived session changed its archive state: id=%q session=%#v", ui.sessionID, client.sessions["archived"])
+	}
+	if got := ui.View().WindowTitle; got != "Old work" {
+		t.Fatalf("restored session window title = %q", got)
 	}
 }
 

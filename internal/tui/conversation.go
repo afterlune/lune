@@ -44,6 +44,37 @@ func plainConversationText(markdown string) string {
 	return strings.Trim(strings.Join(lines, "\n"), "\n")
 }
 
+func stripProposedPlanTags(text string) string {
+	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
+	if strings.Count(text, openTag) != 1 || strings.Count(text, closeTag) != 1 {
+		return text
+	}
+	open := strings.Index(text, openTag)
+	close := strings.Index(text, closeTag)
+	if open < 0 || close < open+len(openTag) {
+		return text
+	}
+	if strings.TrimSpace(text[open+len(openTag):close]) == "" {
+		return text
+	}
+	text = text[:open] + text[open+len(openTag):close] + text[close+len(closeTag):]
+	return strings.TrimSpace(text)
+}
+
+func proposedPlanText(text string) (string, bool) {
+	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
+	if strings.Count(text, openTag) != 1 || strings.Count(text, closeTag) != 1 {
+		return "", false
+	}
+	open := strings.Index(text, openTag)
+	close := strings.Index(text, closeTag)
+	if open < 0 || close < open+len(openTag) {
+		return "", false
+	}
+	plan := strings.TrimSpace(text[open+len(openTag) : close])
+	return plan, plan != ""
+}
+
 func stripPairedAsterisks(line string) string {
 	for {
 		start := strings.IndexByte(line, '*')
