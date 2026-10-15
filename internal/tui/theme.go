@@ -26,10 +26,10 @@ func colorsFor(theme themeName) themeColors {
 	switch theme {
 	case themeLight:
 		return themeColors{
-			Background: "#f5f1e8", Foreground: "#2e3338", Muted: "#6a665f",
-			Accent: "#925526", Secondary: "#805232", Success: "#4f6f52",
-			Warning: "#895d22", Error: "#a3473e", User: "#8a4d25",
-			Assistant: "#2e3338", Tool: "#6a5e53", Code: "#7c532c",
+			Background: codexLight.Canvas, Foreground: codexLight.Primary, Muted: codexLight.Muted,
+			Accent: codexLight.TaskSummary, Secondary: codexLight.Muted, Success: codexLight.Success,
+			Warning: codexLight.TaskSummary, Error: codexLight.Error, User: codexLight.Primary,
+			Assistant: codexLight.Primary, Tool: codexLight.Muted, Code: codexLight.CodeText,
 		}
 	default:
 		return themeColors{
@@ -69,6 +69,17 @@ func (m *tuiModel) themeColors() themeColors {
 		}
 	}
 	return colors
+}
+
+func (m *tuiModel) lightLayout() bool {
+	return m.resolvedTheme() == themeLight
+}
+
+func (m *tuiModel) composerPlaceholder() string {
+	if m.lightLayout() {
+		return lightInputPlaceholder
+	}
+	return defaultInputPlaceholder
 }
 
 func (m *tuiModel) applyResolvedTheme() {

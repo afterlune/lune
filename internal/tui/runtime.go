@@ -655,6 +655,7 @@ func (m *tuiModel) interrupt() {
 }
 
 func (m *tuiModel) finishTask(result taskResult) {
+	startedAt := m.taskStartedAt
 	if id := result.coreResult.ExecutionID; id != "" {
 		if m.finishedTasks[id] {
 			return
@@ -743,6 +744,10 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.status = "Task paused. See the conversation for the reason and next steps."
 	} else {
 		m.status = "Completed."
+	}
+	if !startedAt.IsZero() && (result.coreResult.Status == core.TaskCompleted || result.coreResult.Status == core.TaskFailed) {
+		worked := time.Since(startedAt).Round(time.Second)
+		m.addEntry("turn_footer", fmt.Sprintf("Worked for %s · %s", worked, time.Now().Local().Format("15:04")), false)
 	}
 	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.Status == core.TaskCompleted && proposal != nil {
 		if m.searchOpen {

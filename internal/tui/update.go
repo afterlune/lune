@@ -280,10 +280,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.chat.AtBottom() {
 				m.unreadEntries = 0
 			}
+			m.reflowAfterChatScroll(m.chat.AtBottom())
 		}
 		return m, nil
 	case tea.MouseClickMsg:
 		if m.pendingMCPInteraction != nil {
+			return m, nil
+		}
+		if m.handleScrollPillClick(message.X, message.Y) {
 			return m, nil
 		}
 		if m.handleTranscriptMouseClick(message) {
@@ -329,6 +333,19 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.keymapOpen {
 			return m.handleKeymapKey(message)
+		}
+		if m.shortcutsOpen {
+			if message.String() == "esc" || message.String() == "?" {
+				m.shortcutsOpen = false
+				m.updateLayout()
+			}
+			return m, nil
+		}
+		if message.String() == "?" && m.input.Value() == "" && !m.sessionPicker && !m.modelPicker && !m.effortPicker &&
+			!m.queuePicker && !m.permissionMenu && m.pendingApproval == nil && !m.detailsOpen {
+			m.shortcutsOpen = true
+			m.updateLayout()
+			return m, nil
 		}
 		if m.planReview {
 			switch {
@@ -408,6 +425,10 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.adjustActivityFocus(1)
 			case m.matchesKey("activity_toggle", message):
 				m.toggleFocusedActivity()
+				m.updateLayout()
+			case m.matchesKey("activity_toggle_latest", message):
+				m.toggleLatestToolActivity()
+				return m, nil
 			case m.matchesKey("interrupt_or_copy", message):
 				if m.copyTranscriptSelection(false) {
 					return m, nil
@@ -434,10 +455,21 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if message.String() == "esc" && !m.chat.AtBottom() && !m.detailsOpen {
+			m.jumpToLatest()
+			if m.running {
+				m.interrupt()
+			}
+			return m, nil
+		}
+		if m.matchesKey("activity_toggle_latest", message) && !m.sessionPicker && !m.modelPicker && !m.effortPicker &&
+			!m.queuePicker && !m.permissionMenu && m.pendingApproval == nil && !m.detailsOpen {
+			m.toggleLatestToolActivity()
+			return m, nil
+		}
 		if m.matchesKey("jump_chat_bottom", message) && !m.sessionPicker && !m.modelPicker &&
 			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
-			m.chat.GotoBottom()
-			m.unreadEntries = 0
+			m.jumpToLatest()
 			return m, nil
 		}
 		if m.matchesKey("transcript_copy", message) && m.transcriptSelection.active {
@@ -504,7 +536,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sessionPicker {
 				if m.renamingSession {
 					m.renamingSession = false
-					m.input.Placeholder = defaultInputPlaceholder
+					m.input.Placeholder = m.composerPlaceholder()
 					m.status = "Session rename cancelled."
 					m.resetInput()
 					m.updateLayout()
@@ -538,6 +570,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Effort selection cancelled."
 				m.updateLayout()
 				return m, nil
+			}
+			if !m.chat.AtBottom() {
+				m.jumpToLatest()
 			}
 			m.interrupt()
 			return m, nil
@@ -584,6 +619,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.matchesKey("chat_scroll_up", message) {
 			m.chat.HalfPageUp()
+			m.reflowAfterChatScroll(false)
 			return m, nil
 		}
 		if m.matchesKey("chat_scroll_down", message) {
@@ -591,10 +627,12 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.chat.AtBottom() {
 				m.unreadEntries = 0
 			}
+			m.reflowAfterChatScroll(m.chat.AtBottom())
 			return m, nil
 		}
 		if m.matchesKey("activity_scroll_up", message) {
 			m.chat.HalfPageUp()
+			m.reflowAfterChatScroll(false)
 			return m, nil
 		}
 		if m.matchesKey("activity_scroll_down", message) {
@@ -602,6 +640,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.chat.AtBottom() {
 				m.unreadEntries = 0
 			}
+			m.reflowAfterChatScroll(m.chat.AtBottom())
 			return m, nil
 		}
 		if m.permissionMenu {

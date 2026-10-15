@@ -31,9 +31,18 @@ func TestTUIEnterSubmitsMultilineJSONInput(t *testing.T) {
 	if !strings.Contains(string(client.inputs[0].Input.Raw), `"type":"input_video"`) {
 		t.Fatalf("unknown modality was not preserved: %s", client.inputs[0].Input.Raw)
 	}
-	if len(finished.entries) == 0 || !strings.Contains(finished.entries[len(finished.entries)-1].text, "reply") {
+	if len(finished.entries) == 0 || !containsEntryText(finished.entries, "assistant", "reply") {
 		t.Fatalf("transcript entries = %#v, want assistant response", finished.entries)
 	}
+}
+
+func containsEntryText(entries []tuiEntry, role, text string) bool {
+	for _, entry := range entries {
+		if entry.role == role && strings.Contains(entry.text, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTUIShiftEnterInsertsNewline(t *testing.T) {

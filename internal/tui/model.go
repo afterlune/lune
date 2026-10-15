@@ -164,6 +164,7 @@ type tuiModel struct {
 	sessionIndex                  int
 	queued                        []core.QueuedTurnState
 	detailsOpen                   bool
+	shortcutsOpen                 bool
 	planMode                      bool
 	planReview                    bool
 	planReviewIndex               int
@@ -261,6 +262,7 @@ type tokenUsageTotals struct {
 }
 
 const defaultInputPlaceholder = "Ask Lune to do anything"
+const lightInputPlaceholder = "Ask Codex to do anything"
 
 func Run(client *core.Core) error {
 	app := coreApplication{Core: client}

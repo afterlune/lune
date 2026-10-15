@@ -14,6 +14,16 @@ func TestThemeSemanticColorsStayReadableAndSubdued(t *testing.T) {
 		t.Run(string(theme), func(t *testing.T) {
 			colors := colorsFor(theme)
 			terminalBackground := terminalScreenshotBackground(theme)
+			if theme == themeLight {
+				if colors.Background != "#FFFFFF" || colors.Foreground != "#1F2937" || colors.Muted != "#6B7280" ||
+					colors.Success != "#16A34A" || codexLight.Surface != "#F3F4F6" || codexLight.CodeSurface != "#ECFDF5" {
+					t.Fatalf("light palette does not match the approved design: %#v / %#v", colors, codexLight)
+				}
+				if ratio := themeContrastRatio(colors.Foreground, terminalBackground); ratio < 4.5 {
+					t.Errorf("light primary contrast = %.2f:1, want at least 4.5:1", ratio)
+				}
+				return
+			}
 			semantic := map[string]string{
 				"foreground": colors.Foreground, "muted": colors.Muted, "accent": colors.Accent,
 				"secondary": colors.Secondary, "success": colors.Success, "warning": colors.Warning,
@@ -64,8 +74,8 @@ func TestAutoThemeUsesTerminalColorsAndManualThemesOverride(t *testing.T) {
 	}
 	ui.preferences.Theme = themeLight
 	view = ui.View()
-	if view.BackgroundColor != nil || colorHex(view.ForegroundColor) != colorsFor(themeLight).Foreground {
-		t.Fatalf("manual light view = %s / %s, want inherited background and light foreground palette", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor))
+	if colorHex(view.BackgroundColor) != "#ffffff" || !strings.EqualFold(colorHex(view.ForegroundColor), colorsFor(themeLight).Foreground) {
+		t.Fatalf("manual light view = %s / %s, want white canvas and light foreground palette", colorHex(view.BackgroundColor), colorHex(view.ForegroundColor))
 	}
 
 	ui.preferences.Theme = themeAuto

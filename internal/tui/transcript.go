@@ -76,12 +76,24 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		case "question":
 			prefix = "? "
 		case "assistant":
-			if entry.incomplete {
-				prefix = "Partial · "
+			if m.lightLayout() {
+				prefix = "• "
 			}
+			if entry.incomplete {
+				prefix += "Partial · "
+			}
+		case "turn_footer":
+			prefix = "  "
 		}
 		parts := strings.Split(text, "\n")
 		parts[0] = prefix + parts[0]
+		if entry.role == "turn_footer" || entry.role == "assistant" && m.lightLayout() {
+			for line := 1; line < len(parts); line++ {
+				if parts[line] != "" {
+					parts[line] = "  " + parts[line]
+				}
+			}
+		}
 		appendText(strings.Join(parts, "\n"), entry.role)
 	}
 	appendSpacer := func() {
@@ -137,11 +149,11 @@ func (m *tuiModel) collapsedToolGroupLabel(group toolActivityGroup) string {
 }
 
 func toolActivityGroupKey(entries []tuiEntry, start int) string {
-	if start >= 0 && start < len(entries) && entries[start].activityGroupID != "" {
-		return entries[start].activityGroupID
-	}
 	if start >= 0 && start < len(entries) && entries[start].activityID != "" {
 		return entries[start].activityID
+	}
+	if start >= 0 && start < len(entries) && entries[start].activityGroupID != "" {
+		return entries[start].activityGroupID
 	}
 	return fmt.Sprintf("tool-group-%d", start)
 }
@@ -185,8 +197,18 @@ func (m *tuiModel) toolActivityGroups() []toolActivityGroup {
 
 func (m *tuiModel) toolActivitiesForGroup(group toolActivityGroup) []tuiActivity {
 	activities := make([]tuiActivity, 0, len(group.entries))
+	for _, entryIndex := range group.entries {
+		if entryIndex >= 0 && entryIndex < len(m.entries) && m.entries[entryIndex].activityID != "" {
+			for _, activity := range m.activities {
+				if activity.callID == m.entries[entryIndex].activityID {
+					activities = append(activities, activity)
+				}
+			}
+			return activities
+		}
+	}
 	for _, activity := range m.activities {
-		if activity.groupID == group.key || activity.groupID == "" && activity.callID == group.key {
+		if activity.callID == group.key {
 			activities = append(activities, activity)
 		}
 	}
@@ -234,6 +256,38 @@ func (m *tuiModel) toggleFocusedActivity() {
 	group := groups[m.activityFocusIndex]
 	m.activityExpanded[group.key] = !m.activityExpanded[group.key]
 	m.refreshPanels()
+}
+
+func (m *tuiModel) toggleLatestToolActivity() bool {
+	groups := m.toolActivityGroups()
+	if len(groups) == 0 {
+		m.status = "No tool activity to expand."
+		return false
+	}
+	index := len(groups) - 1
+	if m.activityFocus {
+		index = max(0, min(m.activityFocusIndex, len(groups)-1))
+	}
+	group := groups[index]
+	m.activityExpanded[group.key] = !m.activityExpanded[group.key]
+	m.refreshPanels()
+	m.updateLayout()
+	return true
+}
+
+func (m *tuiModel) jumpToLatest() {
+	m.chat.GotoBottom()
+	m.unreadEntries = 0
+	m.updateLayout()
+	m.chat.GotoBottom()
+	m.refreshPanels()
+}
+
+func (m *tuiModel) reflowAfterChatScroll(atBottom bool) {
+	m.updateLayout()
+	if atBottom {
+		m.chat.GotoBottom()
+	}
 }
 
 func (m *tuiModel) applyTranscriptHighlights() {
@@ -690,6 +744,8 @@ func transcriptRoleStyle(role string, colors themeColors) lipgloss.Style {
 		color = colors.Error
 	case "permission", "question":
 		color = colors.Warning
+	case "turn_footer":
+		color = colors.Muted
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }

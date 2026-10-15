@@ -55,7 +55,10 @@ func tuiHelpText() string {
 	for _, command := range tuiCommands {
 		lines = append(lines, fmt.Sprintf("  %-23s %s", command.usage, command.description))
 	}
-	lines = append(lines, "Use /keymap to view or change keyboard shortcuts.")
+	lines = append(lines,
+		"Use /keymap to view or change keyboard shortcuts.",
+		"Press ? with an empty composer to open the shortcut overlay.",
+	)
 	return strings.Join(lines, "\n")
 }
 

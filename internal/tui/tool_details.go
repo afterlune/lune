@@ -131,6 +131,46 @@ func activityDetailLines(activity tuiActivity) []transcriptLine {
 
 func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolActivityGroup, selected, expanded bool) []transcriptLine {
 	activities := m.toolActivitiesForGroup(group)
+	if m.lightLayout() {
+		var activity tuiActivity
+		hasActivity := false
+		if len(activities) > 0 {
+			activity, hasActivity = activities[len(activities)-1], true
+		}
+		title := "Tool activity"
+		var output []string
+		if hasActivity {
+			title = safeToolText(toolActivityTitle(activity))
+			for _, detail := range activityDetailLines(activity) {
+				if detail.text != "" {
+					output = append(output, detail.text)
+				}
+			}
+		} else if len(group.entries) > 0 {
+			index := group.entries[len(group.entries)-1]
+			if index >= 0 && index < len(m.entries) {
+				title = safeToolText(m.entries[index].text)
+			}
+		}
+		marker := "•"
+		if selected {
+			marker = "›"
+		} else if hasActivity && activity.status == "running" {
+			marker = windowTitleSpinner[m.windowTitleFrame%len(windowTitleSpinner)]
+		} else if hasActivity && activity.status == "failed" {
+			marker = "×"
+		}
+		block := ansi.Strip(renderLightToolActivity(title, output, expanded, max(1, m.chat.Width()), marker))
+		block = strings.ReplaceAll(block, "ctrl+t", m.keyLabel("activity_toggle_latest"))
+		for _, line := range strings.Split(block, "\n") {
+			role := "tool"
+			if hasActivity {
+				role = activityTranscriptRole(activity)
+			}
+			lines = append(lines, transcriptLine{text: line, role: role})
+		}
+		return lines
+	}
 	if !expanded {
 		role := "tool"
 		marker := "· "

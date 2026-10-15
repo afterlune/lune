@@ -133,7 +133,7 @@ func (m *tuiModel) saveSessionRename() (tea.Model, tea.Cmd) {
 		m.setSessionWindowTitle(saved)
 	}
 	m.renamingSession = false
-	m.input.Placeholder = defaultInputPlaceholder
+	m.input.Placeholder = m.composerPlaceholder()
 	m.resetInput()
 	if err := m.reloadSessionList(saved.ID); err != nil {
 		m.status = "Title saved, but the session list could not be refreshed."

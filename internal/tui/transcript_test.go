@@ -135,7 +135,7 @@ func TestCopySelectionCommandPersistsPolicy(t *testing.T) {
 	}
 }
 
-func TestCollapsedToolActivityExpandsWithoutPayload(t *testing.T) {
+func TestToolActivityInvocationsStaySeparateAndExpandOutput(t *testing.T) {
 	ui := newTUIModel(nil, false)
 	ui.runningExecutionID = "execution-1"
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Started: true}})
@@ -143,12 +143,12 @@ func TestCollapsedToolActivityExpandsWithoutPayload(t *testing.T) {
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-2", Name: "web_search", Started: true}})
 	ui.entries = append(ui.entries, tuiEntry{role: "assistant", text: "Final answer remains visible."})
 	content, _ := ui.transcriptContent()
-	if len(ui.entries) != 2 || strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching the web") || !strings.Contains(content, "Final answer remains visible.") {
+	if len(ui.entries) != 3 || !strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching the web") || !strings.Contains(content, "Final answer remains visible.") || strings.Contains(content, "first file contents") {
 		t.Fatalf("collapsed activity = %q", content)
 	}
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Duration: 20}})
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Reading a.go · done") || strings.Contains(content, "Searching the web · running") {
+	if !strings.Contains(content, "Reading a.go · done") || !strings.Contains(content, "Searching the web · running") {
 		t.Fatalf("collapsed activity did not follow the latest event: %q", content)
 	}
 	ui.activityFocus = true

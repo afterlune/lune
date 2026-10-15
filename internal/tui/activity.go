@@ -274,7 +274,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	}
 	entryIndex := -1
 	for i := range m.entries {
-		if groupID != "" && m.entries[i].role == "tool" && m.entries[i].activityGroupID == groupID {
+		if key != "" && m.entries[i].role == "tool" && m.entries[i].activityID == key {
 			entryIndex = i
 			break
 		}
