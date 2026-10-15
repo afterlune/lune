@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/afterlune/luneCore"
+	core "github.com/afterlune/luneCore"
 )
 
 type cliRuntime interface {

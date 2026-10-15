@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/afterlune/luneCore"
+	core "github.com/afterlune/luneCore"
 )
 
 type fakeCLICore struct {

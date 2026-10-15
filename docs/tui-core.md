@@ -1,13 +1,14 @@
 # Core-backed TUI
 
-The terminal UI is a host for `luneCore`. It does not run an agent loop or own tool execution.
+The command entry point delegates process setup to `internal/app`. The app selects either the line-oriented CLI (`internal/cli`) or the Bubble Tea interface (`internal/tui`), creates one `luneCore` client, and closes it after the selected frontend exits. Both frontends are hosts for `luneCore`; neither runs an agent loop or owns tool execution.
 
 ## Runtime boundary
 
 - `CoreClient` in `internal/tui/interfaces.go` handles workspace and session management.
 - `SessionRuntime` handles turn submission, waiting, events, interruption, recovery, and user decisions for one session.
 - `Run` opens the saved session and its runtime, then projects Core events into the Bubble Tea view.
-- The line-oriented CLI uses the same session runtime API.
+- The line-oriented CLI owns prompt input, commands, keyboard interruption, and approval prompts in `internal/cli`; it uses the same session runtime API.
+- `internal/tui` remains one package because its update loop and views share private model state; its source files are grouped by runtime, commands, sessions, activity, and rendering responsibilities.
 
 The interactive TUI owns the terminal's alternate screen so its transcript, composer, and status remain in fixed positions. Conversation history stays available in the session transcript and persists through Core when the TUI exits; it is not copied into native terminal scrollback. Use `/details` to list user messages and `/details <n>` to show one in the transcript again.
 
@@ -19,7 +20,7 @@ Plan mode is a separate UI state. While it is active, the host sets Core's globa
 
 ## Run and build
 
-Run the whole command package so `main.go` and the Core adapter files are compiled together:
+Run the command entry point; Go compiles the app, CLI, TUI, and Core adapters through the package dependencies:
 
 ```powershell
 go run ./cmd

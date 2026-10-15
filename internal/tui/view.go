@@ -1,0 +1,692 @@
+package tui
+
+import (
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	core "github.com/afterlune/luneCore"
+)
+
+const (
+	sessionRailMinWidth   = 24
+	sessionRailMaxWidth   = 30
+	sessionRailHeaderRows = 2
+	sessionRailMaxItems   = 6
+	maxCommandSuggestions = 8
+)
+
+func activityDrawerContentHeight(bodyHeight int) int {
+	if bodyHeight < 5 {
+		return 0
+	}
+	return min(max(4, bodyHeight/3), bodyHeight-2)
+}
+
+func (m *tuiModel) refreshPanels() {
+	followLatest := m.chat.AtBottom()
+	m.chat.SetContent(formatConversationTranscript(m.entries, m.themeColors()))
+	if followLatest {
+		m.chat.GotoBottom()
+	}
+	m.activity.SetContent(m.activityDetailsContent())
+}
+
+func (m *tuiModel) updateLayout() {
+	if m.width <= 0 {
+		m.width = 80
+	}
+	if m.height <= 0 {
+		m.height = 24
+	}
+	contentWidth := max(1, m.width)
+	inputWidth := m.workspaceCenterWidth(contentWidth)
+	m.input.SetWidth(inputWidth)
+	m.updateMCPInteractionWidth(inputWidth)
+	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), 2)
+	m.chat.SoftWrap = true
+	m.chat.SetWidth(inputWidth)
+	if m.detailsOpen {
+		drawerHeight := activityDrawerContentHeight(bodyHeight)
+		chatHeight := bodyHeight
+		if drawerHeight > 0 {
+			chatHeight = max(1, bodyHeight-drawerHeight-1)
+		}
+		m.chat.SetHeight(chatHeight)
+		m.activity.SetHeight(max(1, drawerHeight-1))
+	} else {
+		m.chat.SetHeight(bodyHeight)
+		m.activity.SetHeight(max(1, bodyHeight))
+	}
+	m.activity.SetWidth(inputWidth)
+}
+
+func (m *tuiModel) workspaceRailWidth() int {
+	if m.wideConversation() {
+		return m.sessionRailWidth()
+	}
+	return 0
+}
+
+func (m *tuiModel) workspaceCenterWidth(width int) int {
+	if railWidth := m.workspaceRailWidth(); railWidth > 0 {
+		return max(1, width-railWidth-1)
+	}
+	return max(1, width)
+}
+
+func (m *tuiModel) availableBodyHeight(contentWidth, footerHeight, dividerCount int) int {
+	bodyHeight := max(1, m.height-lipgloss.Height(m.renderHeader(contentWidth))-dividerCount-m.input.Height()-m.commandSuggestionHeight()-footerHeight)
+	if m.pendingMCPInteraction != nil {
+		bodyHeight = max(1, bodyHeight-lipgloss.Height(m.renderMCPInteraction()))
+	}
+	if m.keymapOpen {
+		bodyHeight = max(1, bodyHeight-m.keymapEditorHeight())
+	}
+	return bodyHeight
+}
+
+func applyTextareaTheme(input *textarea.Model, theme themeName) {
+	colors := colorsFor(theme)
+	styles := textarea.DefaultStyles(theme != themeLight)
+	apply := func(state *textarea.StyleState) {
+		state.Base = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
+		state.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
+		state.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+		state.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+		state.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
+		state.EndOfBuffer = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+		state.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+		state.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
+		state.Selection = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(lipgloss.Color(colors.Secondary))
+	}
+	apply(&styles.Focused)
+	apply(&styles.Blurred)
+	styles.Cursor.Color = lipgloss.Color(colors.Accent)
+	input.SetStyles(styles)
+}
+
+func (m *tuiModel) commandSuggestionHeight() int {
+	if m.planReview {
+		return 2
+	}
+	if m.queuePicker {
+		return min(len(m.queued), 8) + 1
+	}
+	if m.sessionPicker {
+		if m.renamingSession || m.deleteConfirm {
+			return 2
+		}
+		return min(len(m.sessionList), 8) + 2
+	}
+	if m.modelPicker {
+		return min(len(m.modelOptions), 8) + 2
+	}
+	if m.effortPicker {
+		return len(reasoningEffortOptions) + 2
+	}
+	if m.permissionMenu {
+		extraLines := 0
+		if m.planMode {
+			extraLines = 1
+		}
+		return len(tuiPermissionOptions) + 2 + extraLines
+	}
+	if len(m.commandSuggestions) == 0 {
+		return 0
+	}
+	return 0
+}
+
+func (m *tuiModel) View() tea.View {
+	return m.renderSessionWorkspace(max(1, m.width))
+}
+
+func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
+	switch {
+	case m.exitConfirm:
+		return "Interrupt and cancel the queued turns [i] · wait for completion [w] · return [esc]"
+	case m.pendingMCPInteraction != nil:
+		return m.renderMCPInteraction()
+	case m.keymapOpen:
+		return m.renderKeymapEditor()
+	case m.sessionPicker:
+		return m.renderSessionPicker()
+	case m.modelPicker:
+		return m.renderModelPicker()
+	case m.effortPicker:
+		return m.renderEffortPicker()
+	case m.queuePicker:
+		return m.renderQueuePicker()
+	case m.planReview:
+		return m.renderPlanReview()
+	case m.permissionMenu:
+		return m.renderPermissionMenu()
+	default:
+		return suggestions
+	}
+}
+
+func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
+	colors := m.themeColors()
+	header := m.renderHeader(width)
+	headerRule := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", width))
+	body := m.renderSessionWorkspaceBody(width)
+	centerWidth := m.workspaceCenterWidth(width)
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
+	input := m.renderWorkspaceRow(m.renderInputView(), centerWidth)
+	suggestions := m.renderCommandSuggestions()
+	parts := []string{header, headerRule, body, m.renderWorkspaceRow(divider, centerWidth), input}
+	if auxiliary := m.renderAuxiliaryPanel(suggestions); auxiliary != "" && auxiliary != suggestions {
+		parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
+	}
+	parts = append(parts, m.renderWorkspaceRow(m.renderFooter(centerWidth), centerWidth))
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	view := tea.NewView(content)
+	view.ForegroundColor = backgroundColor(colors.Foreground)
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	if cursor := m.activeCursor(); cursor != nil && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+		cursor.Y += lipgloss.Height(header) + lipgloss.Height(headerRule) + lipgloss.Height(body) + lipgloss.Height(divider)
+		if railWidth := m.workspaceRailWidth(); railWidth > 0 {
+			cursor.X += railWidth + 1
+		}
+		view.Cursor = cursor
+	}
+	return view
+}
+
+func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
+	colors := m.themeColors()
+	railWidth := m.workspaceRailWidth()
+	content = lipgloss.NewStyle().Width(centerWidth).Render(content)
+	lines := strings.Split(content, "\n")
+	rows := make([]string, len(lines))
+	for index, line := range lines {
+		if lipgloss.Width(line) < centerWidth {
+			line += strings.Repeat(" ", centerWidth-lipgloss.Width(line))
+		} else if lipgloss.Width(line) > centerWidth {
+			line = fitTerminalText(line, centerWidth)
+		}
+		if railWidth > 0 {
+			separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
+			rows[index] = strings.Repeat(" ", railWidth) + separator + line
+		} else {
+			rows[index] = line
+		}
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (m *tuiModel) renderHeader(width int) string {
+	colors := m.themeColors()
+	if m.modernConversation() {
+		state := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(stateName(m.visualState()))
+		brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Render("☾ Lune")
+		left := brand + " · " + state
+		if !m.wideConversation() {
+			left = brand + "  ‹ " + fitTerminalText(m.currentSessionTitle(), max(12, width/2)) + " › · " + state
+		}
+		right := filepath.ToSlash(m.workspace)
+		maxRight := max(0, width-lipgloss.Width(left)-4)
+		if maxRight == 0 {
+			right = ""
+		} else if lipgloss.Width(filepath.Base(right)) <= maxRight && lipgloss.Width(right) > maxRight {
+			right = filepath.Base(right)
+		} else {
+			right = fitTerminalText(right, maxRight)
+		}
+		if right == "" {
+			return left
+		}
+		gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
+		return left + strings.Repeat(" ", gap) + lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(right)
+	}
+	headerText := "☾ Lune Agent"
+	headerText += " · " + stateName(m.visualState())
+	if m.sessionID != "" {
+		headerText += "  ·  " + m.sessionID[:min(8, len(m.sessionID))]
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(headerText)
+}
+
+func (m *tuiModel) renderFooter(width int) string {
+	colors := m.themeColors()
+	model := strings.TrimSpace(m.sessionSettings.ModelProfile)
+	if model == "" {
+		model = "default model"
+	}
+	metadata := model + " · " + reasoningEffortLabel(m.sessionSettings.ReasoningEffort)
+	if m.client != nil {
+		metadata += " · " + permissionModeLabel(m.currentPermissionMode())
+	}
+	if m.planMode {
+		metadata += " · Plan"
+	}
+
+	status := m.status
+	switch {
+	case m.detailsOpen:
+		status = "Activity & usage · " + m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " close"
+	case m.pendingMCPInteraction != nil:
+		status = m.mcpInteractionFooter()
+	case m.mcpAuthCancel != nil:
+		status = m.mcpAuthFooter()
+	case m.pendingApproval != nil:
+		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
+	case m.running:
+		status = fmt.Sprintf("Working · %d queued · Esc pause · %s interrupt", len(m.queued), m.keyLabel("interrupt_send"))
+	case m.pending:
+		status = "Paused · /continue resume · /discard"
+	case m.status == "Ready":
+		status = m.keyLabel("send") + " send · " + m.keyLabel("input_newline") + " newline · " + m.keyLabel("cycle_permissions") + " modes · /plan"
+	}
+	if m.vimMode {
+		vimState := "VIM INSERT"
+		if m.vimNormal {
+			vimState = "VIM NORMAL"
+		}
+		status = vimState + " · " + status
+	}
+	if m.running && m.modelStreamFirstTokenRecorded {
+		status += " · first token " + m.modelStreamFirstTokenLatency.Round(time.Millisecond).String()
+	}
+	if !m.chat.AtBottom() && !m.detailsOpen {
+		status += " · " + m.keyLabel("jump_chat_bottom") + " latest"
+	}
+	if len(m.attachments) > 0 {
+		status += fmt.Sprintf(" · %d image(s)", len(m.attachments))
+	}
+
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
+	usageLine := ""
+	var usage []string
+	if context := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); context != "" {
+		usage = append(usage, context)
+	}
+	if m.taskUsage.requests > 0 {
+		usage = append(usage,
+			"in "+compactTokens(m.taskUsage.input),
+			"out "+compactTokens(m.taskUsage.output),
+			"reason "+compactTokens(m.taskUsage.reasoning),
+			"total "+compactTokens(m.taskUsage.total),
+			"cache "+compactTokens(m.taskUsage.cached)+" ("+cacheHitRate(m.taskUsage.input, m.taskUsage.cached)+")",
+		)
+	}
+	if len(usage) > 0 {
+		usageLine = muted.Render(fitTerminalText(strings.Join(usage, " · "), width))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left,
+		muted.Render(fitTerminalText(metadata, width)),
+		statusStyle.Render(fitTerminalText(status, width)),
+		usageLine,
+	)
+}
+
+func fitTerminalText(value string, width int) string {
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	runes := []rune(value)
+	for len(runes) > 0 && lipgloss.Width(string(runes)+"…") > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
+}
+
+func (m *tuiModel) renderQueuePicker() string {
+	colors := m.themeColors()
+	lines := []string{"Core queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " details · " + m.keyLabel("queue_remove") + " cancel · Esc close"}
+	start := max(0, m.queueIndex-4)
+	end := min(len(m.queued), start+8)
+	if end == len(m.queued) {
+		start = max(0, end-8)
+	}
+	for index, item := range m.queued[start:end] {
+		index += start
+		line := fmt.Sprintf("  %d. %-8s execution %s", item.Position, item.Status, item.ExecutionID)
+		if index == m.queueIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderPlanReview() string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(m.themeColors().Warning)).Render(
+		"Plan review · Enter accepts · type feedback and Enter to revise · Esc cancels",
+	)
+}
+
+func (m *tuiModel) renderCommandSuggestions() string {
+	return m.renderCommandSuggestionsForHeight(maxCommandSuggestions + 1)
+}
+
+func (m *tuiModel) renderCommandSuggestionsForHeight(maxLines int) string {
+	colors := m.themeColors()
+	if m.permissionMenu || len(m.commandSuggestions) == 0 || maxLines <= 0 {
+		return ""
+	}
+	commandRows := min(maxCommandSuggestions, max(1, maxLines-1))
+	if maxLines == 1 {
+		commandRows = 1
+	}
+	start, end := commandSuggestionRangeVisible(m.suggestionIndex, len(m.commandSuggestions), commandRows)
+	lines := make([]string, 0, min(maxLines, end-start+1))
+	for index := start; index < end; index++ {
+		command := m.commandSuggestions[index]
+		line := "  " + command
+		if index == m.suggestionIndex {
+			line = "› " + command
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if maxLines > 1 {
+		hint := "  " + m.keyLabel("suggestion_previous") + "/" + m.keyLabel("suggestion_next") + " select · " + m.keyLabel("send") + " run"
+		if len(m.commandSuggestions) > end-start {
+			hint = fmt.Sprintf("  %d–%d of %d · %s", start+1, end, len(m.commandSuggestions), strings.TrimPrefix(hint, "  "))
+		}
+		lines = append(lines, hint)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func commandSuggestionRange(index, total int) (int, int) {
+	return commandSuggestionRangeVisible(index, total, maxCommandSuggestions)
+}
+
+func commandSuggestionRangeVisible(index, total, visible int) (int, int) {
+	visible = min(total, max(0, visible))
+	if visible <= 0 {
+		return 0, 0
+	}
+	index = max(0, min(index, total-1))
+	start := max(0, min(index-visible/2, total-visible))
+	return start, start + visible
+}
+
+func (m *tuiModel) renderKeymapEditor() string {
+	colors := m.themeColors()
+	count := len(keymapActions) + 1
+	rows := m.keymapEditorRows()
+	start := max(0, m.keymapIndex-rows/2)
+	end := min(count, start+rows)
+	if end == count {
+		start = max(0, end-rows)
+	}
+	heading := "Key bindings · ↑/↓ choose · Enter change · Esc apply and close"
+	if m.keymapCapture != "" {
+		heading = "Recording a binding · press one key combination · Esc cancels capture"
+	}
+	lines := []string{heading}
+	for index := start; index < end; index++ {
+		var label, chord string
+		if index == len(keymapActions) {
+			label, chord = "Restore defaults", ""
+		} else {
+			action := keymapActions[index]
+			label = action.label
+			chord = m.keymapDraft[action.id]
+		}
+		line := fmt.Sprintf("  %-38s %s", label, chord)
+		if index == m.keymapIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if m.keymapCapture == "" {
+		lines = append(lines, "Esc is reserved for cancel/close · bindings apply when this menu closes")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) keymapEditorRows() int {
+	return min(9, max(1, m.height-10))
+}
+
+func (m *tuiModel) keymapEditorHeight() int {
+	return m.keymapEditorRows() + 2
+}
+
+func (m *tuiModel) renderSessionPicker() string {
+	colors := m.themeColors()
+	if m.renamingSession {
+		return strings.Join([]string{"Rename session · Enter save · empty clears · Esc cancel", "Title is limited to 120 characters."}, "\n")
+	}
+	if m.deleteConfirm {
+		if m.sessionIndex >= 0 && m.sessionIndex < len(m.sessionList) {
+			return strings.Join([]string{
+				"Delete “" + sessionDisplayTitle(m.sessionList[m.sessionIndex]) + "” and all saved task state?",
+				m.keyLabel("session_confirm_delete") + " confirm · " + m.keyLabel("session_cancel_delete") + "/Esc cancel",
+			}, "\n")
+		}
+		return m.keyLabel("session_confirm_delete") + " confirm · " + m.keyLabel("session_cancel_delete") + "/Esc cancel"
+	}
+	if len(m.sessionList) == 0 {
+		if m.showArchived {
+			return "No saved sessions · " + m.keyLabel("session_toggle_archived") + " toggle · Esc cancel"
+		}
+		return "No active sessions · " + m.keyLabel("session_toggle_archived") + " show archived · Esc cancel"
+	}
+	viewKind := "active"
+	if m.showArchived {
+		viewKind = "active + archived"
+	}
+	lines := []string{"Sessions · " + viewKind + " · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " restore · " + m.keyLabel("session_archive") + " archive · " + m.keyLabel("session_rename") + " rename · " + m.keyLabel("session_delete") + " delete · " + m.keyLabel("session_toggle_archived") + " toggle"}
+	start := max(0, m.sessionIndex-4)
+	end := min(len(m.sessionList), start+8)
+	if end == len(m.sessionList) {
+		start = max(0, end-8)
+	}
+	for index, saved := range m.sessionList[start:end] {
+		index += start
+		preview := sessionDisplayTitle(saved)
+		line := fmt.Sprintf("  %s  %s", saved.UpdatedAt.Local().Format("01-02 15:04"), preview)
+		if saved.Archived {
+			line += "  [archived]"
+		}
+		if saved.ID == m.sessionID {
+			line += "  (current)"
+		}
+		if index == m.sessionIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderModelPicker() string {
+	colors := m.themeColors()
+	lines := []string{"Model profile · current: " + m.sessionSettings.ModelProfile}
+	start := max(0, m.modelIndex-4)
+	end := min(len(m.modelOptions), start+8)
+	if end == len(m.modelOptions) {
+		start = max(0, end-8)
+	}
+	for index, option := range m.modelOptions[start:end] {
+		index += start
+		line := fmt.Sprintf("  %-20s %s / %s", option.Profile, option.Provider, option.Model)
+		if index == m.modelIndex {
+			line = "›" + strings.TrimPrefix(line, " ")
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderEffortPicker() string {
+	colors := m.themeColors()
+	lines := []string{"Reasoning effort · current: " + reasoningEffortLabel(m.sessionSettings.ReasoningEffort)}
+	for index, value := range reasoningEffortOptions {
+		line := "  " + reasoningEffortLabel(value)
+		if index == m.effortIndex {
+			line = "› " + reasoningEffortLabel(value)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderPermissionMenu() string {
+	colors := m.themeColors()
+	mode := core.PermissionReadOnly
+	if m.client != nil {
+		mode = m.currentPermissionMode()
+	}
+	lines := []string{"Permission mode · current: " + permissionModeLabel(mode)}
+	if m.planMode {
+		lines = append(lines, "Plan caps tools at read-only; permission controls approval for visible tools such as web.")
+	}
+	for index, option := range tuiPermissionOptions {
+		line := fmt.Sprintf("  %-12s %s", option.label, option.description)
+		if index == m.permissionIndex {
+			line = fmt.Sprintf("› %-12s %s", option.label, option.description)
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "  "+m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" apply · Esc cancel")
+	return strings.Join(lines, "\n")
+}
+
+func (m *tuiModel) renderBody(width int) string {
+	colors := m.themeColors()
+	if m.modernConversation() {
+		if m.wideConversation() {
+			return m.renderSessionWorkspaceBody(width)
+		}
+		if m.detailsOpen {
+			bodyHeight := m.availableBodyHeight(width, 2, 1)
+			drawerHeight := activityDrawerContentHeight(bodyHeight)
+			if drawerHeight == 0 {
+				return m.activity.View()
+			}
+			divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", max(1, width)))
+			return lipgloss.JoinVertical(lipgloss.Left, m.chat.View(), divider, m.activityDrawerHeading(), m.activity.View())
+		}
+		return m.chat.View()
+	}
+	if m.detailsOpen {
+		bodyHeight := max(1, m.chat.Height())
+		if bodyHeight < 5 {
+			return m.activity.View()
+		}
+		title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " or Esc close")
+		content := lipgloss.JoinVertical(lipgloss.Left, title, m.activity.View(), hint)
+		return lipgloss.NewStyle().Width(max(1, width-2)).Height(bodyHeight - 2).
+			Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(colors.Accent)).Render(content)
+	}
+	return m.chat.View()
+}
+
+func (m *tuiModel) renderSessionWorkspaceBody(width int) string {
+	colors := m.themeColors()
+	railWidth := m.workspaceRailWidth()
+	centerWidth := m.workspaceCenterWidth(width)
+	bodyHeight := m.availableBodyHeight(width, lipgloss.Height(m.renderFooter(centerWidth)), 2)
+	center := m.chat.View()
+	drawerHeight := activityDrawerContentHeight(bodyHeight)
+	if m.detailsOpen {
+		if drawerHeight == 0 {
+			center = m.activity.View()
+		} else {
+			divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
+			center = lipgloss.JoinVertical(lipgloss.Left, center, divider, m.activityDrawerHeading(), m.activity.View())
+		}
+	}
+	centerLines := fitWorkspaceColumn(center, centerWidth, bodyHeight)
+	if suggestions := m.renderCommandSuggestions(); suggestions != "" && m.renderAuxiliaryPanel(suggestions) == suggestions {
+		popupLines := strings.Split(m.renderCommandSuggestionsForHeight(len(centerLines)), "\n")
+		start := len(centerLines) - len(popupLines)
+		for index, line := range popupLines {
+			line = fitTerminalText(line, centerWidth)
+			centerLines[start+index] = line + strings.Repeat(" ", max(0, centerWidth-lipgloss.Width(line)))
+		}
+	}
+	if railWidth == 0 {
+		return strings.Join(centerLines, "\n")
+	}
+	rail := m.renderSessionRail(railWidth, bodyHeight)
+	railLines := fitWorkspaceColumn(rail, railWidth, bodyHeight)
+	separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("│")
+	rows := make([]string, bodyHeight)
+	for row := range rows {
+		rows[row] = railLines[row] + separator + centerLines[row]
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (m *tuiModel) activityDrawerHeading() string {
+	colors := m.themeColors()
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Activity & usage")
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(
+		m.keyLabel("details_scroll_up") + "/" + m.keyLabel("details_scroll_down") + " scroll · " + m.keyLabel("toggle_activity") + " close",
+	)
+	return title + "  " + hint
+}
+
+func fitWorkspaceColumn(content string, width, height int) []string {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for index, line := range lines {
+		if lipgloss.Width(line) > width {
+			line = fitTerminalText(line, width)
+		}
+		lines[index] = line + strings.Repeat(" ", max(0, width-lipgloss.Width(line)))
+	}
+	return lines
+}
+
+func responseDisplayText(response json.RawMessage) (string, error) {
+	if len(response) == 0 {
+		return "", nil
+	}
+	var envelope struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	lines := make([]string, 0, len(envelope.Output))
+	for _, item := range envelope.Output {
+		var value struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(item, &value); err != nil {
+			return "", err
+		}
+		switch value.Type {
+		case "message":
+			if text := messageContentText(value.Content); text != "" {
+				lines = append(lines, text)
+			}
+		case "reasoning", "function_call", "custom_tool_call":
+		default:
+			lines = append(lines, string(item))
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+}
