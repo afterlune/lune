@@ -18,6 +18,7 @@ type tuiCommandSpec struct {
 var tuiCommands = []tuiCommandSpec{
 	{name: "/autocompact", usage: "/autocompact [on|off|threshold|reset]", description: "Configure automatic context compaction for future tasks."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/copyselect", usage: "/copyselect [auto|always|never]", description: "Configure automatic transcript selection copying."},
 	{name: "/context", usage: "/context [window <tokens>|reserve <tokens>|reset]", description: "View or set session context values."},
 	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},

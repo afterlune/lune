@@ -22,7 +22,15 @@ type keymapAction struct {
 var keymapActions = []keymapAction{
 	{id: "send", label: "Send / confirm", defaultKey: "enter", contexts: allKeymapContexts()},
 	{id: "interrupt_or_copy", label: "Copy selection / interrupt or exit", defaultKey: "ctrl+c", contexts: allKeymapContexts()},
-	{id: "toggle_activity", label: "Toggle activity panel", defaultKey: "ctrl+b", contexts: allKeymapContexts()},
+	{id: "transcript_copy", label: "Copy transcript selection", defaultKey: "ctrl+shift+c", contexts: []string{"main", "running", "activity_focus", "plan_review"}},
+	{id: "toggle_activity", label: "Show activity and usage", defaultKey: "ctrl+b", contexts: allKeymapContexts()},
+	{id: "search_open", label: "Search transcript", defaultKey: "f3", contexts: []string{"main", "input", "suggestions", "vim_normal", "running", "plan_review"}},
+	{id: "search_previous", label: "Previous transcript match", defaultKey: "ctrl+p", contexts: []string{"transcript_search"}},
+	{id: "search_next", label: "Next transcript match", defaultKey: "ctrl+n", contexts: []string{"transcript_search"}},
+	{id: "focus_activity", label: "Focus tool activity", defaultKey: "f4", contexts: []string{"main", "input", "suggestions", "vim_normal", "running", "plan_review"}},
+	{id: "activity_previous", label: "Previous tool activity", defaultKey: "up", contexts: []string{"activity_focus"}},
+	{id: "activity_next", label: "Next tool activity", defaultKey: "down", contexts: []string{"activity_focus"}},
+	{id: "activity_toggle", label: "Expand / collapse tool activity", defaultKey: "enter", contexts: []string{"activity_focus"}},
 	{id: "interrupt_send", label: "Interrupt and send", defaultKey: "ctrl+enter", contexts: allKeymapContexts()},
 	{id: "cycle_permissions", label: "Cycle permission mode", defaultKey: "shift+tab", contexts: []string{"main", "input", "suggestions", "vim_normal", "plan_review"}},
 	{id: "chat_scroll_up", label: "Scroll chat up", defaultKey: "pgup", contexts: allKeymapContexts()},
@@ -438,6 +446,9 @@ func (m *tuiModel) updateInput(message tea.Msg) tea.Cmd {
 	var command tea.Cmd
 	m.input, command = m.input.Update(message)
 	m.recordInputChange(before, m.input.Value())
+	if before != m.input.Value() {
+		m.clearTranscriptSelection()
+	}
 	return command
 }
 

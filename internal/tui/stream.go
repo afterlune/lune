@@ -107,6 +107,7 @@ func (m *tuiModel) appendModelStreamText(itemKey, text string) bool {
 	if text == "" {
 		return false
 	}
+	m.clearTranscriptSelection()
 	if m.modelStreamItems == nil {
 		m.modelStreamItems = make(map[string]int)
 	}
@@ -180,6 +181,7 @@ func (m *tuiModel) reconcileModelStreamFinal(finalText string) bool {
 	for _, index := range indices {
 		incomplete = incomplete || m.entries[index].incomplete
 	}
+	m.clearTranscriptSelection()
 	m.entries[first].text = finalText
 	m.entries[first].incomplete = incomplete
 	if len(indices) > 1 {

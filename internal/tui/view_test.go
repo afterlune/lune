@@ -27,7 +27,7 @@ func TestTUIViewsUseColorAndMarkersWithoutBold(t *testing.T) {
 			ui.permissionIndex = 1
 			ui.entries = []tuiEntry{{role: "you", text: "Review the config."}, {role: "assistant", text: "The selected option is marked by its arrow and color."}}
 			views := []string{
-				ui.renderHeader(120), ui.renderQueuePicker(), ui.renderPlanReview(), ui.renderCommandSuggestions(),
+				ui.renderQueuePicker(), ui.renderPlanReview(), ui.renderCommandSuggestions(),
 				ui.renderKeymapEditor(), ui.renderSessionPicker(), ui.renderModelPicker(), ui.renderEffortPicker(),
 				ui.renderPermissionMenu(), ui.View().Content,
 			}
@@ -72,11 +72,7 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 			t.Fatal("focused composer did not expose a terminal cursor")
 		}
 		expectedX := inputCursor.X
-		if railWidth := ui.workspaceRailWidth(); railWidth > 0 {
-			expectedX += railWidth + 1
-		}
-		expectedY := lipgloss.Height(ui.renderHeader(size.width)) + 1 +
-			lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + inputCursor.Y
+		expectedY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + inputCursor.Y
 		if cursorView.Cursor.X != expectedX || cursorView.Cursor.Y != expectedY {
 			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
 				expectedX, expectedY)

@@ -137,7 +137,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtimeTask = false
 		m.runningExecutionID = ""
 		m.finishTask(message.result)
-		m.refreshSessionRail(m.sessionID)
 		m.refreshPanels()
 		if err := m.refreshRuntimeProjection(); err != nil {
 			m.addEntry("error", "Could not refresh task state: "+err.Error(), true)
@@ -176,17 +175,28 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.activity, _ = m.activity.Update(message)
 		} else {
 			m.chat, _ = m.chat.Update(message)
+			if m.chat.AtBottom() {
+				m.unreadEntries = 0
+			}
 		}
 		return m, nil
 	case tea.MouseClickMsg:
 		if m.pendingMCPInteraction != nil {
 			return m, nil
 		}
-		if updated, command, handled := m.handleSessionRailClick(message); handled {
-			return updated, command
+		if m.handleTranscriptMouseClick(message) {
+			return m, nil
 		}
-		if updated, command, handled := m.handleNarrowSessionSwitcherClick(message); handled {
-			return updated, command
+		m.clearTranscriptSelection()
+		return m, nil
+	case tea.MouseMotionMsg:
+		if m.handleTranscriptMouseMotion(message) {
+			return m, nil
+		}
+		return m, nil
+	case tea.MouseReleaseMsg:
+		if m.handleTranscriptMouseRelease(message) {
+			return m, nil
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -215,9 +225,15 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.keymapOpen {
 			return m.handleKeymapKey(message)
 		}
+		if m.searchOpen {
+			return m.handleTranscriptSearchKey(message)
+		}
 		if m.detailsOpen {
 			switch {
 			case m.matchesKey("interrupt_or_copy", message):
+				if m.copyTranscriptSelection(false) {
+					return m, nil
+				}
 				if m.input.HasSelection() {
 					if err := writeClipboard(m.input.SelectedText()); err != nil {
 						m.status = "Selection could not be copied."
@@ -233,6 +249,15 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, tea.Quit
+			case m.matchesKey("transcript_copy", message):
+				if !m.copyTranscriptSelection(false) && m.input.HasSelection() {
+					if err := writeClipboard(m.input.SelectedText()); err != nil {
+						m.status = "Selection could not be copied."
+					} else {
+						m.status = "Selection copied."
+					}
+				}
+				return m, nil
 			case message.String() == "esc", m.matchesKey("toggle_activity", message):
 				m.detailsOpen = false
 				m.refreshPanels()
@@ -248,9 +273,61 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.activityFocus {
+			switch {
+			case message.String() == "esc":
+				m.activityFocus = false
+				m.status = "Transcript focused."
+			case m.matchesKey("activity_previous", message):
+				m.adjustActivityFocus(-1)
+			case m.matchesKey("activity_next", message):
+				m.adjustActivityFocus(1)
+			case m.matchesKey("activity_toggle", message):
+				m.toggleFocusedActivity()
+			case m.matchesKey("interrupt_or_copy", message):
+				if m.copyTranscriptSelection(false) {
+					return m, nil
+				}
+				m.activityFocus = false
+				if m.running {
+					m.interrupt()
+					return m, nil
+				}
+				return m, tea.Quit
+			case m.matchesKey("transcript_copy", message):
+				if !m.copyTranscriptSelection(false) && m.input.HasSelection() {
+					if err := writeClipboard(m.input.SelectedText()); err != nil {
+						m.status = "Selection could not be copied."
+					} else {
+						m.status = "Selection copied."
+					}
+				}
+				return m, nil
+			default:
+				return m, nil
+			}
+			m.refreshPanels()
+			m.updateLayout()
+			return m, nil
+		}
 		if m.matchesKey("jump_chat_bottom", message) && !m.sessionPicker && !m.modelPicker &&
 			!m.effortPicker && !m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
 			m.chat.GotoBottom()
+			m.unreadEntries = 0
+			return m, nil
+		}
+		if m.matchesKey("transcript_copy", message) && m.transcriptSelection.active {
+			m.copyTranscriptSelection(false)
+			return m, nil
+		}
+		if m.matchesKey("search_open", message) && !m.sessionPicker && !m.modelPicker && !m.effortPicker &&
+			!m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
+			m.openTranscriptSearch()
+			return m, nil
+		}
+		if m.matchesKey("focus_activity", message) && !m.sessionPicker && !m.modelPicker && !m.effortPicker &&
+			!m.queuePicker && !m.permissionMenu && m.pendingApproval == nil {
+			m.toggleActivityFocus()
 			return m, nil
 		}
 		if !(m.running && message.String() == "esc") && !m.sessionPicker && !m.modelPicker && !m.effortPicker && !m.queuePicker && !m.permissionMenu {
@@ -353,6 +430,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.matchesKey("interrupt_or_copy", message) {
+			if m.copyTranscriptSelection(false) {
+				return m, nil
+			}
 			if m.input.HasSelection() && (!m.sessionPicker || m.renamingSession) {
 				if err := writeClipboard(m.input.SelectedText()); err != nil {
 					m.status = "Selection could not be copied."
@@ -395,21 +475,19 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.matchesKey("chat_scroll_down", message) {
 			m.chat.HalfPageDown()
-			return m, nil
-		}
-		if m.matchesKey("activity_scroll_up", message) {
-			if m.modernConversation() && !m.wideConversation() {
-				m.chat.HalfPageUp()
-			} else {
-				m.activity.HalfPageUp()
+			if m.chat.AtBottom() {
+				m.unreadEntries = 0
 			}
 			return m, nil
 		}
+		if m.matchesKey("activity_scroll_up", message) {
+			m.chat.HalfPageUp()
+			return m, nil
+		}
 		if m.matchesKey("activity_scroll_down", message) {
-			if m.modernConversation() && !m.wideConversation() {
-				m.chat.HalfPageDown()
-			} else {
-				m.activity.HalfPageDown()
+			m.chat.HalfPageDown()
+			if m.chat.AtBottom() {
+				m.unreadEntries = 0
 			}
 			return m, nil
 		}
@@ -637,6 +715,8 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 		return m.discard()
 	case "/compact":
 		return m.compact()
+	case "/copyselect":
+		return m.setCopySelectionFromCommand(line)
 	case "/autocompact":
 		return m.showAutoCompactSettings()
 	case "/context":
@@ -679,6 +759,9 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(line, "/context ") || strings.HasPrefix(line, "/context\t") {
 		return m.setContextSettingsFromCommand(line)
+	}
+	if strings.HasPrefix(line, "/copyselect ") || strings.HasPrefix(line, "/copyselect\t") {
+		return m.setCopySelectionFromCommand(line)
 	}
 	if strings.HasPrefix(line, "/autocompact ") || strings.HasPrefix(line, "/autocompact\t") {
 		return m.setAutoCompactFromCommand(line)

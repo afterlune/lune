@@ -6,19 +6,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const (
-	wideConversationWidth  = 112
-	wideConversationHeight = 24
-)
-
-func (m *tuiModel) modernConversation() bool {
-	return m.resolvedTheme() == themeDark || m.resolvedTheme() == themeLight
-}
-
-func (m *tuiModel) wideConversation() bool {
-	return m.modernConversation() && m.width >= wideConversationWidth && m.height >= wideConversationHeight
-}
-
 func plainConversationText(markdown string) string {
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 	markdown = strings.ReplaceAll(markdown, "\r", "\n")

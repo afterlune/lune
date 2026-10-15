@@ -30,9 +30,12 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 		t.Fatalf("task usage = %#v", ui.taskUsage)
 	}
 	view := ui.View().Content
-	for _, expected := range []string{"in 150", "out 50", "reason 12", "20.0%"} {
-		if !strings.Contains(view, expected) {
-			t.Errorf("compact footer missing %q: %q", expected, view)
+	if !strings.Contains(view, "ctx 50/unknown") {
+		t.Errorf("compact footer missing context usage: %q", view)
+	}
+	for _, detailed := range []string{"in 150", "out 50", "reason 12", "20.0%"} {
+		if strings.Contains(view, detailed) {
+			t.Errorf("compact footer contains detailed usage %q: %q", detailed, view)
 		}
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Mod: tea.ModCtrl}))
@@ -49,8 +52,8 @@ func TestTUITokenUsageShowsRequestDetailsAndTaskSessionTotals(t *testing.T) {
 			t.Errorf("usage details missing %q: %q", expected, details)
 		}
 	}
-	if ui.activity.TotalLineCount() <= ui.activity.Height() {
-		t.Fatalf("activity viewport lines=%d height=%d; expected scrollable usage details", ui.activity.TotalLineCount(), ui.activity.Height())
+	if !ui.detailsOpen || !strings.Contains(ui.View().Content, "Model usage") || ui.activity.Height() != ui.chat.Height() {
+		t.Fatalf("usage should temporarily occupy the conversation viewport: details=%v, chat height=%d, activity height=%d", ui.detailsOpen, ui.chat.Height(), ui.activity.Height())
 	}
 
 	ui.Update(modelUsageMsg{})

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,7 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-var updateTUIScreenshots = flag.Bool("update-tui-screenshots", false, "update TUI verification SVG screenshots")
+var updateTUIScreenshots = flag.Bool("update-tui-screenshots", false, "update TUI test snapshot SVGs")
 
 var tuiScreenshotANSI = regexp.MustCompile("\x1b\\[[0-9;]*m")
 var tuiScreenshotSGR = regexp.MustCompile("\x1b\\[([0-9;]*)m")
@@ -39,29 +38,7 @@ func TestTUIScreenshotSVGPreservesForegroundAndBold(t *testing.T) {
 
 func assertTUIScreenshotSVG(t *testing.T, name, got string) {
 	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if ok {
-		candidate := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-		if _, err := os.Stat(filepath.Join(candidate, "go.mod")); err == nil {
-			writeOrCompareTUIScreenshot(t, filepath.Join(candidate, "docs", "design", "tui", "verification"), name, got)
-			return
-		}
-	}
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("locate screenshot workspace: %v", err)
-	}
-	for directory := filepath.Clean(workingDirectory); ; directory = filepath.Dir(directory) {
-		if _, err := os.Stat(filepath.Join(directory, "go.mod")); err == nil {
-			writeOrCompareTUIScreenshot(t, filepath.Join(directory, "docs", "design", "tui", "verification"), name, got)
-			return
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-	}
-	t.Fatalf("could not locate repository root from screenshot test source %q or working directory %q", source, workingDirectory)
+	writeOrCompareTUIScreenshot(t, filepath.Join("testdata", "verification"), name, got)
 }
 
 func writeOrCompareTUIScreenshot(t *testing.T, screenshotDirectory, name, got string) {

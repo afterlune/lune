@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -63,115 +62,6 @@ func (m *tuiModel) reloadSessionList(preferredID string) error {
 		}
 	}
 	return nil
-}
-
-func (m *tuiModel) refreshSessionRail(preferredID string) {
-	if m.client == nil {
-		return
-	}
-	if err := m.reloadSessionList(preferredID); err != nil {
-		m.sessionList = nil
-	}
-}
-
-func (m *tuiModel) sessionRailWidth() int {
-	return min(sessionRailMaxWidth, max(sessionRailMinWidth, max(1, m.width)/5))
-}
-
-func (m *tuiModel) sessionRailRange(bodyHeight int) (int, int) {
-	visible := min(sessionRailMaxItems, max(0, bodyHeight-sessionRailHeaderRows-1))
-	start := max(0, m.sessionIndex-visible/2)
-	end := min(len(m.sessionList), start+visible)
-	if end == len(m.sessionList) {
-		start = max(0, end-visible)
-	}
-	return start, end
-}
-
-func (m *tuiModel) handleSessionRailClick(message tea.MouseClickMsg) (tea.Model, tea.Cmd, bool) {
-	if !m.wideConversation() || message.Button != tea.MouseLeft || m.running || m.pendingApproval != nil ||
-		m.detailsOpen || m.sessionPicker || m.modelPicker || m.effortPicker || m.queuePicker || m.permissionMenu || m.keymapOpen {
-		return m, nil, false
-	}
-	if message.X >= m.sessionRailWidth() {
-		return m, nil, false
-	}
-	bodyStartY := lipgloss.Height(m.renderHeader(max(1, m.width))) + 1
-	row := message.Y - bodyStartY
-	itemOffset := row - sessionRailHeaderRows
-	if itemOffset < 0 {
-		return m, nil, false
-	}
-	width := max(1, m.width)
-	bodyHeight := m.availableBodyHeight(width, lipgloss.Height(m.renderFooter(m.workspaceCenterWidth(width))), 2)
-	start, end := m.sessionRailRange(bodyHeight)
-	index := start + itemOffset
-	if index < start || index >= end {
-		return m, nil, false
-	}
-	if m.sessionList[index].ID == m.sessionID {
-		m.status = "Session already active."
-		return m, nil, true
-	}
-	m.sessionIndex = index
-	model, command := m.selectSession()
-	return model, command, true
-}
-
-func (m *tuiModel) handleNarrowSessionSwitcherClick(message tea.MouseClickMsg) (tea.Model, tea.Cmd, bool) {
-	if !m.modernConversation() || m.wideConversation() || message.Button != tea.MouseLeft || message.Y >= lipgloss.Height(m.renderHeader(max(1, m.width))) ||
-		message.X >= max(1, m.width)/2 || m.running || m.pendingApproval != nil || m.detailsOpen || m.sessionPicker {
-		return m, nil, false
-	}
-	model, command := m.openSessionPicker()
-	return model, command, true
-}
-
-func (m *tuiModel) renderSessionRail(width, height int) string {
-	colors := m.themeColors()
-	lines := []string{
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render("Sessions"),
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("click · /resume"),
-	}
-	if len(m.sessionList) == 0 {
-		lines = append(lines,
-			lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("No recent sessions"),
-			fitTerminalText(m.currentSessionTitle(), width),
-		)
-		return lipgloss.NewStyle().Width(width).Height(height).Render(strings.Join(lines, "\n"))
-	}
-	start, end := m.sessionRailRange(height)
-	for index := start; index < end; index++ {
-		saved := m.sessionList[index]
-		title := sessionDisplayTitle(saved)
-		if strings.TrimSpace(title) == "" {
-			title = "Untitled session"
-		}
-		mark, color := "○", colors.Muted
-		if saved.ID == m.sessionID {
-			mark, color = "●", colors.Accent
-		}
-		line := fitTerminalText(mark+" "+title, width)
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(line))
-	}
-	if end < len(m.sessionList) {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render("…"))
-	}
-	return lipgloss.NewStyle().Width(width).Height(height).Render(strings.Join(lines, "\n"))
-}
-
-func (m *tuiModel) currentSessionTitle() string {
-	for _, saved := range m.sessionList {
-		if saved.ID == m.sessionID {
-			if title := strings.TrimSpace(sessionDisplayTitle(saved)); title != "" {
-				return title
-			}
-		}
-	}
-	if m.sessionID == "" {
-		return "New session"
-	}
-	return "Session " + m.sessionID[:min(8, len(m.sessionID))]
 }
 
 func (m *tuiModel) selectSession() (tea.Model, tea.Cmd) {
@@ -335,6 +225,13 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.clearQueue()
 	m.entries = nil
 	m.activities = nil
+	m.activityExpanded = make(map[string]bool)
+	m.clearTranscriptSelection()
+	m.unreadEntries = 0
+	m.searchOpen = false
+	m.searchQuery = ""
+	m.searchMatches = nil
+	m.searchExpandedState = nil
 	m.usageRequests = nil
 	m.agentUsage = make(map[string]agentUsageSummary)
 	m.agentUsageComplete = saved.AgentUsageComplete
@@ -351,7 +248,6 @@ func (m *tuiModel) newSession() (tea.Model, tea.Cmd) {
 	m.planReview = false
 	m.pending = false
 	m.status = "New session."
-	m.refreshSessionRail(m.sessionID)
 	m.resetInput()
 	m.refreshPanels()
 	m.updateLayout()
@@ -375,7 +271,6 @@ func (m *tuiModel) forkSession() (tea.Model, tea.Cmd) {
 	m.planReview = false
 	m.pending = false
 	m.status = "Forked session history into a new session."
-	m.refreshSessionRail(m.sessionID)
 	m.resetInput()
 	m.refreshPanels()
 	m.updateLayout()
@@ -417,6 +312,14 @@ func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
 	m.activities = nil
+	m.activityExpanded = make(map[string]bool)
+	m.searchOpen = false
+	m.searchQuery = ""
+	m.searchMatches = nil
+	m.searchExpandedState = nil
+	m.clearTranscriptSelection()
+	m.activityFocus = false
+	m.unreadEntries = 0
 	m.teamActivities = nil
 	m.modelStreamFirstTokenLatency = 0
 	m.modelStreamFirstTokenRecorded = false

@@ -16,12 +16,14 @@ const (
 )
 
 type uiPreferences struct {
-	Theme  themeName         `json:"theme"`
-	Keymap map[string]string `json:"keymap"`
+	Theme                themeName         `json:"theme"`
+	Keymap               map[string]string `json:"keymap"`
+	CopyOnSelect         string            `json:"copy_on_select"`
+	ClearSelectionOnCopy bool              `json:"clear_selection_on_copy"`
 }
 
 func defaultUIPreferences() uiPreferences {
-	return uiPreferences{Theme: themeAuto, Keymap: defaultKeymap()}
+	return uiPreferences{Theme: themeAuto, Keymap: defaultKeymap(), CopyOnSelect: "auto"}
 }
 
 func userPreferencesPath() (string, error) {
@@ -64,6 +66,10 @@ func loadUIPreferences(path string) (uiPreferences, error) {
 		}
 		prefs.Keymap = bindings
 	}
+	if stored.CopyOnSelect == "auto" || stored.CopyOnSelect == "always" || stored.CopyOnSelect == "never" {
+		prefs.CopyOnSelect = stored.CopyOnSelect
+	}
+	prefs.ClearSelectionOnCopy = stored.ClearSelectionOnCopy
 	return prefs, nil
 }
 
@@ -82,6 +88,9 @@ func saveUIPreferences(path string, prefs uiPreferences) error {
 			return err
 		}
 		prefs.Keymap = bindings
+	}
+	if prefs.CopyOnSelect != "auto" && prefs.CopyOnSelect != "always" && prefs.CopyOnSelect != "never" {
+		prefs.CopyOnSelect = "auto"
 	}
 	data, err := json.MarshalIndent(prefs, "", "  ")
 	if err != nil {

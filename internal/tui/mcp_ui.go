@@ -303,11 +303,7 @@ func (m *tuiModel) applyMCPInteractionTheme(theme themeName) {
 }
 
 func (m *tuiModel) mcpInteractionInputWidth() int {
-	width := m.width
-	if m.modernConversation() && m.wideConversation() {
-		width = max(1, width-m.sessionRailWidth()-1)
-	}
-	return max(12, width-6)
+	return max(12, m.width-6)
 }
 
 func (m *tuiModel) updateMCPInteractionWidth(width int) {

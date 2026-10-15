@@ -15,6 +15,8 @@ func TestUIPreferencesLoadSaveAndFallback(t *testing.T) {
 	}
 	want := defaultUIPreferences()
 	want.Theme = themeLight
+	want.CopyOnSelect = "always"
+	want.ClearSelectionOnCopy = true
 	if err := saveUIPreferences(path, want); err != nil {
 		t.Fatal(err)
 	}

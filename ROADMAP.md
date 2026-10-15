@@ -27,11 +27,7 @@
 
 ## P0 稳定与地基（逐项状态已按当前源码复核）
 
-- [x] **【首位·门禁】TUI 设计先行：用 image gen 生成效果图，用户确认后再实施** — 曾按用户确认稿实现会话工作区；2026-10-14 切换为以 Core 事件流和原生终端滚屏为主的 TUI，旧设计图留作历史参考。
-  - [x] 先用 image gen 出效果图（转写左右分栏、用户短标记、长输入折叠态、footer / 详情面板等） — 已生成三种新结构方向及状态稿，见 `docs/design/tui/redesign-review/`；选定稿为会话工作区。
-  - [x] **交用户确认**；确认前**不得**改动 `internal/tui/` 的渲染实现 — 新稿已由用户选择；本轮实现以会话工作区为准。
-  - [x] 覆盖场景：空态 / 对话态 / 长输入折叠 / 工具活动 / 详情面板 / 窄终端退化 / 模型提问 — 状态稿已覆盖；模型提问仅是未来功能示意，不代表功能已实现。
-  - [x] 确认后再落实 P3.0（渲染改版） — 会话工作区渲染已完成并更新确定性截图；P3.0 其余视觉细节仍按对应子项跟踪。
+- [x] **【首位·门禁】TUI 视觉改动先确认：基于当前代码和新需求提出方案，经用户确认后再实施** — 旧设计稿已删除；未来方案从当时的实现与需求重新开始，不把历史图稿当作规范。
 - [ ] 修 I-1：类别选择/工具可见性跨轮丢失 + 提示可操作化（已复现 3 次，含写入反复失败） — 监控中：当前只读 Plan 运行 7 次请求未复现；没有证据时不做猜测性修复。
 - [x] 统一工具元数据：注册时声明 `category + permission class + read-only`，替换硬编码（原 `tool/permissions.go`、`agentgraph`、`registry.NewDefaultRegistry`）
 - [x] 修 `workspace` 模式对未知工具免批准的安全缺口（同一改造）
@@ -145,7 +141,7 @@
 - [x] `[D]` MCP：`config.json` 增 `mcpServers` — stdio、Streamable HTTP 与 OAuth CIMD 配置校验已完成。
 - [x] `[D]` 当前版 JSON-RPC 客户端（`2026-07-28`：tools/list、tools/call、resources/read；stdio + Streamable HTTP JSON/SSE）— 不发送已移除的 initialize 握手；MRTR、`x-mcp-header`、分页和当前版本请求元数据均已实现。
 - [x] `[D]` MCP 工具注册到 `tool.Registry`（`mcp` 分类、Network 权限、readOnlyHint 仅影响 Plan 可见性）— 动态注册/移除及结果多模态内容、transcript-only audience 均复用现有工具与会话数据流。
-- [x] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连 — Core manager 与 TUI 命令已完成，OAuth 与 elicitation 表单/URL 屏按已确认 [MCP 设计稿](docs/design/tui/mcp-review.svg) 接入；深浅主题、窄屏及错误状态见多状态截图。
+- [x] `[D]` 连接/健康检查/进程回收；`/mcp` 列出、启停、重连 — Core manager 与 TUI 命令已完成；OAuth 与 elicitation 表单/URL 交互、深浅主题、窄屏和错误状态均有实现与回归覆盖。
 - [ ] `/review`（语义待定）
 - [x] 更新命令清单 / footer 文案；日志加 `model` / `effort` — TUI 命令清单已列出 `/model`、`/effort`；旧式 footer 显示设置摘要，现代深浅主题 footer 按已确认设计保持紧凑；模型请求日志记录 model 与 reasoning_effort。CLI 命令集是否同步仍由下一项决策跟踪。
 - [ ] 决定是否同步非 TUI 命令集（`cmd/core_cli.go`）
@@ -200,7 +196,6 @@
 - [ ] persona 对前端的显示名/头像影响（已有 `internal/tui/avatar.go`）
 - [ ] 称呼粒度：仅称呼还是同时影响语气；是否只作用于主 agent
 - [ ] 称呼命令名与形态：`/user` vs `/callme`；空值是否等于恢复默认
-- [ ] TUI 效果图用哪个 image gen 工具/模型；效果图存放位置（如 `docs/design/`）；确认流程
 - [x] 自动压缩方案（任务内 vs 仅任务间） — 任务内生效；Responses 可使用服务端 `context_management`，Anthropic Messages 使用客户端清理旧工具结果并摘要。
 - [x] `/context` 窗口按模型还是全局 — 现状已定：项目配置为默认值，会话可覆盖；不是按模型 profile 设置。
 - [ ] `/model` 清单来源（provider catalog 已有，待定是否用户可编辑） — 部分实现：目前使用 ProviderCatalog；是否允许用户编辑尚未决定。

@@ -98,10 +98,25 @@ type tuiModel struct {
 	nextAttachmentID    int
 	chat                viewport.Model
 	activity            viewport.Model
+	activityExpanded    map[string]bool
+	activityFocus       bool
+	activityFocusIndex  int
 
 	entries                       []tuiEntry
 	activities                    []tuiActivity
 	teamActivities                []tuiTeamActivity
+	lastTranscriptSessionID       string
+	lastRenderedEntryCount        int
+	unreadEntries                 int
+	transcriptSelection           transcriptSelection
+	lastTranscriptClickAt         time.Time
+	lastTranscriptClickX          int
+	lastTranscriptClickY          int
+	transcriptClickCount          int
+	searchOpen                    bool
+	searchQuery                   string
+	searchMatches                 [][]int
+	searchExpandedState           map[string]bool
 	commandSuggestions            []string
 	suggestionIndex               int
 	keymapOpen                    bool
@@ -268,7 +283,6 @@ func Run(client *core.Core) error {
 		}
 	}
 	ui.restoreSessionState(saved)
-	ui.refreshSessionRail(saved.ID)
 	ui.updateLayout()
 	ui.refreshPanels()
 	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
@@ -314,6 +328,7 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 		nextAttachmentID:    1,
 		chat:                viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 		activity:            viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		activityExpanded:    make(map[string]bool),
 		width:               100,
 		height:              30,
 		pending:             pending,

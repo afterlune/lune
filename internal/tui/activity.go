@@ -247,10 +247,6 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	}
 
 	activity := m.activities[index]
-	entryText := activity.summary + " · " + activity.status
-	if activity.status != "running" && activity.duration > 0 {
-		entryText += " · " + activity.duration.Round(time.Millisecond).String()
-	}
 	entryIndex := -1
 	if event.ID != "" {
 		for i := len(m.entries) - 1; i >= 0; i-- {
@@ -260,10 +256,17 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 			}
 		}
 	}
-	if activity.status != "running" && entryIndex < 0 {
-		m.entries = append(m.entries, tuiEntry{
-			role: "tool", text: entryText, err: activity.status == "failed", activityID: event.ID,
-		})
+	entryText := activity.summary + " · " + activity.status
+	if activity.status != "running" && activity.duration > 0 {
+		entryText += " · " + activity.duration.Round(time.Millisecond).String()
+	}
+	if entryIndex < 0 {
+		m.clearTranscriptSelection()
+		m.entries = append(m.entries, tuiEntry{role: "tool", text: entryText, err: activity.status == "failed", activityID: event.ID})
+	} else {
+		m.clearTranscriptSelection()
+		m.entries[entryIndex].text = entryText
+		m.entries[entryIndex].err = activity.status == "failed"
 	}
 	if len(m.activities) > 200 {
 		m.activities = append([]tuiActivity(nil), m.activities[len(m.activities)-200:]...)
@@ -375,6 +378,7 @@ func (m *tuiModel) addEntry(role, text string, isError bool) {
 			return
 		}
 	}
+	m.clearTranscriptSelection()
 	m.entries = append(m.entries, tuiEntry{role: role, text: text, err: isError})
 	m.refreshPanels()
 }

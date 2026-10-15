@@ -14,7 +14,13 @@ import (
 func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Started: true}})
+	if len(ui.entries) != 1 || !strings.Contains(ui.entries[0].text, "running") {
+		t.Fatalf("starting tool call should create one live transcript row: %#v", ui.entries)
+	}
 	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Duration: 25, Failed: true}})
+	if len(ui.entries) != 1 || !strings.Contains(ui.entries[0].text, "failed") {
+		t.Fatalf("finished tool call should update its live transcript row: %#v", ui.entries)
+	}
 	view := ui.activityDetailsContent()
 	if !strings.Contains(view, "Reading a workspace file") || !strings.Contains(view, "failed") {
 		t.Fatalf("view = %q, want humanized tool and failure status", view)
