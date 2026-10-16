@@ -62,6 +62,9 @@ export interface ExecutionActivityView {
     "executionId": string;
     "userMessageIndex": number;
     "status": string;
+    "queuePosition"?: number;
+    "messageText"?: string;
+    "messageImages"?: string[] | null;
     "startedAt": string;
     "finishedAt"?: string | null;
     "tools": ToolActivityView[] | null;

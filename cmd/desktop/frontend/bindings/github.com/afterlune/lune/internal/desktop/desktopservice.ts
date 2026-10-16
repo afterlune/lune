@@ -33,6 +33,10 @@ export function CreateSession(): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(498841211);
 }
 
+export function EditUserMessage(messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
+    return $Call.ByID(376143777, messageID, input);
+}
+
 export function ImplementPlan(executionID: string, mode: string): $CancellablePromise<$models.PlanResult> {
     return $Call.ByID(2356305697, executionID, mode);
 }

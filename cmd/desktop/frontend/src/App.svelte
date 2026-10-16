@@ -11,8 +11,8 @@
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
   type LocalMessage = ConversationMessage & {
-    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'submitted' | 'failed';
-    deliveryError?: string; request?: SubmitInput; executionID?: string; userMessageIndex?: number; interrupted?: boolean;
+    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'queued' | 'submitted' | 'failed';
+    deliveryError?: string; request?: SubmitInput; executionID?: string; userMessageIndex?: number; queuePosition?: number; interrupted?: boolean;
   };
   type Activity = {
     id: string; invocationId: string; agentId?: string; label: string; detail: string;
@@ -24,12 +24,15 @@
   type ActivityRun = {
     key: string; executionId: string; userMessageIndex: number; status: string; statusLabel: string;
     startedAt: string; finishedAt?: string | null; tools: Activity[]; expanded: boolean; elapsedSeconds?: number;
+    queuePosition?: number; messageText?: string; messageImages?: string[];
   };
   type StoredActivityRun = NonNullable<WorkspaceState['executionHistory']>[number];
   type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
   type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
-  type Modal = 'settings' | 'migration' | 'switch' | 'close' | null;
+  type Modal = 'settings' | 'migration' | 'switch' | 'close' | 'edit' | null;
+  type EditDraft = { messageID: string; userMessageIndex: number; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
+  type EditConfirmation = { draft: EditDraft; request: SubmitInput; waitForQueue: boolean };
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
@@ -53,7 +56,6 @@
   let elapsedSeconds = $state(0);
   let turnStartedAt = $state(0);
   let elapsedTimer: number | undefined;
-  let submitPendingMessageID = '';
   let activeActivityRunKey = '';
   let interrupting = $state(false);
   let interruptRequestedExecutionID = '';
@@ -70,6 +72,7 @@
   let migrationPath = $state('');
   let switchTarget = $state('');
   let planReview = $state<{ executionID: string; text: string } | null>(null);
+  let deferredPlanReviews = $state<{ executionID: string; text: string }[]>([]);
   let answerValues = $state<Record<string, string>>({});
   let noteValues = $state<Record<string, string>>({});
   let providerForms = $state<ProviderForm[]>([]);
@@ -77,11 +80,19 @@
   let defaultModel = $state('');
   let maxParallelAgents = $state(4);
   let settingsSaving = $state(false);
+  let editDraft = $state<EditDraft | null>(null);
+  let deferredEdit = $state<EditConfirmation | null>(null);
+  let editConfirmation = $state<EditConfirmation | null>(null);
+  let applyingEdit = $state(false);
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const approvals = $derived(pending.filter((item) => item.kind === 'approval'));
   const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery'));
-  const canSend = $derived(models.configured && !running && !busy && !interrupting && pending.length === 0 && !planReview);
+  const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !deferredEdit);
+  const canSend = $derived(canWrite && !editDraft);
+  const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !deferredEdit && !applyingEdit);
+  const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
+  const workOutstanding = $derived(running || queuedMessageCount > 0);
   const transcriptRows = $derived.by(() => {
     let userMessageIndex = -1;
     return messages.map((message) => {
@@ -121,6 +132,7 @@
       );
       if (pendingMatch) consumed.add(pendingMatch.id);
       return {
+        ...(pendingMatch ?? {}),
         ...serverMessage,
         id: pendingMatch?.id ?? serverMessage.id,
         canonicalID: serverMessage.id,
@@ -130,6 +142,80 @@
 
     const unmatchedLocal = currentMessages.filter((message) => message.local && !consumed.has(message.id));
     return [...merged, ...unmatchedLocal];
+  }
+
+  function requestImagesFromURLs(images: string[]) {
+    return images.flatMap((preview, index) => {
+      const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/i.exec(preview);
+      return match ? [{ name: `image-${index + 1}`, mediaType: match[1].toLowerCase(), data: match[2] }] : [];
+    });
+  }
+
+  function restorePendingExecutionMessages() {
+    for (const run of activityHistory) {
+      if (run.messageText === undefined && !run.messageImages?.length) continue;
+      const images = run.messageImages ?? [];
+      const request: SubmitInput = {
+        text: run.messageText ?? '', images: requestImagesFromURLs(images), userMessageIndex: run.userMessageIndex,
+      };
+      const deliveryState = run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : 'submitted';
+      const existingByExecution = messages.find((message) => message.executionID === run.executionId);
+      if (existingByExecution) {
+        updateMessage(existingByExecution.id, {
+          deliveryState, queuePosition: run.queuePosition,
+          deliveryError: deliveryState === 'failed' ? '任务执行失败' : undefined,
+          request,
+        });
+        continue;
+      }
+      const targetIndex = Math.max(0, Math.min(run.userMessageIndex, messages.filter((message) => message.role === 'user').length));
+      const existingAtIndex = messages.filter((message) => message.role === 'user')[targetIndex];
+      if (existingAtIndex && existingAtIndex.text === request.text &&
+        (existingAtIndex.images ?? []).length === images.length &&
+        (existingAtIndex.images ?? []).every((image, index) => image === images[index])) {
+        updateMessage(existingAtIndex.id, {
+          executionID: run.executionId, userMessageIndex: run.userMessageIndex,
+          deliveryState, queuePosition: run.queuePosition, request,
+          deliveryError: deliveryState === 'failed' ? '任务执行失败' : undefined,
+        });
+        continue;
+      }
+      const restored: LocalMessage = {
+        id: `execution-${run.executionId}`, role: 'user', text: request.text, images, local: true,
+        deliveryState, executionID: run.executionId, userMessageIndex: run.userMessageIndex,
+        queuePosition: run.queuePosition, request,
+        deliveryError: deliveryState === 'failed' ? '任务执行失败' : undefined,
+      };
+      let insertion = messages.length;
+      let seenUsers = 0;
+      for (let index = 0; index < messages.length; index++) {
+        if (messages[index].role !== 'user') continue;
+        if (seenUsers === targetIndex) { insertion = index; break; }
+        seenUsers++;
+      }
+      messages = [...messages.slice(0, insertion), restored, ...messages.slice(insertion)];
+    }
+  }
+
+  function attachQueuedState(state: WorkspaceState) {
+    const queued = state.runtimeState?.Queue ?? [];
+    if (!queued.length) return;
+    activityHistory = activityHistory.map((run) => {
+      const item = queued.find((turn) => turn.ExecutionID === run.executionId);
+      if (!item) return run;
+      const isQueued = item.Status === 'queued';
+      const isActive = item.Status === 'active';
+      return {
+        ...run,
+        status: isQueued ? 'queued' : isActive ? 'running' : run.status,
+        statusLabel: isQueued ? `排队中 · 第 ${item.Position} 位` : isActive ? '正在处理请求' : run.statusLabel,
+        queuePosition: item.Position,
+      };
+    });
+    for (const turn of queued) {
+      if (turn.Status === 'queued') updateMessageForExecution(turn.ExecutionID, { deliveryState: 'queued', queuePosition: turn.Position });
+      else if (turn.Status === 'active') updateMessageForExecution(turn.ExecutionID, { deliveryState: 'submitted' });
+    }
   }
 
   function updateMessage(id: string, update: Partial<LocalMessage>) {
@@ -199,6 +285,7 @@
   }
 
   function activityRunStatusLabel(status: string) {
+    if (status === 'queued') return '任务排队中';
     if (status === 'completed') return '任务已完成';
     if (status === 'failed') return '任务执行失败';
     if (status === 'interrupted' || status === 'discarded' || status === 'cancelled') return '任务已中断';
@@ -207,26 +294,30 @@
   }
 
   function currentUserMessageIndex() {
-    const message = messages.find((item) => item.id === submitPendingMessageID);
-    return message?.userMessageIndex ?? messages.filter((item) => item.role === 'user').length - 1;
+    const message = messages.find((item) => item.executionID === executionID);
+    if (message?.userMessageIndex !== undefined) return message.userMessageIndex;
+    const run = activityHistory.find((item) => item.executionId === executionID);
+    return run?.userMessageIndex ?? -1;
   }
 
   function upsertActivityRun(update: Partial<ActivityRun> & { executionId?: string; key?: string }) {
-    const key = update.key || update.executionId || activeActivityRunKey || `local:${submitPendingMessageID || 'current'}`;
+    const key = update.key || update.executionId || activeActivityRunKey || 'current';
     const index = activityHistory.findIndex((run) => run.key === key || (!!update.executionId && run.executionId === update.executionId));
     const previous = index >= 0 ? activityHistory[index] : undefined;
+    const message = update.executionId ? messages.find((item) => item.executionID === update.executionId) : undefined;
     const next: ActivityRun = {
       key,
       executionId: update.executionId ?? previous?.executionId ?? '',
       userMessageIndex: update.userMessageIndex !== undefined && update.userMessageIndex >= 0
-        ? update.userMessageIndex : previous?.userMessageIndex ?? -1,
+        ? update.userMessageIndex : previous?.userMessageIndex ?? message?.userMessageIndex ?? -1,
       status: update.status ?? previous?.status ?? 'running',
       statusLabel: update.statusLabel ?? previous?.statusLabel ?? currentStatus,
       startedAt: update.startedAt ?? previous?.startedAt ?? new Date().toISOString(),
       finishedAt: update.finishedAt ?? previous?.finishedAt,
-      tools: update.tools ?? previous?.tools ?? activities,
+      tools: update.tools ?? previous?.tools ?? (update.executionId === executionID ? activities : []),
       expanded: update.expanded ?? previous?.expanded ?? false,
       elapsedSeconds: update.elapsedSeconds ?? previous?.elapsedSeconds,
+      queuePosition: update.queuePosition ?? previous?.queuePosition,
     };
     if (index < 0) activityHistory = [...activityHistory, next];
     else activityHistory = activityHistory.map((run, runIndex) => runIndex === index ? next : run);
@@ -291,7 +382,7 @@
       : state === 'failed' || state === 'disconnected' ? 'failed'
         : state === 'interrupted' || state === 'cancelled' ? 'interrupted'
           : state === 'waiting' ? 'paused' : 'running';
-    const key = activeActivityRunKey || executionID || `local:${submitPendingMessageID || 'current'}`;
+    const key = activeActivityRunKey || executionID || 'current';
     activeActivityRunKey = key;
 	const run = upsertActivityRun({
       key, executionId: executionID, userMessageIndex: currentUserMessageIndex(),
@@ -378,13 +469,15 @@
     messages = [...(state.session.messages ?? [])];
     activities = [];
     activityHistory = mergeExecutionHistory(state.executionHistory ?? [], []);
+    attachQueuedState(state);
+    restorePendingExecutionMessages();
     streamText = '';
     planReview = currentPlanReview;
     const status = state.runtimeState?.Task?.Status;
-    running = status === 'running' || status === 'queued';
-    executionID = state.runtimeState?.Task?.ExecutionID ?? '';
-    executionState = running ? 'running' : 'idle';
-    currentStatus = running ? (status === 'queued' ? '任务排队中' : '正在处理请求') : '';
+    running = status === 'running';
+    executionID = running ? state.runtimeState?.Task?.ExecutionID ?? '' : '';
+    executionState = running ? 'running' : pending.length ? 'waiting' : 'idle';
+    currentStatus = running ? '正在处理请求' : pending.length ? '等待你的处理' : queuedMessageCount ? '任务排队中' : '';
     elapsedSeconds = 0;
     turnStartedAt = 0;
     activeActivityRunKey = running ? executionID : '';
@@ -412,20 +505,23 @@
     pending = state.pending ?? [];
     messages = mergeMessagesFromSession(state.session.messages ?? [], messages);
     activityHistory = mergeExecutionHistory(state.executionHistory ?? [], activityHistory);
+    attachQueuedState(state);
+    restorePendingExecutionMessages();
     scrollToLatest();
 
     const task = state.runtimeState?.Task;
     const taskStatus = task?.Status;
     const wasRunning = running;
-    const snapshotRunning = taskStatus === 'running' || taskStatus === 'queued';
+    const snapshotRunning = taskStatus === 'running';
     const localExecutionActive = executionState === 'submitting' || executionState === 'running' || executionState === 'disconnected';
     const localExecutionTerminal = executionState === 'completed' || executionState === 'failed' || executionState === 'cancelled' || executionState === 'interrupted';
     running = !localExecutionTerminal && (snapshotRunning || localExecutionActive);
-    if (task?.ExecutionID) executionID = task.ExecutionID;
+    if (snapshotRunning && task?.ExecutionID) executionID = task.ExecutionID;
+    else if (!localExecutionActive) executionID = '';
 
     if (running && snapshotRunning) {
       if (!wasRunning && executionState === 'idle') {
-        setExecutionStatus('running', taskStatus === 'queued' ? '任务排队中' : '正在处理请求', { expand: true });
+        setExecutionStatus('running', '正在处理请求', { expand: true });
       } else if (elapsedTimer === undefined && turnStartedAt === 0) {
         startElapsedTimer(true);
       } else if (executionState === 'waiting' && pending.length === 0) {
@@ -434,6 +530,7 @@
       }
     } else if (pending.length > 0 && executionState !== 'completed' && executionState !== 'failed' && executionState !== 'cancelled') {
       running = false;
+      executionState = 'waiting';
       stopElapsedTimer();
       const waitingStatus = pending.some((item) => item.kind === 'approval')
         ? '等待你的授权'
@@ -441,6 +538,14 @@
           ? '等待你的回答'
           : '等待你处理恢复请求';
       setExecutionStatus('waiting', waitingStatus, { expand: true });
+    } else if (!running && queuedMessageCount > 0 && !localExecutionTerminal) {
+      executionState = 'idle';
+      currentStatus = '任务排队中';
+      stopElapsedTimer();
+    } else if (!running && !localExecutionActive && !localExecutionTerminal) {
+      executionState = 'idle';
+      currentStatus = '';
+      stopElapsedTimer();
     }
   }
 
@@ -456,6 +561,7 @@
       showError(error);
     } finally {
       refreshing = false;
+      void applyDeferredEditWhenIdle();
     }
   }
 
@@ -478,7 +584,7 @@
           { id: 'markdown-assistant', role: 'assistant', text: '检查完成，主要结论如下：\n\n## 发现的问题\n\n- 会话刷新会覆盖尚未持久化的用户消息。\n- 流式状态缺少明确阶段。\n\n| 状态 | 当前表现 |\n| --- | --- |\n| 消息 | 延迟出现 |\n| 模型 | 没有明确进度 |\n\n```go\nfunc ready() bool {\n    return true\n}\n```\n\n> 修复后，用户消息应立即显示。\n\n<scr' + 'ipt>window.__markdownXSS = true</scr' + 'ipt>\n[危险链接](javascript:alert(1))' },
         ];
       }
-      if (variant === 'running' || variant === 'interrupt') {
+      if (variant === 'running' || variant === 'interrupt' || variant === 'queue') {
         running = true;
         executionID = 'exec-preview-running';
         executionState = 'running';
@@ -583,30 +689,45 @@
   };
   type TurnResultEvent = { sessionId: string; executionId: string; status: string; text: string; plan?: string; error?: string };
 
-  function pendingMessageForExecution(event: AgentEvent) {
-    const message = messages.find((item) => item.id === submitPendingMessageID && item.local);
-    if (message && event.executionId) updateMessage(message.id, { executionID: event.executionId });
+  function startExecution(event: AgentEvent) {
+    if (!event.executionId) return;
+    executionID = event.executionId;
+    activeActivityRunKey = event.executionId;
+    const currentRun = activityHistory.find((run) => run.executionId === event.executionId);
+    activities = currentRun?.tools ?? [];
+    activitySequence = 0;
+    streamText = '';
+    updateMessageForExecution(event.executionId, { deliveryState: 'submitted' });
+    running = true;
+    startElapsedTimer(true);
+    const label = '正在等待模型响应';
+    upsertActivityRun({
+      key: event.executionId, executionId: event.executionId, status: 'running', statusLabel: label,
+      userMessageIndex: currentRun?.userMessageIndex ?? currentUserMessageIndex(), tools: activities,
+    });
+    setExecutionStatus('running', label, { expand: true });
   }
 
-  function startExecution(event: AgentEvent) {
-    const previousRunKey = activeActivityRunKey;
-    if (event.executionId) executionID = event.executionId;
-    if (event.executionId && activeActivityRunKey.startsWith('local:')) {
-      const localKey = activeActivityRunKey;
-      const localRun = activityHistory.find((run) => run.key === localKey);
-      if (localRun) {
-        activityHistory = activityHistory.map((run) => run.key === localKey ? { ...run, key: event.executionId, executionId: event.executionId } : run);
+  function updateMessageForExecution(execution: string, update: Partial<LocalMessage>) {
+    messages = messages.map((message) => message.executionID === execution ? { ...message, ...update } : message);
+  }
+
+  function insertAssistantForUser(userMessageIndex: number, assistant: LocalMessage) {
+    if (messages.some((message) => message.executionID === assistant.executionID && message.role === 'assistant')) return;
+    let seenUsers = 0;
+    let insertAt = messages.length;
+    for (let index = 0; index < messages.length; index++) {
+      const message = messages[index];
+      if (message.role === 'user') {
+        if (seenUsers === userMessageIndex) {
+          insertAt = index + 1;
+          while (insertAt < messages.length && messages[insertAt].role === 'assistant' && messages[insertAt].executionID === assistant.executionID) insertAt++;
+          break;
+        }
+        seenUsers++;
       }
-      activeActivityRunKey = event.executionId;
-    } else if (event.executionId) {
-      activeActivityRunKey = event.executionId;
     }
-    if (interruptRequestedExecutionID === previousRunKey && event.executionId) interruptRequestedExecutionID = event.executionId;
-    pendingMessageForExecution(event);
-    running = true;
-    if (turnStartedAt === 0) startElapsedTimer(true);
-    const label = event.kind === 'task_queued' ? '任务排队中' : '正在等待模型响应';
-    setExecutionStatus('running', label, { expand: true });
+    messages = [...messages.slice(0, insertAt), assistant, ...messages.slice(insertAt)];
   }
 
   function handleToolEvent(event: AgentEvent) {
@@ -632,15 +753,17 @@
 
   function finishExecution(status: string, message = '') {
     const normalized = status.toLowerCase();
-    const currentRun = activityHistory.find((run) => run.key === activeActivityRunKey || (!!executionID && run.executionId === executionID));
+    const finishedExecutionID = executionID;
+    const currentRun = activityHistory.find((run) => run.key === activeActivityRunKey || (!!finishedExecutionID && run.executionId === finishedExecutionID));
     if (currentRun?.status === 'interrupted' && (normalized === 'paused' || normalized === 'discarded')) return;
     if (normalized === 'paused') {
-      if (interruptRequestedExecutionID && (interruptRequestedExecutionID === executionID || interruptRequestedExecutionID === activeActivityRunKey)) {
+      if (interruptRequestedExecutionID && (interruptRequestedExecutionID === finishedExecutionID || interruptRequestedExecutionID === activeActivityRunKey)) {
         setExecutionStatus('running', '正在中断任务');
         return;
       }
       running = false;
       stopElapsedTimer();
+      executionState = 'waiting';
       const waitingLabel = pending.some((item) => item.kind === 'approval')
         ? '等待你的授权'
         : pending.some((item) => item.kind === 'user_question')
@@ -652,31 +775,49 @@
     running = false;
     stopElapsedTimer();
     if (normalized === 'interrupted' || normalized === 'discarded' || normalized === 'cancelled') {
-      const interrupted = normalized !== 'cancelled' || interruptRequestedExecutionID === executionID;
+      const interrupted = normalized !== 'cancelled' || interruptRequestedExecutionID === finishedExecutionID;
+      executionState = interrupted ? 'interrupted' : 'cancelled';
+      updateMessageForExecution(finishedExecutionID, { deliveryState: 'submitted' });
       setExecutionStatus(interrupted ? 'interrupted' : 'cancelled', interrupted ? '任务已中断' : '任务已取消', { expand: false });
       return;
     }
     if (normalized === 'failed') {
+      executionState = 'failed';
+      updateMessageForExecution(finishedExecutionID, { deliveryState: 'failed', deliveryError: message || '任务执行失败' });
       setExecutionStatus('failed', message ? `任务失败：${message}` : '任务执行失败', { expand: false });
       return;
     }
+    executionState = 'completed';
+    updateMessageForExecution(finishedExecutionID, { deliveryState: 'submitted', deliveryError: undefined });
     setExecutionStatus('completed', '任务已完成', { expand: false });
+  }
+
+  function queuedExecution(event: AgentEvent) {
+    if (!event.executionId) return;
+    const message = messages.find((item) => item.executionID === event.executionId);
+    const existing = activityHistory.find((run) => run.executionId === event.executionId);
+    const position = message?.queuePosition ?? existing?.queuePosition ?? Math.max(0, queuedMessageCount - 1);
+    updateMessageForExecution(event.executionId, { deliveryState: 'queued', queuePosition: position });
+    upsertActivityRun({
+      key: event.executionId, executionId: event.executionId,
+      userMessageIndex: message?.userMessageIndex ?? existing?.userMessageIndex ?? -1,
+      status: 'queued', statusLabel: `排队中 · 第 ${position || 1} 位`, queuePosition: position,
+      tools: existing?.tools ?? [],
+    });
+    if (!running && !executionID) currentStatus = '任务排队中';
   }
 
   function onAgentEvent(event: AgentEvent) {
     if (event.sessionId !== session?.id) return;
-    if (executionID && event.executionId && executionID !== event.executionId &&
-      event.kind !== 'task_started' && event.kind !== 'task_queued') return;
-    if (!executionID && event.executionId && event.kind !== 'task_started' && event.kind !== 'task_queued') return;
-
-    if (event.kind === 'task_started' || event.kind === 'task_queued') {
-      if (executionID && event.executionId !== executionID) {
-        activities = [];
-        streamText = '';
-        activitySequence = 0;
-      }
-      startExecution(event);
+    if (event.kind === 'task_queued') {
+      queuedExecution(event);
+      return;
     }
+    if (event.kind === 'task_started') {
+      startExecution(event);
+      return;
+    }
+    if (!event.executionId || event.executionId !== executionID) return;
 
     if (event.kind === 'agent_started') {
       running = true;
@@ -736,24 +877,35 @@
 
   function onTurnResult(result: TurnResultEvent) {
     if (result.sessionId !== session?.id) return;
-    if (executionID && result.executionId && executionID !== result.executionId) return;
-    executionID = result.executionId;
-    const currentRun = activityHistory.find((run) => run.executionId === result.executionId || run.key === activeActivityRunKey);
+    const currentRun = activityHistory.find((run) => run.executionId === result.executionId || run.key === result.executionId);
     const interrupted = interruptRequestedExecutionID === result.executionId || currentRun?.status === 'interrupted';
-    const partialText = result.status === 'paused' && interrupted ? streamText.trim() : '';
+    const isCurrentExecution = result.executionId === executionID;
+    const partialText = result.status === 'paused' && interrupted && isCurrentExecution ? streamText.trim() : '';
     const responseText = result.text || partialText;
-    streamText = '';
-    finishExecution(result.status || (result.error ? 'failed' : 'completed'), result.error);
+    if (isCurrentExecution) {
+      streamText = '';
+      finishExecution(result.status || (result.error ? 'failed' : 'completed'), result.error);
+    }
     if (result.error && result.status !== 'paused' && !interrupted) showError(result.error);
-    if (responseText && !messages.some((message) => message.role === 'assistant' && message.text === responseText && message.executionID === result.executionId)) {
-      messages = [...messages, {
+    if (responseText) {
+      const run = activityHistory.find((item) => item.executionId === result.executionId);
+      const userMessage = messages.find((item) => item.role === 'user' && item.executionID === result.executionId);
+      insertAssistantForUser(run?.userMessageIndex ?? userMessage?.userMessageIndex ?? -1, {
         id: `assistant-${result.executionId}${partialText ? '-interrupted' : ''}`, role: 'assistant', text: responseText,
         local: true, deliveryState: 'submitted', executionID: result.executionId, interrupted: !!partialText,
-      }];
+      });
     }
-    if (result.plan) planReview = { executionID: result.executionId, text: result.plan };
+    if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { executionID: result.executionId, text: result.plan }];
+    presentDeferredPlanReview();
     scrollToLatest();
     void refreshSession();
+    void applyDeferredEditWhenIdle();
+  }
+
+  function presentDeferredPlanReview() {
+    if (planReview || running || queuedMessageCount > 0 || pending.length > 0 || deferredPlanReviews.length === 0) return;
+    planReview = deferredPlanReviews[0];
+    deferredPlanReviews = deferredPlanReviews.slice(1);
   }
 
   function compactArguments(value: unknown) {
@@ -835,7 +987,7 @@
   }
 
   async function openWorkspace(path: string) {
-    if (workspace && running) {
+    if (workspace && workOutstanding) {
       switchTarget = path;
       modal = 'switch';
       return;
@@ -903,7 +1055,7 @@
   }
 
   async function closeWorkspace() {
-    if (running) { modal = 'close'; return; }
+    if (workOutstanding) { modal = 'close'; return; }
     if (!previewMode) {
       try { await Desktop.CloseWorkspace(false); }
       catch (error) { showError(error); return; }
@@ -970,9 +1122,13 @@
   }
 
   async function sendMessage() {
+    if (editDraft) {
+      requestEditConfirmation();
+      return;
+    }
     const text = composerText.trim();
-    const interactivePreview = previewVariant === 'send' || previewVariant === 'send-failure' || previewVariant === 'interrupt';
-    if ((!text && attachments.length === 0) || running || !models.configured || (previewMode && !interactivePreview)) return;
+    const interactivePreview = ['send', 'send-failure', 'interrupt', 'queue', 'edit'].includes(previewVariant);
+    if ((!text && attachments.length === 0) || !canSend || (previewMode && !interactivePreview)) return;
     const id = `user-${crypto.randomUUID()}`;
     const userMessageIndex = messages.filter((message) => message.role === 'user').length;
     const request: SubmitInput = { text, images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })), userMessageIndex };
@@ -983,35 +1139,45 @@
     messages = [...messages, message];
     composerText = '';
     attachments = [];
-    submitPendingMessageID = id;
     await submitUserMessage(id, request);
   }
 
   async function submitUserMessage(messageID: string, request: SubmitInput) {
     busy = true;
-    executionID = '';
-    activeActivityRunKey = `local:${messageID}`;
-    const existingRun = activityHistory.find((run) => run.key === activeActivityRunKey);
-    activities = existingRun?.tools ?? [];
-    streamText = '';
-    activitySequence = 0;
-    running = true;
-    setExecutionStatus('submitting', '正在提交请求', { expand: true });
-    startElapsedTimer(true);
+    if (!running && !activityHistory.some((run) => run.status === 'queued')) {
+      executionState = 'submitting';
+      currentStatus = '正在提交请求';
+    }
     await tick();
-    scrollToLatest(true);
+    scrollToLatest();
     try {
       const submission = previewMode ? await submitPreviewRequest(request) : await Desktop.Submit(request);
-      executionID = submission.ExecutionID;
-      updateMessage(messageID, { deliveryState: 'submitted', deliveryError: undefined, executionID: submission.ExecutionID });
-      running = executionState === 'interrupted' ? false : true;
-      if (executionState === 'submitting') setExecutionStatus('running', '正在等待模型响应', { expand: true });
+      const queued = submission.Status === 'queued';
+      updateMessage(messageID, {
+        deliveryState: queued ? 'queued' : 'submitted', deliveryError: undefined,
+        executionID: submission.ExecutionID, queuePosition: queued ? submission.Position : undefined,
+      });
+      const localMessage = messages.find((message) => message.id === messageID);
+      upsertActivityRun({
+        key: submission.ExecutionID, executionId: submission.ExecutionID,
+        userMessageIndex: localMessage?.userMessageIndex ?? request.userMessageIndex ?? -1,
+        status: queued ? 'queued' : 'running',
+        statusLabel: queued ? `排队中 · 第 ${submission.Position} 位` : '正在等待模型响应',
+        queuePosition: queued ? submission.Position : undefined,
+      });
+      if (!queued && !running && !executionID) {
+        executionID = submission.ExecutionID;
+        activeActivityRunKey = submission.ExecutionID;
+      }
+      if (queued && !running && !executionID) currentStatus = '任务排队中';
     } catch (error) {
-      running = false;
-      stopElapsedTimer();
       const reason = error instanceof Error ? error.message : String(error);
       updateMessage(messageID, { deliveryState: 'failed', deliveryError: reason });
-      setExecutionStatus('failed', '消息发送失败', { expand: false });
+      if (!running) {
+        executionState = 'failed';
+        currentStatus = '消息发送失败';
+        stopElapsedTimer();
+      }
     }
     finally { busy = false; }
   }
@@ -1021,6 +1187,22 @@
     if (previewVariant === 'send-failure' && !previewFailedOnce) {
       previewFailedOnce = true;
       throw new Error('模拟提交失败，请重试');
+    }
+
+    if (previewVariant === 'queue') {
+      const queuedExecutionID = 'exec-preview-queued';
+      onAgentEvent({ kind: 'task_queued', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'queued' });
+      window.setTimeout(() => {
+        onAgentEvent({ kind: 'task_finished', sessionId: previewState.session.id, taskId: 'task-preview-running', executionId: 'exec-preview-running', status: 'completed' });
+        onTurnResult({ sessionId: previewState.session.id, executionId: 'exec-preview-running', status: 'completed', text: '第一条消息已完成。' });
+        onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'running' });
+        window.setTimeout(() => {
+          onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'running', stream: { type: 'text_delta', delta: '队列消息已执行。' } });
+          onAgentEvent({ kind: 'task_finished', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'completed' });
+          onTurnResult({ sessionId: previewState.session.id, executionId: queuedExecutionID, status: 'completed', text: '队列消息已执行。' });
+        }, 550);
+      }, 700);
+      return { Status: 'queued', QueueID: 'queue-preview', ExecutionID: queuedExecutionID, Position: 1 };
     }
 
     const previewExecutionID = 'exec-preview-send';
@@ -1039,20 +1221,145 @@
     window.setTimeout(() => onAgentEvent({ kind: 'tool_finished', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', invocationId: 'tool-preview-invocation', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, details: { output: 'package desktop\n\nfunc Submit(input SubmitInput) {}' }, started: false, failed: false, canceled: false, durationMs: 420 } }), 1200);
     window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'text_delta', delta: '已读取服务代码，正在整理结果。' } }), 1500);
     window.setTimeout(() => onTurnResult({ sessionId: previewState.session.id, executionId: previewExecutionID, status: 'completed', text: '## 检查结果\n\n已完成读取。', }), 2600);
-    return { ExecutionID: previewExecutionID };
+    return { Status: 'accepted', QueueID: '', ExecutionID: previewExecutionID, Position: 0 };
+  }
+
+  function startEditingMessage(message: LocalMessage, userMessageIndex: number) {
+    if (!canEditMessages || message.role !== 'user' || userMessageIndex < 0 || message.deliveryState === 'sending') return;
+    editDraft = { messageID: message.id, userMessageIndex, previousText: composerText, previousAttachments: attachments };
+    composerText = message.text;
+    attachments = (message.images ?? []).flatMap((preview, index) => {
+      const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/i.exec(preview);
+      return match ? [{ name: `image-${index + 1}`, mediaType: match[1].toLowerCase(), data: match[2], preview }] : [];
+    });
+    scrollToLatest(true);
+  }
+
+  function cancelEditingMessage() {
+    if (editDraft) {
+      composerText = editDraft.previousText;
+      attachments = editDraft.previousAttachments;
+    }
+    editDraft = null;
+  }
+
+  function requestEditConfirmation() {
+    if (!editDraft || !canWrite) return;
+    const text = composerText.trim();
+    if (!text && attachments.length === 0) { showError('请输入内容或保留至少一张图片'); return; }
+    const request: SubmitInput = {
+      text,
+      images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })),
+      userMessageIndex: editDraft.userMessageIndex,
+    };
+    editConfirmation = {
+      draft: editDraft, request,
+      waitForQueue: running || queuedMessageCount > 0,
+    };
+    modal = 'edit';
+  }
+
+  function confirmMessageEdit() {
+    if (!editConfirmation) return;
+    const edit = editConfirmation;
+    editConfirmation = null;
+    modal = null;
+    composerText = '';
+    attachments = [];
+    editDraft = null;
+    if (edit.waitForQueue) {
+      deferredEdit = edit;
+      void applyDeferredEditWhenIdle();
+    } else {
+      void applyUserMessageEdit(edit);
+    }
+  }
+
+  function cancelDeferredEdit() {
+    deferredEdit = null;
+    editDraft = null;
+    currentStatus = running ? currentStatus : queuedMessageCount ? '任务排队中' : '';
+  }
+
+  async function applyDeferredEditWhenIdle() {
+    if (!deferredEdit || applyingEdit || busy || running || queuedMessageCount > 0 || pending.length > 0 || planReview || interrupting) return;
+    if (!previewMode) {
+      const target = messages.find((message) => message.id === deferredEdit?.draft.messageID);
+      if (target?.local && !target.canonicalID) return;
+    }
+    const edit = deferredEdit;
+    deferredEdit = null;
+    await applyUserMessageEdit(edit);
+  }
+
+  async function applyUserMessageEdit(edit: EditConfirmation) {
+    if (applyingEdit) return;
+    const targetIndex = messages.findIndex((message) => message.id === edit.draft.messageID);
+    if (targetIndex < 0) { showError('要编辑的消息已从当前会话中移除'); return; }
+    const message = messages[targetIndex];
+    if (message.role !== 'user') { showError('只能编辑用户消息'); return; }
+    if (message.deliveryState === 'failed') { showError('这条消息执行失败，请先重试后再编辑历史消息'); return; }
+    applyingEdit = true;
+    busy = true;
+    try {
+      const request = { ...edit.request, userMessageIndex: edit.draft.userMessageIndex };
+      const submission = previewMode
+        ? { Status: 'accepted', QueueID: '', ExecutionID: `exec-preview-edit-${Date.now()}`, Position: 0 }
+        : await Desktop.EditUserMessage(message.canonicalID || message.id, request);
+      const replacement: LocalMessage = {
+        id: `user-${crypto.randomUUID()}`, role: 'user', text: request.text,
+        images: attachmentsForRequest(request), local: true, deliveryState: submission.Status === 'queued' ? 'queued' : 'submitted',
+        request, userMessageIndex: edit.draft.userMessageIndex, executionID: submission.ExecutionID,
+        queuePosition: submission.Status === 'queued' ? submission.Position : undefined,
+      };
+      messages = [...messages.slice(0, targetIndex), replacement];
+      activityHistory = activityHistory.filter((run) => run.userMessageIndex < edit.draft.userMessageIndex || run.executionId === submission.ExecutionID);
+      planReview = null;
+      deferredPlanReviews = [];
+      streamText = '';
+      const queued = submission.Status === 'queued';
+      upsertActivityRun({
+        key: submission.ExecutionID, executionId: submission.ExecutionID,
+        userMessageIndex: edit.draft.userMessageIndex,
+        status: queued ? 'queued' : 'running',
+        statusLabel: queued ? `排队中 · 第 ${submission.Position} 位` : '正在等待模型响应',
+        queuePosition: queued ? submission.Position : undefined,
+      });
+      if (!previewMode && !running) {
+        executionID = submission.ExecutionID;
+        activeActivityRunKey = submission.ExecutionID;
+      }
+      if (previewMode) {
+        onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview-edit', executionId: submission.ExecutionID, status: 'running' });
+        window.setTimeout(() => onTurnResult({ sessionId: previewState.session.id, executionId: submission.ExecutionID, status: 'completed', text: '修改后的回复。' }), 450);
+      }
+      scrollToLatest(true);
+      void refreshSession();
+    } catch (error) {
+      showError(error);
+    } finally {
+      busy = false;
+      applyingEdit = false;
+      void applyDeferredEditWhenIdle();
+    }
+  }
+
+  function attachmentsForRequest(request: SubmitInput) {
+    return (request.images ?? []).map((image) => `data:${image.mediaType};base64,${image.data}`);
   }
 
   async function retryMessage(message: LocalMessage) {
-    if (!message.request || message.deliveryState !== 'failed' || busy || running) return;
+    if (!message.request || message.deliveryState !== 'failed' || busy || pending.length > 0 || planReview) return;
     updateMessage(message.id, { deliveryState: 'sending', deliveryError: undefined });
-    submitPendingMessageID = message.id;
     await submitUserMessage(message.id, message.request);
   }
 
   async function interruptTask() {
     if (interrupting) return;
+    const targetExecutionID = executionID;
+    const partialTextAtInterrupt = streamText.trim();
     interrupting = true;
-    interruptRequestedExecutionID = executionID || activeActivityRunKey;
+    interruptRequestedExecutionID = targetExecutionID || activeActivityRunKey;
     setExecutionStatus('running', '正在中断任务');
     try {
       const interrupted = previewMode ? true : await Desktop.Interrupt();
@@ -1061,16 +1368,18 @@
         await refreshSession();
         return;
       }
-      running = false;
-      stopElapsedTimer();
-      finishExecution('interrupted');
-      if (streamText.trim()) {
-        const partialText = streamText.trim();
-        const partialID = `assistant-${executionID}-interrupted`;
+      if (executionID === targetExecutionID) {
+        running = false;
+        stopElapsedTimer();
+        finishExecution('interrupted');
+      }
+      if (partialTextAtInterrupt) {
+        const partialID = `assistant-${targetExecutionID}-interrupted`;
         if (!messages.some((message) => message.id === partialID)) {
-          messages = [...messages, { id: partialID, role: 'assistant', text: partialText, local: true, deliveryState: 'submitted', executionID, interrupted: true }];
+          const run = activityHistory.find((item) => item.executionId === targetExecutionID);
+          insertAssistantForUser(run?.userMessageIndex ?? -1, { id: partialID, role: 'assistant', text: partialTextAtInterrupt, local: true, deliveryState: 'submitted', executionID: targetExecutionID, interrupted: true });
         }
-        streamText = '';
+        if (executionID === targetExecutionID) streamText = '';
       }
       await refreshSession();
     } catch (error) {
@@ -1172,7 +1481,11 @@
     finally { busy = false; }
   }
 
-  function stayInPlan() { planReview = null; }
+  function stayInPlan() {
+    planReview = null;
+    presentDeferredPlanReview();
+    void applyDeferredEditWhenIdle();
+  }
 
   onMount(() => {
     void initialize();
@@ -1239,7 +1552,7 @@
           {#if workspace}
             <button class="subtle-button" onclick={() => void closeWorkspace()} title="关闭工作区">关闭工作区</button>
             <span class="top-divider"></span>
-            <label class="permission-select"><span>权限</span><select value={permissionMode} disabled={planMode || running} onchange={(event) => void setPermission(event.currentTarget.value)}>
+            <label class="permission-select"><span>权限</span><select value={permissionMode} disabled={planMode || workOutstanding} onchange={(event) => void setPermission(event.currentTarget.value)}>
               <option value="read-only">只读</option><option value="workspace">工作区</option><option value="ask">每次询问</option><option value="full-access">完全访问</option>
             </select></label>
           {/if}
@@ -1278,8 +1591,13 @@
                   {#if row.message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
                   {#if row.message.deliveryState === 'failed'}
                     <div class="message-delivery-error"><span>{row.message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(row.message)}>重试</button></div>
+                  {:else if row.message.deliveryState === 'queued'}
+                    <div class="message-delivery-pending">排队中{row.message.queuePosition !== undefined ? ` · 第 ${row.message.queuePosition} 位` : ''}</div>
                   {:else if row.message.deliveryState === 'sending'}
                     <div class="message-delivery-pending">正在发送…</div>
+                  {/if}
+                  {#if row.message.role === 'user' && canEditMessages && row.message.deliveryState !== 'sending' && row.message.deliveryState !== 'failed'}
+                    <div class="message-actions"><button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(row.message, row.userMessageIndex)}>编辑</button></div>
                   {/if}
                 </div>
               </article>
@@ -1350,29 +1668,37 @@
           {#if !models.configured}
             <button class="setup-notice" onclick={setSettingsForm}><span>ⓘ</span> 配置一个模型后即可开始对话 <b>打开设置 →</b></button>
           {/if}
+          {#if editDraft}<div class="edit-mode-banner">正在编辑第 {editDraft.userMessageIndex + 1} 条用户消息。保存后会移除该消息之后的对话并重新运行。</div>{/if}
+          {#if deferredEdit}<div class="edit-mode-banner" role="status">当前执行和队列完成后将应用编辑；后续对话会被移除，已发生的文件操作不会撤销。<button class="message-edit-button" onclick={cancelDeferredEdit}>取消编辑</button></div>{/if}
           {#if attachments.length}
-            <div class="attachment-strip">{#each attachments as attachment, index}<div class="attachment-chip"><img src={attachment.preview} alt={attachment.name} /><span>{attachment.name}</span><button aria-label="移除图片" onclick={() => attachments = attachments.filter((_, i) => i !== index)}>×</button></div>{/each}</div>
+            <div class="attachment-strip">{#each attachments as attachment, index}<div class="attachment-chip"><img src={attachment.preview} alt={attachment.name} /><span>{attachment.name}</span><button aria-label="移除图片" disabled={!canWrite} onclick={() => attachments = attachments.filter((_, i) => i !== index)}>×</button></div>{/each}</div>
           {/if}
           <div class:composer-disabled={!models.configured} class="composer">
-            <textarea bind:value={composerText} onkeydown={handleComposerKey} placeholder={!models.configured ? '先配置模型以开始对话' : pending.length ? '请先处理上方的请求' : planReview ? '请先选择方案操作' : '发送消息…'} disabled={!canSend} rows="1" aria-label="消息输入"></textarea>
+            <textarea bind:value={composerText} onkeydown={handleComposerKey} placeholder={editDraft ? '编辑消息…' : !models.configured ? '先配置模型以开始对话' : pending.length ? '请先处理上方的请求' : planReview ? '请先选择方案操作' : '发送消息…'} disabled={!canWrite} rows="1" aria-label="消息输入"></textarea>
             <div class="composer-toolbar">
               <div class="composer-left">
-                <button class="composer-tool" title="添加图片" onclick={() => document.getElementById('image-picker')?.click()} disabled={!models.configured}><span>＋</span><span>添加图片</span></button>
+                <button class="composer-tool" title="添加图片" onclick={() => document.getElementById('image-picker')?.click()} disabled={!canWrite}><span>＋</span><span>添加图片</span></button>
                 <input id="image-picker" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onchange={(event) => event.currentTarget.files && void addFiles(event.currentTarget.files)} />
                 <span class="composer-separator"></span>
-                <button class:plan-active={planMode} class="plan-toggle" onclick={() => void setPlanMode(!planMode)} disabled={running}><span>◈</span> Plan 模式</button>
+                <button class:plan-active={planMode} class="plan-toggle" onclick={() => void setPlanMode(!planMode)} disabled={workOutstanding || !!editDraft || !!deferredEdit}><span>◈</span> Plan 模式</button>
               </div>
               <div class="composer-right">
                 {#if models.configured && models.profiles?.length && session}
-                  <select class="model-profile-select" value={session.settings.model_profile || models.defaultModel} disabled={running} aria-label="会话模型" onchange={(event) => void setSessionModel(event.currentTarget.value)}>
+                  <select class="model-profile-select" value={session.settings.model_profile || models.defaultModel} disabled={workOutstanding} aria-label="会话模型" onchange={(event) => void setSessionModel(event.currentTarget.value)}>
                     {#each models.profiles as profile}<option value={profile.name}>{profile.name}</option>{/each}
                   </select>
                 {:else}<span class="model-label">未配置模型</span>{/if}
-                {#if running}<button class="stop-button" onclick={() => void interruptTask()} disabled={interrupting} title="中断任务">{interrupting ? '正在中断…' : '■ 中断'}</button>{:else}<button class="send-button" onclick={() => void sendMessage()} disabled={!canSend || (!composerText.trim() && !attachments.length)} aria-label="发送"><span>↑</span></button>{/if}
+                {#if running}<button class="stop-button" onclick={() => void interruptTask()} disabled={interrupting} title="中断任务">{interrupting ? '正在中断…' : '■ 中断'}</button>{/if}
+                {#if editDraft}
+                  <button class="quiet-button" onclick={cancelEditingMessage} disabled={busy}>取消</button>
+                  <button class="send-button" onclick={() => void sendMessage()} disabled={!canWrite || (!composerText.trim() && !attachments.length)} aria-label="保存修改">保存</button>
+                {:else}
+                  <button class="send-button" onclick={() => void sendMessage()} disabled={!canSend || (!composerText.trim() && !attachments.length)} aria-label="发送"><span>↑</span></button>
+                {/if}
               </div>
             </div>
           </div>
-          <div class="composer-footnote">luneAgent 可能会出错，请检查重要信息。<span>Enter 发送 · Shift+Enter 换行</span></div>
+          <div class="composer-footnote">luneAgent 可能会出错，请检查重要信息。<span>Enter 发送 · Shift+Enter 换行{running || queuedMessageCount > 0 ? ' · 运行中发送将排队' : ''}</span></div>
         </div>
       {/if}
     </main>
@@ -1382,7 +1708,7 @@
 {#if errorMessage}<div class="toast-error" role="status">{errorMessage}<button onclick={() => errorMessage = ''}>×</button></div>{/if}
 
 {#if modal}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => event.target === event.currentTarget && (modal = null)}>
+  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; } }}>
           {#if modal === 'settings'}
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
         <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
@@ -1437,6 +1763,12 @@
         <div class="modal-header"><div><span class="eyebrow">TASK IN PROGRESS</span><h2>{modal === 'switch' ? '中断当前任务并切换？' : '中断当前任务并关闭？'}</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
         <div class="modal-body"><p>当前任务还在运行。确认后会请求中断，并等待 Core 完成清理后再{modal === 'switch' ? '打开另一个工作区' : '关闭工作区'}。</p></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>继续等待</button><button class="danger-button" disabled={busy} onclick={() => modal === 'switch' ? void confirmWorkspaceSwitch() : void confirmCloseWorkspace()}>{busy ? '正在停止…' : '中断并继续'}</button></div>
+      </div>
+    {:else if modal === 'edit' && editConfirmation}
+      <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="edit-confirm-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">EDIT CONVERSATION</span><h2 id="edit-confirm-title">确认编辑这条消息？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; editConfirmation = null; }}>×</button></div>
+        <div class="modal-body"><p>{editConfirmation.waitForQueue ? '当前任务和已接受的排队消息会继续完成，之后再应用编辑。' : '系统会立即从这条消息开始回退并重新运行。'}这条消息之后的对话记录会被移除，已发生的文件操作不会撤销。</p></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; editConfirmation = null; }}>继续当前对话</button><button class="danger-button" onclick={confirmMessageEdit}>{editConfirmation.waitForQueue ? '完成后应用编辑' : '回退并重跑'}</button></div>
       </div>
     {/if}
   </div>

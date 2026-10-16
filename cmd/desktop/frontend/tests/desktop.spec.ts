@@ -79,6 +79,58 @@ test('interrupted activity stays in the transcript and accepts a follow-up messa
   await expect(page.getByText('任务已中断')).toBeVisible();
 });
 
+test('running composer queues the next message without replacing the active execution', async ({ page }) => {
+  await page.goto('/?preview=queue');
+  const composer = page.getByRole('textbox', { name: '消息输入' });
+  await expect(composer).toBeEnabled();
+  await expect(page.getByRole('status')).toHaveText('模型正在分析请求');
+  await composer.fill('排队中的后续消息');
+  await page.getByRole('button', { name: '发送' }).click();
+
+  await expect(page.getByText('排队中的后续消息', { exact: true })).toBeVisible();
+  await expect(page.locator('.message-delivery-pending')).toContainText('排队中');
+  await expect(page.getByText('模型正在分析请求')).toBeVisible();
+  await expect(page.getByText('第一条消息已完成。')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('队列消息已执行。')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('排队中的后续消息', { exact: true })).toHaveCount(1);
+});
+
+test('editing a user message confirms branch rewind and resubmits the replacement', async ({ page }) => {
+  await page.goto('/?preview=edit');
+  const userRows = page.locator('.message-row.from-user');
+  await userRows.first().getByRole('button', { name: '编辑消息' }).click();
+  const composer = page.getByRole('textbox', { name: '消息输入' });
+  await expect(composer).toHaveValue('帮我检查 Question 面板的交互，并把截图测试流程接入桌面端。');
+  await composer.fill('修改后的第一条消息');
+  await page.getByRole('button', { name: '保存修改' }).click();
+  await expect(page.getByRole('dialog', { name: '确认编辑这条消息？' })).toBeVisible();
+  await expect(page.getByText('已发生的文件操作不会撤销。')).toBeVisible();
+  await page.getByRole('button', { name: '回退并重跑' }).click();
+
+  await expect(page.getByText('修改后的第一条消息', { exact: true })).toBeVisible();
+  await expect(page.getByText('我会先把窗口结构和消息流搭好，再补上浏览器预览与真实窗口启动检查。')).toHaveCount(0);
+  await expect(page.getByText('修改后的回复。')).toBeVisible({ timeout: 5_000 });
+});
+
+test('editing during execution waits for the accepted queue to drain', async ({ page }) => {
+  await page.goto('/?preview=queue');
+  await page.getByRole('textbox', { name: '消息输入' }).fill('排队中的后续消息');
+  await page.getByRole('button', { name: '发送' }).click();
+  await expect(page.locator('.message-delivery-pending')).toContainText('排队中');
+
+  const userRows = page.locator('.message-row.from-user');
+  await userRows.first().getByRole('button', { name: '编辑消息' }).click();
+  await page.getByRole('textbox', { name: '消息输入' }).fill('队列完成后重跑的内容');
+  await page.getByRole('button', { name: '保存修改' }).click();
+  await page.getByRole('button', { name: '完成后应用编辑' }).click();
+  await expect(page.locator('.edit-mode-banner[role="status"]')).toContainText('当前执行和队列完成后将应用编辑');
+  await expect(page.getByRole('textbox', { name: '消息输入' })).toBeDisabled();
+
+  await expect(page.getByText('队列完成后重跑的内容', { exact: true })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText('排队中的后续消息', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('修改后的回复。')).toBeVisible({ timeout: 5_000 });
+});
+
 test('stored execution details render again when the session is reopened', async ({ page }) => {
   await page.goto('/?preview=activity-history');
   await expect(page.getByRole('status')).toHaveText('任务已中断');
@@ -106,7 +158,7 @@ test('user message stays visible through submit, task events and stale session s
   await page.getByRole('button', { name: '发送' }).click();
 
   await expect(page.getByText('即时显示的测试消息', { exact: true })).toBeVisible();
-  await expect(page.getByRole('status')).toHaveText('正在提交请求');
+  await expect(page.locator('.message-delivery-pending')).toContainText('正在发送');
   await expect(page.getByRole('status')).toHaveText('正在等待模型响应', { timeout: 5_000 });
   await page.getByRole('button', { name: /1 步骤/ }).click();
   await expect(page.locator('.activity-tool-details summary')).toContainText('internal/desktop/service.go');

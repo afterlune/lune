@@ -211,6 +211,7 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .plan-arrow { color: var(--muted); font-size: 14px; }
 
 .composer-wrap { width: min(920px, calc(100% - 64px)); flex: 0 0 auto; align-self: center; padding: 0 0 16px; }
+.edit-mode-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; padding: 8px 10px; border: 1px solid var(--blue-line); border-radius: 7px; color: var(--muted-strong); background: var(--blue-soft); font-size: 10px; line-height: 1.5; }
 .setup-notice { width: 100%; height: 34px; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 0 11px; border: 1px solid #eadbbd; border-radius: 7px; color: #896b32; background: #fff9ec; text-align: left; font-size: 10px; }
 .setup-notice b { margin-left: auto; font-size: 10px; }
 .composer { padding: 10px 11px 8px; border: 1px solid #dce2eb; border-radius: 12px; background: var(--surface); box-shadow: 0 5px 19px rgba(41, 57, 82, .07); transition: border-color .15s, box-shadow .15s; }
@@ -360,6 +361,7 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .markdown-body input[type='checkbox'] { margin: 0 6px 0 0; accent-color: var(--blue); }
 .turn-progress { width: 100%; margin: 12px 0 22px; overflow: visible; color: var(--muted-strong); background: transparent; }
 .turn-progress.status-waiting { color: var(--muted-strong); }
+.turn-progress.status-queued .status-indicator { background: var(--blue); opacity: .55; }
 .turn-progress.status-failed .turn-status-text { color: var(--red); }
 .turn-status-row { min-height: 28px; display: flex; align-items: center; gap: 9px; padding: 2px 0; }
 .status-indicator { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--muted); }
@@ -396,6 +398,9 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .message-delivery-error, .message-delivery-pending { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--red); font-size: 10px; }
 .message-delivery-error .small-button { height: 25px; border-color: color-mix(in srgb, var(--red) 30%, var(--line)); color: var(--red); }
 .message-delivery-pending { color: var(--muted); }
+.message-actions { display: flex; justify-content: flex-end; margin-top: 5px; }
+.message-edit-button { border: 0; border-radius: 5px; padding: 3px 6px; color: var(--muted); background: transparent; font-size: 9px; }
+.message-edit-button:hover { color: var(--blue); background: var(--surface); }
 .status-spinner-active, .spinner { animation: spin .8s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .status-spinner-active, .spinner, .stream-caret { animation: none; } }
 @media (max-width: 760px) {

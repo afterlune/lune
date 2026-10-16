@@ -708,18 +708,113 @@ func (s *DesktopService) Submit(input SubmitInput) (core.TurnSubmission, error) 
 	if s.runtime == nil || s.core == nil {
 		return core.TurnSubmission{}, errors.New("请先打开会话")
 	}
+	taskInput, err := s.buildTaskInput(input)
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	state, err := s.runtime.State(context.Background())
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	if state.Task.Status == core.TaskPaused {
+		return core.TurnSubmission{}, errors.New("请先处理当前等待中的请求")
+	}
+	mode := core.StartIfIdle
+	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
+		mode = core.QueueInput
+	}
+	return s.submitPreparedLocked(taskInput, input, mode)
+}
+
+func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (core.TurnSubmission, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runtime == nil || s.core == nil {
+		return core.TurnSubmission{}, errors.New("请先打开会话")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return core.TurnSubmission{}, errors.New("用户消息标识无效")
+	}
+	state, err := s.runtime.State(context.Background())
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
+		return core.TurnSubmission{}, errors.New("当前任务或排队消息尚未结束")
+	}
+	pending, err := s.runtime.PendingRequests(context.Background())
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	if len(pending) > 0 || state.Task.Status == core.TaskPaused {
+		return core.TurnSubmission{}, errors.New("请先处理当前等待中的请求")
+	}
+	saved, err := s.core.GetSession(context.Background(), s.sessionID)
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	conversation := transcriptMessages(saved.History)
+	userCount := 0
+	userMessageCount := 0
+	userMessageIndex := -1
+	for _, message := range conversation {
+		if message.Role != "user" {
+			continue
+		}
+		userMessageCount++
+		if message.ID == messageID {
+			userMessageIndex = userCount
+		}
+		userCount++
+	}
+	if userMessageIndex < 0 {
+		return core.TurnSubmission{}, errors.New("要编辑的用户消息已不在当前会话历史中")
+	}
+	taskInput, err := s.buildTaskInput(input)
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	originalHistory := append(json.RawMessage(nil), saved.History...)
+	removeCount := userMessageCount - userMessageIndex
+	removed, err := s.core.RewindSession(context.Background(), s.sessionID, removeCount)
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	if removed != removeCount {
+		_ = s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
+		return core.TurnSubmission{}, errors.New("回退会话历史时消息数量发生变化")
+	}
+	index := userMessageIndex
+	input.UserMessageIndex = &index
+	submission, err := s.submitPreparedLocked(taskInput, input, core.StartIfIdle)
+	if err != nil {
+		rollbackErr := s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
+		return core.TurnSubmission{}, errors.Join(err, rollbackErr)
+	}
+	if s.activityStore != nil {
+		if err := s.activityStore.DeleteFromUserMessageIndexExcept(context.Background(), s.sessionID, userMessageIndex, submission.ExecutionID); err != nil {
+			slog.Warn("remove execution history after editing a user message", "error", err)
+		}
+	}
+	return submission, nil
+}
+
+func (s *DesktopService) buildTaskInput(input SubmitInput) (core.TaskInput, error) {
 	text := strings.TrimSpace(input.Text)
 	if text == "" && len(input.Images) == 0 {
-		return core.TurnSubmission{}, errors.New("请输入内容或添加图片")
+		return core.TaskInput{}, errors.New("请输入内容或添加图片")
 	}
 	var taskInput core.TaskInput
 	var err error
 	if len(input.Images) == 0 {
 		taskInput, err = core.NewTaskInput(text)
 	} else {
+		if s.core == nil {
+			return core.TaskInput{}, errors.New("请先打开工作区")
+		}
 		limits := s.core.ProjectAttachmentLimits()
 		if len(input.Images) > limits.MaxFiles {
-			return core.TurnSubmission{}, fmt.Errorf("图片数量超出限制（最多 %d 张）", limits.MaxFiles)
+			return core.TaskInput{}, fmt.Errorf("图片数量超出限制（最多 %d 张）", limits.MaxFiles)
 		}
 		parts := make([]contentPart, 0, len(input.Images)*2+1)
 		if text != "" {
@@ -728,39 +823,54 @@ func (s *DesktopService) Submit(input SubmitInput) (core.TurnSubmission, error) 
 		var total int64
 		for _, item := range input.Images {
 			if item.MediaType != "image/png" && item.MediaType != "image/jpeg" && item.MediaType != "image/gif" && item.MediaType != "image/webp" {
-				return core.TurnSubmission{}, fmt.Errorf("不支持的图片格式: %s", item.MediaType)
+				return core.TaskInput{}, fmt.Errorf("不支持的图片格式: %s", item.MediaType)
 			}
 			data, decodeErr := base64.StdEncoding.DecodeString(item.Data)
 			if decodeErr != nil {
-				return core.TurnSubmission{}, fmt.Errorf("读取图片 %q: %w", item.Name, decodeErr)
+				return core.TaskInput{}, fmt.Errorf("读取图片 %q: %w", item.Name, decodeErr)
 			}
 			if int64(len(data)) > limits.MaxFileBytes {
-				return core.TurnSubmission{}, fmt.Errorf("图片 %q 超出单文件大小限制", item.Name)
+				return core.TaskInput{}, fmt.Errorf("图片 %q 超出单文件大小限制", item.Name)
 			}
 			total += int64(len(data))
 			if total > limits.MaxTotalBytes {
-				return core.TurnSubmission{}, errors.New("图片总大小超出限制")
+				return core.TaskInput{}, errors.New("图片总大小超出限制")
 			}
 			config, format, decodeErr := image.DecodeConfig(bytes.NewReader(data))
 			if decodeErr != nil || config.Width < 1 || config.Height < 1 || !supportedImageFormat(format) {
-				return core.TurnSubmission{}, fmt.Errorf("图片 %q 无法解码", item.Name)
+				return core.TaskInput{}, fmt.Errorf("图片 %q 无法解码", item.Name)
 			}
 			parts = append(parts, contentPart{Type: "input_image", ImageURL: "data:" + item.MediaType + ";base64," + base64.StdEncoding.EncodeToString(data)})
 		}
 		taskInput, err = core.NewTaskInput([]userMessage{{Type: "message", Role: "user", Content: parts}})
 	}
 	if err != nil {
-		return core.TurnSubmission{}, err
+		return core.TaskInput{}, err
 	}
+	return taskInput, nil
+}
+
+func (s *DesktopService) submitPreparedLocked(taskInput core.TaskInput, input SubmitInput, mode core.SubmissionMode) (core.TurnSubmission, error) {
 	request := core.TurnRequest{Input: taskInput, PlanMode: s.planMode}
-	submission, err := s.runtime.SubmitTurn(context.Background(), request, core.StartIfIdle)
+	submission, err := s.runtime.SubmitTurn(context.Background(), request, mode)
 	if err != nil {
 		return core.TurnSubmission{}, err
 	}
 	messageIndex := userMessageIndex(input.UserMessageIndex, s.core, s.sessionID)
 	if s.activityStore != nil {
-		if err := s.activityStore.UpsertExecution(context.Background(), s.sessionID, submission.ExecutionID, &messageIndex, "running"); err != nil {
+		status := "running"
+		if submission.Status == core.SubmissionQueued {
+			status = "queued"
+		}
+		if err := s.activityStore.AssociateExecution(context.Background(), s.sessionID, submission.ExecutionID, messageIndex, status); err != nil {
 			slog.Warn("save desktop execution activity", "error", err)
+		}
+		images := make([]string, 0, len(input.Images))
+		for _, item := range input.Images {
+			images = append(images, "data:"+item.MediaType+";base64,"+item.Data)
+		}
+		if err := s.activityStore.SaveExecutionMessage(context.Background(), s.sessionID, submission.ExecutionID, strings.TrimSpace(input.Text), images, status, submission.Position); err != nil {
+			slog.Warn("save desktop queued message", "error", err)
 		}
 	}
 	s.watchTurnLocked(s.runtime, s.sessionID, submission.ExecutionID)
@@ -849,6 +959,9 @@ func saveInterruptedActivity(service *DesktopService, sessionID, executionID str
 	}
 	if err := store.UpsertExecution(context.Background(), sessionID, executionID, nil, "interrupted"); err != nil {
 		slog.Warn("save interrupted execution activity", "error", err)
+	}
+	if err := store.UpdateExecutionMessageStatus(context.Background(), sessionID, executionID, "interrupted", 0); err != nil {
+		slog.Warn("remove interrupted desktop message receipt", "error", err)
 	}
 }
 
@@ -1113,17 +1226,34 @@ func (s *DesktopService) persistActivityEvent(event core.Event) {
 	}
 	ctx := context.Background()
 	switch event.Kind {
-	case core.EventTaskStarted, core.EventTaskQueued:
+	case core.EventTaskQueued:
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "queued"); err != nil {
+			slog.Warn("save queued desktop execution activity", "error", err)
+		}
+		if err := store.UpdateExecutionMessageStatus(ctx, event.SessionID, event.ExecutionID, "queued", 0); err != nil {
+			slog.Warn("save queued desktop message status", "error", err)
+		}
+	case core.EventTaskStarted:
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "running"); err != nil {
 			slog.Warn("save desktop execution activity", "error", err)
 		}
+		if err := store.UpdateExecutionMessageStatus(ctx, event.SessionID, event.ExecutionID, "running", 0); err != nil {
+			slog.Warn("save running desktop message status", "error", err)
+		}
 	case core.EventTaskFinished:
-		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, activityStatus(string(event.Status))); err != nil {
+		status := activityStatus(string(event.Status))
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, status); err != nil {
 			slog.Warn("save desktop execution activity status", "error", err)
+		}
+		if err := store.UpdateExecutionMessageStatus(ctx, event.SessionID, event.ExecutionID, status, 0); err != nil {
+			slog.Warn("save finished desktop message status", "error", err)
 		}
 	case core.EventTaskDiscarded:
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "interrupted"); err != nil {
 			slog.Warn("save interrupted execution activity", "error", err)
+		}
+		if err := store.UpdateExecutionMessageStatus(ctx, event.SessionID, event.ExecutionID, "interrupted", 0); err != nil {
+			slog.Warn("remove discarded desktop message receipt", "error", err)
 		}
 	case core.EventToolDetails:
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "running"); err != nil {

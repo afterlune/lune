@@ -23,6 +23,9 @@ type ExecutionActivityView struct {
 	ExecutionID      string             `json:"executionId"`
 	UserMessageIndex int                `json:"userMessageIndex"`
 	Status           string             `json:"status"`
+	QueuePosition    int64              `json:"queuePosition,omitempty"`
+	MessageText      string             `json:"messageText,omitempty"`
+	MessageImages    []string           `json:"messageImages,omitempty"`
 	StartedAt        time.Time          `json:"startedAt"`
 	FinishedAt       *time.Time         `json:"finishedAt,omitempty"`
 	Tools            []ToolActivityView `json:"tools"`
@@ -114,6 +117,15 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY(session_id, execution_id, invocation_id, agent_id)
 		);
+		CREATE TABLE IF NOT EXISTS execution_activity_messages (
+			session_id TEXT NOT NULL,
+			execution_id TEXT NOT NULL,
+			text TEXT NOT NULL,
+			images BLOB NOT NULL,
+			status TEXT NOT NULL,
+			queue_position INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(session_id, execution_id)
+		);
 		CREATE INDEX IF NOT EXISTS execution_activity_runs_session
 			ON execution_activity_runs(session_id, started_at, execution_id);
 		CREATE INDEX IF NOT EXISTS execution_activity_tools_session
@@ -123,6 +135,55 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 		return nil, fmt.Errorf("initialize desktop activity database: %w", err)
 	}
 	return &ActivityStore{db: db}, nil
+}
+
+func (s *ActivityStore) SaveExecutionMessage(ctx context.Context, sessionID, executionID, text string, images []string, status string, queuePosition int64) error {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" || status == "" {
+		return errors.New("activity store, session, execution, and status are required")
+	}
+	encodedImages, err := json.Marshal(images)
+	if err != nil {
+		return fmt.Errorf("encode queued message images: %w", err)
+	}
+	var existingStatus string
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM execution_activity_runs WHERE session_id = ? AND execution_id = ?`, sessionID, executionID).Scan(&existingStatus)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("inspect queued message status: %w", err)
+	}
+	if isTerminalActivityStatus(existingStatus) && existingStatus != "failed" {
+		return nil
+	}
+	if existingStatus != "" {
+		status = existingStatus
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO execution_activity_messages(session_id, execution_id, text, images, status, queue_position)
+		VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET
+			text = excluded.text, images = excluded.images, status = excluded.status, queue_position = excluded.queue_position
+	`, sessionID, executionID, text, encodedImages, status, queuePosition)
+	if err != nil {
+		return fmt.Errorf("save queued message for session: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) UpdateExecutionMessageStatus(ctx context.Context, sessionID, executionID, status string, queuePosition int64) error {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" || status == "" {
+		return errors.New("activity store, session, execution, and status are required")
+	}
+	if status == "completed" || status == "interrupted" || status == "cancelled" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM execution_activity_messages WHERE session_id = ? AND execution_id = ?`, sessionID, executionID)
+		if err != nil {
+			return fmt.Errorf("delete completed queued message: %w", err)
+		}
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE execution_activity_messages SET status = ?, queue_position = ? WHERE session_id = ? AND execution_id = ?`, status, queuePosition, sessionID, executionID)
+	if err != nil {
+		return fmt.Errorf("update queued message status: %w", err)
+	}
+	return nil
 }
 
 func (s *ActivityStore) Close() error {
@@ -155,6 +216,62 @@ func (s *ActivityStore) UpsertExecution(ctx context.Context, sessionID, executio
 	`, sessionID, executionID, index, status, now.UnixNano(), finishedAt)
 	if err != nil {
 		return fmt.Errorf("save execution activity status: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) AssociateExecution(ctx context.Context, sessionID, executionID string, userMessageIndex int, initialStatus string) error {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" || userMessageIndex < 0 || initialStatus == "" {
+		return errors.New("activity store, session, execution, message index, and status are required")
+	}
+	now := time.Now().UTC().UnixNano()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_activity_runs(session_id, execution_id, user_message_index, status, started_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET
+			user_message_index = excluded.user_message_index
+	`, sessionID, executionID, userMessageIndex, initialStatus, now)
+	if err != nil {
+		return fmt.Errorf("associate execution with user message: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) DeleteFromUserMessageIndexExcept(ctx context.Context, sessionID string, userMessageIndex int, keepExecutionID string) error {
+	if s == nil || s.db == nil || sessionID == "" || userMessageIndex < 0 {
+		return errors.New("activity store, session, and user message index are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin execution history cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM execution_activity_tools
+		WHERE session_id = ? AND execution_id IN (
+			SELECT execution_id FROM execution_activity_runs
+			WHERE session_id = ? AND user_message_index >= ? AND execution_id <> ?
+		)
+	`, sessionID, sessionID, userMessageIndex, keepExecutionID); err != nil {
+		return fmt.Errorf("delete tools for edited conversation branch: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM execution_activity_messages
+		WHERE session_id = ? AND execution_id IN (
+			SELECT execution_id FROM execution_activity_runs
+			WHERE session_id = ? AND user_message_index >= ? AND execution_id <> ?
+		)
+	`, sessionID, sessionID, userMessageIndex, keepExecutionID); err != nil {
+		return fmt.Errorf("delete pending messages for edited conversation branch: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM execution_activity_runs
+		WHERE session_id = ? AND user_message_index >= ? AND execution_id <> ?
+	`, sessionID, userMessageIndex, keepExecutionID); err != nil {
+		return fmt.Errorf("delete executions for edited conversation branch: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit edited conversation activity cleanup: %w", err)
 	}
 	return nil
 }
@@ -224,6 +341,44 @@ func (s *ActivityStore) ListSession(ctx context.Context, sessionID string) ([]Ex
 	}
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close execution activity rows: %w", err)
+	}
+
+	messageRows, err := s.db.QueryContext(ctx, `
+		SELECT execution_id, text, images, status, queue_position
+		FROM execution_activity_messages WHERE session_id = ?
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending execution messages: %w", err)
+	}
+	for messageRows.Next() {
+		var executionID, status string
+		var text string
+		var encodedImages []byte
+		var position int64
+		if err := messageRows.Scan(&executionID, &text, &encodedImages, &status, &position); err != nil {
+			_ = messageRows.Close()
+			return nil, fmt.Errorf("read pending execution message: %w", err)
+		}
+		index, found := indexes[executionID]
+		if !found {
+			continue
+		}
+		runs[index].MessageText = text
+		runs[index].Status = status
+		runs[index].QueuePosition = position
+		if len(encodedImages) > 0 {
+			if err := json.Unmarshal(encodedImages, &runs[index].MessageImages); err != nil {
+				_ = messageRows.Close()
+				return nil, fmt.Errorf("decode pending execution message images: %w", err)
+			}
+		}
+	}
+	if err := messageRows.Err(); err != nil {
+		_ = messageRows.Close()
+		return nil, fmt.Errorf("read pending execution messages: %w", err)
+	}
+	if err := messageRows.Close(); err != nil {
+		return nil, fmt.Errorf("close pending execution messages: %w", err)
 	}
 
 	toolRows, err := s.db.QueryContext(ctx, `

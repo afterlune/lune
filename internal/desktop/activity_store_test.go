@@ -65,6 +65,83 @@ func TestActivityStorePersistsExecutionAndToolDetails(t *testing.T) {
 	}
 }
 
+func TestActivityStoreKeepsQueuedMessageUntilCompletion(t *testing.T) {
+	directory := t.TempDir()
+	store, err := OpenActivityStore(directory)
+	if err != nil {
+		t.Fatalf("OpenActivityStore: %v", err)
+	}
+	messageIndex := 1
+	if err := store.AssociateExecution(context.Background(), "session", "exec-queued", messageIndex, "queued"); err != nil {
+		t.Fatalf("AssociateExecution: %v", err)
+	}
+	images := []string{"data:image/png;base64,aGVsbG8="}
+	if err := store.SaveExecutionMessage(context.Background(), "session", "exec-queued", "follow up", images, "queued", 2); err != nil {
+		t.Fatalf("SaveExecutionMessage: %v", err)
+	}
+	if err := store.UpdateExecutionMessageStatus(context.Background(), "session", "exec-queued", "running", 0); err != nil {
+		t.Fatalf("UpdateExecutionMessageStatus(running): %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
+	store, err = OpenActivityStore(directory)
+	if err != nil {
+		t.Fatalf("reopen activity store: %v", err)
+	}
+	defer store.Close()
+	got, err := store.ListSession(context.Background(), "session")
+	if err != nil {
+		t.Fatalf("ListSession: %v", err)
+	}
+	if len(got) != 1 || got[0].MessageText != "follow up" || got[0].Status != "running" || len(got[0].MessageImages) != 1 || got[0].MessageImages[0] != images[0] {
+		t.Fatalf("pending execution message = %#v", got)
+	}
+	if err := store.UpdateExecutionMessageStatus(context.Background(), "session", "exec-queued", "completed", 0); err != nil {
+		t.Fatalf("UpdateExecutionMessageStatus(completed): %v", err)
+	}
+	got, err = store.ListSession(context.Background(), "session")
+	if err != nil {
+		t.Fatalf("ListSession after completion: %v", err)
+	}
+	if len(got) != 1 || got[0].MessageText != "" || len(got[0].MessageImages) != 0 {
+		t.Fatalf("completed execution retained redundant message: %#v", got)
+	}
+}
+
+func TestActivityStoreDeletesEditedBranchAndKeepsReplacement(t *testing.T) {
+	store, err := OpenActivityStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenActivityStore: %v", err)
+	}
+	defer store.Close()
+	for index, executionID := range []string{"before", "edited", "after"} {
+		if err := store.UpsertExecution(context.Background(), "session", executionID, &index, "completed"); err != nil {
+			t.Fatalf("UpsertExecution(%s): %v", executionID, err)
+		}
+		if err := store.UpsertTool(context.Background(), "session", executionID, ToolActivityView{ID: "tool-" + executionID, Name: "read_file", Status: "done"}); err != nil {
+			t.Fatalf("UpsertTool(%s): %v", executionID, err)
+		}
+	}
+	newIndex := 1
+	if err := store.AssociateExecution(context.Background(), "session", "replacement", newIndex, "running"); err != nil {
+		t.Fatalf("AssociateExecution(replacement): %v", err)
+	}
+	if err := store.SaveExecutionMessage(context.Background(), "session", "replacement", "replacement text", nil, "running", 0); err != nil {
+		t.Fatalf("SaveExecutionMessage(replacement): %v", err)
+	}
+	if err := store.DeleteFromUserMessageIndexExcept(context.Background(), "session", 1, "replacement"); err != nil {
+		t.Fatalf("DeleteFromUserMessageIndexExcept: %v", err)
+	}
+	got, err := store.ListSession(context.Background(), "session")
+	if err != nil {
+		t.Fatalf("ListSession: %v", err)
+	}
+	if len(got) != 2 || got[0].ExecutionID != "before" || got[1].ExecutionID != "replacement" || got[1].MessageText != "replacement text" {
+		t.Fatalf("edited branch activity = %#v", got)
+	}
+}
+
 func TestBoundedToolActivityPayloadTruncatesLargeDetails(t *testing.T) {
 	activity := ToolActivityView{
 		ID: "call-large", InvocationID: "invocation-large", Name: "write_file", Status: "done",

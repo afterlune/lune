@@ -48,7 +48,7 @@
     catch { return String(value ?? ''); }
   }
 
-  function toolStatus(status: ActivityTool['status']) {
+function toolStatus(status: ActivityTool['status']) {
     if (status === 'running') return '进行中';
     if (status === 'failed') return '失败';
     if (status === 'cancelled') return '已取消';
@@ -57,7 +57,7 @@
 
 </script>
 
-<section class:status-waiting={run.status === 'paused'} class:status-failed={run.status === 'failed'} class:status-interrupted={run.status === 'interrupted' || run.status === 'cancelled'} class="turn-progress" aria-label="本轮执行状态">
+<section class:status-queued={run.status === 'queued'} class:status-waiting={run.status === 'paused'} class:status-failed={run.status === 'failed'} class:status-interrupted={run.status === 'interrupted' || run.status === 'cancelled'} class="turn-progress" aria-label="本轮执行状态">
   <div class="turn-status-row">
     <span class:status-spinner-active={active && run.status === 'running'} class:status-indicator={true} aria-hidden="true"></span>
     <span class="turn-status-text" role="status" aria-live="polite">{run.statusLabel}</span>
