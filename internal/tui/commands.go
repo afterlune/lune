@@ -79,6 +79,7 @@ func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	display := inputTranscriptText(input, raw)
+	m.setTaskTitle(display)
 	m.addEntry("you", display, false)
 	m.status = "Queueing this turn in Core…"
 	m.resetInput()

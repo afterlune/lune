@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"io"
 	"os"
 	"time"
 
@@ -223,6 +224,9 @@ type tuiModel struct {
 	pending                       bool
 	running                       bool
 	windowTitle                   string
+	taskTitle                     string
+	taskCompleted                 bool
+	terminalOutput                io.Writer
 	windowTitleFrame              int
 	windowTitleAnimationToken     uint64
 	windowTitleRevision           uint64
@@ -327,7 +331,9 @@ func Run(client *core.Core) error {
 	ui.restoreSessionState(saved)
 	ui.updateLayout()
 	ui.refreshPanels()
-	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(os.Stdout))
+	output := &synchronizedWriter{w: os.Stdout}
+	ui.terminalOutput = output
+	program := tea.NewProgram(ui, tea.WithInput(os.Stdin), tea.WithOutput(output))
 	ui.startRuntimeEvents()
 	runtime.SetUserInteractionAvailable(true)
 	defer func() {

@@ -74,6 +74,7 @@ func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, re
 		}
 	}
 	if mode == core.StartIfIdle {
+		m.taskCompleted = false
 		m.resetModelStream()
 		m.modelStreamFirstTokenLatency = 0
 		m.modelStreamFirstTokenRecorded = false
@@ -204,6 +205,11 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 	case core.EventApprovalCancelled:
 		if m.pendingApproval != nil && m.pendingApproval.request.ID == event.ApprovalID {
 			m.pendingApproval = nil
+			if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval &&
+				m.pendingRequest.Approval != nil && m.pendingRequest.Approval.ID == event.ApprovalID {
+				m.pendingRequest = nil
+				m.pending = false
+			}
 			m.status = "Tool approval cancelled."
 		}
 	case core.EventUserInteractionRequired:
@@ -543,6 +549,7 @@ func (m *tuiModel) replanAfterBlocker(line string) (tea.Model, tea.Cmd) {
 		m.addEntry("error", err.Error(), true)
 		return m, nil
 	}
+	m.setTaskTitle(feedback)
 	m.addEntry("you", feedback, false)
 	return m.submitTurn(input, core.StartIfIdle, true)
 }
@@ -675,7 +682,6 @@ func (m *tuiModel) finishTask(result taskResult) {
 		}
 	}
 	m.running = false
-	m.pendingApproval = nil
 	m.runtimeTask = false
 	if executionID := result.coreResult.ExecutionID; executionID != "" {
 		delete(m.activeExecutions, executionID)
@@ -695,6 +701,7 @@ func (m *tuiModel) finishTask(result taskResult) {
 	}
 	taskFailed := result.coreResult.Status == core.TaskFailed
 	taskCancelled := m.cancelled || result.coreResult.Status == core.TaskCancelled
+	m.taskCompleted = result.coreResult.Status == core.TaskCompleted && !taskFailed && !taskCancelled && result.err == nil
 	proposal := result.coreResult.ProposedPlan
 	if planText, ok := proposedPlanText(responseText); ok {
 		if proposal == nil && result.coreResult.Status == core.TaskCompleted && !taskFailed && !taskCancelled && result.err == nil {

@@ -12,7 +12,18 @@ import (
 )
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	return m.update(message)
+	if m.taskCompleted {
+		switch message.(type) {
+		case tea.FocusMsg, tea.KeyPressMsg, tea.PasteMsg:
+			m.taskCompleted = false
+		}
+	}
+	previousState := m.terminalState()
+	model, command := m.update(message)
+	if previousState == terminalRunning && m.terminalState() == terminalWaiting {
+		command = tea.Batch(command, m.terminalBell())
+	}
+	return model, command
 }
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -140,6 +151,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case toolApprovalCancelledMsg:
 		if m.pendingApproval != nil && m.pendingApproval.request.ID == message.requestID {
 			m.pendingApproval = nil
+			if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval &&
+				m.pendingRequest.Approval != nil && m.pendingRequest.Approval.ID == message.requestID {
+				m.pendingRequest = nil
+				m.pending = false
+			}
 			m.status = "Tool approval cancelled."
 			m.refreshPanels()
 		}
@@ -976,7 +992,9 @@ func (m *tuiModel) submit() (tea.Model, tea.Cmd) {
 	if m.proposedPlan != nil {
 		m.clearPendingPlan()
 	}
-	m.addEntry("you", inputTranscriptText(input, raw), false)
+	display := inputTranscriptText(input, raw)
+	m.setTaskTitle(display)
+	m.addEntry("you", display, false)
 	m.resetInput()
 	m.cancelled = false
 	return m.submitTurn(input, core.StartIfIdle, true)

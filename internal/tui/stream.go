@@ -14,11 +14,19 @@ const modelStreamRefreshInterval = 32 * time.Millisecond
 type modelStreamFlushMsg struct{ token uint64 }
 
 type streamToolCall struct {
+	activityID  string
+	taskID      string
+	requestID   string
 	id          string
-	name        string
+	itemID      string
 	agentID     string
 	executionID string
+	outputIndex *int
+	name        string
 	arguments   strings.Builder
+	preparing   bool
+	finished    bool
+	hidden      bool
 }
 
 type proposedPlanTagStreamFilter struct {
@@ -69,6 +77,9 @@ func (m *tuiModel) startModelStream(event core.Event) {
 func (m *tuiModel) queueModelStreamEvent(event core.Event) tea.Cmd {
 	if event.SessionID != m.sessionID || event.TaskID == "" || event.TaskID != m.modelStreamTaskID ||
 		m.modelStreamClosed || event.Stream == nil {
+		return nil
+	}
+	if event.Stream.Purpose == "memory" {
 		return nil
 	}
 	switch event.Stream.Type {
@@ -122,6 +133,7 @@ func (m *tuiModel) flushModelStreamEvents() bool {
 		if event.AgentID == "lead" && event.Stream.RequestID != "" && event.Stream.RequestID != m.modelStreamRequestID {
 			flushDelta()
 			m.closeModelStreamResponse(false, true)
+			m.finishUnidentifiedStreamToolCalls(m.modelStreamRequestID)
 			m.modelStreamRequestID = event.Stream.RequestID
 		}
 		switch event.Stream.Type {
@@ -147,29 +159,15 @@ func (m *tuiModel) flushModelStreamEvents() bool {
 		case "completed":
 			flushDelta()
 			m.closeModelStreamResponse(false, true)
+			m.finishUnidentifiedStreamToolCalls(event.Stream.RequestID)
 		case "failed":
 			flushDelta()
 			changed = m.closeModelStreamResponse(true, true) || changed
+			m.finishUnidentifiedStreamToolCalls(event.Stream.RequestID)
 		}
 	}
 	flushDelta()
 	return changed
-}
-
-func streamToolCallID(event core.Event) string {
-	if event.Stream == nil {
-		return ""
-	}
-	if event.Stream.ToolCallID != "" {
-		return event.Stream.ToolCallID
-	}
-	if event.Stream.ItemID != "" {
-		return event.Stream.ItemID
-	}
-	if event.Stream.OutputIndex != nil {
-		return "output:" + strconv.Itoa(*event.Stream.OutputIndex)
-	}
-	return ""
 }
 
 func (m *tuiModel) updateStreamToolCall(event core.Event) {
@@ -177,30 +175,16 @@ func (m *tuiModel) updateStreamToolCall(event core.Event) {
 	if stream == nil {
 		return
 	}
-	id := streamToolCallID(event)
-	if id == "" || stream.ToolName == "" {
-		return
+	call := m.findOrCreateStreamToolCall(event)
+	if stream.ToolName != "" {
+		call.name = stream.ToolName
 	}
-	if m.streamToolCalls == nil {
-		m.streamToolCalls = make(map[string]*streamToolCall)
+	m.updateStreamToolCallIdentity(call, event)
+	if stream.ToolArguments != "" && (call.arguments.Len() == 0 || len(stream.ToolArguments) > call.arguments.Len()) {
+		call.arguments.Reset()
+		call.arguments.WriteString(stream.ToolArguments)
 	}
-	mapKey := streamToolMapKey(event.AgentID, id)
-	call := m.streamToolCalls[mapKey]
-	if call == nil {
-		call = &streamToolCall{id: id, agentID: event.AgentID, executionID: event.ExecutionID}
-		m.streamToolCalls[mapKey] = call
-	}
-	call.name = stream.ToolName
-	call.agentID = event.AgentID
-	call.executionID = event.ExecutionID
-	call.arguments.Reset()
-	call.arguments.WriteString(stream.ToolArguments)
-	if stream.ItemID != "" {
-		m.streamToolCalls[streamToolMapKey(event.AgentID, stream.ItemID)] = call
-	}
-	if stream.OutputIndex != nil {
-		m.streamToolCalls[streamToolMapKey(event.AgentID, "output:"+strconv.Itoa(*stream.OutputIndex))] = call
-	}
+	call.hidden = call.hidden || hiddenModelToolCall(call.name)
 	m.refreshStreamToolActivity(call)
 }
 
@@ -209,60 +193,263 @@ func (m *tuiModel) updateStreamToolArguments(event core.Event) {
 	if stream == nil {
 		return
 	}
-	id := streamToolCallID(event)
-	if id == "" {
-		return
-	}
-	if m.streamToolCalls == nil {
-		m.streamToolCalls = make(map[string]*streamToolCall)
-	}
-	call := m.streamToolCalls[streamToolMapKey(event.AgentID, id)]
-	if call == nil {
-		call = &streamToolCall{id: id, agentID: event.AgentID, executionID: event.ExecutionID}
-		m.streamToolCalls[streamToolMapKey(event.AgentID, id)] = call
-	}
-	if call.executionID == "" {
-		call.executionID = event.ExecutionID
+	call := m.findOrCreateStreamToolCall(event)
+	m.updateStreamToolCallIdentity(call, event)
+	if stream.ToolName != "" {
+		call.name = stream.ToolName
 	}
 	call.arguments.WriteString(stream.Delta)
-	if stream.ToolCallID != "" {
-		m.streamToolCalls[streamToolMapKey(event.AgentID, stream.ToolCallID)] = call
-	}
-	if stream.ItemID != "" {
-		m.streamToolCalls[streamToolMapKey(event.AgentID, stream.ItemID)] = call
-	}
+	call.hidden = call.hidden || hiddenModelToolCall(call.name)
 	m.refreshStreamToolActivity(call)
 }
 
 func (m *tuiModel) refreshStreamToolActivity(call *streamToolCall) {
-	if call == nil || call.id == "" || call.name == "" {
+	if call == nil {
 		return
 	}
-	key := call.id
-	if call.agentID != "" {
-		key = call.agentID + ":" + key
+	m.bindStreamToolActivityAliases(call)
+	if call.hidden {
+		m.removeStreamToolActivity(call)
+		return
 	}
-	if call.executionID != "" {
-		key = call.executionID + ":" + key
+	if call.name == "" || call.activityID == "" {
+		call.preparing = true
+		return
+	}
+	args := []byte(call.arguments.String())
+	summary := humanizedToolSummary(call.name, args, m.workspace)
+	if toolSummaryPreparing(summary) {
+		call.preparing = true
+		return
+	}
+	call.preparing = false
+	m.updateToolActivity(core.ToolCall{AgentID: call.agentID, ID: call.activityID, Name: call.name, Arguments: args, Started: true})
+}
+
+func (m *tuiModel) hasPreparingToolCall() bool {
+	seen := make(map[*streamToolCall]bool)
+	for _, call := range m.streamToolCalls {
+		if call == nil || seen[call] {
+			continue
+		}
+		seen[call] = true
+		if call.preparing && !call.finished && !call.hidden {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *tuiModel) finishUnidentifiedStreamToolCalls(requestID string) {
+	seen := make(map[*streamToolCall]bool)
+	for _, call := range m.streamToolCalls {
+		if call == nil || seen[call] || call.name != "" || call.finished {
+			continue
+		}
+		seen[call] = true
+		if requestID != "" && call.requestID != requestID {
+			continue
+		}
+		call.preparing = false
+		call.finished = true
+	}
+}
+
+func (m *tuiModel) findOrCreateStreamToolCall(event core.Event) *streamToolCall {
+	if m.streamToolCalls == nil {
+		m.streamToolCalls = make(map[string]*streamToolCall)
+	}
+	aliases := streamToolAliases(event)
+	var call *streamToolCall
+	for _, alias := range aliases {
+		candidate := m.streamToolCalls[alias]
+		if candidate == nil {
+			continue
+		}
+		if call == nil {
+			call = candidate
+		} else if candidate != call {
+			call = m.mergeStreamToolCalls(call, candidate)
+		}
+	}
+	if call == nil {
+		call = m.streamToolCalls[streamPendingAlias(event)]
+	}
+	if call == nil {
+		call = &streamToolCall{taskID: event.TaskID, agentID: event.AgentID}
+	}
+	m.updateStreamToolCallIdentity(call, event)
+	for _, alias := range aliases {
+		m.streamToolCalls[alias] = call
+	}
+	return call
+}
+
+func (m *tuiModel) updateStreamToolCallIdentity(call *streamToolCall, event core.Event) {
+	stream := event.Stream
+	if stream == nil {
+		return
+	}
+	if call.taskID == "" {
+		call.taskID = event.TaskID
+	}
+	if call.requestID == "" {
+		call.requestID = stream.RequestID
+	}
+	if call.agentID == "" {
+		call.agentID = event.AgentID
+	}
+	if call.executionID == "" {
+		call.executionID = event.ExecutionID
+	}
+	if stream.ToolCallID != "" {
+		call.id = stream.ToolCallID
+	}
+	if stream.ItemID != "" {
+		call.itemID = stream.ItemID
+	}
+	if stream.OutputIndex != nil {
+		index := *stream.OutputIndex
+		call.outputIndex = &index
+	}
+	if call.activityID == "" {
+		identity := ""
+		switch {
+		case call.id != "":
+			identity = "call:" + call.id
+		case call.itemID != "":
+			identity = "item:" + call.itemID
+		case call.outputIndex != nil:
+			identity = "output:" + strconv.Itoa(*call.outputIndex)
+		}
+		if identity != "" {
+			call.activityID = strings.Join([]string{"stream", call.taskID, call.requestID, call.agentID, identity}, ":")
+		}
+	}
+	for _, alias := range streamToolAliases(event) {
+		m.streamToolCalls[alias] = call
+	}
+}
+
+func streamToolAliases(event core.Event) []string {
+	if event.Stream == nil {
+		return nil
+	}
+	stream := event.Stream
+	scope := []string{event.TaskID, stream.RequestID, event.AgentID}
+	aliases := make([]string, 0, 4)
+	add := func(kind, value string) {
+		if value == "" {
+			return
+		}
+		aliases = append(aliases, strings.Join(append(append([]string(nil), scope...), kind, value), "\x00"))
+	}
+	add("call", stream.ToolCallID)
+	add("item", stream.ItemID)
+	if stream.OutputIndex != nil {
+		add("output", strconv.Itoa(*stream.OutputIndex))
+	}
+	if len(aliases) == 0 {
+		aliases = append(aliases, strings.Join(append(append([]string(nil), scope...), "pending"), "\x00"))
+	}
+	return aliases
+}
+
+func streamPendingAlias(event core.Event) string {
+	if event.Stream == nil {
+		return ""
+	}
+	return strings.Join([]string{event.TaskID, event.Stream.RequestID, event.AgentID, "pending"}, "\x00")
+}
+
+func (m *tuiModel) mergeStreamToolCalls(target, source *streamToolCall) *streamToolCall {
+	if target == nil {
+		return source
+	}
+	if source == nil || source == target {
+		return target
+	}
+	if target.activityID == "" && source.activityID != "" {
+		target, source = source, target
+	}
+	if target.name == "" {
+		target.name = source.name
+	}
+	if target.id == "" {
+		target.id = source.id
+	}
+	if target.itemID == "" {
+		target.itemID = source.itemID
+	}
+	if target.outputIndex == nil {
+		target.outputIndex = source.outputIndex
+	}
+	if target.executionID == "" {
+		target.executionID = source.executionID
+	}
+	if target.arguments.Len() == 0 || strings.HasPrefix(source.arguments.String(), target.arguments.String()) {
+		target.arguments.Reset()
+		target.arguments.WriteString(source.arguments.String())
+	} else if source.arguments.Len() > 0 && !strings.HasPrefix(target.arguments.String(), source.arguments.String()) {
+		target.arguments.WriteString(source.arguments.String())
+	}
+	target.preparing = target.preparing || source.preparing
+	target.finished = target.finished || source.finished
+	target.hidden = target.hidden || source.hidden
+	if target.activityID != "" && source.activityID != "" && target.activityID != source.activityID {
+		m.rekeyToolActivity(source.activityID, target.activityID)
+	}
+	for alias, call := range m.streamToolCalls {
+		if call == source {
+			m.streamToolCalls[alias] = target
+		}
+	}
+	return target
+}
+
+func (m *tuiModel) bindStreamToolActivityAliases(call *streamToolCall) {
+	if call.activityID == "" {
+		return
 	}
 	if m.toolActivityAliases == nil {
 		m.toolActivityAliases = make(map[string]string)
 	}
-	m.toolActivityAliases[key] = key
-	aliasKey := call.id
-	if call.agentID != "" {
-		aliasKey = call.agentID + ":" + call.id
+	m.bindToolActivityAlias(core.ToolCall{AgentID: call.agentID, ID: call.activityID}, call.activityID)
+	for _, id := range []string{call.id, call.itemID} {
+		if id == "" {
+			continue
+		}
+		m.bindToolActivityAlias(core.ToolCall{AgentID: call.agentID, ExecutionID: call.executionID, ID: id}, call.activityID)
 	}
-	if call.executionID != "" {
-		aliasKey = call.executionID + ":" + aliasKey
-	}
-	m.toolActivityAliases[aliasKey] = key
-	args := []byte(call.arguments.String())
-	m.updateToolActivity(core.ToolCall{ExecutionID: call.executionID, AgentID: call.agentID, ID: call.id, Name: call.name, Arguments: args, Started: true})
 }
 
-func streamToolMapKey(agentID, id string) string {
-	return agentID + "\x00" + id
+func (m *tuiModel) removeStreamToolActivity(call *streamToolCall) {
+	if call == nil || call.activityID == "" {
+		return
+	}
+	for index := len(m.entries) - 1; index >= 0; index-- {
+		if m.entries[index].role == "tool" && (m.entries[index].activityID == call.activityID || m.toolActivityAliases[m.entries[index].activityID] == call.activityID) {
+			m.entries = append(m.entries[:index], m.entries[index+1:]...)
+		}
+	}
+	for index := len(m.activities) - 1; index >= 0; index-- {
+		if m.activities[index].callID == call.activityID {
+			m.activities = append(m.activities[:index], m.activities[index+1:]...)
+		}
+	}
+}
+
+func hiddenModelToolCall(name string) bool {
+	switch name {
+	case "select_tool_category", "ask_user", "delegate_team", "propose_workspace_memories":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolSummaryPreparing(summary string) bool {
+	return summary == "Tool request" || strings.Contains(summary, "(preparing)")
 }
 
 func modelStreamItemKey(event *core.ModelStreamEvent) string {

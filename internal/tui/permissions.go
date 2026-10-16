@@ -376,13 +376,18 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 		return
 	}
 	request := m.pendingApproval
-	m.pendingApproval = nil
 	if m.runtime != nil {
 		if err := m.runtime.ResolveApproval(request.request.ID, approved); err != nil {
 			m.status = "Could not resolve tool approval: " + err.Error()
 			m.addEntry("error", m.status, true)
 			return
 		}
+	}
+	m.pendingApproval = nil
+	if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval &&
+		m.pendingRequest.Approval != nil && m.pendingRequest.Approval.ID == request.request.ID {
+		m.pendingRequest = nil
+		m.pending = false
 	}
 	if approved {
 		m.status = "Tool call approved once."

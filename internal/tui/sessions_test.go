@@ -107,7 +107,7 @@ func TestSessionPickerArchivesRenamesAndDeletesCurrentSession(t *testing.T) {
 	if client.sessions["current"].Title != "Renamed review" || ui.renamingSession {
 		t.Fatalf("renamed session = %#v, editing=%v", client.sessions["current"], ui.renamingSession)
 	}
-	if got := ui.View().WindowTitle; got != "Renamed review" {
+	if got := ui.View().WindowTitle; got != "Renamed review | luneAgent" {
 		t.Fatalf("renamed current session window title = %q", got)
 	}
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: 'd'}))
@@ -121,8 +121,8 @@ func TestSessionPickerArchivesRenamesAndDeletesCurrentSession(t *testing.T) {
 	if ui.sessionID == "current" || ui.sessionPicker {
 		t.Fatalf("current session was not replaced after deletion: id=%q picker=%v", ui.sessionID, ui.sessionPicker)
 	}
-	if got := ui.View().WindowTitle; got != defaultWindowTitle {
-		t.Fatalf("new session window title = %q, want %q", got, defaultWindowTitle)
+	if got, want := ui.View().WindowTitle, defaultWindowTitle+" | luneAgent"; got != want {
+		t.Fatalf("new session window title = %q, want %q", got, want)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestSessionPickerCanOpenArchivedOnlySessionWithoutUnarchiving(t *testing.T)
 	if ui.sessionID != "archived" || !client.sessions["archived"].Archived {
 		t.Fatalf("restoring archived session changed its archive state: id=%q session=%#v", ui.sessionID, client.sessions["archived"])
 	}
-	if got := ui.View().WindowTitle; got != "Old work" {
+	if got := ui.View().WindowTitle; got != "Old work | luneAgent" {
 		t.Fatalf("restored session window title = %q", got)
 	}
 }

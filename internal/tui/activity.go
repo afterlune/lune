@@ -216,6 +216,13 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 		return
 	}
 	key := m.toolActivityKey(event)
+	if hiddenModelToolCall(event.Name) {
+		m.removeToolActivity(key)
+		return
+	}
+	if event.Name == "" && event.Details == nil {
+		return
+	}
 	groupID := toolActivityGroupID(event, key, m.runningExecutionID, len(m.activities))
 	index := -1
 	for i := range m.activities {
@@ -236,8 +243,12 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	if groupID != "" {
 		activity.groupID = groupID
 	}
-	if len(event.Arguments) > 0 && string(event.Arguments) != "null" || activity.summary == "" {
-		activity.summary = humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+	if event.Name != "" && (len(event.Arguments) > 0 && string(event.Arguments) != "null" || activity.summary == "" || activity.summary == "Using a tool" || toolSummaryPreparing(activity.summary)) {
+		summary := humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+		if !event.Started && toolSummaryPreparing(summary) {
+			summary = completedToolSummary(event.Name)
+		}
+		activity.summary = summary
 	}
 	if event.Details != nil {
 		keepCurrent := false
@@ -293,6 +304,22 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	}
 }
 
+func (m *tuiModel) removeToolActivity(key string) {
+	if key == "" {
+		return
+	}
+	for index := len(m.entries) - 1; index >= 0; index-- {
+		if m.entries[index].role == "tool" && m.entries[index].activityID == key {
+			m.entries = append(m.entries[:index], m.entries[index+1:]...)
+		}
+	}
+	for index := len(m.activities) - 1; index >= 0; index-- {
+		if m.activities[index].callID == key {
+			m.activities = append(m.activities[:index], m.activities[index+1:]...)
+		}
+	}
+}
+
 func (m *tuiModel) toolActivityKey(event core.ToolCall) string {
 	if event.Details != nil && event.Details.Command != nil {
 		command := event.Details.Command.Command
@@ -303,30 +330,137 @@ func (m *tuiModel) toolActivityKey(event core.ToolCall) string {
 			event.ExecutionID = command.ExecutionID
 		}
 	}
-	key := activityKey(event)
-	if alias := m.toolActivityAliases[key]; alias != "" {
-		return alias
-	}
-	for _, id := range []string{event.ID, event.InvocationID} {
+	for _, id := range []string{event.InvocationID, event.ID} {
 		if id == "" {
 			continue
 		}
-		aliasKey := id
-		if event.AgentID != "" {
-			aliasKey = event.AgentID + ":" + aliasKey
-		}
-		if event.ExecutionID != "" {
-			aliasKey = event.ExecutionID + ":" + id
-			if event.AgentID != "" {
-				aliasKey = event.ExecutionID + ":" + event.AgentID + ":" + id
+		for _, aliasKey := range []string{
+			event.ExecutionID + ":" + event.AgentID + ":" + id,
+			event.AgentID + ":" + id,
+			activityKey(core.ToolCall{ExecutionID: event.ExecutionID, ID: id}),
+			id,
+		} {
+			if alias := m.toolActivityAliases[aliasKey]; alias != "" {
+				m.toolActivityAliases[activityKey(event)] = alias
+				if call := m.streamToolCallForActivity(alias); call != nil {
+					summary := humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+					call.preparing = event.Started && toolSummaryPreparing(summary)
+					call.finished = !event.Started
+				}
+				return alias
 			}
 		}
-		if alias := m.toolActivityAliases[aliasKey]; alias != "" {
-			m.toolActivityAliases[key] = alias
-			return alias
+	}
+	if call := m.uniqueStreamToolCallForEvent(event); call != nil {
+		m.bindToolActivityAlias(event, call.activityID)
+		summary := humanizedToolSummary(event.Name, event.Arguments, m.workspace)
+		call.preparing = event.Started && toolSummaryPreparing(summary)
+		call.finished = !event.Started
+		return call.activityID
+	}
+	return activityKey(event)
+}
+
+func (m *tuiModel) bindToolActivityAlias(event core.ToolCall, activityID string) {
+	if activityID == "" {
+		return
+	}
+	if m.toolActivityAliases == nil {
+		m.toolActivityAliases = make(map[string]string)
+	}
+	for _, id := range []string{event.InvocationID, event.ID} {
+		if id == "" {
+			continue
+		}
+		m.toolActivityAliases[activityKey(core.ToolCall{ExecutionID: event.ExecutionID, ID: id})] = activityID
+		if event.AgentID != "" {
+			m.toolActivityAliases[event.AgentID+":"+id] = activityID
+			if event.ExecutionID != "" {
+				m.toolActivityAliases[event.ExecutionID+":"+event.AgentID+":"+id] = activityID
+			}
 		}
 	}
-	return key
+	m.toolActivityAliases[activityID] = activityID
+}
+
+func (m *tuiModel) uniqueStreamToolCallForEvent(event core.ToolCall) *streamToolCall {
+	var match *streamToolCall
+	seen := make(map[*streamToolCall]bool)
+	for _, call := range m.streamToolCalls {
+		if call == nil || seen[call] || call.activityID == "" || call.finished || call.hidden {
+			continue
+		}
+		seen[call] = true
+		if event.AgentID != "" && call.agentID != event.AgentID {
+			continue
+		}
+		if event.ExecutionID != "" && call.executionID != "" && call.executionID != event.ExecutionID {
+			continue
+		}
+		if match != nil {
+			return nil
+		}
+		match = call
+	}
+	return match
+}
+
+func (m *tuiModel) streamToolCallForActivity(activityID string) *streamToolCall {
+	seen := make(map[*streamToolCall]bool)
+	for _, call := range m.streamToolCalls {
+		if call != nil && !seen[call] {
+			seen[call] = true
+			if call.activityID == activityID {
+				return call
+			}
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) rekeyToolActivity(oldKey, newKey string) {
+	if oldKey == "" || newKey == "" || oldKey == newKey {
+		return
+	}
+	oldEntry, newEntry := -1, -1
+	for index := range m.entries {
+		if m.entries[index].role != "tool" {
+			continue
+		}
+		if m.entries[index].activityID == oldKey {
+			oldEntry = index
+		}
+		if m.entries[index].activityID == newKey {
+			newEntry = index
+		}
+	}
+	if oldEntry >= 0 && newEntry >= 0 {
+		m.entries = append(m.entries[:oldEntry], m.entries[oldEntry+1:]...)
+	} else if oldEntry >= 0 {
+		m.entries[oldEntry].activityID = newKey
+	}
+	oldActivity, newActivity := -1, -1
+	for index := range m.activities {
+		if m.activities[index].callID == oldKey {
+			oldActivity = index
+		}
+		if m.activities[index].callID == newKey {
+			newActivity = index
+		}
+	}
+	if oldActivity >= 0 && newActivity >= 0 {
+		m.activities = append(m.activities[:oldActivity], m.activities[oldActivity+1:]...)
+	} else if oldActivity >= 0 {
+		m.activities[oldActivity].callID = newKey
+	}
+	if m.toolActivityAliases == nil {
+		m.toolActivityAliases = make(map[string]string)
+	}
+	for alias, target := range m.toolActivityAliases {
+		if target == oldKey {
+			m.toolActivityAliases[alias] = newKey
+		}
+	}
 }
 
 func toolActivityGroupID(event core.ToolCall, key, currentExecutionID string, activityCount int) string {
@@ -362,6 +496,9 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 	if args.Pattern == "" {
 		args.Pattern = partialJSONField(string(arguments), "pattern")
 	}
+	if args.Command == "" {
+		args.Command = partialJSONField(string(arguments), "command")
+	}
 	workspaceRoot := ""
 	if len(workspace) > 0 {
 		workspaceRoot = workspace[0]
@@ -370,15 +507,31 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 	summary := "Tool request"
 	switch name {
 	case "read_file":
-		summary = summaryWithPath("Read", path)
+		if path == "" {
+			summary = "Read a workspace file"
+		} else {
+			summary = "Read " + path
+		}
 	case "write_file":
 		summary = summaryWithPath("Wrote", path)
+		if path == "" {
+			summary = "Wrote a workspace file"
+		}
 	case "edit_file":
 		summary = summaryWithPath("Edited", path)
+		if path == "" {
+			summary = "Edited a workspace file"
+		}
 	case "list_dir":
 		summary = summaryWithPath("Listed", path)
+		if path == "" {
+			summary = "Listed a directory"
+		}
 	case "glob":
 		summary = summaryWithPath("Found", displayToolPath(args.Pattern, workspaceRoot))
+		if args.Pattern == "" {
+			summary = "Searched project files"
+		}
 	case "grep":
 		if path != "" {
 			summary = "Searched " + path
@@ -387,27 +540,55 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 			}
 		} else {
 			summary = summaryWithPath("Searched", displayToolPath(args.Pattern, workspaceRoot))
+			if args.Pattern == "" {
+				summary = "Searched project files"
+			}
 		}
 	case "web_search":
 		summary = "Searched the web"
+	case "search_memory":
+		summary = "Searched workspace memories"
 	case "web_fetch":
 		if parsed, err := url.Parse(args.URL); err == nil && parsed.Hostname() != "" {
 			summary = "Fetched " + parsed.Hostname()
 		} else {
-			summary = "Fetched (preparing)"
+			summary = "Fetched a web page"
 		}
 	case "command":
 		if strings.TrimSpace(args.Command) == "" {
-			summary = "Run (preparing)"
+			summary = "Run a command"
 		} else {
 			summary = "Run " + safeToolText(args.Command)
 		}
 	case "html":
 		summary = "Processed web content"
 	default:
-		summary = "Tool request (preparing)"
+		summary = "Using a tool"
 	}
 	return summary
+}
+
+func completedToolSummary(name string) string {
+	switch name {
+	case "read_file":
+		return "Read a workspace file"
+	case "write_file":
+		return "Wrote a workspace file"
+	case "edit_file":
+		return "Edited a workspace file"
+	case "list_dir":
+		return "Listed files"
+	case "glob":
+		return "Searched project files"
+	case "grep":
+		return "Searched project files"
+	case "web_fetch":
+		return "Fetched a web page"
+	case "command":
+		return "Ran a command"
+	default:
+		return "Used a tool"
+	}
 }
 
 func partialJSONField(raw, name string) string {

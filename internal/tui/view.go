@@ -248,7 +248,9 @@ func (m *tuiModel) commandSuggestionHeight() int {
 
 func (m *tuiModel) View() tea.View {
 	view := m.renderSessionWorkspace(max(1, m.width))
-	view.WindowTitle = m.windowTitleText()
+	view.WindowTitle = m.computeWindowTitle()
+	view.ProgressBar = m.terminalProgressBar()
+	view.ReportFocus = true
 	return view
 }
 
@@ -417,6 +419,9 @@ func (m *tuiModel) renderLiveActivity(width int) string {
 }
 
 func (m *tuiModel) currentLiveAction() string {
+	if m.hasPreparingToolCall() {
+		return "Preparing tool call..."
+	}
 	for index := len(m.activities) - 1; index >= 0; index-- {
 		activity := m.activities[index]
 		if activity.status != "running" {

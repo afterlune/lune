@@ -331,6 +331,8 @@ func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.finishedTasks = nil
 	m.sessionSettings = saved.Settings
 	m.entries = transcriptEntries(saved.History, m.workspace)
+	m.taskTitle = fitTerminalText(latestUserTaskTitleSummary(m.entries), 32)
+	m.taskCompleted = false
 	m.activities = nil
 	m.activityExpanded = make(map[string]bool)
 	m.searchOpen = false

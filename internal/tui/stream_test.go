@@ -238,6 +238,90 @@ func TestTUIStreamIgnoresOtherAgentsSessionsAndTasks(t *testing.T) {
 	}
 }
 
+func TestTUIStreamMergesToolArgumentDeltasByIndexThenCallID(t *testing.T) {
+	ui := newStreamingTUI()
+	arguments := `{"query":"workspace decisions"}`
+	index := 0
+	parts := []string{`{"que`, `ry`, `":"`, `work`, `space`, ` `, `dec`, `isions`, `"`, `}`}
+	for _, delta := range parts {
+		ui.Update(coreEventMsg{event: core.Event{
+			Kind: core.EventModelStream, SessionID: ui.sessionID, TaskID: "task-1", AgentID: "lead", ExecutionID: "execution-1",
+			Stream: &core.ModelStreamEvent{RequestID: "request-1", Type: "tool_arguments_delta", OutputIndex: &index, Delta: delta},
+		}})
+	}
+	ui.Update(modelStreamFlushMsg{token: ui.modelStreamToken})
+	if len(ui.entries) != 0 || !ui.hasPreparingToolCall() {
+		t.Fatalf("unidentified partial call should have one transient preparing state: entries=%#v preparing=%v", ui.entries, ui.hasPreparingToolCall())
+	}
+
+	started := core.Event{
+		Kind: core.EventModelStream, SessionID: ui.sessionID, TaskID: "task-1", AgentID: "lead", ExecutionID: "execution-1",
+		Stream: &core.ModelStreamEvent{
+			RequestID: "request-1", Type: "tool_started", ToolCallID: "call-1", ItemID: "item-1", OutputIndex: &index,
+			ToolName: "search_memory", ToolArguments: arguments,
+		},
+	}
+	ui.Update(coreEventMsg{event: started})
+	ui.Update(coreEventMsg{event: started})
+	ui.Update(modelStreamFlushMsg{token: ui.modelStreamToken})
+	if got := countToolEntries(ui.entries); got != 1 {
+		t.Fatalf("tool rows after duplicate start = %d, want one: %#v", got, ui.entries)
+	}
+	if ui.hasPreparingToolCall() || !strings.Contains(ui.entries[0].text, "Searched workspace memories") {
+		t.Fatalf("tool title did not resolve semantically: preparing=%v entries=%#v", ui.hasPreparingToolCall(), ui.entries)
+	}
+
+	ui.Update(toolActivityMsg{event: core.ToolCall{
+		ExecutionID: "execution-1", ID: "call-1", AgentID: "lead", Name: "search_memory",
+		Arguments: json.RawMessage(arguments), Duration: 20,
+	}})
+	if got := countToolEntries(ui.entries); got != 1 || ui.activities[0].status != "done" {
+		t.Fatalf("Core tool result did not update the stream row in place: rows=%d activities=%#v entries=%#v", got, ui.activities, ui.entries)
+	}
+}
+
+func TestTUIStreamScopesFallbackIndicesByRequestAndHidesControlCalls(t *testing.T) {
+	ui := newStreamingTUI()
+	index := 0
+	for _, event := range []core.Event{
+		{
+			Kind: core.EventModelStream, SessionID: ui.sessionID, TaskID: "task-1", AgentID: "lead", ExecutionID: "execution-1",
+			Stream: &core.ModelStreamEvent{RequestID: "request-1", Type: "tool_started", ToolCallID: "call-1", OutputIndex: &index,
+				ToolName: "read_file", ToolArguments: `{"path":"one.go"}`},
+		},
+		{
+			Kind: core.EventModelStream, SessionID: ui.sessionID, TaskID: "task-1", AgentID: "lead", ExecutionID: "execution-1",
+			Stream: &core.ModelStreamEvent{RequestID: "request-2", Type: "tool_started", ToolCallID: "call-2", OutputIndex: &index,
+				ToolName: "read_file", ToolArguments: `{"path":"two.go"}`},
+		},
+		{
+			Kind: core.EventModelStream, SessionID: ui.sessionID, TaskID: "task-1", AgentID: "lead", ExecutionID: "execution-1",
+			Stream: &core.ModelStreamEvent{RequestID: "request-3", Type: "tool_started", ToolCallID: "selector", OutputIndex: &index,
+				ToolName: "select_tool_category", ToolArguments: `{"category":"files"}`},
+		},
+	} {
+		ui.Update(coreEventMsg{event: event})
+	}
+	ui.Update(modelStreamFlushMsg{token: ui.modelStreamToken})
+	if got := countToolEntries(ui.entries); got != 2 {
+		t.Fatalf("same output index across requests merged or internal selector leaked: rows=%d entries=%#v", got, ui.entries)
+	}
+	text := strings.Join(entryTexts(ui.entries), "\n")
+	if !strings.Contains(text, "Read one.go") || !strings.Contains(text, "Read two.go") || strings.Contains(text, "select_tool_category") {
+		t.Fatalf("request-scoped tool titles = %q", text)
+	}
+}
+
+func countToolEntries(entries []tuiEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.role == "tool" {
+			count++
+		}
+	}
+	return count
+}
+
 func newStreamingTUI() *tuiModel {
 	client := &fakeResponder{}
 	ui := newTUIModel(client, false)

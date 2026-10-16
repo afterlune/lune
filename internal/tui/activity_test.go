@@ -14,8 +14,8 @@ import (
 func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Started: true}})
-	if len(ui.entries) != 1 || !strings.Contains(ui.entries[0].text, "running") {
-		t.Fatalf("starting tool call should create one live transcript row: %#v", ui.entries)
+	if len(ui.entries) != 1 || ui.entries[0].text != "Read a workspace file" {
+		t.Fatalf("starting tool call should create one semantic transcript row: %#v", ui.entries)
 	}
 	ui.Update(toolActivityMsg{event: core.ToolCall{ID: "internal-call-id", Name: "read_file", Duration: 25, Failed: true}})
 	if len(ui.entries) != 1 || !strings.Contains(ui.entries[0].text, "failed") {
