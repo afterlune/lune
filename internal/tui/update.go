@@ -78,6 +78,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.running = false
+		m.thinking = false
 		m.streamActive = false
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
@@ -188,6 +189,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
+
+	case tea.MouseWheelMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		m.scrolledUp = !m.viewport.AtBottom()
+		return m, vpCmd
+
+	case tea.MouseClickMsg:
+		if m.scrolledUp && msg.Button == tea.MouseLeft {
+			m.viewport.GotoBottom()
+			m.scrolledUp = false
+			return m, nil
+		}
 	}
 
 	// Default composer update
@@ -388,7 +402,17 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 4. Enter to submit Composer
+	// 4. Shift+Enter / Alt+Enter to insert newline
+	key := msg.Key()
+	isShiftEnter := (key.Code == tea.KeyEnter && (key.Mod&tea.ModShift != 0 || key.Mod&tea.ModAlt != 0 || key.Mod&tea.ModCtrl != 0)) ||
+		keyStr == "shift+enter" || keyStr == "alt+enter" || keyStr == "ctrl+enter"
+	if isShiftEnter {
+		m.composer.InsertRune('\n')
+		m.updateLayout()
+		return m, nil
+	}
+
+	// 5. Enter to submit Composer
 	if keyStr == "enter" {
 		val := strings.TrimSpace(m.composer.Value())
 		if val == "" {

@@ -94,7 +94,11 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed)).Render("• ")
 		action = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed)).Bold(true).
 			Render(fmt.Sprintf("Failed (exit %d)", *entry.ToolExitCode))
-	} else if strings.EqualFold(entry.ToolName, "read_file") || strings.EqualFold(entry.ToolName, "list_dir") {
+	} else if strings.EqualFold(entry.ToolName, "read_file") ||
+		strings.EqualFold(entry.ToolName, "list_dir") ||
+		strings.EqualFold(entry.ToolName, "grep") ||
+		strings.EqualFold(entry.ToolName, "glob") ||
+		strings.EqualFold(entry.ToolName, "find_files") {
 		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
 		action = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("Explored")
 	} else {
@@ -123,9 +127,13 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		previewCount = len(outLines)
 	}
 
+	maxLineLen := max(20, width-8)
 	var bodyLines []string
 	for i := 0; i < previewCount; i++ {
 		line := outLines[i]
+		if len(line) > maxLineLen {
+			line = line[:maxLineLen] + "…"
+		}
 		if i == 0 {
 			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render(line))
 		} else {
@@ -144,10 +152,14 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 }
 
 // renderWorking renders the active working indicator.
-func renderWorking(elapsed time.Duration) string {
+func renderWorking(elapsed time.Duration, thinking bool) string {
 	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
 	timeStr := fmt.Sprintf("%ds", int(elapsed.Seconds()))
-	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("Working (%s · esc to interrupt)", timeStr))
+	action := "Working"
+	if thinking {
+		action = "Thinking"
+	}
+	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%s (%s · esc to interrupt)", action, timeStr))
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("└ ")
 	tip := styleTextMuted().Render("Tip: When the composer is empty, press Esc to step back and edit your last message; Enter confirms.")
 	return bullet + title + "\n  " + branch + tip
@@ -335,15 +347,26 @@ func renderScrollPill(width int) string {
 	return strings.Repeat(" ", left) + styled
 }
 
-// renderComposerBand renders the input box with a soft gray card background.
+// renderComposerBand renders the input box with a soft gray card background covering at least 3 rows.
 func renderComposerBand(inputView string, width int) string {
 	lines := strings.Split(inputView, "\n")
 	var padded []string
 	cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
+
+	// Top padding line
+	emptyRow := cardStyle.Render(strings.Repeat(" ", width))
+	padded = append(padded, emptyRow)
+
+	// Middle input line(s)
 	for _, l := range lines {
-		pad := max(0, width-lipgloss.Width(l)-2)
-		padded = append(padded, cardStyle.Render(" "+l+strings.Repeat(" ", pad)))
+		content := " " + l
+		pad := max(0, width-lipgloss.Width(content))
+		padded = append(padded, cardStyle.Render(content+strings.Repeat(" ", pad)))
 	}
+
+	// Bottom padding line
+	padded = append(padded, emptyRow)
+
 	return strings.Join(padded, "\n")
 }
 

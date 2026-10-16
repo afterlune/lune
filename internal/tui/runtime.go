@@ -98,6 +98,7 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	})
 
 	m.running = true
+	m.thinking = false
 	m.taskStartedAt = time.Now()
 	m.currentStreamText = ""
 	m.streamActive = true
@@ -135,12 +136,25 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	switch event.Kind {
 	case core.EventModelStream:
-		if event.Stream != nil && event.Stream.Delta != "" {
-			m.currentStreamText += event.Stream.Delta
-			m.refreshViewportContent()
+		if event.Stream != nil {
+			switch event.Stream.Type {
+			case "reasoning_delta":
+				m.thinking = true
+				m.refreshViewportContent()
+			case "text_delta", "":
+				if event.Stream.Delta != "" {
+					m.thinking = false
+					m.currentStreamText += event.Stream.Delta
+					m.refreshViewportContent()
+				}
+			}
 		}
 
 	case core.EventToolStarted:
+		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
+			return m, nil
+		}
+		m.thinking = false
 		cmdText := event.Tool.Name
 		outText := ""
 		if event.Tool.Details != nil {
@@ -166,6 +180,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.refreshViewportContent()
 
 	case core.EventToolDetails:
+		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
+			return m, nil
+		}
 		if event.Tool.Details != nil {
 			cmdText := event.Tool.Name
 			outText := event.Tool.Details.Output
@@ -199,6 +216,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case core.EventToolFinished:
+		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
+			return m, nil
+		}
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == event.Tool.ID {
 				m.entries[i].ToolStatus = event.CommandStatus
@@ -209,6 +229,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.refreshViewportContent()
 
 	case core.EventUserQuestionRequired:
+		m.thinking = false
 		if event.UserQuestion != nil && len(event.UserQuestion.Questions) > 0 {
 			m.activeQuestion = &ActiveQuestion{
 				Request:  *event.UserQuestion,
@@ -218,6 +239,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case core.EventApprovalRequired:
+		m.thinking = false
 		if event.Approval != nil {
 			if m.permissionMode == core.PermissionFullAccess {
 				_ = m.runtime.ResolveApproval(event.Approval.ID, true)
@@ -237,6 +259,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case core.EventTaskFinished:
+		m.thinking = false
 		if m.currentStreamText != "" {
 			m.entries = append(m.entries, TranscriptEntry{
 				ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
@@ -251,6 +274,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 
 	case core.EventTaskDiscarded:
+		m.thinking = false
 		m.running = false
 		m.currentStreamText = ""
 		m.refreshViewportContent()

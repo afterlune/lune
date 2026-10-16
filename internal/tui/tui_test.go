@@ -170,15 +170,110 @@ func TestModelUpdateKeys(t *testing.T) {
 	if !m.autocompleteOpen {
 		t.Errorf("expected autocomplete to open for /plan")
 	}
+
+	// Shift+Enter inserts newline
+	m.composer.SetValue("line1")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "line1\n" {
+		t.Errorf("expected composer to have newline after Shift+Enter, got: %q", m.composer.Value())
+	}
+
+	// Composer band covers at least 3 rows
+	renderedBand := renderComposerBand(m.composer.View(), 80)
+	bandLines := strings.Split(renderedBand, "\n")
+	if len(bandLines) < 3 {
+		t.Errorf("expected composer band to have at least 3 lines, got: %d", len(bandLines))
+	}
 }
 
 func TestWorkingIndicator(t *testing.T) {
-	working := renderWorking(40 * time.Second)
+	working := renderWorking(40*time.Second, false)
 	if !strings.Contains(working, "Working (40s · esc to interrupt)") {
 		t.Errorf("expected Working title, got: %s", working)
 	}
 	if !strings.Contains(working, "Tip:") {
 		t.Errorf("expected Tip line, got: %s", working)
+	}
+
+	thinking := renderWorking(15*time.Second, true)
+	if !strings.Contains(thinking, "Thinking (15s · esc to interrupt)") {
+		t.Errorf("expected Thinking title, got: %s", thinking)
+	}
+}
+
+func TestStreamingFiltersReasoningDelta(t *testing.T) {
+	m := &tuiModel{}
+
+	// 1. Reasoning delta should set thinking=true and NOT add to currentStreamText
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventModelStream,
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Internal model thoughts...",
+		},
+	})
+	if !m.thinking {
+		t.Errorf("expected m.thinking to be true during reasoning_delta")
+	}
+	if m.currentStreamText != "" {
+		t.Errorf("expected currentStreamText to be empty, got: %q", m.currentStreamText)
+	}
+
+	// 2. Text delta should append to currentStreamText and reset thinking
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventModelStream,
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Hello user",
+		},
+	})
+	if m.thinking {
+		t.Errorf("expected m.thinking to be false after text_delta")
+	}
+	if m.currentStreamText != "Hello user" {
+		t.Errorf("expected currentStreamText to be 'Hello user', got: %q", m.currentStreamText)
+	}
+
+	// 3. select_tool_category should be ignored and not add to entries
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventToolStarted,
+		Tool: core.ToolCall{
+			Name: "select_tool_category",
+		},
+	})
+	if len(m.entries) != 0 {
+		t.Errorf("expected select_tool_category to be ignored, got %d entries", len(m.entries))
+	}
+}
+
+func TestMouseWheelScrolling(t *testing.T) {
+	m := &tuiModel{
+		viewport: newTUIModel(nil, nil, "test-sess").viewport,
+	}
+	m.width = 80
+	m.height = 24
+	m.viewport.SetWidth(80)
+	m.viewport.SetHeight(10)
+	// Add many lines of content
+	m.viewport.SetContent(strings.Repeat("line\n", 50))
+	m.viewport.GotoBottom()
+	if m.scrolledUp {
+		t.Errorf("expected scrolledUp to be false at bottom")
+	}
+
+	// Scroll up with mouse wheel
+	mod, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m = mod.(*tuiModel)
+	if !m.scrolledUp {
+		t.Errorf("expected scrolledUp to be true after MouseWheelUp")
+	}
+
+	// Click to jump back to bottom
+	mod, _ = m.Update(tea.MouseClickMsg{Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if m.scrolledUp {
+		t.Errorf("expected scrolledUp to be false after clicking back to bottom")
 	}
 }
 

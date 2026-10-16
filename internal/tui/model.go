@@ -43,11 +43,12 @@ type tuiModel struct {
 	statusMessage     string
 	streamActive      bool
 	currentStreamText string
+	thinking          bool
 }
 
 func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID string) *tuiModel {
 	comp := textarea.New()
-	comp.Placeholder = "Ask Codex to do anything"
+	comp.Placeholder = "Ask Lune to do anything"
 	comp.Prompt = "› "
 	comp.ShowLineNumbers = false
 	comp.DynamicHeight = true
@@ -106,11 +107,13 @@ func (m *tuiModel) updateLayout() {
 
 	// Measure bottom components height:
 	// - Header: ~2-3 lines
-	// - Composer: composer height (1 to 5) + 1
+	// - Blank line gap before composer: 1 line
+	// - Composer band: composer height (1 to 5) + 2 padding rows
 	// - Footer: 2 lines
 	// - Popup / Question / Approval / Plan review if open
 	headerHeight := 3
-	composerHeight := m.composer.Height() + 1
+	gapHeight := 1
+	composerBandHeight := m.composer.Height() + 2
 	footerHeight := 2
 
 	var modalHeight int
@@ -124,7 +127,7 @@ func (m *tuiModel) updateLayout() {
 		modalHeight = len(m.autocompleteItems) + 1
 	}
 
-	occupied := headerHeight + composerHeight + footerHeight + modalHeight
+	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
 	vpHeight := max(3, m.height-occupied)
 
 	m.viewport.SetWidth(contentWidth)
@@ -163,7 +166,7 @@ func (m *tuiModel) refreshViewportContent() {
 	// Active working indicator
 	if m.running {
 		elapsed := time.Since(m.taskStartedAt)
-		blocks = append(blocks, renderWorking(elapsed))
+		blocks = append(blocks, renderWorking(elapsed, m.thinking))
 	}
 
 	fullText := strings.Join(blocks, "\n\n")
@@ -201,6 +204,9 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderAutocompletePopup(m.autocompleteItems, m.autocompleteIndex, contentWidth))
 	}
 
+	// Spacing gap before composer
+	sections = append(sections, "")
+
 	// 5. Composer
 	sections = append(sections, renderComposerBand(m.composer.View(), contentWidth))
 
@@ -211,6 +217,7 @@ func (m *tuiModel) View() tea.View {
 
 	view := tea.NewView(content)
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	return view
 }
 
