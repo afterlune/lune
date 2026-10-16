@@ -426,8 +426,14 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 				_ = json.Unmarshal(arguments, &text)
 				arguments = json.RawMessage(text)
 			}
+			title := humanizedToolSummary(value.Name, arguments, workspace...)
+			if strings.HasPrefix(title, "Run ") {
+				title = "Ran " + strings.TrimPrefix(title, "Run ")
+			} else {
+				title += " · done"
+			}
 			entries = append(entries, transcriptEntry{
-				Role: "tool", Text: humanizedToolSummary(value.Name, arguments, workspace...) + " · done",
+				Role: "tool", Text: title,
 				ActivityGroupID: "history-turn:" + strconv.Itoa(turn),
 			})
 		}

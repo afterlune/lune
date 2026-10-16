@@ -47,7 +47,7 @@ func TestBackgroundCommandUpdatesOriginalRecordAndShowsExit(t *testing.T) {
 	output.Output = "FAIL"
 	ui.updateToolActivity(core.ToolCall{ID: "poll", InvocationID: "poll-inv", Name: "command_status", Details: &publictool.ExecutionDetails{Command: &output}})
 	text, _ := ui.transcriptContent()
-	if len(ui.entries) != 1 || !strings.Contains(text, "Failed (exit 1) go test ./...") {
+	if len(ui.entries) != 1 || !strings.Contains(text, "Ran go test ./... · failed (exit 1)") {
 		t.Fatalf("timeline=%q", text)
 	}
 	stale := output

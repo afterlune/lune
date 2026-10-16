@@ -14,7 +14,7 @@ func TestTranscriptSearchExpandsToolRowsAndPreservesComposerDraft(t *testing.T) 
 	ui.input.SetValue("keep this draft")
 	ui.entries = []tuiEntry{
 		{role: "assistant", text: "The file is ready."},
-		{role: "tool", activityID: "call-1", text: "Reading internal/config/provider.go · done"},
+		{role: "tool", activityID: "call-1", text: "Read internal/config/provider.go · done"},
 	}
 	ui.refreshPanels()
 	ui.openTranscriptSearch()
@@ -22,7 +22,7 @@ func TestTranscriptSearchExpandsToolRowsAndPreservesComposerDraft(t *testing.T) 
 	ui.updateTranscriptSearch()
 	ui.updateLayout()
 
-	if len(ui.searchMatches) != 1 || !strings.Contains(ui.chat.GetContent(), "Reading internal/config/provider.go") {
+	if len(ui.searchMatches) != 1 || !strings.Contains(ui.chat.GetContent(), "Read internal/config/provider.go") {
 		t.Fatalf("search matches=%v content=%q", ui.searchMatches, ui.chat.GetContent())
 	}
 	if ui.input.Value() != "keep this draft" {
@@ -36,14 +36,14 @@ func TestTranscriptSearchExpandsToolRowsAndPreservesComposerDraft(t *testing.T) 
 
 func TestTranscriptSearchEscapeRestoresCollapsedActivity(t *testing.T) {
 	ui := newTUIModel(nil, false)
-	ui.entries = []tuiEntry{{role: "tool", activityID: "call-1", text: "Reading private.txt · done"}}
+	ui.entries = []tuiEntry{{role: "tool", activityID: "call-1", text: "Read private.txt · done"}}
 	ui.refreshPanels()
 	ui.openTranscriptSearch()
 	if !ui.activityExpanded["call-1"] {
 		t.Fatal("search should reveal collapsed tool activity")
 	}
 	ui.handleTranscriptSearchKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
-	if ui.searchOpen || ui.activityExpanded["call-1"] || !strings.Contains(ui.chat.GetContent(), "Reading private.txt") {
+	if ui.searchOpen || ui.activityExpanded["call-1"] || !strings.Contains(ui.chat.GetContent(), "Read private.txt") {
 		t.Fatalf("Esc should restore prior transcript disclosure state: open=%v expanded=%v content=%q", ui.searchOpen, ui.activityExpanded, ui.chat.GetContent())
 	}
 }
@@ -143,18 +143,18 @@ func TestToolActivityInvocationsStaySeparateAndExpandOutput(t *testing.T) {
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-2", Name: "web_search", Started: true}})
 	ui.entries = append(ui.entries, tuiEntry{role: "assistant", text: "Final answer remains visible."})
 	content, _ := ui.transcriptContent()
-	if len(ui.entries) != 3 || !strings.Contains(content, "Reading a.go") || !strings.Contains(content, "Searching the web") || !strings.Contains(content, "Final answer remains visible.") || strings.Contains(content, "first file contents") {
+	if len(ui.entries) != 3 || !strings.Contains(content, "Read a.go") || !strings.Contains(content, "Searched the web") || !strings.Contains(content, "Final answer remains visible.") || strings.Contains(content, "first file contents") {
 		t.Fatalf("collapsed activity = %q", content)
 	}
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Duration: 20}})
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Reading a.go · done") || !strings.Contains(content, "Searching the web · running") {
+	if !strings.Contains(content, "Read a.go · done") || !strings.Contains(content, "Searched the web · running") {
 		t.Fatalf("collapsed activity did not follow the latest event: %q", content)
 	}
 	ui.activityFocus = true
 	ui.toggleFocusedActivity()
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Reading a.go · done") || !strings.Contains(content, "Searching the web · running") || !strings.Contains(content, "first file contents") {
+	if !strings.Contains(content, "Read a.go · done") || !strings.Contains(content, "Searched the web · running") || !strings.Contains(content, "first file contents") {
 		t.Fatalf("expanded activity = %q", content)
 	}
 }

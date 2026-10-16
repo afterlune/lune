@@ -52,30 +52,49 @@ func activityKey(event core.ToolCall) string {
 }
 
 func toolActivityTitle(activity tuiActivity) string {
-	title := activity.summary
 	if d := activity.details; d != nil {
 		if c := d.Command; c != nil {
-			switch c.Command.Status {
-			case publictool.CommandRunning, publictool.CommandStopping:
-				return "Running " + safeToolText(c.Command.Command)
-			case publictool.CommandSucceeded:
-				return "Ran " + safeToolText(c.Command.Command)
-			case publictool.CommandFailed:
-				if c.Command.ExitCode != nil {
-					return fmt.Sprintf("Failed (exit %d) %s", *c.Command.ExitCode, safeToolText(c.Command.Command))
-				}
-				return "Failed " + safeToolText(c.Command.Command)
-			default:
-				return string(c.Command.Status) + " · " + safeToolText(c.Command.Command)
+			status := c.Command.Status
+			if status == "" {
+				status = publictool.CommandStatus(activity.status)
 			}
+			return commandActivityTitle(c.Command.Command, status, c.Command.ExitCode)
 		}
 		if len(d.Changes) > 0 {
 			change := d.Changes[0]
-			return fmt.Sprintf("Edited %s (+%d -%d)", safeDisplayPath(change.Path), change.Added, change.Removed)
+			title := fmt.Sprintf("Edited %s (+%d -%d)", safeDisplayPath(change.Path), change.Added, change.Removed)
+			return title + " · " + activity.status
 		}
 	}
-	title += " · " + activity.status
-	return title
+	if strings.HasPrefix(activity.summary, "Run ") {
+		command := strings.TrimPrefix(activity.summary, "Run ")
+		return commandActivityTitle(command, publictool.CommandStatus(activity.status), nil)
+	}
+	return activity.summary + " · " + activity.status
+}
+
+func commandActivityTitle(command string, status publictool.CommandStatus, exitCode *int) string {
+	command = safeToolText(command)
+	switch status {
+	case publictool.CommandRunning, publictool.CommandStopping:
+		return "Run " + command
+	case publictool.CommandSucceeded, publictool.CommandStatus("done"):
+		return "Ran " + command
+	case publictool.CommandFailed:
+		result := "failed"
+		if exitCode != nil {
+			result += fmt.Sprintf(" (exit %d)", *exitCode)
+		}
+		return "Ran " + command + " · " + result
+	case publictool.CommandCancelled:
+		return "Ran " + command + " · cancelled"
+	case publictool.CommandTimedOut:
+		return "Ran " + command + " · timed out"
+	case publictool.CommandInterrupted:
+		return "Ran " + command + " · interrupted"
+	default:
+		return "Run " + command
+	}
 }
 
 func safeToolText(s string) string {

@@ -930,7 +930,7 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 	ranges := []lipgloss.Range{lipgloss.NewRange(0, markerWidth, lipgloss.NewStyle().Foreground(lipgloss.Color(markerColor)))}
 	markerByteWidth := len(marker)
 	plain := line[markerByteWidth+1:]
-	for _, verb := range []string{"Running", "Failed", "Edited", "Reading", "Writing", "Searching", "Fetching", "Listing", "Ran"} {
+	for _, verb := range []string{"Ran", "Run", "Failed", "Read", "Wrote", "Edited", "Listed", "Found", "Searched", "Fetched", "Processed"} {
 		if !strings.HasPrefix(plain, verb+" ") {
 			continue
 		}
@@ -950,6 +950,16 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 				ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:commandStart]), lipgloss.Width(line[:statusEnd]), statusStyle))
 				commandStart += close + 2
 				command = line[commandStart:]
+			}
+		}
+		if verb == "Ran" {
+			if failedAt := strings.LastIndex(command, " · failed"); failedAt >= 0 {
+				statusStart := commandStart + failedAt
+				ranges = append(ranges, lipgloss.NewRange(
+					lipgloss.Width(line[:statusStart]),
+					lipgloss.Width(line),
+					lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)),
+				))
 			}
 		}
 		fields := strings.Fields(command)

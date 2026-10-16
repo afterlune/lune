@@ -402,7 +402,7 @@ func formatToolApproval(request core.ApprovalRequest, workspace ...string) strin
 }
 
 func formatToolApprovalWithKeys(request core.ApprovalRequest, workspace, approveKey, denyKey string) string {
-	display := humanizedToolSummary(request.Tool, request.Arguments, workspace)
+	display := toolApprovalAction(request.Tool, request.Arguments, workspace)
 	warning := ""
 	details := ""
 	if request.Tool == "command" {
@@ -413,5 +413,31 @@ func formatToolApprovalWithKeys(request core.ApprovalRequest, workspace, approve
 		details = "\nCommand: " + cleanInlineText(args.Command)
 		warning = "\nApproved shell commands run as your user and can access files outside the workspace."
 	}
-	return fmt.Sprintf("Allow %s once?%s%s\nPress %s to approve once, %s to deny, or Esc to interrupt the task.", display, details, warning, approveKey, denyKey)
+	return fmt.Sprintf("Approve this operation once?\nAction: %s%s%s\nPress %s to approve once, %s to deny, or Esc to interrupt the task.", display, details, warning, approveKey, denyKey)
+}
+
+func toolApprovalAction(name string, arguments json.RawMessage, workspace string) string {
+	summary := humanizedToolSummary(name, arguments, workspace)
+	switch name {
+	case "write_file":
+		return "Write " + strings.TrimPrefix(summary, "Wrote ")
+	case "edit_file":
+		return "Edit " + strings.TrimPrefix(summary, "Edited ")
+	case "list_dir":
+		return "List " + strings.TrimPrefix(summary, "Listed ")
+	case "glob":
+		return "Find project files"
+	case "grep":
+		return "Search " + strings.TrimPrefix(summary, "Searched ")
+	case "web_search":
+		return "Search the web"
+	case "web_fetch":
+		return "Fetch " + strings.TrimPrefix(summary, "Fetched ")
+	case "command":
+		return "Run command"
+	case "html":
+		return "Process web content"
+	default:
+		return summary
+	}
 }

@@ -315,36 +315,36 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 	}
 	_ = json.Unmarshal(arguments, &args)
 	path := safeDisplayPath(args.Path)
-	summary := "Working on a tool request"
+	summary := "Tool request"
 	switch name {
 	case "read_file":
-		summary = summaryWithPath("Reading", path)
+		summary = summaryWithPath("Read", path)
 	case "write_file":
-		summary = summaryWithPath("Writing", path)
+		summary = summaryWithPath("Wrote", path)
 	case "edit_file":
-		summary = summaryWithPath("Editing", path)
+		summary = summaryWithPath("Edited", path)
 	case "list_dir":
-		summary = summaryWithPath("Listing", path)
+		summary = summaryWithPath("Listed", path)
 	case "glob":
-		summary = "Finding project files"
+		summary = "Found project files"
 	case "grep":
 		if path != "" {
-			summary = "Searching " + path
+			summary = "Searched " + path
 		} else {
-			summary = "Searching project files"
+			summary = "Searched project files"
 		}
 	case "web_search":
-		summary = "Searching the web"
+		summary = "Searched the web"
 	case "web_fetch":
 		if parsed, err := url.Parse(args.URL); err == nil && parsed.Hostname() != "" {
-			summary = "Fetching " + parsed.Hostname()
+			summary = "Fetched " + parsed.Hostname()
 		} else {
-			summary = "Fetching a web page"
+			summary = "Fetched a web page"
 		}
 	case "command":
-		summary = "Running " + safeToolText(args.Command)
+		summary = "Run " + safeToolText(args.Command)
 	case "html":
-		summary = "Processing web content"
+		summary = "Processed web content"
 	}
 	if len(workspace) > 0 {
 		summary = absoluteToolSummary(summary, workspace[0])
@@ -375,7 +375,7 @@ func absoluteToolSummary(summary, workspace string) string {
 	if workspace == "" {
 		return summary
 	}
-	for _, prefix := range []string{"Reading ", "Writing ", "Editing ", "Listing ", "Searching "} {
+	for _, prefix := range []string{"Read ", "Wrote ", "Edited ", "Listed ", "Searched "} {
 		if !strings.HasPrefix(summary, prefix) {
 			continue
 		}
@@ -429,7 +429,7 @@ func (m *tuiModel) activityDetailsContent() string {
 			activities.WriteByte('\n')
 		}
 		icon := activityBadge(activity.status)
-		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(icon) + " " + activity.summary + " · " + activity.status
+		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(icon) + " " + toolActivityTitle(activity)
 		if activity.status != "running" && activity.duration > 0 {
 			line += "  " + activity.duration.Round(time.Millisecond).String()
 		}
@@ -510,7 +510,7 @@ func (m *tuiModel) recentWorkspacePaths(limit int) []string {
 }
 
 func activityPath(summary string) string {
-	for _, prefix := range []string{"Reading ", "Writing ", "Editing ", "Listing ", "Searching "} {
+	for _, prefix := range []string{"Read ", "Wrote ", "Edited ", "Listed ", "Searched "} {
 		if strings.HasPrefix(summary, prefix) {
 			path := strings.TrimSpace(strings.TrimPrefix(summary, prefix))
 			if filepath.IsAbs(path) {

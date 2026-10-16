@@ -22,7 +22,7 @@ func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
 		t.Fatalf("finished tool call should update its live transcript row: %#v", ui.entries)
 	}
 	view := ui.activityDetailsContent()
-	if !strings.Contains(view, "Reading a workspace file") || !strings.Contains(view, "failed") {
+	if !strings.Contains(view, "Read a workspace file") || !strings.Contains(view, "failed") {
 		t.Fatalf("view = %q, want humanized tool and failure status", view)
 	}
 	if strings.Contains(view, "read_file") || strings.Contains(view, "internal-call-id") || strings.Contains(view, "arguments") || strings.Contains(view, "secret tool output") {
@@ -34,7 +34,7 @@ func TestTUIHistoryTranscriptHidesToolArgumentsAndOutput(t *testing.T) {
 	toolOutput := "secret tool output"
 	history := json.RawMessage(`[{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"private.txt\"}"},{"type":"function_call_output","call_id":"call-1","output":"` + toolOutput + `"}]`)
 	entries := transcriptFromHistory(history)
-	if len(entries) != 1 || entries[0].Text != "Reading private.txt · done" {
+	if len(entries) != 1 || entries[0].Text != "Read private.txt · done" {
 		t.Fatalf("transcript entries = %#v, want one sanitized tool lifecycle", entries)
 	}
 	if strings.Contains(entries[0].Text, "read_file") || strings.Contains(entries[0].Text, toolOutput) {
@@ -47,7 +47,7 @@ func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
 	ui.restoreSessionState(core.Session{History: json.RawMessage(`[{"type":"function_call","call_id":"call-1","name":"read_file","arguments":"{\"path\":\"private.txt\"}"}]`)})
 	ui.refreshPanels()
 	view := ui.activityDetailsContent() + "\n" + strings.Join(entryTexts(ui.entries), "\n")
-	if strings.Contains(view, "read_file") || !strings.Contains(view, "Reading private.txt") {
+	if strings.Contains(view, "read_file") || !strings.Contains(view, "Read private.txt") {
 		t.Fatalf("legacy transcript exposes internal tool name: %q", view)
 	}
 }
@@ -62,13 +62,13 @@ func TestTUIRestoredHistoryCollapsesToolCallsByUserTurn(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.entries = transcriptEntries(history)
 	content, _ := ui.transcriptContent()
-	if len(ui.toolActivityGroups()) != 1 || strings.Contains(content, "Reading main.go") || !strings.Contains(content, "Searching project files") || !strings.Contains(content, "Found two TODOs.") {
+	if len(ui.toolActivityGroups()) != 1 || strings.Contains(content, "Read main.go") || !strings.Contains(content, "Searched project files") || !strings.Contains(content, "Found two TODOs.") {
 		t.Fatalf("restored collapsed transcript = groups:%d content:%q", len(ui.toolActivityGroups()), content)
 	}
 	ui.activityFocus = true
 	ui.toggleFocusedActivity()
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Reading main.go · done") || !strings.Contains(content, "Searching project files · done") {
+	if !strings.Contains(content, "Read main.go · done") || !strings.Contains(content, "Searched project files · done") {
 		t.Fatalf("restored expanded transcript = %q", content)
 	}
 }
@@ -137,7 +137,7 @@ func TestTUIActivityUsesWorkspacePathsAndUserVisibleToolNames(t *testing.T) {
 		ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`), Duration: 12,
 	}})
 	view := ui.activityDetailsContent() + "\n" + strings.Join(entryTexts(ui.entries), "\n")
-	if len(ui.activities) != 1 || ui.activities[0].summary != "Reading "+file || !strings.Contains(view, "Lead agent") || !strings.Contains(view, "Model usage") {
+	if len(ui.activities) != 1 || ui.activities[0].summary != "Read "+file || !strings.Contains(view, "Lead agent") || !strings.Contains(view, "Model usage") {
 		t.Fatalf("activity details are missing real tool activity, agent status, or usage: %q", view)
 	}
 	if strings.Contains(view, "read_file") || strings.Contains(view, "subagent") || strings.Contains(view, "artifact") || strings.Contains(view, "0%") {
@@ -150,7 +150,7 @@ func TestToolApprovalUsesHumanTextAndSafeCommandPreview(t *testing.T) {
 	read := formatToolApproval(core.ApprovalRequest{
 		Tool: "read_file", Arguments: json.RawMessage(`{"path":"notes.txt"}`),
 	}, workspace)
-	if !strings.Contains(read, "Reading "+filepath.ToSlash(filepath.Join(workspace, "notes.txt"))) || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
+	if !strings.Contains(read, "Action: Read "+filepath.ToSlash(filepath.Join(workspace, "notes.txt"))) || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
 		t.Fatalf("read approval = %q; want a human-readable path without internal payload", read)
 	}
 	command := formatToolApproval(core.ApprovalRequest{

@@ -217,7 +217,7 @@ func workspaceFixtureActivities(count int) []tuiActivity {
 		}
 		activities[index] = tuiActivity{
 			callID:  fmt.Sprintf("call-%02d", index+1),
-			summary: fmt.Sprintf("Reading internal/config/section-%02d/provider-settings.go", index+1),
+			summary: fmt.Sprintf("Read internal/config/section-%02d/provider-settings.go", index+1),
 			status:  status,
 		}
 	}

@@ -72,9 +72,9 @@ func renderLightToolActivity(title string, output []string, expanded bool, width
 	}
 	lines := make([]string, 0, min(len(output), 3)+2)
 	markerColor := codexLight.Success
-	if strings.HasPrefix(title, "Failed ") {
+	if strings.HasPrefix(title, "Failed ") || strings.Contains(title, " · failed") {
 		markerColor = codexLight.Error
-	} else if strings.HasPrefix(title, "Running ") && marker == "•" {
+	} else if strings.HasPrefix(title, "Run ") && marker == "•" {
 		marker = windowTitleSpinner[0]
 	}
 	lines = append(lines, ansi.Truncate(renderLightToolHeader(marker, title, markerColor), width, "…"))
@@ -103,7 +103,7 @@ func renderLightToolHeader(marker, title, markerColor string) string {
 	}
 	verb := ""
 	command := title
-	for _, candidate := range []string{"Ran ", "Running ", "Failed ", "Edited ", "Reading ", "Writing ", "Searching ", "Fetching ", "Listing "} {
+	for _, candidate := range []string{"Ran ", "Run ", "Failed ", "Read ", "Wrote ", "Edited ", "Listed ", "Found ", "Searched ", "Fetched ", "Processed "} {
 		if strings.HasPrefix(title, candidate) {
 			verb, command = candidate, strings.TrimPrefix(title, candidate)
 			break
@@ -123,11 +123,22 @@ func renderLightToolHeader(marker, title, markerColor string) string {
 			command = command[close+2:]
 		}
 	}
+	failureStatus := ""
+	if strings.HasPrefix(verb, "Ran") {
+		if index := strings.LastIndex(command, " · failed"); index >= 0 {
+			failureStatus = command[index:]
+			command = command[:index]
+		}
+	}
 	if status != "" {
 		return markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " +
 			lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Render(status) + " " + renderLightCommand(command)
 	}
-	return markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " + renderLightCommand(command)
+	header := markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " + renderLightCommand(command)
+	if failureStatus != "" {
+		header += lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Render(failureStatus)
+	}
+	return header
 }
 
 func renderLightCommand(command string) string {
@@ -175,9 +186,10 @@ func itoa(value int) string {
 // renderToolActivity returns a compact, tree-indented tool record. The first
 // three output lines stay visible until the caller expands the invocation.
 func renderToolActivity(cmd string, output []string, expanded bool, width int) string {
-	if !strings.HasPrefix(cmd, "Ran ") && !strings.HasPrefix(cmd, "Running ") && !strings.HasPrefix(cmd, "Failed ") &&
-		!strings.HasPrefix(cmd, "Edited ") && !strings.HasPrefix(cmd, "Reading ") && !strings.HasPrefix(cmd, "Writing ") &&
-		!strings.HasPrefix(cmd, "Searching ") && !strings.HasPrefix(cmd, "Fetching ") && !strings.HasPrefix(cmd, "Listing ") {
+	if !strings.HasPrefix(cmd, "Ran ") && !strings.HasPrefix(cmd, "Run ") && !strings.HasPrefix(cmd, "Failed ") &&
+		!strings.HasPrefix(cmd, "Read ") && !strings.HasPrefix(cmd, "Wrote ") && !strings.HasPrefix(cmd, "Edited ") &&
+		!strings.HasPrefix(cmd, "Listed ") && !strings.HasPrefix(cmd, "Found ") && !strings.HasPrefix(cmd, "Searched ") &&
+		!strings.HasPrefix(cmd, "Fetched ") && !strings.HasPrefix(cmd, "Processed ") {
 		cmd = "Ran " + cmd
 	}
 	return renderLightToolActivity(cmd, output, expanded, width, "•")
