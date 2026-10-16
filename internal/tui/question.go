@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -162,34 +164,30 @@ func (m *tuiModel) renderQuestion() string {
 	colors := m.themeColors()
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	textStyle := accent
+	descriptionStyle := muted
+	indent := ""
+	bg := lipgloss.Color(codexLight.Surface)
 	width := max(1, m.width-2)
 	if light {
-		surface := lipgloss.Color(codexLight.Surface)
-		width = max(1, m.width-4)
-		accent = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary)).Background(surface)
-		muted = lightMutedStyle().Background(surface)
+		indent = "  "
+		textStyle = lightTextStyle()
+		descriptionStyle = lightTextStyle()
+		accent = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary))
+		muted = lightMutedStyle()
 	}
 	lines := make([]string, 0, len(q.request.Options)*2+5)
-	appendWrapped := func(value string) {
+	appendText := func(value, lineIndent string, style lipgloss.Style) {
 		if light {
-			lines = append(lines, wrapQuestionStyledText(value, width)...)
+			lines = append(lines, wrapAndPadLines(value, lineIndent, m.width, style, bg)...)
 			return
 		}
-		lines = append(lines, wrapDisplayText(value, width))
-	}
-	appendMarkdown := func(value string) {
-		if light {
-			lines = append(lines, renderQuestionMarkdown(value, width, lipgloss.Color(codexLight.Surface))...)
-			return
+		for _, line := range strings.Split(wrapDisplayText(value, width), "\n") {
+			lines = append(lines, style.Render(line))
 		}
-		appendWrapped(value)
 	}
-	appendWrapped(muted.Render("Question"))
-	if light {
-		appendMarkdown(q.request.Question)
-	} else {
-		appendWrapped(accent.Render(q.request.Question))
-	}
+	appendText("Question", indent, muted)
+	appendText(q.request.Question, indent, textStyle)
 	count := len(q.request.Options)
 	hasChoices := count >= 2
 	focusLine := 0
@@ -206,32 +204,36 @@ func (m *tuiModel) renderQuestion() string {
 				prefix = "› "
 			}
 			row := fmt.Sprintf("%s%d. %s", prefix, i+1, label)
+			style := descriptionStyle
 			if i == q.selected {
 				focusLine = len(lines)
-				row = accent.Render(row)
-			} else if light {
-				row = lightTextStyle().Background(lipgloss.Color(codexLight.Surface)).Render(row)
+				style = accent
 			}
-			appendWrapped(row)
+			appendText(row, indent, style)
 			if description != "" {
 				if light {
-					appendMarkdown("     " + description)
+					appendText(description, "      ", descriptionStyle)
 				} else {
-					appendWrapped(muted.Render("     " + description))
+					appendText("     "+description, "", muted)
 				}
 			}
 		}
 	}
 	if q.notes {
-		appendWrapped(q.input.View())
+		if light {
+			lines = append(lines, wrapStyledQuestionInput(q.input.View(), indent, m.width, bg)...)
+		} else {
+			lines = append(lines, q.input.View())
+		}
 		focusLine = max(0, len(lines)-1)
 	}
 	if q.err != "" {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error))
 		if light {
-			errStyle = errStyle.Background(lipgloss.Color(codexLight.Surface))
+			appendText(q.err, indent, errStyle)
+		} else {
+			appendText(q.err, "", errStyle)
 		}
-		appendWrapped(errStyle.Render(q.err))
 	}
 	hint := m.keyLabel("send") + " submit · Esc hide"
 	if hasChoices {
@@ -256,52 +258,111 @@ func (m *tuiModel) renderQuestion() string {
 	if offset > 0 || offset+budget < totalLines {
 		hint = "PgUp/PgDn scroll · " + hint
 	}
-	hintStyle := muted
-	contentWidth := max(1, m.width-2)
 	if light {
-		contentWidth = max(1, m.width-4)
+		content := append([]string(nil), body...)
+		content = append(content, wrapAndPadLines(hint, indent, m.width, muted, bg)...)
+		content = append([]string{renderFullWidthBlankLine(m.width, bg)}, content...)
+		content = append(content, renderFullWidthBlankLine(m.width, bg))
+		return strings.Join(content, "\n")
 	}
-	content := append(body, hintStyle.Render(fitTerminalText(hint, contentWidth)))
-	if light {
-		return renderFullWidthBand(content, m.width, lipgloss.Color(codexLight.Surface), 2, 1)
-	}
+	content := append(body, muted.Render(fitTerminalText(hint, max(1, m.width-2))))
 	return lipgloss.NewStyle().Width(m.width).Padding(0, 1).Background(m.questionSurface()).Render(strings.Join(content, "\n"))
 }
 
 func (m *tuiModel) questionInputWidth() int {
-	width := max(1, m.width-2)
-	if m.lightLayout() {
-		width = max(1, m.width-4)
-	}
-	return width
+	return max(1, m.width-2)
 }
 
-func wrapQuestionStyledText(value string, width int) []string {
-	return strings.Split(ansi.Wrap(value, max(1, width), ""), "\n")
+type questionInlineStyleRange struct {
+	start int
+	end   int
+	style lipgloss.Style
 }
 
-func renderQuestionMarkdown(value string, width int, surface color.Color) []string {
-	base := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Background(surface)
+func parseQuestionMarkdown(text string, bg color.Color) (string, []questionInlineStyleRange) {
 	code := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText)).Background(lipgloss.Color("#E2E8F0"))
-	bold := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(surface).Bold(true)
-	var lines []string
-	for _, paragraph := range strings.Split(value, "\n") {
-		var rendered strings.Builder
-		last := 0
-		for _, match := range questionInlineMarkdown.FindAllStringSubmatchIndex(paragraph, -1) {
-			rendered.WriteString(base.Render(paragraph[last:match[0]]))
-			switch {
-			case match[2] >= 0:
-				rendered.WriteString(code.Render(paragraph[match[2]:match[3]]))
-			case match[4] >= 0:
-				rendered.WriteString(bold.Render(paragraph[match[4]:match[5]]))
-			}
-			last = match[1]
+	bold := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(bg).Bold(true)
+	var plain strings.Builder
+	var ranges []questionInlineStyleRange
+	last := 0
+	for _, match := range questionInlineMarkdown.FindAllStringSubmatchIndex(text, -1) {
+		plain.WriteString(text[last:match[0]])
+		style := code
+		start, end := match[2], match[3]
+		if start < 0 {
+			style = bold
+			start, end = match[4], match[5]
 		}
-		rendered.WriteString(base.Render(paragraph[last:]))
-		lines = append(lines, wrapQuestionStyledText(rendered.String(), width)...)
+		styledStart := plain.Len()
+		plain.WriteString(text[start:end])
+		ranges = append(ranges, questionInlineStyleRange{start: styledStart, end: plain.Len(), style: style})
+		last = match[1]
 	}
-	return lines
+	plain.WriteString(text[last:])
+	return plain.String(), ranges
+}
+
+func wrappedLineOffset(plain, line string, offset int) int {
+	if line == "" || strings.HasPrefix(plain[offset:], line) {
+		return offset
+	}
+	for offset < len(plain) {
+		r, size := utf8.DecodeRuneInString(plain[offset:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		offset += size
+		if strings.HasPrefix(plain[offset:], line) {
+			return offset
+		}
+	}
+	if index := strings.Index(plain[offset:], line); index >= 0 {
+		return offset + index
+	}
+	return offset
+}
+
+func renderQuestionTextRange(plain string, start, end int, textStyle lipgloss.Style, ranges []questionInlineStyleRange) string {
+	var rendered strings.Builder
+	cursor := start
+	for _, styledRange := range ranges {
+		if styledRange.end <= start || styledRange.start >= end {
+			continue
+		}
+		rangeStart := max(start, styledRange.start)
+		rangeEnd := min(end, styledRange.end)
+		if rangeStart > cursor {
+			rendered.WriteString(textStyle.Render(plain[cursor:rangeStart]))
+		}
+		if rangeEnd > rangeStart {
+			rendered.WriteString(styledRange.style.Render(plain[rangeStart:rangeEnd]))
+			cursor = rangeEnd
+		}
+	}
+	if cursor < end {
+		rendered.WriteString(textStyle.Render(plain[cursor:end]))
+	}
+	return rendered.String()
+}
+
+func wrapStyledQuestionInput(value, indent string, totalWidth int, bg color.Color) []string {
+	totalWidth = max(1, totalWidth)
+	indentWidth := lipgloss.Width(indent)
+	maxIndentWidth := max(0, totalWidth-1)
+	if indentWidth > maxIndentWidth {
+		indent = ansi.Truncate(indent, maxIndentWidth, "")
+		indentWidth = lipgloss.Width(indent)
+	}
+	contentWidth := max(1, totalWidth-indentWidth)
+	background := lipgloss.NewStyle().Background(bg)
+	whitespace := lipgloss.WithWhitespaceStyle(background)
+	styledIndent := background.Render(indent)
+	wrapped := strings.Split(ansi.Wrap(value, contentWidth, ""), "\n")
+	rows := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		rows = append(rows, lipgloss.PlaceHorizontal(totalWidth, lipgloss.Left, styledIndent+line, whitespace))
+	}
+	return rows
 }
 
 func (m *tuiModel) submitQuestionAnswer(question core.UserQuestionRequest, answer string) tea.Cmd {

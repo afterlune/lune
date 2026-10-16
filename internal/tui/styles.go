@@ -36,34 +36,40 @@ var codexLight = LightTheme{
 	TaskSummary: "#B45309", Error: "#B91C1C",
 }
 
-func renderFullWidthBand(lines []string, width int, bg color.Color, padX, padY int) string {
-	width = max(1, width)
-	padY = max(0, padY)
-	padX = max(0, min(padX, (width-1)/2))
-	contentWidth := max(1, width-2*padX)
+func wrapAndPadLines(text, indent string, totalWidth int, textStyle lipgloss.Style, bg color.Color) []string {
+	totalWidth = max(1, totalWidth)
+	indentWidth := lipgloss.Width(indent)
+	maxIndentWidth := max(0, totalWidth-1)
+	if indentWidth > maxIndentWidth {
+		indent = ansi.Truncate(indent, maxIndentWidth, "")
+		indentWidth = lipgloss.Width(indent)
+	}
+	rightPad := 0
+	contentWidth := max(1, totalWidth-indentWidth-rightPad)
 	background := lipgloss.NewStyle().Background(bg)
 	whitespace := lipgloss.WithWhitespaceStyle(background)
-	emptyRow := func() string {
-		return lipgloss.PlaceHorizontal(width, lipgloss.Left, "", whitespace)
-	}
+	styledIndent := background.Render(indent)
 
-	rows := make([]string, 0, len(lines)+padY*2)
-	for range padY {
-		rows = append(rows, emptyRow())
-	}
-	for _, line := range lines {
-		for _, paragraphLine := range strings.Split(line, "\n") {
-			wrapped := ansi.Wrap(paragraphLine, contentWidth, "")
-			for _, wrappedLine := range strings.Split(wrapped, "\n") {
-				content := background.Render(strings.Repeat(" ", padX)) + wrappedLine
-				rows = append(rows, lipgloss.PlaceHorizontal(width, lipgloss.Left, content, whitespace))
-			}
+	var rows []string
+	for _, paragraph := range strings.Split(text, "\n") {
+		plain, ranges := parseQuestionMarkdown(paragraph, bg)
+		wrappedLines := strings.Split(ansi.Wrap(plain, contentWidth, ""), "\n")
+		offset := 0
+		for _, line := range wrappedLines {
+			start := wrappedLineOffset(plain, line, offset)
+			end := min(len(plain), start+len(line))
+			content := renderQuestionTextRange(plain, start, end, textStyle.Background(bg), ranges)
+			styled := styledIndent + content
+			rows = append(rows, lipgloss.PlaceHorizontal(totalWidth, lipgloss.Left, styled, whitespace))
+			offset = end
 		}
 	}
-	for range padY {
-		rows = append(rows, emptyRow())
-	}
-	return strings.Join(rows, "\n")
+	return rows
+}
+
+func renderFullWidthBlankLine(width int, bg color.Color) string {
+	background := lipgloss.NewStyle().Background(bg)
+	return lipgloss.PlaceHorizontal(max(1, width), lipgloss.Left, "", lipgloss.WithWhitespaceStyle(background))
 }
 
 func inlineCodeStyle() lipgloss.Style {
@@ -178,23 +184,27 @@ func renderLightActionTarget(verb, target string) string {
 		}
 	}
 	style := lightTextStyle()
-	if isLightPathTarget(target) {
+	fields := strings.Fields(target)
+	if len(fields) > 0 && isPathLike(fields[0], target) {
 		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color(codexLight.CodeSurface))
 	}
 	return style.Render(target) + lightTextStyle().Render(details)
 }
 
-func isLightPathTarget(target string) bool {
-	target = strings.TrimSpace(target)
-	if target == "" {
+func isPathLike(arg, fullRest string) bool {
+	arg = strings.TrimSpace(arg)
+	fullRest = strings.TrimSpace(fullRest)
+	if arg == "" || fullRest == "" {
 		return false
 	}
-	if strings.ContainsAny(target, `/\\.`) {
+	firstToken := strings.Fields(fullRest)[0]
+	if strings.ContainsAny(fullRest, " \t\r\n") && !strings.ContainsAny(firstToken, `/\\.`) {
+		return false
+	}
+	if strings.ContainsAny(arg, `/\\.`) {
 		return true
 	}
-	// A lone target is commonly an extensionless filename (for example Makefile).
-	// Multi-word fallback summaries such as "a workspace file" remain prose.
-	return !strings.ContainsAny(target, " \t\r\n")
+	return strings.EqualFold(arg, "Makefile") || strings.EqualFold(arg, "Dockerfile")
 }
 
 func renderLightCommand(command string) string {
