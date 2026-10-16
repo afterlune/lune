@@ -31,7 +31,7 @@ type LightTheme struct {
 
 var codexLight = LightTheme{
 	Canvas: "#FFFFFF", Surface: "#F3F4F6", Primary: "#1F2937", Muted: "#6B7280",
-	Subtle: "#9CA3AF", Success: "#16A34A", CodeSurface: "#E6F4EA", CodeText: "#137333",
+	Subtle: "#9CA3AF", Success: "#16A34A", CodeSurface: "#E6F4EA", CodeText: "#15803D",
 	Flag: "#B91C1C", PillSurface: "#E0F2FE", PillText: "#0284C7", Mode: "#C026D3",
 	TaskSummary: "#B45309", Error: "#B91C1C",
 }
@@ -131,7 +131,7 @@ func renderLightToolHeader(marker, title, markerColor string) string {
 	if verb == "" {
 		return markerRun + space + lightTextStyle().Render(title)
 	}
-	verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
+	verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)
 	if strings.HasPrefix(verb, "Failed") {
 		verbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Bold(true)
 	}
@@ -180,10 +180,29 @@ func renderLightActionTarget(verb, target string) string {
 	}
 	style := lightTextStyle()
 	fields := strings.Fields(target)
-	if len(fields) > 0 && isPathLike(fields[0], target) {
+	if len(fields) > 0 && actionTargetIsPath(verb, target) {
 		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color(codexLight.CodeSurface))
 	}
 	return style.Render(target) + lightTextStyle().Render(details)
+}
+
+func actionTargetIsPath(verb, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	switch strings.TrimSpace(verb) {
+	case "Read", "Wrote", "Edited", "Listed":
+		switch strings.ToLower(target) {
+		case "a workspace file", "a directory", "files":
+			return false
+		default:
+			return true
+		}
+	default:
+		fields := strings.Fields(target)
+		return len(fields) > 0 && isPathLike(fields[0], target)
+	}
 }
 
 func isPathLike(arg, fullRest string) bool {
@@ -203,27 +222,109 @@ func isPathLike(arg, fullRest string) bool {
 }
 
 func renderLightCommand(command string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return lightTextStyle().Render(command)
+	styled := lightTextStyle().Render(command)
+	return lipgloss.StyleRanges(styled, lightCommandStyleRanges(command)...)
+}
+
+type lightCommandStyleRange struct {
+	start int
+	end   int
+	style lipgloss.Style
+}
+
+func lightCommandStyleRanges(command string) []lipgloss.Range {
+	var ranges []lipgloss.Range
+	for _, segment := range lightCommandSegments(command) {
+		ranges = append(ranges, lipgloss.NewRange(
+			lipgloss.Width(command[:segment.start]), lipgloss.Width(command[:segment.end]), segment.style,
+		))
 	}
-	var out strings.Builder
-	commandStyle := inlineCodeStyle()
-	flagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Flag))
-	for index, field := range fields {
-		if index > 0 {
-			out.WriteByte(' ')
+	return ranges
+}
+
+func lightCommandLineRanges(line string, commandStart int, command string) []lipgloss.Range {
+	var ranges []lipgloss.Range
+	for _, segment := range lightCommandSegments(command) {
+		lineStart, lineEnd := commandStart+segment.start, commandStart+segment.end
+		if lineStart < 0 || lineEnd > len(line) || lineStart >= lineEnd {
+			continue
 		}
+		ranges = append(ranges, lipgloss.NewRange(
+			lipgloss.Width(line[:lineStart]), lipgloss.Width(line[:lineEnd]), segment.style,
+		))
+	}
+	return ranges
+}
+
+func lightCommandSegments(command string) []lightCommandStyleRange {
+	commandStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#2563EB"))
+	flagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#B91C1C"))
+	quotedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D"))
+	var ranges []lightCommandStyleRange
+	tokenIndex := 0
+	for cursor := 0; cursor < len(command); {
+		for cursor < len(command) && (command[cursor] == ' ' || command[cursor] == '\t') {
+			cursor++
+		}
+		if cursor >= len(command) {
+			break
+		}
+		tokenStart := cursor
+		quotedStart := -1
+		quote := byte(0)
+		var quotedRanges [][2]int
+		for cursor < len(command) {
+			character := command[cursor]
+			if quote != 0 {
+				if character == '\\' && quote == '"' && cursor+1 < len(command) {
+					cursor += 2
+					continue
+				}
+				if character == quote {
+					quote = 0
+					quotedRanges = append(quotedRanges, [2]int{quotedStart, cursor + 1})
+					quotedStart = -1
+				}
+				cursor++
+				continue
+			}
+			if character == ' ' || character == '\t' {
+				break
+			}
+			if character == '\'' || character == '"' || character == '`' {
+				quote = character
+				quotedStart = cursor
+			}
+			cursor++
+		}
+		if quotedStart >= 0 {
+			quotedRanges = append(quotedRanges, [2]int{quotedStart, cursor})
+		}
+		tokenEnd := cursor
+		var tokenStyle lipgloss.Style
+		hasTokenStyle := false
 		switch {
-		case strings.HasPrefix(field, "-"):
-			out.WriteString(flagStyle.Render(field))
-		case index == 0:
-			out.WriteString(commandStyle.Render(field))
-		default:
-			out.WriteString(lightTextStyle().Render(field))
+		case tokenIndex == 0:
+			tokenStyle = commandStyle
+			hasTokenStyle = true
+		case strings.HasPrefix(command[tokenStart:tokenEnd], "-"):
+			tokenStyle = flagStyle
+			hasTokenStyle = true
 		}
+		segmentStart := tokenStart
+		for _, quoted := range quotedRanges {
+			if hasTokenStyle && segmentStart < quoted[0] {
+				ranges = append(ranges, lightCommandStyleRange{start: segmentStart, end: quoted[0], style: tokenStyle})
+			}
+			ranges = append(ranges, lightCommandStyleRange{start: quoted[0], end: quoted[1], style: quotedStyle})
+			segmentStart = quoted[1]
+		}
+		if hasTokenStyle && segmentStart < tokenEnd {
+			ranges = append(ranges, lightCommandStyleRange{start: segmentStart, end: tokenEnd, style: tokenStyle})
+		}
+		tokenIndex++
 	}
-	return out.String()
+	return ranges
 }
 
 func renderScrollPill(width int, key string) string {

@@ -2,13 +2,13 @@ package tui
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func TestTUIToolTimelineShowsOnlySanitizedLifecycle(t *testing.T) {
@@ -52,6 +52,30 @@ func TestTUIRestoresLegacyToolNamesAsHumanSummaries(t *testing.T) {
 	}
 }
 
+func TestSessionHeaderStaysSeparateFromFilteredToolOutput(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferences.Theme = themeLight
+	ui.applyResolvedTheme()
+	ui.workspace = `D:\Git\luneAgent`
+	ui.windowTitle = "lune"
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	ui.updateToolActivity(core.ToolCall{
+		ID: "read-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`),
+		Details: &publictool.ExecutionDetails{Output: "visible result\n[end of results]\n[next_start_line=4]"},
+	})
+	group := ui.toolActivityGroups()[0]
+	ui.activityExpanded[group.key] = true
+	ui.refreshPanels()
+	lines := strings.Split(plainTUIView(ui), "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "• luneAgent") || strings.Contains(lines[0], "visible result") {
+		t.Fatalf("session header absorbed tool output: %#v", lines)
+	}
+	plain := strings.Join(lines, "\n")
+	if !strings.Contains(plain, "visible result") || strings.Contains(plain, "[end of results]") || strings.Contains(plain, "[next_start_line=") {
+		t.Fatalf("tool output preview or metadata filtering is wrong: %q", plain)
+	}
+}
+
 func TestTUIRestoredHistoryCollapsesToolCallsByUserTurn(t *testing.T) {
 	history := json.RawMessage(`[
 		{"type":"message","role":"user","content":"Inspect the project."},
@@ -62,13 +86,13 @@ func TestTUIRestoredHistoryCollapsesToolCallsByUserTurn(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.entries = transcriptEntries(history)
 	content, _ := ui.transcriptContent()
-	if len(ui.toolActivityGroups()) != 1 || strings.Contains(content, "Read main.go") || !strings.Contains(content, "Searched project files") || !strings.Contains(content, "Found two TODOs.") {
+	if len(ui.toolActivityGroups()) != 1 || strings.Contains(content, "Read main.go") || !strings.Contains(content, "Searched TODO") || !strings.Contains(content, "Found two TODOs.") {
 		t.Fatalf("restored collapsed transcript = groups:%d content:%q", len(ui.toolActivityGroups()), content)
 	}
 	ui.activityFocus = true
 	ui.toggleFocusedActivity()
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Read main.go · done") || !strings.Contains(content, "Searched project files · done") {
+	if !strings.Contains(content, "Read main.go · done") || !strings.Contains(content, "Searched TODO · done") {
 		t.Fatalf("restored expanded transcript = %q", content)
 	}
 }
@@ -125,7 +149,6 @@ func TestTUIActivityDetailsOverlayOpensAndCloses(t *testing.T) {
 
 func TestTUIActivityUsesWorkspacePathsAndUserVisibleToolNames(t *testing.T) {
 	workspace := t.TempDir()
-	file := filepath.ToSlash(filepath.Join(workspace, "internal", "tool", "html.go"))
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.workspace = workspace
 	ui.preferences = uiPreferences{Theme: themeDark}
@@ -137,7 +160,7 @@ func TestTUIActivityUsesWorkspacePathsAndUserVisibleToolNames(t *testing.T) {
 		ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/tool/html.go"}`), Duration: 12,
 	}})
 	view := ui.activityDetailsContent() + "\n" + strings.Join(entryTexts(ui.entries), "\n")
-	if len(ui.activities) != 1 || ui.activities[0].summary != "Read "+file || !strings.Contains(view, "Lead agent") || !strings.Contains(view, "Model usage") {
+	if len(ui.activities) != 1 || ui.activities[0].summary != "Read internal/tool/html.go" || !strings.Contains(view, "Lead agent") || !strings.Contains(view, "Model usage") {
 		t.Fatalf("activity details are missing real tool activity, agent status, or usage: %q", view)
 	}
 	if strings.Contains(view, "read_file") || strings.Contains(view, "subagent") || strings.Contains(view, "artifact") || strings.Contains(view, "0%") {
@@ -150,7 +173,7 @@ func TestToolApprovalUsesHumanTextAndSafeCommandPreview(t *testing.T) {
 	read := formatToolApproval(core.ApprovalRequest{
 		Tool: "read_file", Arguments: json.RawMessage(`{"path":"notes.txt"}`),
 	}, workspace)
-	if !strings.Contains(read, "Action: Read "+filepath.ToSlash(filepath.Join(workspace, "notes.txt"))) || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
+	if !strings.Contains(read, "Action: Read notes.txt") || strings.Contains(read, "read_file") || strings.Contains(read, `"path"`) {
 		t.Fatalf("read approval = %q; want a human-readable path without internal payload", read)
 	}
 	command := formatToolApproval(core.ApprovalRequest{

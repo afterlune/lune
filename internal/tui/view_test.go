@@ -9,7 +9,7 @@ import (
 	core "github.com/afterlune/luneCore"
 )
 
-func TestTUIViewsUseColorAndMarkersWithoutBold(t *testing.T) {
+func TestTUIViewsKeepMarkersAndUseBoldPlanSelection(t *testing.T) {
 	for _, theme := range []themeName{themeDark, themeLight} {
 		t.Run(string(theme), func(t *testing.T) {
 			ui := newTUIModel(&fakeResponder{}, false)
@@ -35,12 +35,8 @@ func TestTUIViewsUseColorAndMarkersWithoutBold(t *testing.T) {
 			if !strings.Contains(tuiScreenshotANSI.ReplaceAllString(combined, ""), "›") {
 				t.Fatal("selected rows lost their structural arrow marker")
 			}
-			for _, line := range parseTUIScreenshotLines(combined, colorsFor(theme).Foreground) {
-				for _, run := range line {
-					if run.bold {
-						t.Fatalf("TUI %s view contains bold text %q", theme, run.text)
-					}
-				}
+			if theme == themeLight && !strings.Contains(ui.renderPlanReview(), "1. Yes, implement this plan") {
+				t.Fatal("light Plan review lost its selected option")
 			}
 		})
 	}
@@ -75,7 +71,7 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 		if ui.lightLayout() {
 			expectedX++
 		}
-		expectedY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + inputCursor.Y
+		expectedY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 4 + inputCursor.Y
 		if cursorView.Cursor.X != expectedX || cursorView.Cursor.Y != expectedY {
 			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
 				expectedX, expectedY)

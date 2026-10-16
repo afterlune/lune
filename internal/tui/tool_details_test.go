@@ -65,6 +65,19 @@ func TestToolOutputCannotMoveTerminalCursor(t *testing.T) {
 	}
 }
 
+func TestActivityDetailsHideInternalPaginationTailLines(t *testing.T) {
+	activity := tuiActivity{details: &publictool.ExecutionDetails{
+		Output: "first result\n[end of results]\n[next_start_line=24]\n[END OF RESULTS]",
+	}}
+	lines := activityDetailLines(activity)
+	if len(lines) != 1 || lines[0].text != "first result" {
+		t.Fatalf("internal metadata leaked into tool output: %#v", lines)
+	}
+	if !internalToolMetadataLine(" [next_start_line=24] ") || !internalToolMetadataLine("[end of results]") || internalToolMetadataLine("[next_start_line=]") {
+		t.Fatal("tool metadata filter accepted an invalid tail marker or missed a valid one")
+	}
+}
+
 func TestToolTimelineKeepsDifferentExecutionsSeparate(t *testing.T) {
 	ui := newTUIModel(nil, false)
 	for _, executionID := range []string{"first", "second"} {

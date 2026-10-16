@@ -82,6 +82,7 @@ func (m *tuiModel) submitTurn(input core.TaskInput, mode core.SubmissionMode, re
 			m.taskUsage = tokenUsageTotals{}
 		}
 		m.running = true
+		m.executionStarted = false
 		m.runtimeTask = true
 		m.cancelled = false
 		m.status = "Working… Press Esc to interrupt."
@@ -124,6 +125,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 	m.queued = append(m.queued[:0], state.Queue...)
 	m.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	m.executionStarted = state.Task.Status == core.TaskRunning
 	m.pending = state.Task.Status == core.TaskPaused
 	m.runningExecutionID = ""
 	if state.Task.ExecutionID != "" {
@@ -153,6 +155,7 @@ func (m *tuiModel) refreshRuntimeProjection() error {
 	m.queued = append(m.queued[:0], state.Queue...)
 	m.pending = state.Task.Status == core.TaskPaused
 	m.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	m.executionStarted = state.Task.Status == core.TaskRunning
 	if m.running && state.Task.ExecutionID != "" {
 		m.runningExecutionID = state.Task.ExecutionID
 		m.activeExecutions[state.Task.ExecutionID] = true
@@ -168,6 +171,8 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 	switch event.Kind {
 	case core.EventTaskStarted:
 		if event.ExecutionID == m.runningExecutionID {
+			m.executionStarted = true
+			command = m.startWindowTitleAnimation()
 			m.startModelStream(event)
 			m.contextWindow = event.ContextWindow
 			m.contextInput = 0
@@ -176,6 +181,10 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 	case core.EventTaskQueued:
 		m.status = "Turn queued."
 	case core.EventTaskFinished:
+		if event.ExecutionID == m.runningExecutionID {
+			m.executionStarted = false
+			command = m.startWindowTitleAnimation()
+		}
 		m.finishModelStreamEvent(event)
 		if event.ExecutionID != "" {
 			delete(m.activeExecutions, event.ExecutionID)
@@ -205,6 +214,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 	case core.EventApprovalCancelled:
 		if m.pendingApproval != nil && m.pendingApproval.request.ID == event.ApprovalID {
 			m.pendingApproval = nil
+			m.pendingRequests = nil
 			if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval &&
 				m.pendingRequest.Approval != nil && m.pendingRequest.Approval.ID == event.ApprovalID {
 				m.pendingRequest = nil
@@ -491,6 +501,7 @@ func (m *tuiModel) startRecovery(options *core.ExecutionOptions) (tea.Model, tea
 	if m.runtime == nil {
 		return m, nil
 	}
+	m.pendingRequests = nil
 	runtime := m.runtime
 	var command tea.Cmd = func() tea.Msg {
 		var submission core.TurnSubmission
@@ -506,6 +517,7 @@ func (m *tuiModel) startRecovery(options *core.ExecutionOptions) (tea.Model, tea
 		return turnSubmittedMsg{submission: submission}
 	}
 	m.running = true
+	m.executionStarted = false
 	m.runtimeTask = true
 	m.status = "Recovering the paused task…"
 	m.resetInput()
@@ -516,7 +528,9 @@ func (m *tuiModel) waitForRecoveredExecution(executionID string) (tea.Model, tea
 	if executionID == "" {
 		return m, nil
 	}
+	m.pendingRequests = nil
 	m.running = true
+	m.executionStarted = true
 	m.runtimeTask = true
 	m.runningExecutionID = executionID
 	m.activeExecutions[executionID] = true
@@ -643,6 +657,7 @@ func (m *tuiModel) startTask(operation func(context.Context) taskResult, resetUs
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.running = true
+	m.executionStarted = true
 	m.cancelled = false
 	m.status = "Working… Press Esc to interrupt."
 	m.taskStartedAt = time.Now()
@@ -682,6 +697,7 @@ func (m *tuiModel) finishTask(result taskResult) {
 		}
 	}
 	m.running = false
+	m.executionStarted = false
 	m.runtimeTask = false
 	if executionID := result.coreResult.ExecutionID; executionID != "" {
 		delete(m.activeExecutions, executionID)
@@ -715,6 +731,21 @@ func (m *tuiModel) finishTask(result taskResult) {
 	streamedFinal := m.finishModelStream(responseText, result.err == nil && !taskFailed && !taskCancelled)
 	if responseErr != nil {
 		m.addEntry("error", responseErr.Error(), true)
+	} else if proposal != nil {
+		before, after := splitPlanResponseText(responseText, proposal.Text)
+		replacement := make([]tuiEntry, 0, 3)
+		if before != "" {
+			replacement = append(replacement, tuiEntry{role: "assistant", text: before})
+		}
+		replacement = append(replacement, tuiEntry{role: "plan", text: proposal.Text})
+		if after != "" {
+			replacement = append(replacement, tuiEntry{role: "assistant", text: after})
+		}
+		if updated, replaced := replaceStreamedPlanEntry(m.entries, responseText, replacement); streamedFinal && replaced {
+			m.entries = updated
+		} else {
+			m.entries = append(m.entries, replacement...)
+		}
 	} else if responseText != "" && !streamedFinal {
 		m.addEntry("assistant", responseText, false)
 	} else if responseText == "" && !streamedFinal && result.notice == "" && result.coreResult.Status == core.TaskCompleted && proposal == nil {
@@ -761,7 +792,7 @@ func (m *tuiModel) finishTask(result taskResult) {
 	}
 	if !startedAt.IsZero() && (result.coreResult.Status == core.TaskCompleted || result.coreResult.Status == core.TaskFailed) {
 		worked := time.Since(startedAt).Round(time.Second)
-		m.addEntry("turn_footer", fmt.Sprintf("Worked for %s · %s", worked, time.Now().Local().Format("15:04")), false)
+		m.addEntry("turn_footer", fmt.Sprintf("Worked for %s • %s", worked, time.Now().Local().Format("15:04")), false)
 	}
 	if !taskCancelled && !taskFailed && result.err == nil && result.coreResult.Status == core.TaskCompleted && proposal != nil {
 		if m.searchOpen {
@@ -776,10 +807,39 @@ func (m *tuiModel) finishTask(result taskResult) {
 		m.proposedPlan = proposal
 		m.planSourceExecutionID = result.coreResult.ExecutionID
 		m.planAuthorization = core.PlanAuthorization{}
-		m.status = "Plan ready · choose an action."
+		m.status = "Plan review · Read-only permissions."
 		m.updateLayout()
 	}
 	m.cancelled = false
+}
+
+func splitPlanResponseText(response, plan string) (string, string) {
+	response = strings.TrimSpace(response)
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return response, ""
+	}
+	if index := strings.Index(response, plan); index >= 0 {
+		return strings.TrimSpace(response[:index]), strings.TrimSpace(response[index+len(plan):])
+	}
+	if response == "" || response == plan {
+		return "", ""
+	}
+	return response, ""
+}
+
+func replaceStreamedPlanEntry(entries []tuiEntry, response string, replacement []tuiEntry) ([]tuiEntry, bool) {
+	for index := len(entries) - 1; index >= 0; index-- {
+		if entries[index].role != "assistant" || entries[index].text != response {
+			continue
+		}
+		updated := make([]tuiEntry, 0, len(entries)-1+len(replacement))
+		updated = append(updated, entries[:index]...)
+		updated = append(updated, replacement...)
+		updated = append(updated, entries[index+1:]...)
+		return updated, true
+	}
+	return entries, false
 }
 
 func modelFailureSummary(failure *core.ModelFailure) string {

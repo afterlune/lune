@@ -165,7 +165,7 @@ func activityDetailLines(activity tuiActivity) []transcriptLine {
 	return lines
 }
 
-var internalToolMetadata = regexp.MustCompile(`^\[next_start_line=\d+;\s*more=(?:true|false);\s*line_truncated=(?:true|false)\]$`)
+var internalToolMetadata = regexp.MustCompile(`(?i)^\[(?:end of results|next_start_line=[^\]]+)\]$`)
 
 func internalToolMetadataLine(line string) bool {
 	return internalToolMetadata.MatchString(strings.TrimSpace(line))

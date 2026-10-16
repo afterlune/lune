@@ -45,6 +45,8 @@ type toolActivityGroup struct {
 	entries []int
 }
 
+var orderedPlanListItem = regexp.MustCompile(`^\d+[.)]\s+`)
+
 func (m *tuiModel) transcriptLines() []transcriptLine {
 	lines := make([]transcriptLine, 0, len(m.entries)*2)
 	groups := m.toolActivityGroups()
@@ -61,6 +63,10 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 	appendEntry := func(entryIndex int) {
 		entry := &m.entries[entryIndex]
 		width := max(1, m.chat.Width()-2)
+		if entry.role == "plan" && m.lightLayout() {
+			lines = append(lines, lightPlanTranscriptLines(entry.text, max(1, m.chat.Width()-4))...)
+			return
+		}
 		cacheKey := entry.role + "\x00" + entry.text + "\x00" + strconv.FormatBool(entry.incomplete) + "\x00" + strconv.FormatBool(m.lightLayout())
 		text := entry.cachedRender
 		if entry.cachedWidth != width || entry.cachedText != cacheKey {
@@ -152,6 +158,42 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		index = nextIndex
 	}
 	return lines
+}
+
+func lightPlanTranscriptLines(text string, width int) []transcriptLine {
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	var result []transcriptLine
+	for _, raw := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(raw)
+		role := "plan"
+		display := raw
+		switch {
+		case strings.HasPrefix(trimmed, "### "):
+			role = "plan_heading"
+			display = strings.TrimPrefix(trimmed, "### ")
+		case strings.HasPrefix(trimmed, "## "):
+			role = "plan_heading"
+			display = strings.TrimPrefix(trimmed, "## ")
+		case strings.HasPrefix(trimmed, "# "):
+			role = "plan_heading"
+			display = strings.TrimPrefix(trimmed, "# ")
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ "):
+			display = "• " + strings.TrimSpace(trimmed[2:])
+		case orderedPlanListItem.MatchString(trimmed):
+			display = "• " + orderedPlanListItem.ReplaceAllString(trimmed, "")
+		default:
+			display = plainConversationText(display)
+		}
+		if strings.TrimSpace(display) == "" {
+			result = append(result, transcriptLine{text: "  ", role: "plan"})
+			continue
+		}
+		wrapped := renderConversationText(display, max(1, width-2))
+		for _, line := range strings.Split(wrapped, "\n") {
+			result = append(result, transcriptLine{text: "  " + line, role: role})
+		}
+	}
+	return result
 }
 
 func (m *tuiModel) toolGroupHasPreview(group toolActivityGroup) bool {

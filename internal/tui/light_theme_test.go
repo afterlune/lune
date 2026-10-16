@@ -43,7 +43,7 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 	if !strings.Contains(view.Content, "\x1b[48;2;243;244;246m") {
 		t.Fatalf("light composer/user bands did not use the surface background: %q", view.Content)
 	}
-	if !strings.Contains(view.Content, "48;2;230;244;234m") || !strings.Contains(view.Content, "38;2;19;115;51") {
+	if !strings.Contains(view.Content, "48;2;230;244;234m") || !strings.Contains(view.Content, "38;2;21;128;61") {
 		t.Fatalf("inline code did not use the green highlight surface: %q", view.Content)
 	}
 	assertStyledRun := func(value string) {
@@ -114,7 +114,7 @@ func TestLightComposerCursorAndViewportFitNarrowTerminals(t *testing.T) {
 			t.Errorf("%dx%d light viewport dimensions = %dx%d", size.width, size.height, lipgloss.Width(view.Content), lipgloss.Height(view.Content))
 		}
 		cursor := ui.input.Cursor()
-		wantY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + cursor.Y
+		wantY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 4 + cursor.Y
 		wantX := cursor.X + 1
 		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY {
 			t.Errorf("%dx%d composer cursor = %#v, want (%d,%d)", size.width, size.height, view.Cursor, wantX, wantY)
@@ -123,11 +123,104 @@ func TestLightComposerCursorAndViewportFitNarrowTerminals(t *testing.T) {
 		ui.updateLayout()
 		view = ui.View()
 		cursor = ui.input.Cursor()
-		wantY = lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + cursor.Y
+		wantY = lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 4 + cursor.Y
 		wantX = cursor.X + 1
 		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY || lipgloss.Height(view.Content) > size.height {
 			t.Errorf("%dx%d multiline composer cursor/layout = %#v / %d rows, want (%d,%d) within viewport", size.width, size.height, view.Cursor, lipgloss.Height(view.Content), wantX, wantY)
 		}
+	}
+}
+
+func TestQuestionPanelUsesFullWidthLightSurfaceAndSingleRowSelection(t *testing.T) {
+	ui := newTUIModel(nil, false)
+	ui.preferences.Theme = themeLight
+	ui.applyResolvedTheme()
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.openQuestion(core.UserQuestionRequest{
+		Question: "下一步要落在哪条线上？",
+		Options: []core.UserQuestionOption{
+			{Label: "保留结果状态", Description: "成功显示已完成，失败显示警告"},
+			{Label: "全部恢复普通标题", Description: "失败或取消后也立刻恢复普通任务标题"},
+		},
+	})
+	ui.question.selected = 1
+	ui.updateLayout()
+	panel := ui.renderQuestion()
+	lines := parseTUIScreenshotLinesWithBackground(panel, codexLight.Primary, codexLight.Canvas)
+	lineText := func(runs []tuiScreenshotRun) string {
+		var text strings.Builder
+		for _, run := range runs {
+			text.WriteString(run.text)
+		}
+		return text.String()
+	}
+	findLine := func(needle string) []tuiScreenshotRun {
+		t.Helper()
+		for _, runs := range lines {
+			if strings.Contains(lineText(runs), needle) {
+				return runs
+			}
+		}
+		t.Fatalf("Question panel line %q is missing: %q", needle, tuiScreenshotANSI.ReplaceAllString(panel, ""))
+		return nil
+	}
+	assertSurfaceRow := func(needle, surface string) []tuiScreenshotRun {
+		t.Helper()
+		runs := findLine(needle)
+		width := 0
+		foundSurface := false
+		for _, run := range runs {
+			width += lipgloss.Width(run.text)
+			foundSurface = foundSurface || strings.EqualFold(run.background, surface)
+		}
+		if width != 100 || !foundSurface {
+			t.Fatalf("row %q width/background = %d / %v, want 100 columns filled with %s", needle, width, foundSurface, surface)
+		}
+		return runs
+	}
+	header := assertSurfaceRow("Question 1/1 (1 unanswered)", codexLight.Surface)
+	for _, run := range header {
+		if strings.Contains(run.text, "Question 1/1") && !strings.EqualFold(run.foreground, codexLight.Muted) {
+			t.Errorf("Question heading color = %s, want %s", run.foreground, codexLight.Muted)
+		}
+	}
+	question := assertSurfaceRow("下一步要落在哪条线上？", codexLight.Surface)
+	questionBlue := false
+	for _, run := range question {
+		if strings.Contains(run.text, "下一步要落在哪条线上？") && strings.EqualFold(run.foreground, "#2563EB") {
+			questionBlue = true
+		}
+	}
+	if !questionBlue {
+		t.Fatal("core question was not rendered in bright blue")
+	}
+	selected := assertSurfaceRow("› 2. 全部恢复普通标题", "#BFDBFE")
+	selectedLabel, selectedDescription := false, false
+	for _, run := range selected {
+		if strings.Contains(run.text, "全部恢复普通标题") {
+			selectedLabel = run.bold && strings.EqualFold(run.foreground, "#111827")
+		}
+		if strings.Contains(run.text, "失败或取消") {
+			selectedDescription = strings.EqualFold(run.foreground, "#1E3A8A")
+		}
+	}
+	if !selectedLabel || !selectedDescription {
+		t.Fatalf("selected row colors/boldness are wrong: %#v", selected)
+	}
+	optionLine := findLine("1. 保留结果状态")
+	if !strings.Contains(lineText(optionLine), "成功显示已完成") {
+		t.Fatal("inactive option description is not on the same row")
+	}
+	hint := findLine("tab to add notes | enter to submit answer | esc to interrupt")
+	for _, run := range hint {
+		if run.text == "tab" || run.text == "enter" || run.text == "esc" {
+			if !run.bold || !strings.EqualFold(run.foreground, "#1F2937") {
+				t.Errorf("shortcut %q style = %#v", run.text, run)
+			}
+		}
+	}
+	if ui.View().Cursor != nil {
+		t.Fatal("choice state exposed a cursor")
 	}
 }
 
@@ -148,8 +241,18 @@ func TestToolActivityPreviewAndExpansion(t *testing.T) {
 		t.Fatalf("expanded tool output = %q", expanded)
 	}
 	header := renderToolActivity("git status --short", nil, false, 80)
-	if !strings.Contains(header, "48;2;230;244;234") || !strings.Contains(header, "38;2;185;28;28") {
-		t.Fatal("tool header is missing command and flag syntax colors")
+	if !strings.Contains(header, "38;2;37;99;235") || !strings.Contains(header, "38;2;185;28;28") {
+		t.Fatal("tool header is missing blue command and brick-red flag syntax colors")
+	}
+	quoted := renderToolActivity(`Get-Content "a b.txt" -Skip 2`, nil, false, 80)
+	if !strings.Contains(quoted, "38;2;21;128;61") {
+		t.Fatal("quoted shell string is missing dark-green syntax color")
+	}
+	path := renderLightToolActivity("Read internal/tui/view.go", nil, false, 80, "•")
+	for _, color := range []string{"38;2;22;163;74", "38;2;21;128;61", "48;2;230;244;234"} {
+		if !strings.Contains(path, color) {
+			t.Errorf("Read activity row is missing required color %q: %q", color, path)
+		}
 	}
 
 }
@@ -167,7 +270,7 @@ func TestLightScrollPillClickAndEscapeReturnToLatest(t *testing.T) {
 	if !strings.Contains(ansi.Strip(ui.View().Content), "Back to bottom") {
 		t.Fatal("scrolling away from the latest message should show the scroll pill")
 	}
-	ui.Update(tea.MouseClickMsg{X: ui.width / 2, Y: ui.chat.Height(), Button: tea.MouseLeft})
+	ui.Update(tea.MouseClickMsg{X: ui.width / 2, Y: ui.chat.Height() + 1, Button: tea.MouseLeft})
 	if !ui.chat.AtBottom() || strings.Contains(ansi.Strip(ui.View().Content), "Back to bottom") {
 		t.Fatal("clicking the scroll pill should return to the latest message")
 	}
@@ -220,7 +323,7 @@ func TestCompletedTaskAddsWorkedFooter(t *testing.T) {
 	ui.taskStartedAt = time.Now().Add(-49 * time.Second)
 	ui.finishTask(taskResult{coreResult: core.TaskResult{Status: core.TaskCompleted}})
 	for _, entry := range ui.entries {
-		if entry.role == "turn_footer" && strings.HasPrefix(entry.text, "Worked for 49s · ") {
+		if entry.role == "turn_footer" && strings.HasPrefix(entry.text, "Worked for 49s • ") {
 			return
 		}
 	}

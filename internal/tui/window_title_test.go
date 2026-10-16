@@ -36,14 +36,15 @@ func TestTUIWindowTitleReflectsRunningQuestionAndApprovalStates(t *testing.T) {
 	ui.windowTitle = "Old session title"
 	ui.setTaskTitle("梳理当前工具调用")
 	ui.running = true
+	ui.executionStarted = true
 	ui.modelStreamTaskID = "task-1"
-	if got, want := ui.View().WindowTitle, "⠋ Thinking... · 梳理当前工具调用"; got != want {
+	if got, want := ui.View().WindowTitle, "⠋ Old session title | luneAgent"; got != want {
 		t.Fatalf("running title = %q, want %q", got, want)
 	}
 
 	question := core.UserQuestionRequest{Question: "下一步优先做哪条线？"}
 	ui.pendingRequest = &core.PendingRequest{Kind: core.PendingUserQuestion, UserQuestion: &question}
-	if got, want := ui.View().WindowTitle, "⚠ 待回答: 下一步优先做哪条线？ | 梳理当前工具调用"; got != want {
+	if got, want := ui.View().WindowTitle, "[ ! ] Action Required | Old session title | luneAgent"; got != want {
 		t.Fatalf("question title = %q, want %q", got, want)
 	}
 
@@ -52,7 +53,7 @@ func TestTUIWindowTitleReflectsRunningQuestionAndApprovalStates(t *testing.T) {
 	ui.pendingApproval = &toolApprovalRequestMsg{request: core.ApprovalRequest{
 		Tool: "command", Arguments: json.RawMessage(`{"command":"git push"}`),
 	}}
-	if got, want := ui.View().WindowTitle, "⚠ 待审批: git push | 梳理当前工具调用"; got != want {
+	if got, want := ui.View().WindowTitle, "[ ! ] Action Required | Old session title | luneAgent"; got != want {
 		t.Fatalf("approval title = %q, want %q", got, want)
 	}
 }
@@ -64,12 +65,13 @@ func TestTUIWindowTitleSpinnerTicksAt100Milliseconds(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.setTaskTitle("Inspect the tool stream")
 	ui.running = true
+	ui.executionStarted = true
 	command := ui.startWindowTitleAnimation()
-	if command == nil || !strings.HasPrefix(ui.View().WindowTitle, "⠋ ") {
+	if command == nil || ui.View().WindowTitle != "⠋ Inspect the tool stream | luneAgent" {
 		t.Fatalf("initial spinner title/command = %q / %v", ui.View().WindowTitle, command != nil)
 	}
 	_, next := ui.Update(windowTitleTickMsg{sessionID: ui.sessionID, token: ui.windowTitleAnimationToken})
-	if next == nil || !strings.HasPrefix(ui.View().WindowTitle, "⠙ ") {
+	if next == nil || ui.View().WindowTitle != "⠙ Inspect the tool stream | luneAgent" {
 		t.Fatalf("next spinner title/command = %q / %v", ui.View().WindowTitle, next != nil)
 	}
 }
@@ -78,7 +80,7 @@ func TestTUIWindowTitleCompletionClearsOnFocusOrInput(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	ui.setTaskTitle("梳理当前项目")
 	ui.taskCompleted = true
-	if got, want := ui.View().WindowTitle, "✔ 已完成 · 梳理当前项目 | luneAgent"; got != want {
+	if got, want := ui.View().WindowTitle, "梳理当前项目 | luneAgent"; got != want {
 		t.Fatalf("completed title = %q, want %q", got, want)
 	}
 	ui.Update(tea.FocusMsg{})
@@ -100,6 +102,7 @@ func TestTUIViewAlwaysCarriesTerminalProgressState(t *testing.T) {
 	}
 
 	ui.running = true
+	ui.executionStarted = true
 	view = ui.View()
 	if view.ProgressBar == nil || view.ProgressBar.State != tea.ProgressBarIndeterminate {
 		t.Fatalf("running view progress = %#v", view.ProgressBar)
@@ -112,11 +115,33 @@ func TestTUIViewAlwaysCarriesTerminalProgressState(t *testing.T) {
 	}
 }
 
+func TestTUIIdleTitleDoesNotKeepPauseOrCompletionMarkers(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.setTaskTitle("Cancel this task")
+	ui.pending = true
+	ui.taskCompleted = true
+	if got, want := ui.View().WindowTitle, "Cancel this task | luneAgent"; got != want {
+		t.Fatalf("idle paused/completed title = %q, want %q", got, want)
+	}
+}
+
+func TestTUIRecoveredExecutionClearsResolvedRequestTitleState(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.setTaskTitle("Continue after answer")
+	ui.pendingRequests = []core.PendingRequest{{Kind: core.PendingUserQuestion}}
+	ui.activeExecutions = make(map[string]bool)
+	ui.waitForRecoveredExecution("execution-1")
+	if got, want := ui.View().WindowTitle, "⠋ Continue after answer | luneAgent"; got != want {
+		t.Fatalf("recovered execution title = %q, want %q", got, want)
+	}
+}
+
 func TestTUIWaitingTransitionRingsOnce(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
 	var output bytes.Buffer
 	ui.terminalOutput = &synchronizedWriter{w: &output}
 	ui.running = true
+	ui.executionStarted = true
 	request := core.ApprovalRequest{ID: "approval-1", Tool: "command", Arguments: json.RawMessage(`{"command":"git push"}`)}
 	_, command := ui.Update(toolApprovalRequestMsg{request: request})
 	if command == nil {

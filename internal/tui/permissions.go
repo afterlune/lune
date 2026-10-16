@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -27,9 +28,9 @@ var tuiPermissionOptions = []tuiPermissionOption{
 }
 
 var planReviewChoices = [...]string{
-	"Implement in this session",
-	"Implement in a new session",
-	"Stay read-only",
+	"Yes, implement this plan",
+	"Yes, clear context and implement",
+	"No, stay in Plan mode",
 }
 
 func (m *tuiModel) acceptPlan() (tea.Model, tea.Cmd) {
@@ -80,22 +81,28 @@ func (m *tuiModel) implementProposedPlan(mode core.PlanImplementationMode) (tea.
 	m.clearPendingPlan()
 	m.resetInput()
 	m.running = true
+	m.executionStarted = false
 	m.runtimeTask = true
 	m.status = "Starting the approved plan…"
+	m.taskStartedAt = time.Now()
 	implementationCmd := tea.Cmd(func() tea.Msg {
 		implementation, err := runtime.ImplementPlan(context.Background(), sourceID, mode, authorization)
 		if err != nil {
-			return taskFinishedMsg{result: taskResult{err: err}}
+			return planImplementationStartedMsg{err: err}
 		}
 		waitRuntime := runtime
 		if implementation.SessionID != runtime.SessionID() {
 			waitRuntime, err = client.OpenSessionRuntime(context.Background(), implementation.SessionID)
 			if err != nil {
-				return taskFinishedMsg{result: taskResult{targetSessionID: implementation.SessionID, err: err}}
+				return planImplementationStartedMsg{targetSessionID: implementation.SessionID, err: err}
 			}
 		}
-		result, err := waitRuntime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)
-		return taskFinishedMsg{result: taskResult{response: result.Response, coreResult: result, targetSessionID: implementation.SessionID, err: err}}
+		return planImplementationStartedMsg{
+			targetSessionID: implementation.SessionID,
+			executionID:     implementation.Submission.ExecutionID,
+			runtime:         waitRuntime,
+			started:         implementation.Submission.Status == core.SubmissionAccepted,
+		}
 	})
 	return m, tea.Batch(implementationCmd, m.startWindowTitleAnimation())
 }
@@ -384,6 +391,7 @@ func (m *tuiModel) resolveToolApproval(approved bool) {
 		}
 	}
 	m.pendingApproval = nil
+	m.pendingRequests = nil
 	if m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval &&
 		m.pendingRequest.Approval != nil && m.pendingRequest.Approval.ID == request.request.ID {
 		m.pendingRequest = nil

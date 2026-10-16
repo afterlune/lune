@@ -17,7 +17,7 @@ func TestThemeSemanticColorsStayReadableAndSubdued(t *testing.T) {
 			if theme == themeLight {
 				if colors.Background != "#FFFFFF" || colors.Foreground != "#1F2937" || colors.Muted != "#6B7280" ||
 					colors.Success != "#16A34A" || codexLight.Surface != "#F3F4F6" ||
-					codexLight.CodeSurface != "#E6F4EA" || codexLight.CodeText != "#137333" {
+					codexLight.CodeSurface != "#E6F4EA" || codexLight.CodeText != "#15803D" {
 					t.Fatalf("light palette does not match the approved design: %#v / %#v", colors, codexLight)
 				}
 				if ratio := themeContrastRatio(colors.Foreground, terminalBackground); ratio < 4.5 {

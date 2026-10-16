@@ -56,9 +56,9 @@ func TestTranscriptMouseSelectionMapsUnicodeCellsAndCopies(t *testing.T) {
 	ui.refreshPanels()
 	ui.preferences.CopyOnSelect = "never"
 
-	ui.Update(tea.MouseClickMsg{X: 7, Y: 0, Button: tea.MouseLeft})
-	ui.Update(tea.MouseMotionMsg{X: 9, Y: 0, Button: tea.MouseLeft})
-	ui.Update(tea.MouseReleaseMsg{X: 9, Y: 0, Button: tea.MouseLeft})
+	ui.Update(tea.MouseClickMsg{X: 7, Y: 1, Button: tea.MouseLeft})
+	ui.Update(tea.MouseMotionMsg{X: 9, Y: 1, Button: tea.MouseLeft})
+	ui.Update(tea.MouseReleaseMsg{X: 9, Y: 1, Button: tea.MouseLeft})
 	if got := ui.selectedTranscriptText(); got != "世界" {
 		t.Fatalf("drag selected %q, want two CJK graphemes", got)
 	}
@@ -149,13 +149,13 @@ func TestToolActivityInvocationsStaySeparateAndExpandOutput(t *testing.T) {
 	}
 	ui.Update(toolActivityMsg{event: core.ToolCall{ExecutionID: "execution-1", ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`), Duration: 20}})
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Read a.go · done") || !strings.Contains(content, "Searched the web · running") {
+	if !strings.Contains(content, "✓ Read a.go") || !strings.Contains(content, "⠋ Searched the web") {
 		t.Fatalf("collapsed activity did not follow the latest event: %q", content)
 	}
 	ui.activityFocus = true
 	ui.toggleFocusedActivity()
 	content, _ = ui.transcriptContent()
-	if !strings.Contains(content, "Read a.go · done") || !strings.Contains(content, "Searched the web · running") || !strings.Contains(content, "first file contents") {
+	if !strings.Contains(content, "› Read a.go") || !strings.Contains(content, "⠋ Searched the web") || !strings.Contains(content, "first file contents") {
 		t.Fatalf("expanded activity = %q", content)
 	}
 }
@@ -166,6 +166,7 @@ func TestTranscriptKeepsReadOffsetAndCountsUnreadEntries(t *testing.T) {
 	ui.entries = []tuiEntry{{role: "assistant", text: strings.Repeat("long response line\n", 24)}}
 	ui.refreshPanels()
 	ui.chat.SetYOffset(2)
+	ui.autoScroll = false
 	ui.entries = append(ui.entries, tuiEntry{role: "assistant", text: "new response"})
 	ui.refreshPanels()
 	if ui.chat.YOffset() != 2 || ui.unreadEntries != 1 {

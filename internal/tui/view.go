@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"sort"
 	"strings"
 	"time"
@@ -313,7 +314,11 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 		parts = append(parts, m.renderWorkspaceRow(divider, centerWidth))
 	}
 	if m.planReview && !m.questionOpen {
-		parts = append(parts, m.renderWorkspaceRow(m.renderPlanReview(), centerWidth))
+		if light {
+			parts = append(parts, m.renderPlanReview())
+		} else {
+			parts = append(parts, m.renderWorkspaceRow(m.renderPlanReview(), centerWidth))
+		}
 	} else if light {
 		composer := m.renderInputView()
 		if m.questionOpen && m.question != nil {
@@ -396,25 +401,17 @@ func (m *tuiModel) renderSessionHeader(width int) string {
 		workspace = "workspace"
 	}
 	colors := m.themeColors()
-	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Success)).Bold(true).Render("● luneAgent")
+	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Success)).Bold(true).Render("• luneAgent")
 	name := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true).Render(title)
 	meta := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(workspace + " · " + model)
 	return fitTerminalText(brand+"  "+name+"  "+meta, max(1, width))
 }
 
 func (m *tuiModel) renderLiveActivity(width int) string {
-	if m.questionOpen && m.question != nil {
+	if m.terminalState() == terminalWaiting {
 		return ""
 	}
-	if m.hasPendingUserQuestion() || m.pendingApproval != nil {
-		text := "⚠ Waiting for your answer (see prompt above)"
-		if m.pendingApproval != nil {
-			text = "⚠ Waiting for permission approval (see prompt above)"
-		}
-		color := m.themeColors().Warning
-		return fitTerminalText(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(text), max(1, width))
-	}
-	if !m.running {
+	if m.terminalState() != terminalRunning {
 		return ""
 	}
 	action := m.currentLiveAction()
@@ -507,8 +504,6 @@ func (m *tuiModel) renderFooter(width int) string {
 		status = m.mcpAuthFooter()
 	case m.pendingApproval != nil:
 		status = "Approval required · " + m.keyLabel("approve_tool") + " allow once · " + m.keyLabel("deny_tool") + " deny · Esc pause"
-	case m.questionOpen:
-		status = "Waiting for your answer"
 	case m.running:
 		status = fmt.Sprintf("Working (%s) · %d queued · Esc interrupt", m.taskElapsed(), len(m.queued))
 	case m.pending:
@@ -705,18 +700,83 @@ func (m *tuiModel) renderQueuePicker() string {
 
 func (m *tuiModel) renderPlanReview() string {
 	colors := m.themeColors()
-	lines := []string{lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Warning)).Render("Plan ready · choose an action")}
+	width := max(1, m.width)
+	innerWidth := max(1, width-4)
+	bg := color.Color(lipgloss.Color(codexLight.Surface))
+	if !m.lightLayout() {
+		bg = m.questionSurface()
+	}
+	background := lipgloss.NewStyle().Background(bg)
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(bg).Bold(true)
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Muted))
+	if !m.lightLayout() {
+		titleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(bg).Bold(true)
+		mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	}
+	rows := []string{fillQuestionRow("", width, bg)}
+	rows = append(rows, fillQuestionRow(background.Render("  ")+titleStyle.Render("Implement this plan?"), width, bg))
+	rows = append(rows, fillQuestionRow("", width, bg))
+	descriptions := [3]string{
+		"Switch to Default and start coding",
+		"Start a fresh thread (current context: " + m.currentContextPercent() + " used)",
+		"Continue planning with the model",
+	}
+	leftWidth := 1
+	for index, choice := range planReviewChoices {
+		leftWidth = max(leftWidth, lipgloss.Width(fmt.Sprintf("%d. %s", index+1, choice)))
+	}
+	rowWidth := max(1, innerWidth-2)
+	gapWidth := min(2, max(0, rowWidth-2))
+	leftWidth = min(leftWidth, max(1, rowWidth-gapWidth-1))
+	descriptionWidth := max(0, rowWidth-leftWidth-gapWidth)
 	selected := min(max(m.planReviewIndex, 0), len(planReviewChoices)-1)
 	for index, option := range planReviewChoices {
-		line := "  " + option
+		rowBG := bg
+		marker, foreground, descriptionForeground := "  ", colors.Foreground, colors.Muted
 		if index == selected {
-			line = "› " + option
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Render(line)
+			marker = "› "
+			if m.lightLayout() {
+				rowBG, foreground, descriptionForeground = lipgloss.Color("#BFDBFE"), "#111827", "#1E3A8A"
+			} else {
+				rowBG, foreground, descriptionForeground = lipgloss.Color(colors.Accent), colors.Background, colors.Background
+			}
 		}
-		lines = append(lines, line)
+		markerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(rowBG)
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(rowBG)
+		if index == selected {
+			labelStyle = labelStyle.Bold(true)
+		}
+		descriptionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(descriptionForeground)).Background(rowBG)
+		label := truncateQuestionText(fmt.Sprintf("%d. %s", index+1, option), leftWidth)
+		line := lipgloss.NewStyle().Background(rowBG).Render("  ") + markerStyle.Render(marker) + labelStyle.Render(label)
+		if padding := max(0, leftWidth-lipgloss.Width(label)); padding > 0 {
+			line += lipgloss.NewStyle().Background(rowBG).Render(strings.Repeat(" ", padding))
+		}
+		if descriptionWidth > 0 {
+			description := truncateQuestionText(descriptions[index], descriptionWidth)
+			line += lipgloss.NewStyle().Background(rowBG).Render(strings.Repeat(" ", gapWidth)) + descriptionStyle.Render(description)
+		}
+		rows = append(rows, fillQuestionRow(line, width, rowBG))
 	}
-	lines = append(lines, m.keyLabel("picker_previous")+"/"+m.keyLabel("picker_next")+" select · "+m.keyLabel("send")+" choose · Esc stay read-only")
-	return strings.Join(lines, "\n")
+	rows = append(rows, fillQuestionRow("", width, bg))
+	hintKey := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true)
+	if m.lightLayout() {
+		hintKey = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F2937")).Bold(true)
+	}
+	var hint strings.Builder
+	hint.WriteString(hintKey.Render("enter"))
+	hint.WriteString(mutedStyle.Render(" select · "))
+	hint.WriteString(hintKey.Render("esc"))
+	hint.WriteString(mutedStyle.Render(" back"))
+	return strings.Join(rows, "\n") + "\n" + fitTerminalText(hint.String(), width)
+}
+
+func (m *tuiModel) currentContextPercent() string {
+	if m.contextWindow <= 0 {
+		return "unknown"
+	}
+	percent := int64(float64(m.contextInput)/float64(m.contextWindow)*100 + 0.5)
+	return fmt.Sprintf("%d%%", max(0, min(100, int(percent))))
 }
 
 func (m *tuiModel) renderCommandSuggestions() string {
@@ -958,6 +1018,10 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 		}
 		lineRanges = append(lineRanges, lightToolLineRanges(plainLine, role)...)
 		lineRanges = append(lineRanges, lightTokenRanges(plainLine)...)
+		if role == "plan_heading" && lipgloss.Width(plainLine) > 2 {
+			lineRanges = append(lineRanges, lipgloss.NewRange(2, lipgloss.Width(plainLine),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)))
+		}
 		for _, match := range m.searchMatches {
 			start, end := max(match[0], visual.start), min(match[1], visual.end)
 			if start < end {
@@ -979,9 +1043,11 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 		lineRanges = nonOverlappingStyleRanges(lineRanges)
 		foreground := colors.Foreground
 		background := codexLight.Canvas
-		if role == "you" {
+		if role == "you" || role == "plan" || role == "plan_heading" {
 			foreground, background = codexLight.Primary, codexLight.Surface
 		} else if role == "tool_done" {
+			foreground = codexLight.Muted
+		} else if role == "turn_footer" {
 			foreground = codexLight.Muted
 		} else if role == "error" {
 			foreground = codexLight.Error
@@ -1107,7 +1173,7 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 		}
 		start := markerWidth + 1
 		verbByteStart := markerByteWidth + 1
-		verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
+		verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)
 		if verb == "Failed" {
 			verbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Bold(true)
 		}
@@ -1123,36 +1189,42 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 				command = line[commandStart:]
 			}
 		}
-		if verb == "Ran" {
-			if failedAt := strings.LastIndex(command, " · failed"); failedAt >= 0 {
-				statusStart := commandStart + failedAt
-				ranges = append(ranges, lipgloss.NewRange(
-					lipgloss.Width(line[:statusStart]),
-					lipgloss.Width(line),
-					lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)),
-				))
+		activityStatus := ""
+		for _, suffix := range []string{" · failed", " · cancelled", " · canceled", " · timed out", " · interrupted", " · running", " · stopping"} {
+			if index := strings.LastIndex(command, suffix); index >= 0 {
+				activityStatus = command[index:]
+				command = command[:index]
+				break
 			}
 		}
-		fields := strings.Fields(command)
-		if len(fields) == 0 {
-			break
+		if verb == "Ran" && activityStatus != "" {
+			color := codexLight.Muted
+			if strings.Contains(activityStatus, "failed") {
+				color = codexLight.Error
+			}
+			statusStart := commandStart + len(command)
+			ranges = append(ranges, lipgloss.NewRange(
+				lipgloss.Width(line[:statusStart]), lipgloss.Width(line), lipgloss.NewStyle().Foreground(lipgloss.Color(color)),
+			))
 		}
-		first := strings.Index(command, fields[0])
-		firstStart := commandStart + first
-		ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:firstStart]), lipgloss.Width(line[:firstStart+len(fields[0])]), inlineCodeStyle()))
-		cursor := first + len(fields[0])
-		for _, field := range fields[1:] {
-			relative := strings.Index(command[cursor:], field)
-			if relative < 0 {
-				continue
+		if verb == "Ran" || verb == "Run" || verb == "Failed" {
+			commandRanges := lightCommandLineRanges(line, commandStart, command)
+			ranges = append(ranges, commandRanges...)
+		} else {
+			target := command
+			targetEnd := len(target)
+			if verb == "Edited" {
+				if index := strings.LastIndex(target, " (+"); index >= 0 && strings.HasSuffix(target, ")") {
+					targetEnd = index
+				}
 			}
-			relative += cursor
-			if strings.HasPrefix(field, "-") {
-				fieldStart := commandStart + relative
-				flagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Flag))
-				ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:fieldStart]), lipgloss.Width(line[:fieldStart+len(field)]), flagStyle))
+			pathTarget := strings.TrimSpace(target[:targetEnd])
+			if actionTargetIsPath(verb, pathTarget) {
+				pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color("#E6F4EA"))
+				pathStart := commandStart + strings.Index(command, pathTarget)
+				pathEnd := pathStart + len(pathTarget)
+				ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:pathStart]), lipgloss.Width(line[:pathEnd]), pathStyle))
 			}
-			cursor = relative + len(field)
 		}
 		break
 	}

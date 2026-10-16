@@ -55,7 +55,7 @@ func TestPausedQuestionIsRestoredAsAnAnswerTarget(t *testing.T) {
 		t.Fatal("paused user question was not restored as the active answer target")
 	}
 	transcript := plainTUIView(ui)
-	if !strings.Contains(transcript, "Choose a number") || !strings.Contains(transcript, "Waiting for your answer") {
+	if !strings.Contains(transcript, "Choose a number") || !strings.Contains(transcript, "enter to submit answer") {
 		t.Fatalf("paused question was not explained in the transcript: %q", transcript)
 	}
 	if !strings.Contains(transcript, "1. 1") || !strings.Contains(transcript, "2. 2") {

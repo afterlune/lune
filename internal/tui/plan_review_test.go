@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -62,7 +63,7 @@ func TestTUIRecognizedPlanHidesWrapperAndOpensThreeChoices(t *testing.T) {
 		ExecutionID: "execution-1", Status: core.TaskCompleted, ProposedPlan: &core.ProposedPlan{Text: planText},
 	}})
 
-	if len(ui.entries) != 1 || ui.entries[0].text != "Intro\n\n## Summary\nBuild the feature.\n\nDone" {
+	if len(ui.entries) != 3 || ui.entries[0].text != "Intro" || ui.entries[1].role != "plan" || ui.entries[1].text != planText || ui.entries[2].text != "Done" {
 		t.Fatalf("plan transcript = %#v", ui.entries)
 	}
 	if !ui.planReview || ui.planReviewIndex != 0 {
@@ -93,6 +94,110 @@ func TestTUIPlanReviewFitsTerminalSizesWithoutComposer(t *testing.T) {
 		if view.Cursor != nil || strings.Contains(view.Content, "hidden draft") {
 			t.Errorf("%dx%d plan review exposed composer: cursor=%v", size.width, size.height, view.Cursor)
 		}
+	}
+}
+
+func TestTUIPlanBodyAndConfirmationUseLightModeBlocks(t *testing.T) {
+	ui := newTUIModel(&fakeResponder{}, false)
+	ui.preferences.Theme = themeLight
+	ui.applyResolvedTheme()
+	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	ui.taskStartedAt = time.Now().Add(-40 * time.Second)
+	planText := "## Overview\n- First implementation step\n1. Second implementation step"
+	response, err := json.Marshal(map[string]any{"output": []any{
+		map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": planText},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui.finishTask(taskResult{response: response, coreResult: core.TurnResult{
+		ExecutionID: "execution-1", Status: core.TaskCompleted, ProposedPlan: &core.ProposedPlan{Text: planText},
+	}})
+	ui.refreshPanels()
+	view := ui.View()
+	plain := tuiScreenshotANSI.ReplaceAllString(view.Content, "")
+	overviewAt := strings.Index(plain, "Overview")
+	workedAt := strings.Index(plain, "Worked for 40s • ")
+	confirmAt := strings.Index(plain, "Implement this plan?")
+	if overviewAt < 0 || workedAt <= overviewAt || confirmAt <= workedAt {
+		t.Fatalf("plan blocks are out of order or incomplete: %q", plain)
+	}
+	lines := parseTUIScreenshotLinesWithBackground(view.Content, codexLight.Primary, codexLight.Canvas)
+	planHeading, planBullet, numberedPlanBullet, worked := false, false, false, false
+	for _, runs := range lines {
+		var line strings.Builder
+		background := ""
+		boldOverview := false
+		mutedFooter := false
+		for _, run := range runs {
+			line.WriteString(run.text)
+			if lipgloss.Width(run.text) > 0 {
+				background = run.background
+			}
+			if strings.Contains(run.text, "Overview") && run.bold && strings.EqualFold(run.foreground, "#111827") {
+				boldOverview = true
+			}
+			if strings.Contains(run.text, "Worked for 40s") && strings.EqualFold(run.foreground, codexLight.Muted) {
+				mutedFooter = true
+			}
+		}
+		if strings.Contains(line.String(), "Overview") {
+			planHeading = strings.EqualFold(background, codexLight.Surface) && boldOverview
+		}
+		if strings.Contains(line.String(), "• First implementation step") {
+			planBullet = strings.EqualFold(background, codexLight.Surface)
+		}
+		if strings.Contains(line.String(), "• Second implementation step") {
+			numberedPlanBullet = strings.EqualFold(background, codexLight.Surface)
+		}
+		if strings.Contains(line.String(), "Worked for 40s") {
+			worked = strings.EqualFold(background, codexLight.Canvas) && mutedFooter
+		}
+	}
+	if !planHeading || !planBullet || !numberedPlanBullet || !worked {
+		t.Fatalf("plan surface/footer styles missing: heading=%v bullet=%v numbered=%v footer=%v", planHeading, planBullet, numberedPlanBullet, worked)
+	}
+
+	panel := ui.renderPlanReview()
+	plainPanel := tuiScreenshotANSI.ReplaceAllString(panel, "")
+	for _, pair := range [][2]string{
+		{"1. Yes, implement this plan", "Switch to Default and start coding"},
+		{"2. Yes, clear context and implement", "Start a fresh thread (current context: unknown used)"},
+		{"3. No, stay in Plan mode", "Continue planning with the model"},
+	} {
+		found := false
+		for _, line := range strings.Split(plainPanel, "\n") {
+			if strings.Contains(line, pair[0]) && strings.Contains(line, pair[1]) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Plan review option %q and description %q are not on one row: %q", pair[0], pair[1], plainPanel)
+		}
+	}
+	if !strings.Contains(plainPanel, "enter select · esc back") {
+		t.Errorf("Plan review hint is missing: %q", plainPanel)
+	}
+	selectedRow := false
+	for _, runs := range parseTUIScreenshotLinesWithBackground(panel, codexLight.Primary, codexLight.Canvas) {
+		var text strings.Builder
+		width := 0
+		allBlue := true
+		for _, run := range runs {
+			text.WriteString(run.text)
+			width += lipgloss.Width(run.text)
+			if lipgloss.Width(run.text) > 0 && !strings.EqualFold(run.background, "#BFDBFE") {
+				allBlue = false
+			}
+		}
+		if strings.Contains(text.String(), "› 1. Yes, implement this plan") {
+			selectedRow = width == 100 && allBlue
+		}
+	}
+	if !selectedRow {
+		t.Fatal("Plan review selected option did not fill the terminal row in blue")
 	}
 }
 
@@ -133,7 +238,7 @@ func TestTUIPlanTagsAreHiddenDuringStreamingAndChooserUsesVisiblePlanBlock(t *te
 	ui.finishTask(taskResult{response: response, coreResult: core.TurnResult{
 		ExecutionID: "execution-1", Status: core.TaskCompleted,
 	}})
-	if len(ui.entries) < 1 || ui.entries[0].text != "Intro\n\nDo the work.\n\nDone" {
+	if len(ui.entries) < 3 || ui.entries[0].text != "Intro" || ui.entries[1].role != "plan" || ui.entries[1].text != "Do the work." || ui.entries[2].text != "Done" {
 		t.Fatalf("cleaned plan transcript = %#v", ui.entries)
 	}
 	if !ui.planReview || ui.proposedPlan == nil || ui.proposedPlan.Text != "Do the work." {

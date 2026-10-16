@@ -29,7 +29,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case windowTitleTickMsg:
-		if message.sessionID != m.sessionID || message.token != m.windowTitleAnimationToken || !m.running {
+		if message.sessionID != m.sessionID || message.token != m.windowTitleAnimationToken || m.terminalState() != terminalRunning {
 			return m, nil
 		}
 		m.windowTitleFrame = (m.windowTitleFrame + 1) % len(titleSpinner)
@@ -168,6 +168,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case turnSubmittedMsg:
 		if message.err != nil {
 			m.running = false
+			m.executionStarted = false
 			m.runtimeTask = false
 			m.addEntry("error", "Could not submit turn: "+message.err.Error(), true)
 			m.status = "Turn was not accepted."
@@ -185,9 +186,36 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.running = true
+		m.executionStarted = true
 		m.runtimeTask = true
 		m.runningExecutionID = message.submission.ExecutionID
 		return m, tea.Batch(waitForTurn(m.runtime, message.submission.ExecutionID), taskClock(m.sessionID), m.startWindowTitleAnimation())
+	case planImplementationStartedMsg:
+		if message.err != nil {
+			return m, func() tea.Msg {
+				return taskFinishedMsg{result: taskResult{targetSessionID: message.targetSessionID, err: message.err}}
+			}
+		}
+		if message.runtime == nil || message.executionID == "" {
+			return m, func() tea.Msg {
+				return taskFinishedMsg{result: taskResult{targetSessionID: message.targetSessionID, err: fmt.Errorf("plan implementation did not return an execution")}}
+			}
+		}
+		m.running = true
+		m.executionStarted = message.started
+		m.runtimeTask = true
+		m.runningExecutionID = message.executionID
+		if m.activeExecutions == nil {
+			m.activeExecutions = make(map[string]bool)
+		}
+		m.activeExecutions[message.executionID] = true
+		wait := func() tea.Msg {
+			result, err := message.runtime.WaitTurn(context.Background(), message.executionID)
+			return taskFinishedMsg{result: taskResult{
+				response: result.Response, coreResult: result, targetSessionID: message.targetSessionID, err: err,
+			}}
+		}
+		return m, tea.Batch(wait, m.startWindowTitleAnimation())
 	case taskFinishedMsg:
 		if m.finishedTasks[message.result.coreResult.ExecutionID] {
 			return m, nil
@@ -220,7 +248,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, m.inspectPausedTask("")
 		}
-		m.addEntry("question", message.question.Question, false)
+		m.addEntry("question", m.question.displayText, false)
 		m.addEntry("you", message.answer, false)
 		if m.question.fromComposer {
 			m.resetInput()
@@ -228,14 +256,48 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.question = nil
 		m.questionOpen = false
 		m.pendingRequest = nil
+		m.pendingRequests = nil
 		m.pending = false
 		m.updateLayout()
 		return m.waitForRecoveredExecution(message.question.ExecutionID)
+	case questionInterruptedMsg:
+		if message.sessionID != m.sessionID || m.question == nil || !sameQuestion(m.question.request, message.question) {
+			return m, nil
+		}
+		if message.err != nil {
+			m.question.interrupting = false
+			m.question.err = "Could not interrupt paused task: " + message.err.Error()
+			m.status = "Question task could not be interrupted."
+			m.updateLayout()
+			m.refreshPanels()
+			return m, nil
+		}
+		m.question = nil
+		m.questionOpen = false
+		m.pendingRequest = nil
+		m.pendingRequests = nil
+		m.pending = false
+		m.running = false
+		m.executionStarted = false
+		m.runtimeTask = false
+		m.status = "Question task interrupted."
+		if message.discarded {
+			m.addEntry("notice", "Question task interrupted; its paused continuation was discarded.", false)
+		} else {
+			m.status = "Question is no longer pending."
+		}
+		if err := m.refreshRuntimeProjection(); err != nil {
+			m.addEntry("error", "Could not refresh session state after interrupt: "+err.Error(), true)
+		}
+		m.updateLayout()
+		m.refreshPanels()
+		return m, nil
 	case pausedTaskDetailsMsg:
 		if message.sessionID == m.sessionID && !message.paused && message.err == nil && m.question != nil {
 			m.question = nil
 			m.questionOpen = false
 			m.pendingRequest = nil
+			m.pendingRequests = nil
 			m.pending = false
 			m.updateLayout()
 			m.refreshPanels()
@@ -256,21 +318,19 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.PasteMsg:
 		if m.questionOpen && m.question != nil {
-			if m.question.submitting {
+			if m.question.submitting || m.question.interrupting || !m.question.notes {
 				return m, nil
 			}
-			var focusCmd tea.Cmd
-			if len(m.question.request.Options) > 0 {
-				focusCmd = m.question.setSelection(len(m.question.request.Options))
-			} else {
-				m.question.notes = true
-				focusCmd = m.question.input.Focus()
-			}
-			setQuestionInputPrompt(m.question)
+			message.Content = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(message.Content, "\r\n", " "), "\n", " "), "\r", " ")
 			var cmd tea.Cmd
 			m.question.input, cmd = m.question.input.Update(message)
+			if m.question.selected == len(m.question.request.Options) {
+				m.question.customDraft = m.question.input.Value()
+			} else {
+				m.question.noteDraft = m.question.input.Value()
+			}
 			m.updateLayout()
-			return m, tea.Batch(focusCmd, cmd)
+			return m, cmd
 		}
 		if m.pendingMCPInteraction != nil {
 			return m, m.updateMCPInteractionInput(message)
@@ -1045,6 +1105,7 @@ func (m *tuiModel) confirmExit(cancelQueued bool) (tea.Model, tea.Cmd) {
 		m.exitConfirm = false
 		m.exitAfterTask = true
 		m.running = true
+		m.executionStarted = state.Task.Status == core.TaskRunning
 		m.runtimeTask = true
 		m.runningExecutionID = state.Task.ExecutionID
 		m.activeExecutions[state.Task.ExecutionID] = true

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"image/color"
 	"regexp"
-	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -19,15 +19,16 @@ var questionInlineMarkdown = regexp.MustCompile("`([^`]+)`|\\*\\*(.+?)\\*\\*")
 
 type questionPanel struct {
 	request      core.UserQuestionRequest
+	displayText  string
+	background   string
 	selected     int
 	notes        bool
 	noteDraft    string
 	customDraft  string
 	input        textarea.Model
 	submitting   bool
+	interrupting bool
 	fromComposer bool
-	scroll       int
-	manualScroll bool
 	err          string
 	cursorRow    int
 }
@@ -36,6 +37,13 @@ type questionAnsweredMsg struct {
 	sessionID string
 	question  core.UserQuestionRequest
 	answer    string
+	err       error
+}
+
+type questionInterruptedMsg struct {
+	sessionID string
+	question  core.UserQuestionRequest
+	discarded bool
 	err       error
 }
 
@@ -93,20 +101,14 @@ func (m *tuiModel) clearQuestionPreparingTool(executionID string) {
 func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	m.clearQuestionPreparingTool(request.ExecutionID)
 	if m.question != nil && sameQuestion(m.question.request, request) {
-		previousSelection := m.question.selected
-		previousCount := len(m.question.request.Options)
+		parts := splitQuestionDisplay(request.Question)
 		m.question.request = request
 		m.question.selected = min(m.question.selected, len(request.Options))
-		if previousCount == 0 && len(request.Options) > 0 {
-			m.question.notes = false
-			m.question.input.Blur()
-		} else if len(request.Options) == 0 || m.question.selected == len(request.Options) {
-			m.question.notes = true
-			m.question.input.Focus()
-		} else if previousSelection == previousCount && previousCount > 0 {
-			m.question.notes = false
-			m.question.input.Blur()
+		m.question.displayText = parts.question
+		if parts.background != "" && parts.background != m.question.background {
+			m.addEntry("assistant", parts.background, false)
 		}
+		m.question.background = parts.background
 		setQuestionInputPrompt(m.question)
 		m.questionOpen = true
 		m.updateLayout()
@@ -115,23 +117,23 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	input := textarea.New()
 	input.KeyMap = m.input.KeyMap
 	input.Placeholder = ""
-	input.Prompt = "› Note: "
+	input.Prompt = "› Add notes: "
 	input.ShowLineNumbers = false
-	input.DynamicHeight = true
+	input.DynamicHeight = false
 	input.MinHeight = 1
-	input.MaxHeight = 4
+	input.MaxHeight = 1
 	input.SetVirtualCursor(false)
 	input.SetWidth(m.questionInputWidth())
 	applyTextareaTheme(&input, m.resolvedTheme())
-	m.question = &questionPanel{request: request, input: input, notes: len(request.Options) == 0}
-	setQuestionInputPrompt(m.question)
-	if m.question.notes {
-		m.question.input.Focus()
-	} else {
-		m.question.input.Blur()
+	parts := splitQuestionDisplay(request.Question)
+	m.question = &questionPanel{request: request, displayText: parts.question, background: parts.background, input: input}
+	if parts.background != "" {
+		m.addEntry("assistant", parts.background, false)
 	}
+	setQuestionInputPrompt(m.question)
+	m.question.input.Blur()
 	m.questionOpen = true
-	m.status = "Waiting for your answer."
+	m.status = ""
 	m.updateLayout()
 }
 
@@ -139,152 +141,142 @@ func setQuestionInputPrompt(q *questionPanel) {
 	if q == nil {
 		return
 	}
-	if len(q.request.Options) == 0 || q.selected == len(q.request.Options) {
-		q.input.Prompt = "› Type your answer: "
-		return
-	}
-	q.input.Prompt = "› Note: "
+	q.input.Prompt = "› Add notes: "
 }
 
 func (q *questionPanel) setSelection(selected int) tea.Cmd {
-	if q == nil || len(q.request.Options) == 0 {
+	if q == nil {
 		return nil
 	}
 	count := len(q.request.Options)
 	selected = max(0, min(count, selected))
-	wasCustom := q.selected == count
-	willBeCustom := selected == count
-	if wasCustom != willBeCustom {
-		if wasCustom {
+	if q.notes {
+		if q.selected == count {
 			q.customDraft = q.input.Value()
-			q.input.SetValue(q.noteDraft)
 		} else {
 			q.noteDraft = q.input.Value()
-			q.input.SetValue(q.customDraft)
 		}
 	}
 	q.selected = selected
 	setQuestionInputPrompt(q)
-	if willBeCustom {
-		q.notes = true
-		return q.input.Focus()
-	}
-	if wasCustom {
-		q.notes = false
-		q.input.Blur()
-		return nil
+	if q.notes {
+		if selected == count {
+			q.input.SetValue(q.customDraft)
+		} else {
+			q.input.SetValue(q.noteDraft)
+		}
 	}
 	return nil
 }
 
 func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	q := m.question
-	if key.String() == "esc" {
-		m.questionOpen = false
-		m.updateLayout()
+	if q.submitting || q.interrupting {
 		return m, nil
 	}
-	if q.submitting {
-		return m, nil
+	if key.String() == "esc" || key.String() == "ctrl+c" {
+		q.interrupting = true
+		q.err = "Interrupting paused task…"
+		return m, m.discardQuestionTask(q.request)
 	}
-	if key.String() == "ctrl+c" {
-		if q.input.HasSelection() {
-			if err := writeClipboard(q.input.SelectedText()); err != nil {
-				q.err = err.Error()
-			}
-			return m, nil
-		}
-		m.questionOpen = false
-		m.updateLayout()
-		return m, nil
-	}
-	hasChoices := len(q.request.Options) > 0
+	count := len(q.request.Options)
 	switch {
-	case m.matchesKey("chat_scroll_up", key):
-		q.manualScroll = true
-		q.scroll = max(0, q.scroll-max(1, m.height/3))
-	case m.matchesKey("chat_scroll_down", key):
-		q.manualScroll = true
-		q.scroll += max(1, m.height/3)
-	case m.matchesKey("question_notes", key):
-		if !hasChoices || q.selected == len(q.request.Options) {
-			return m, nil
-		}
-		q.notes = !q.notes
-		q.manualScroll = false
+	case key.Code == tea.KeyTab || m.matchesKey("question_notes", key):
 		if q.notes {
-			q.input.SetValue(q.noteDraft)
+			if q.selected == count {
+				q.customDraft = q.input.Value()
+			} else {
+				q.noteDraft = q.input.Value()
+			}
+			q.notes = false
+			q.input.Blur()
+		} else {
+			q.notes = true
+			if q.selected == count {
+				q.input.SetValue(q.customDraft)
+			} else {
+				q.input.SetValue(q.noteDraft)
+			}
+		}
+		if q.notes {
 			setQuestionInputPrompt(q)
 			m.updateLayout()
 			return m, q.input.Focus()
 		}
-		q.noteDraft = q.input.Value()
-		q.input.Blur()
 		m.updateLayout()
 		return m, nil
-	case hasChoices && m.matchesKey("question_previous", key):
+	case key.Code == tea.KeyUp || m.matchesKey("question_previous", key):
+		if q.notes {
+			if q.selected == count {
+				q.customDraft = q.input.Value()
+			} else {
+				q.noteDraft = q.input.Value()
+			}
+			q.notes = false
+			q.input.Blur()
+		}
 		command := q.setSelection(q.selected - 1)
 		q.err = ""
-		q.manualScroll = false
 		m.updateLayout()
 		return m, command
-	case hasChoices && m.matchesKey("question_next", key):
+	case key.Code == tea.KeyDown || m.matchesKey("question_next", key):
+		if q.notes {
+			if q.selected == count {
+				q.customDraft = q.input.Value()
+			} else {
+				q.noteDraft = q.input.Value()
+			}
+			q.notes = false
+			q.input.Blur()
+		}
 		command := q.setSelection(q.selected + 1)
 		q.err = ""
-		q.manualScroll = false
 		m.updateLayout()
 		return m, command
 	case m.matchesKey("send", key):
-		if hasChoices && q.selected < len(q.request.Options) {
-			return m.answerUserQuestion(questionChoiceAnswer(q))
-		}
-		answer := strings.TrimSpace(q.input.Value())
-		if answer == "" {
+		if !q.notes {
+			if q.selected < count {
+				return m.answerUserQuestion(questionChoiceAnswer(q))
+			}
 			q.notes = true
-			q.err = "Type your own answer before submitting."
+			q.input.SetValue(q.customDraft)
+			q.err = ""
 			setQuestionInputPrompt(q)
 			m.updateLayout()
 			return m, q.input.Focus()
 		}
-		return m.answerUserQuestion(answer)
+		answer := strings.TrimSpace(q.input.Value())
+		if q.selected == count {
+			if answer == "" {
+				q.err = "Enter an answer in notes."
+				m.updateLayout()
+				return m, nil
+			}
+			q.customDraft = answer
+			return m.answerUserQuestion(answer)
+		}
+		q.noteDraft = answer
+		return m.answerUserQuestion(questionChoiceAnswer(q))
 	default:
 		if !q.notes {
-			if hasChoices {
-				if n, err := strconv.Atoi(key.String()); err == nil && n > 0 && n <= len(q.request.Options)+1 {
-					q.err = ""
-					q.manualScroll = false
-					if n <= len(q.request.Options) {
-						q.setSelection(n - 1)
-						setQuestionInputPrompt(q)
-						m.updateLayout()
-						return m.answerUserQuestion(questionChoiceAnswer(q))
-					}
-					command := q.setSelection(len(q.request.Options))
-					if q.selected == len(q.request.Options) {
-						m.updateLayout()
-						return m, command
-					}
-				}
-				return m, nil
-			}
-			if key.Text == "" {
-				return m, nil
-			}
-			q.notes = true
-			q.err = ""
-			if hasChoices && q.selected < len(q.request.Options) {
-				q.noteDraft = q.input.Value()
-			}
-			setQuestionInputPrompt(q)
-			q.input.Focus()
+			return m, nil
+		}
+		if key.Code == tea.KeyEnter {
+			return m, nil
+		}
+		if strings.ContainsAny(key.Text, "\r\n") {
+			return m, nil
 		}
 		var cmd tea.Cmd
 		q.input, cmd = q.input.Update(key)
+		if q.selected == count {
+			q.customDraft = q.input.Value()
+		} else {
+			q.noteDraft = q.input.Value()
+		}
 		m.updateLayout()
 		return m, cmd
 	}
-	m.updateLayout()
-	return m, nil
 }
 
 func questionChoiceAnswer(q *questionPanel) string {
@@ -292,10 +284,55 @@ func questionChoiceAnswer(q *questionPanel) string {
 		return ""
 	}
 	answer := q.request.Options[q.selected].Label
-	if notes := strings.TrimSpace(q.input.Value()); notes != "" {
+	notes := q.noteDraft
+	if q.notes && q.selected < len(q.request.Options) {
+		notes = q.input.Value()
+	}
+	if notes = strings.TrimSpace(notes); notes != "" {
 		answer += "\n\n" + notes
 	}
 	return answer
+}
+
+type questionTextParts struct {
+	background string
+	question   string
+}
+
+var questionParagraphBreak = regexp.MustCompile(`\n(?:[ \t]*\n)+`)
+
+func splitQuestionDisplay(raw string) questionTextParts {
+	text := strings.ReplaceAll(strings.ReplaceAll(raw, "\r\n", "\n"), "\r", "\n")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return questionTextParts{}
+	}
+	if mark := strings.LastIndexAny(text, "?？"); mark >= 0 {
+		start := 0
+		prefix := text[:mark]
+		if boundary := strings.LastIndexAny(prefix, ".!。！？\n"); boundary >= 0 {
+			_, size := utf8.DecodeRuneInString(prefix[boundary:])
+			start = boundary + size
+		}
+		return questionTextParts{
+			background: strings.TrimSpace(text[:start]),
+			question:   strings.TrimSpace(text[start:]),
+		}
+	}
+	paragraphs := questionParagraphBreak.Split(text, -1)
+	if len(paragraphs) == 1 {
+		lines := strings.Split(text, "\n")
+		if len(lines) > 1 {
+			return questionTextParts{
+				background: strings.TrimSpace(strings.Join(lines[:len(lines)-1], "\n")),
+				question:   strings.TrimSpace(lines[len(lines)-1]),
+			}
+		}
+		return questionTextParts{question: text}
+	}
+	question := strings.TrimSpace(paragraphs[len(paragraphs)-1])
+	background := strings.TrimSpace(strings.Join(paragraphs[:len(paragraphs)-1], "\n\n"))
+	return questionTextParts{background: background, question: question}
 }
 
 func (m *tuiModel) renderQuestion() string {
@@ -303,217 +340,124 @@ func (m *tuiModel) renderQuestion() string {
 	if q == nil {
 		return ""
 	}
-	light := m.lightLayout()
+	width := max(1, m.width)
+	innerWidth := max(1, width-4)
+	bg := color.Color(lipgloss.Color(codexLight.Surface))
 	colors := m.themeColors()
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
-	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-	textStyle := accent
-	descriptionStyle := muted
-	indent := ""
-	bg := lipgloss.Color(codexLight.Surface)
-	width := max(1, m.width-2)
-	if light {
-		indent = "  "
-		textStyle = lightTextStyle()
-		descriptionStyle = lightMutedStyle()
-		accent = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary))
-		muted = lightMutedStyle()
+	if !m.lightLayout() {
+		bg = m.questionSurface()
 	}
-	lines := make([]string, 0, len(q.request.Options)*2+5)
-	notesLine := -1
-	focusLine := 0
-	appendText := func(value, lineIndent string, style lipgloss.Style) {
-		if light {
-			lines = append(lines, wrapAndPadLines(value, lineIndent, m.width, style, bg)...)
-			return
-		}
-		plain, ranges := parseQuestionMarkdown(value, bg)
-		atomic := questionAtomicRanges(ranges)
-		contentWidth := max(1, width-lipgloss.Width(lineIndent))
-		for _, segment := range wrapTextSegments(plain, contentWidth, atomic) {
-			content := renderQuestionTextRange(plain, segment.start, segment.end, style, nil)
-			lines = append(lines, style.Render(lineIndent)+content)
-		}
+	background := lipgloss.NewStyle().Background(bg)
+	rows := []string{fillQuestionRow("", width, bg)}
+	questionTitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Muted)).Background(bg)
+	questionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#2563EB")).Background(bg)
+	if !m.lightLayout() {
+		questionTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Background(bg)
+		questionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Background(bg)
 	}
-	appendSingleLine := func(value, lineIndent string, style lipgloss.Style) {
-		plain, ranges := parseQuestionMarkdown(value, bg)
-		totalWidth := width
-		if light {
-			totalWidth = m.width
-		}
-		contentWidth := max(1, totalWidth-lipgloss.Width(lineIndent))
-		truncated := ansi.StringWidth(plain) > contentWidth
-		end := len(plain)
-		if truncated {
-			end = len(ansi.Truncate(plain, max(0, contentWidth-1), ""))
-		}
-		styleRanges := ranges
-		if !light {
-			styleRanges = nil
-		}
-		content := renderQuestionTextRange(plain, 0, end, style, styleRanges)
-		if truncated {
-			content += style.Render("…")
-		}
-		if light {
-			background := lipgloss.NewStyle().Background(bg)
-			styled := background.Render(lineIndent) + content
-			lines = append(lines, lipgloss.PlaceHorizontal(m.width, lipgloss.Left, styled,
-				lipgloss.WithWhitespaceStyle(background)))
-			return
-		}
-		lines = append(lines, style.Render(lineIndent)+content)
-	}
-	appendQuestionInput := func() {
-		var inputRows []string
-		if light {
-			inputRows = wrapStyledQuestionInput(q.input.View(), indent, m.width, bg)
-		} else {
-			inputRows = strings.Split(q.input.View(), "\n")
-		}
-		lines = append(lines, inputRows...)
-		focusLine = max(0, len(lines)-1)
-	}
-	appendBlankLine := func() {
-		if light {
-			lines = append(lines, renderFullWidthBlankLine(m.width, bg))
-			return
-		}
-		lines = append(lines, "")
-	}
-	questionTitle := "⚠ Question"
-	questionTitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Warning)).Bold(true)
-	appendText(questionTitle, indent, questionTitleStyle)
-	appendText(q.request.Question, indent, textStyle)
+	rows = append(rows, fillQuestionRow(background.Render("  ")+questionTitleStyle.Render("Question 1/1 (1 unanswered)"), width, bg))
+	prompt := fitTerminalText(singleLineQuestionSummary(q.displayText), innerWidth)
+	rows = append(rows, fillQuestionRow(background.Render("  ")+questionStyle.Render(prompt), width, bg))
+	rows = append(rows, fillQuestionRow("", width, bg))
+
 	count := len(q.request.Options)
-	hasChoices := count > 0
-	if !hasChoices {
-		appendBlankLine()
+	labels := make([]string, count+1)
+	descriptions := make([]string, count+1)
+	for index, option := range q.request.Options {
+		labels[index] = fmt.Sprintf("%d. %s", index+1, singleLineQuestionSummary(option.Label))
+		descriptions[index] = singleLineQuestionSummary(option.Description)
 	}
-	if hasChoices {
-		appendBlankLine()
-		// Keep the selected choice visible even on short terminals.
-		for i := 0; i <= count; i++ {
-			label, description := "None of the above", ""
-			if i < count {
-				label = q.request.Options[i].Label
-				description = q.request.Options[i].Description
-			}
-			prefix := "  "
-			if i == q.selected {
-				prefix = "› "
-			}
-			row := fmt.Sprintf("%s%d. %s", prefix, i+1, label)
-			if i == count && i != q.selected {
-				row += " (type custom answer)"
-			} else if i < count && i != q.selected && strings.TrimSpace(description) != "" {
-				row += " · " + singleLineQuestionSummary(description)
-			}
-			style := descriptionStyle
-			if i == q.selected {
-				focusLine = len(lines)
-				style = accent
-			}
-			appendSingleLine(row, indent, style)
-			if i == q.selected && description != "" {
-				appendText(description, "    ", descriptionStyle)
-				appendBlankLine()
-			}
-			if i == count && i == q.selected && q.notes {
-				notesLine = len(lines)
-				appendQuestionInput()
+	labels[count] = fmt.Sprintf("%d. None of the above", count+1)
+	descriptions[count] = "Optionally, add details in notes (tab)"
+	labelWidth := 1
+	for _, label := range labels {
+		labelWidth = max(labelWidth, lipgloss.Width(label))
+	}
+	rowWidth := max(1, innerWidth-2) // selection marker
+	gapWidth := min(2, max(0, rowWidth-2))
+	labelWidth = min(labelWidth, max(1, rowWidth-gapWidth-1))
+	descriptionWidth := max(0, rowWidth-labelWidth-gapWidth)
+	for index, label := range labels {
+		selected := index == q.selected
+		rowBG := bg
+		marker, labelColor, descriptionColor := "  ", colors.Foreground, colors.Muted
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(labelColor)).Background(rowBG)
+		descriptionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(descriptionColor)).Background(rowBG)
+		markerStyle := labelStyle
+		if selected {
+			marker = "› "
+			if m.lightLayout() {
+				rowBG = lipgloss.Color("#BFDBFE")
+				labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(rowBG).Bold(true)
+				descriptionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#1E3A8A")).Background(rowBG)
+				markerStyle = labelStyle
+			} else {
+				rowBG = lipgloss.Color(colors.Accent)
+				labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(rowBG).Bold(true)
+				descriptionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(rowBG)
+				markerStyle = labelStyle
 			}
 		}
-	}
-	if q.notes && (!hasChoices || q.selected < count) {
-		if len(lines) > 0 && lines[len(lines)-1] != "" {
-			appendBlankLine()
+		label = truncateQuestionText(label, labelWidth)
+		row := lipgloss.NewStyle().Background(rowBG).Render("  ") + markerStyle.Render(marker) + labelStyle.Render(label)
+		padding := max(0, labelWidth-lipgloss.Width(label))
+		if padding > 0 {
+			row += lipgloss.NewStyle().Background(rowBG).Render(strings.Repeat(" ", padding))
 		}
-		notesLine = len(lines)
-		appendQuestionInput()
+		if descriptionWidth > 0 {
+			description := truncateQuestionText(descriptions[index], descriptionWidth)
+			row += lipgloss.NewStyle().Background(rowBG).Render(strings.Repeat(" ", gapWidth)) + descriptionStyle.Render(description)
+		}
+		rows = append(rows, fillQuestionRow(row, width, rowBG))
+	}
+	q.cursorRow = 0
+	if q.notes {
+		q.cursorRow = len(rows)
+		input := ansi.Truncate(q.input.View(), innerWidth, "...")
+		rows = append(rows, fillQuestionRow(background.Render("  ")+input, width, bg))
 	}
 	if q.err != "" {
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error))
-		if light {
-			appendText(q.err, indent, errStyle)
-		} else {
-			appendText(q.err, "", errStyle)
-		}
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error)).Background(bg)
+		rows = append(rows, fillQuestionRow(background.Render("  ")+style.Render(fitTerminalText(q.err, innerWidth)), width, bg))
 	}
-	hint := m.keyLabel("send") + " submit · Esc hide"
-	if hasChoices {
-		if q.notes {
-			hint = m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · " + m.keyLabel("send") + " submit · Esc hide"
-			if q.selected < count {
-				hint = m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · " + m.keyLabel("question_notes") + " choices · " + m.keyLabel("send") + " submit · Esc hide"
-			}
-		} else {
-			hint = m.keyLabel("question_previous") + "/" + m.keyLabel("question_next") + " select · number keys submit · " + m.keyLabel("question_notes") + " notes · " + m.keyLabel("send") + " submit · Esc hide"
-		}
-	}
-	if q.submitting {
-		hint = "Submitting answer…"
-	}
-	body := lines
-	totalLines := len(body)
-	budget := m.questionBodyBudget(light, hint, indent, muted, bg)
-	questionOffset := func(budget int) int {
-		offset := q.scroll
-		if !q.manualScroll {
-			offset = max(0, focusLine-budget+1)
-		}
-		return min(offset, max(0, totalLines-budget))
-	}
-	offset := questionOffset(budget)
-	if offset > 0 || offset+budget < totalLines {
-		hint = "PgUp/PgDn scroll · " + hint
-		budget = m.questionBodyBudget(light, hint, indent, muted, bg)
-		offset = questionOffset(budget)
-	}
-	body = body[offset:min(len(body), offset+budget)]
-	if notesLine >= 0 {
-		cursorY := 0
-		if cursor := q.input.Cursor(); cursor != nil {
-			cursorY = cursor.Y
-		}
-		q.cursorRow = notesLine - offset + cursorY
-		if light {
-			q.cursorRow++
-		}
-	} else {
-		q.cursorRow = 0
-	}
-	if light {
-		content := append([]string(nil), body...)
-		content = append(content, renderFullWidthBlankLine(m.width, bg))
-		content = append(content, wrapAndPadLines(hint, indent, m.width, muted, bg)...)
-		content = append([]string{renderFullWidthBlankLine(m.width, bg)}, content...)
-		content = append(content, renderFullWidthBlankLine(m.width, bg))
-		return strings.Join(content, "\n")
-	}
-	content := append(body, muted.Render(fitTerminalText(hint, max(1, m.width-2))))
-	return lipgloss.NewStyle().Width(m.width).Padding(0, 1).Background(m.questionSurface()).Render(strings.Join(content, "\n"))
+	rows = append(rows, fillQuestionRow("", width, bg))
+	return strings.Join(rows, "\n") + "\n" + m.renderQuestionHint(width)
 }
 
-func (m *tuiModel) questionBodyBudget(light bool, hint, indent string, muted lipgloss.Style, bg color.Color) int {
-	footerHeight := lipgloss.Height(m.renderFooter(max(1, m.width)))
-	dividerRows, panelChromeRows := 1, 1
-	if light {
-		hintRows := len(wrapAndPadLines(hint, indent, m.width, muted, bg))
-		dividerRows, panelChromeRows = 0, 3+hintRows
+func fillQuestionRow(content string, width int, bg color.Color) string {
+	background := lipgloss.NewStyle().Background(bg)
+	return lipgloss.PlaceHorizontal(width, lipgloss.Left, content, lipgloss.WithWhitespaceStyle(background))
+}
+
+func truncateQuestionText(value string, width int) string {
+	if width <= 0 {
+		return ""
 	}
-	scrollPillRows := 0
-	if m.lightLayout() && m.scrolledAwayFromBottom() {
-		scrollPillRows = 1
+	if ansi.StringWidth(value) <= width {
+		return value
 	}
-	searchRows := 0
-	if m.searchOpen {
-		searchRows = 1
+	if width <= 3 {
+		return ansi.Truncate(value, width, "")
 	}
-	// Reserve the header, one transcript row, separator/activity rows, footer,
-	// and the Question panel's own hint and padding before sizing its body.
-	reserved := 1 + 1 + 2 + footerHeight + dividerRows + panelChromeRows + scrollPillRows + searchRows
-	return max(1, m.height-reserved)
+	return ansi.Truncate(value, width-3, "") + "..."
+}
+
+func (m *tuiModel) renderQuestionHint(width int) string {
+	colors := m.themeColors()
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true)
+	if m.lightLayout() {
+		muted = lightMutedStyle()
+		key = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F2937")).Bold(true)
+	}
+	var hint strings.Builder
+	hint.WriteString(key.Render("tab"))
+	hint.WriteString(muted.Render(" to add notes | "))
+	hint.WriteString(key.Render("enter"))
+	hint.WriteString(muted.Render(" to submit answer | "))
+	hint.WriteString(key.Render("esc"))
+	hint.WriteString(muted.Render(" to interrupt"))
+	return fitTerminalText(hint.String(), width)
 }
 
 func singleLineQuestionSummary(description string) string {
@@ -522,7 +466,7 @@ func singleLineQuestionSummary(description string) string {
 }
 
 func (m *tuiModel) questionInputWidth() int {
-	return max(1, m.width-2)
+	return max(1, m.width-4)
 }
 
 type questionInlineStyleRange struct {
@@ -590,31 +534,22 @@ func renderQuestionTextRange(plain string, start, end int, textStyle lipgloss.St
 	return rendered.String()
 }
 
-func wrapStyledQuestionInput(value, indent string, totalWidth int, bg color.Color) []string {
-	totalWidth = max(1, totalWidth)
-	indentWidth := lipgloss.Width(indent)
-	maxIndentWidth := max(0, totalWidth-1)
-	if indentWidth > maxIndentWidth {
-		indent = ansi.Truncate(indent, maxIndentWidth, "")
-		indentWidth = lipgloss.Width(indent)
-	}
-	contentWidth := max(1, totalWidth-indentWidth)
-	background := lipgloss.NewStyle().Background(bg)
-	whitespace := lipgloss.WithWhitespaceStyle(background)
-	styledIndent := background.Render(indent)
-	wrapped := strings.Split(ansi.Wrap(value, contentWidth, ""), "\n")
-	rows := make([]string, 0, len(wrapped))
-	for _, line := range wrapped {
-		rows = append(rows, lipgloss.PlaceHorizontal(totalWidth, lipgloss.Left, styledIndent+line, whitespace))
-	}
-	return rows
-}
-
 func (m *tuiModel) submitQuestionAnswer(question core.UserQuestionRequest, answer string) tea.Cmd {
 	runtime, sessionID := m.runtime, m.sessionID
 	return func() tea.Msg {
 		err := runtime.ResolveUserQuestion(context.Background(), core.UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer})
 		return questionAnsweredMsg{sessionID: sessionID, question: question, answer: answer, err: err}
+	}
+}
+
+func (m *tuiModel) discardQuestionTask(question core.UserQuestionRequest) tea.Cmd {
+	runtime, sessionID := m.runtime, m.sessionID
+	return func() tea.Msg {
+		if runtime == nil {
+			return questionInterruptedMsg{sessionID: sessionID, question: question, err: fmt.Errorf("session runtime is unavailable")}
+		}
+		discarded, err := runtime.DiscardPaused(context.Background())
+		return questionInterruptedMsg{sessionID: sessionID, question: question, discarded: discarded, err: err}
 	}
 }
 

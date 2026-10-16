@@ -438,7 +438,16 @@ func (r *fakeSessionRuntime) Recover(_ context.Context, _ ...core.ExecutionOptio
 }
 
 func (r *fakeSessionRuntime) DiscardPaused(context.Context) (bool, error) {
-	return r.owner.DiscardTask(context.Background(), r.sessionID)
+	discarded, err := r.owner.DiscardTask(context.Background(), r.sessionID)
+	if err != nil || !discarded {
+		return discarded, err
+	}
+	r.mu.Lock()
+	r.status = core.TaskCancelled
+	r.active = ""
+	r.pendingRequests = nil
+	r.mu.Unlock()
+	return discarded, nil
 }
 
 func (r *fakeSessionRuntime) SetUserInteractionAvailable(available bool) {

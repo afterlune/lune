@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"strings"
 	"sync"
@@ -65,78 +64,47 @@ func (m *tuiModel) setSessionWindowTitle(saved core.Session) {
 }
 
 func (m *tuiModel) computeWindowTitle() string {
-	title := safeWindowTitle(m.taskTitle)
-	if title == "" {
-		title = safeWindowTitle(latestUserTaskTitleSummary(m.entries))
-	}
-	if title == "" {
-		title = safeWindowTitle(m.windowTitle)
+	title := safeWindowTitle(m.windowTitle)
+	if title == "" || title == defaultWindowTitle {
+		taskTitle := safeWindowTitle(m.taskTitle)
+		if taskTitle == "" {
+			taskTitle = safeWindowTitle(latestUserTaskTitleSummary(m.entries))
+		}
+		if taskTitle != "" {
+			title = taskTitle
+		}
 	}
 	if title == "" {
 		title = defaultWindowTitle
 	}
-	title = fitTerminalText(title, 32)
-
-	if m.hasPendingUserQuestion() {
-		question := m.pendingQuestionSummary()
-		if question == "" {
-			question = "等待回答"
-		}
-		return safeWindowTitle("⚠ 待回答: " + fitTerminalText(question, 36) + " | " + title)
-	}
-	if m.hasPendingApproval() {
-		action := "操作待审批"
-		if request := m.pendingApprovalRequest(); request != nil {
-			action = approvalTitleSummary(*request, m.workspace)
-		}
-		if action == "" || strings.Contains(action, "(preparing)") {
-			action = "操作待审批"
-		}
-		return safeWindowTitle("⚠ 待审批: " + fitTerminalText(action, 36) + " | " + title)
-	}
-	if m.running {
+	switch m.terminalState() {
+	case terminalWaiting:
+		return safeWindowTitle("[ ! ] Action Required | " + title + " | luneAgent")
+	case terminalRunning:
 		frame := m.windowTitleFrame % len(titleSpinner)
-		return safeWindowTitle(titleSpinner[frame] + " " + fitTerminalText(m.currentWindowTitleAction(), 32) + " · " + title)
+		return safeWindowTitle(titleSpinner[frame] + " " + title + " | luneAgent")
+	default:
+		return safeWindowTitle(title + " | luneAgent")
 	}
-	if m.taskCompleted {
-		return safeWindowTitle("✔ 已完成 · " + title + " | luneAgent")
-	}
-	return title + " | luneAgent"
-}
-
-func (m *tuiModel) currentWindowTitleAction() string {
-	action := m.currentLiveAction()
-	if action == "Thinking" || action == "Working" {
-		return "Thinking..."
-	}
-	return action
 }
 
 func (m *tuiModel) terminalState() terminalTaskState {
-	if m.hasPendingUserQuestion() || m.hasPendingApproval() {
+	if m.planReview || m.hasPendingUserDecision() {
 		return terminalWaiting
 	}
-	if m.running {
+	if m.executionStarted {
 		return terminalRunning
 	}
 	return terminalIdle
 }
 
-func (m *tuiModel) hasPendingApproval() bool {
-	return m.pendingApproval != nil || (m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval)
+func (m *tuiModel) hasPendingUserDecision() bool {
+	return m.questionOpen || m.question != nil || m.pendingRequest != nil || len(m.pendingRequests) > 0 || m.hasPendingApproval() ||
+		m.pendingMCPInteraction != nil || m.mcpAuthCancel != nil
 }
 
-func approvalTitleSummary(request core.ApprovalRequest, workspace string) string {
-	if request.Tool == "command" {
-		var args struct {
-			Command string `json:"command"`
-		}
-		_ = json.Unmarshal(request.Arguments, &args)
-		if command := strings.Join(strings.Fields(safeToolText(args.Command)), " "); command != "" {
-			return command
-		}
-	}
-	return toolApprovalAction(request.Tool, request.Arguments, workspace)
+func (m *tuiModel) hasPendingApproval() bool {
+	return m.pendingApproval != nil || (m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingApproval)
 }
 
 func (m *tuiModel) terminalProgressBar() *tea.ProgressBar {
@@ -148,26 +116,6 @@ func (m *tuiModel) terminalProgressBar() *tea.ProgressBar {
 	default:
 		return &tea.ProgressBar{State: tea.ProgressBarNone}
 	}
-}
-
-func (m *tuiModel) pendingQuestionSummary() string {
-	if m.question != nil {
-		return cleanInlineText(m.question.request.Question)
-	}
-	if m.pendingRequest != nil && m.pendingRequest.UserQuestion != nil {
-		return cleanInlineText(m.pendingRequest.UserQuestion.Question)
-	}
-	return ""
-}
-
-func (m *tuiModel) pendingApprovalRequest() *core.ApprovalRequest {
-	if m.pendingApproval != nil {
-		return &m.pendingApproval.request
-	}
-	if m.pendingRequest != nil && m.pendingRequest.Approval != nil {
-		return m.pendingRequest.Approval
-	}
-	return nil
 }
 
 func (m *tuiModel) setTaskTitle(summary string) {
@@ -202,14 +150,10 @@ func (m *tuiModel) terminalBell() tea.Cmd {
 	}
 }
 
-func (m *tuiModel) hasPendingUserQuestion() bool {
-	return m.question != nil || (m.pendingRequest != nil && m.pendingRequest.Kind == core.PendingUserQuestion)
-}
-
 func (m *tuiModel) startWindowTitleAnimation() tea.Cmd {
 	m.windowTitleAnimationToken++
 	m.windowTitleFrame = 0
-	if !m.running {
+	if m.terminalState() != terminalRunning {
 		return nil
 	}
 	return nextWindowTitleTick(m.sessionID, m.windowTitleAnimationToken)

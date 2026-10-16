@@ -30,7 +30,8 @@ func TestTUIQuestionAndExecutionSVGs(t *testing.T) {
 					ui.question.err = "Could not submit answer. Your draft is preserved."
 				case "question-narrow":
 					ui.Update(tea.WindowSizeMsg{Width: 48, Height: 18})
-					ui.question.request.Question = strings.Repeat("Which environment should we inspect? ", 4)
+					ui.question.request.Question = strings.Repeat("Which environment should we inspect. ", 4) + "Which environment should we inspect?"
+					ui.openQuestion(ui.question.request)
 				case "execution":
 					ui.questionOpen = false
 					ui.question = nil

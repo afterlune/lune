@@ -94,6 +94,14 @@ type turnSubmittedMsg struct {
 	resetUsage bool
 }
 
+type planImplementationStartedMsg struct {
+	targetSessionID string
+	executionID     string
+	runtime         SessionRuntime
+	started         bool
+	err             error
+}
+
 type taskResult struct {
 	response        json.RawMessage
 	coreResult      core.TaskResult
@@ -223,6 +231,7 @@ type tuiModel struct {
 	height                        int
 	pending                       bool
 	running                       bool
+	executionStarted              bool
 	windowTitle                   string
 	taskTitle                     string
 	taskCompleted                 bool
@@ -318,6 +327,7 @@ func Run(client *core.Core) error {
 	ui.runtimeSessionID = saved.ID
 	ui.pending = state.Task.Status == core.TaskPaused
 	ui.running = state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
+	ui.executionStarted = state.Task.Status == core.TaskRunning
 	ui.runningExecutionID = state.Task.ExecutionID
 	ui.activeExecutions = make(map[string]bool)
 	if state.Task.ExecutionID != "" {

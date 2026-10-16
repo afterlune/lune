@@ -313,8 +313,11 @@ func (m *tuiModel) updateMCPInteractionWidth(width int) {
 }
 
 func (m *tuiModel) activeCursor() *tea.Cursor {
-	if m.questionOpen && m.question != nil && m.question.notes {
-		return m.question.input.Cursor()
+	if m.questionOpen {
+		if m.question != nil && m.question.notes {
+			return m.question.input.Cursor()
+		}
+		return nil
 	}
 	if m.pendingMCPInteraction != nil {
 		if m.pendingMCPInteraction.mode == "form" && len(m.pendingMCPInteraction.fields) > 0 {
