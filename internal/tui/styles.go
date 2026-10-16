@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"image/color"
 	"strconv"
 	"strings"
 
@@ -35,18 +36,34 @@ var codexLight = LightTheme{
 	TaskSummary: "#B45309", Error: "#B91C1C",
 }
 
-func fullWidthBand(content string, width int, background string) string {
+func renderFullWidthBand(lines []string, width int, bg color.Color, padX, padY int) string {
 	width = max(1, width)
-	lines := strings.Split(content, "\n")
-	for index, line := range lines {
-		lineWidth := lipgloss.Width(line)
-		if lineWidth > width {
-			line = fitTerminalText(line, width)
-			lineWidth = lipgloss.Width(line)
-		}
-		lines[index] = line + strings.Repeat(" ", max(0, width-lineWidth))
+	padY = max(0, padY)
+	padX = max(0, min(padX, (width-1)/2))
+	contentWidth := max(1, width-2*padX)
+	background := lipgloss.NewStyle().Background(bg)
+	whitespace := lipgloss.WithWhitespaceStyle(background)
+	emptyRow := func() string {
+		return lipgloss.PlaceHorizontal(width, lipgloss.Left, "", whitespace)
 	}
-	return lipgloss.NewStyle().Width(width).Background(lipgloss.Color(background)).Render(strings.Join(lines, "\n"))
+
+	rows := make([]string, 0, len(lines)+padY*2)
+	for range padY {
+		rows = append(rows, emptyRow())
+	}
+	for _, line := range lines {
+		for _, paragraphLine := range strings.Split(line, "\n") {
+			wrapped := ansi.Wrap(paragraphLine, contentWidth, "")
+			for _, wrappedLine := range strings.Split(wrapped, "\n") {
+				content := background.Render(strings.Repeat(" ", padX)) + wrappedLine
+				rows = append(rows, lipgloss.PlaceHorizontal(width, lipgloss.Left, content, whitespace))
+			}
+		}
+	}
+	for range padY {
+		rows = append(rows, emptyRow())
+	}
+	return strings.Join(rows, "\n")
 }
 
 func inlineCodeStyle() lipgloss.Style {
@@ -96,6 +113,7 @@ func renderLightToolActivity(title string, output []string, expanded bool, width
 }
 
 func renderLightToolHeader(marker, title, markerColor string) string {
+	title = strings.TrimSuffix(title, " · done")
 	markerRun := lipgloss.NewStyle().Foreground(lipgloss.Color(markerColor)).Render(marker)
 	space := " "
 	if marker == "›" {
@@ -123,22 +141,60 @@ func renderLightToolHeader(marker, title, markerColor string) string {
 			command = command[close+2:]
 		}
 	}
-	failureStatus := ""
-	if strings.HasPrefix(verb, "Ran") {
-		if index := strings.LastIndex(command, " · failed"); index >= 0 {
-			failureStatus = command[index:]
+	activityStatus := ""
+	for _, suffix := range []string{" · failed", " · cancelled", " · canceled", " · timed out", " · interrupted", " · running", " · stopping"} {
+		if index := strings.LastIndex(command, suffix); index >= 0 {
+			activityStatus = command[index:]
 			command = command[:index]
+			break
 		}
 	}
+
+	var target string
 	if status != "" {
-		return markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " +
-			lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Render(status) + " " + renderLightCommand(command)
+		target = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Render(status) + " " + renderLightCommand(command)
+	} else if strings.HasPrefix(verb, "Ran") || strings.HasPrefix(verb, "Run") || strings.HasPrefix(verb, "Failed") {
+		target = renderLightCommand(command)
+	} else {
+		target = renderLightActionTarget(verb, command)
 	}
-	header := markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " + renderLightCommand(command)
-	if failureStatus != "" {
-		header += lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Render(failureStatus)
+	header := markerRun + space + verbStyle.Render(strings.TrimSpace(verb)) + " " + target
+	if activityStatus != "" {
+		statusColor := codexLight.Muted
+		if strings.Contains(activityStatus, "failed") {
+			statusColor = codexLight.Error
+		}
+		header += lipgloss.NewStyle().Foreground(lipgloss.Color(statusColor)).Render(activityStatus)
 	}
 	return header
+}
+
+func renderLightActionTarget(verb, target string) string {
+	details := ""
+	if strings.HasPrefix(verb, "Edited") {
+		if index := strings.LastIndex(target, " (+"); index >= 0 && strings.HasSuffix(target, ")") {
+			details = target[index:]
+			target = strings.TrimSpace(target[:index])
+		}
+	}
+	style := lightTextStyle()
+	if isLightPathTarget(target) {
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color(codexLight.CodeSurface))
+	}
+	return style.Render(target) + lightTextStyle().Render(details)
+}
+
+func isLightPathTarget(target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	if strings.ContainsAny(target, `/\\.`) {
+		return true
+	}
+	// A lone target is commonly an extensionless filename (for example Makefile).
+	// Multi-word fallback summaries such as "a workspace file" remain prose.
+	return !strings.ContainsAny(target, " \t\r\n")
 }
 
 func renderLightCommand(command string) string {

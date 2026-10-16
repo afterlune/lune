@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -11,7 +12,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
+	"github.com/charmbracelet/x/ansi"
 )
+
+var questionInlineMarkdown = regexp.MustCompile("`([^`]+)`|\\*\\*(.+?)\\*\\*")
 
 type questionPanel struct {
 	request      core.UserQuestionRequest
@@ -57,7 +61,7 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	input.MinHeight = 1
 	input.MaxHeight = 4
 	input.SetVirtualCursor(true)
-	input.SetWidth(max(1, m.width-2))
+	input.SetWidth(m.questionInputWidth())
 	applyTextareaTheme(&input, m.resolvedTheme())
 	m.question = &questionPanel{request: request, input: input, notes: len(request.Options) < 2}
 	if m.question.notes {
@@ -154,10 +158,38 @@ func (m *tuiModel) renderQuestion() string {
 	if q == nil {
 		return ""
 	}
+	light := m.lightLayout()
 	colors := m.themeColors()
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-	lines := []string{muted.Render("Question"), accent.Render(wrapDisplayText(q.request.Question, max(1, m.width-2)))}
+	width := max(1, m.width-2)
+	if light {
+		surface := lipgloss.Color(codexLight.Surface)
+		width = max(1, m.width-4)
+		accent = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary)).Background(surface)
+		muted = lightMutedStyle().Background(surface)
+	}
+	lines := make([]string, 0, len(q.request.Options)*2+5)
+	appendWrapped := func(value string) {
+		if light {
+			lines = append(lines, wrapQuestionStyledText(value, width)...)
+			return
+		}
+		lines = append(lines, wrapDisplayText(value, width))
+	}
+	appendMarkdown := func(value string) {
+		if light {
+			lines = append(lines, renderQuestionMarkdown(value, width, lipgloss.Color(codexLight.Surface))...)
+			return
+		}
+		appendWrapped(value)
+	}
+	appendWrapped(muted.Render("Question"))
+	if light {
+		appendMarkdown(q.request.Question)
+	} else {
+		appendWrapped(accent.Render(q.request.Question))
+	}
 	count := len(q.request.Options)
 	hasChoices := count >= 2
 	focusLine := 0
@@ -174,23 +206,32 @@ func (m *tuiModel) renderQuestion() string {
 				prefix = "› "
 			}
 			row := fmt.Sprintf("%s%d. %s", prefix, i+1, label)
-			row = wrapDisplayText(row, max(1, m.width-2))
 			if i == q.selected {
-				focusLine = len(strings.Split(strings.Join(lines, "\n"), "\n"))
+				focusLine = len(lines)
 				row = accent.Render(row)
+			} else if light {
+				row = lightTextStyle().Background(lipgloss.Color(codexLight.Surface)).Render(row)
 			}
-			lines = append(lines, row)
+			appendWrapped(row)
 			if description != "" {
-				lines = append(lines, muted.Render(wrapDisplayText("     "+description, max(1, m.width-2))))
+				if light {
+					appendMarkdown("     " + description)
+				} else {
+					appendWrapped(muted.Render("     " + description))
+				}
 			}
 		}
 	}
 	if q.notes {
-		lines = append(lines, q.input.View())
-		focusLine = len(strings.Split(strings.Join(lines, "\n"), "\n")) - 1
+		appendWrapped(q.input.View())
+		focusLine = max(0, len(lines)-1)
 	}
 	if q.err != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error)).Render(wrapDisplayText(q.err, max(1, m.width-2))))
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error))
+		if light {
+			errStyle = errStyle.Background(lipgloss.Color(codexLight.Surface))
+		}
+		appendWrapped(errStyle.Render(q.err))
 	}
 	hint := m.keyLabel("send") + " submit · Esc hide"
 	if hasChoices {
@@ -203,7 +244,7 @@ func (m *tuiModel) renderQuestion() string {
 	if q.submitting {
 		hint = "Submitting answer…"
 	}
-	body := strings.Split(strings.Join(lines, "\n"), "\n")
+	body := lines
 	budget := max(1, m.height-7)
 	offset := q.scroll
 	if !q.manualScroll {
@@ -215,8 +256,52 @@ func (m *tuiModel) renderQuestion() string {
 	if offset > 0 || offset+budget < totalLines {
 		hint = "PgUp/PgDn scroll · " + hint
 	}
-	content := strings.Join(append(body, muted.Render(fitTerminalText(hint, max(1, m.width-2)))), "\n")
-	return lipgloss.NewStyle().Width(m.width).Padding(0, 1).Background(m.questionSurface()).Render(content)
+	hintStyle := muted
+	contentWidth := max(1, m.width-2)
+	if light {
+		contentWidth = max(1, m.width-4)
+	}
+	content := append(body, hintStyle.Render(fitTerminalText(hint, contentWidth)))
+	if light {
+		return renderFullWidthBand(content, m.width, lipgloss.Color(codexLight.Surface), 2, 1)
+	}
+	return lipgloss.NewStyle().Width(m.width).Padding(0, 1).Background(m.questionSurface()).Render(strings.Join(content, "\n"))
+}
+
+func (m *tuiModel) questionInputWidth() int {
+	width := max(1, m.width-2)
+	if m.lightLayout() {
+		width = max(1, m.width-4)
+	}
+	return width
+}
+
+func wrapQuestionStyledText(value string, width int) []string {
+	return strings.Split(ansi.Wrap(value, max(1, width), ""), "\n")
+}
+
+func renderQuestionMarkdown(value string, width int, surface color.Color) []string {
+	base := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Background(surface)
+	code := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText)).Background(lipgloss.Color("#E2E8F0"))
+	bold := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(surface).Bold(true)
+	var lines []string
+	for _, paragraph := range strings.Split(value, "\n") {
+		var rendered strings.Builder
+		last := 0
+		for _, match := range questionInlineMarkdown.FindAllStringSubmatchIndex(paragraph, -1) {
+			rendered.WriteString(base.Render(paragraph[last:match[0]]))
+			switch {
+			case match[2] >= 0:
+				rendered.WriteString(code.Render(paragraph[match[2]:match[3]]))
+			case match[4] >= 0:
+				rendered.WriteString(bold.Render(paragraph[match[4]:match[5]]))
+			}
+			last = match[1]
+		}
+		rendered.WriteString(base.Render(paragraph[last:]))
+		lines = append(lines, wrapQuestionStyledText(rendered.String(), width)...)
+	}
+	return lines
 }
 
 func (m *tuiModel) submitQuestionAnswer(question core.UserQuestionRequest, answer string) tea.Cmd {

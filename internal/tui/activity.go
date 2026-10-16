@@ -429,7 +429,7 @@ func (m *tuiModel) activityDetailsContent() string {
 			activities.WriteByte('\n')
 		}
 		icon := activityBadge(activity.status)
-		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(icon) + " " + toolActivityTitle(activity)
+		line := lipgloss.NewStyle().Foreground(lipgloss.Color(activityColor(activity.status, colors))).Render(icon) + " " + m.displayToolActivityTitle(activity)
 		if activity.status != "running" && activity.duration > 0 {
 			line += "  " + activity.duration.Round(time.Millisecond).String()
 		}
@@ -477,6 +477,14 @@ func (m *tuiModel) activityDetailsContent() string {
 		activities.WriteString("\nPermissions: " + permissionModeLabel(m.currentPermissionMode()))
 	}
 	return activities.String()
+}
+
+func (m *tuiModel) displayToolActivityTitle(activity tuiActivity) string {
+	title := toolActivityTitle(activity)
+	if m.lightLayout() {
+		return strings.TrimSuffix(title, " · done")
+	}
+	return title
 }
 
 func activityColor(status string, colors themeColors) string {

@@ -121,12 +121,42 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		selected := m.activityFocus && groupNumber == m.activityFocusIndex
 		groupNumber++
 		lines = m.appendToolActivityGroup(lines, group, selected, m.activityExpanded[group.key])
-		index++
-		if index < len(m.entries) {
-			appendSpacer()
+		if !m.lightLayout() {
+			index++
+			if index < len(m.entries) {
+				appendSpacer()
+			}
+			continue
 		}
+
+		nextIndex := index + 1
+		for nextIndex < len(m.entries) && m.entries[nextIndex].role == "tool" && toolActivityGroupKey(m.entries, nextIndex) == group.key {
+			nextIndex++
+		}
+		if nextIndex < len(m.entries) {
+			next := m.entries[nextIndex]
+			if next.role != "tool" {
+				appendSpacer()
+			} else if nextGroup, exists := groupAt[nextIndex]; exists && (m.toolGroupHasPreview(group) || m.toolGroupHasPreview(nextGroup)) {
+				appendSpacer()
+			}
+		}
+		index = nextIndex
 	}
 	return lines
+}
+
+func (m *tuiModel) toolGroupHasPreview(group toolActivityGroup) bool {
+	activities := m.toolActivitiesForGroup(group)
+	if len(activities) == 0 {
+		return false
+	}
+	for _, detail := range activityDetailLines(activities[len(activities)-1]) {
+		if detail.text != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *tuiModel) collapsedToolGroupLabel(group toolActivityGroup) string {

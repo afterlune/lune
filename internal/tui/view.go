@@ -80,7 +80,7 @@ func (m *tuiModel) updateLayout() {
 	m.input.SetWidth(composerInputWidth)
 	if m.question != nil {
 		m.question.input.KeyMap = m.input.KeyMap
-		m.question.input.SetWidth(max(1, inputWidth-2))
+		m.question.input.SetWidth(m.questionInputWidth())
 		applyTextareaTheme(&m.question.input, m.resolvedTheme())
 	}
 	m.updateMCPInteractionWidth(inputWidth)
@@ -89,7 +89,7 @@ func (m *tuiModel) updateLayout() {
 	scrollPillRows := 0
 	if m.lightLayout() {
 		dividerCount = 0
-		if !m.planReview {
+		if !m.planReview && !(m.questionOpen && m.question != nil) {
 			composerExtra = 2
 		}
 		if m.scrolledAwayFromBottom() {
@@ -156,19 +156,26 @@ func applyTextareaTheme(input *textarea.Model, theme themeName) {
 		}
 	}
 	styles := textarea.DefaultStyles(theme != themeLight)
+	styleFor := func(foreground string) lipgloss.Style {
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(foreground))
+		if theme == themeLight {
+			style = style.Background(lipgloss.Color(codexLight.Surface))
+		}
+		return style
+	}
 	apply := func(state *textarea.StyleState) {
-		state.Base = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
-		state.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
-		state.LineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-		state.CursorLineNumber = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-		state.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground))
-		state.EndOfBuffer = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
-		state.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
+		state.Base = styleFor(colors.Foreground)
+		state.Text = styleFor(colors.Foreground)
+		state.LineNumber = styleFor(colors.Muted)
+		state.CursorLineNumber = styleFor(colors.Muted)
+		state.CursorLine = styleFor(colors.Foreground)
+		state.EndOfBuffer = styleFor(colors.Muted)
+		state.Placeholder = styleFor(colors.Muted)
 		prompt := colors.Accent
 		if theme == themeLight {
 			prompt = codexLight.Subtle
 		}
-		state.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(prompt))
+		state.Prompt = styleFor(prompt)
 		state.Selection = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Background)).Background(lipgloss.Color(colors.Secondary))
 	}
 	apply(&styles.Focused)
@@ -273,7 +280,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 		composer := m.renderInputView()
 		if m.questionOpen && m.question != nil {
 			composer = m.renderQuestion()
-			parts = append(parts, fullWidthBand("\n"+composer+"\n", max(1, m.width), codexLight.Surface))
+			parts = append(parts, composer)
 		} else {
 			composerStyle := lipgloss.NewStyle().
 				Width(max(1, m.width)).
@@ -414,7 +421,7 @@ func (m *tuiModel) renderFooter(width int) string {
 }
 
 func (m *tuiModel) renderLightFooter(width int) string {
-	width = max(1, width)
+	width = max(1, min(width, max(1, m.width-1)))
 	model := strings.TrimSpace(m.sessionSettings.ModelProfile)
 	if model == "" {
 		model = "default model"
