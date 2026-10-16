@@ -41,9 +41,9 @@ func (m *tuiModel) refreshPanels() {
 			if role == "tool_done" {
 				style = style.Foreground(lipgloss.Color(colors.Muted))
 			}
-			style = style.Width(max(1, m.chat.Width()))
+			style = style.Width(max(1, m.width))
 			if role == "you" {
-				style = style.Background(lipgloss.Color(codexLight.Surface))
+				style = style.Foreground(lipgloss.Color(codexLight.Primary)).Background(lipgloss.Color(codexLight.Surface))
 			}
 		}
 		return style
@@ -73,7 +73,11 @@ func (m *tuiModel) updateLayout() {
 	}
 	contentWidth := max(1, m.width)
 	inputWidth := contentWidth
-	m.input.SetWidth(inputWidth)
+	composerInputWidth := inputWidth
+	if m.lightLayout() {
+		composerInputWidth = max(1, inputWidth-2)
+	}
+	m.input.SetWidth(composerInputWidth)
 	if m.question != nil {
 		m.question.input.KeyMap = m.input.KeyMap
 		m.question.input.SetWidth(max(1, inputWidth-2))
@@ -269,8 +273,15 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 		composer := m.renderInputView()
 		if m.questionOpen && m.question != nil {
 			composer = m.renderQuestion()
+			parts = append(parts, fullWidthBand("\n"+composer+"\n", max(1, m.width), codexLight.Surface))
+		} else {
+			composerStyle := lipgloss.NewStyle().
+				Width(max(1, m.width)).
+				Background(lipgloss.Color(codexLight.Surface)).
+				Foreground(lipgloss.Color(codexLight.Primary)).
+				Padding(1, 1)
+			parts = append(parts, composerStyle.Render(composer))
 		}
-		parts = append(parts, fullWidthBand("\n"+composer+"\n", centerWidth, codexLight.Surface))
 		if auxiliary := m.renderAuxiliaryPanel(suggestions); !m.questionOpen && auxiliary != "" && auxiliary != suggestions {
 			parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
 		}
@@ -298,6 +309,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 			cursor.Y++
 		}
 		if light {
+			cursor.X++
 			cursor.Y++
 		} else {
 			cursor.Y += lipgloss.Height(divider)
@@ -808,12 +820,9 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 			right := lipgloss.Width(visual.text[:end-visual.start])
 			lineRanges = append(lineRanges, lipgloss.NewRange(left, right, inlineCodeStyle()))
 		}
-		hasInlineCode := len(lineRanges) > 0
 		plainLine := ansi.Strip(rows[rowIndex])
 		lineRanges = append(lineRanges, lightToolLineRanges(plainLine, role)...)
-		if !hasInlineCode && !strings.HasPrefix(plainLine, "• ") && !strings.HasPrefix(plainLine, "› ") && !strings.HasPrefix(plainLine, "◉ ") {
-			lineRanges = append(lineRanges, lightTokenRanges(plainLine)...)
-		}
+		lineRanges = append(lineRanges, lightTokenRanges(plainLine)...)
 		if len(lineRanges) > 0 {
 			sort.SliceStable(lineRanges, func(left, right int) bool {
 				return lineRanges[left].Start < lineRanges[right].Start

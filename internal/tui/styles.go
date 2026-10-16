@@ -30,7 +30,7 @@ type LightTheme struct {
 
 var codexLight = LightTheme{
 	Canvas: "#FFFFFF", Surface: "#F3F4F6", Primary: "#1F2937", Muted: "#6B7280",
-	Subtle: "#9CA3AF", Success: "#16A34A", CodeSurface: "#ECFDF5", CodeText: "#15803D",
+	Subtle: "#9CA3AF", Success: "#16A34A", CodeSurface: "#E6F4EA", CodeText: "#137333",
 	Flag: "#B91C1C", PillSurface: "#E0F2FE", PillText: "#0284C7", Mode: "#C026D3",
 	TaskSummary: "#B45309", Error: "#B91C1C",
 }

@@ -20,8 +20,8 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 	ui.sessionSettings.ModelProfile = "GPT-6-Luna"
 	ui.applyResolvedTheme()
 	ui.entries = []tuiEntry{
-		{role: "you", text: "Please inspect `responses.go`."},
-		{role: "assistant", text: "I found `ResponseRequest` and will trace its defaults."},
+		{role: "you", text: "Please inspect `responses.go` and review 9124055 on origin/main."},
+		{role: "assistant", text: "I found `TUI` and will run `go test ./...` on origin/main at 9124055."},
 	}
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 28})
 	ui.refreshPanels()
@@ -33,15 +33,65 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 	if strings.Contains(plain, "────") || !strings.Contains(plain, "› Please inspect") || !strings.Contains(plain, "• I found") {
 		t.Fatalf("light transcript should be borderless and use the requested message markers: %q", plain)
 	}
+	transcript, _ := ui.transcriptContent()
+	if strings.Contains(transcript, "`") {
+		t.Fatalf("inline code delimiters should not be visible: %q", transcript)
+	}
 	if !strings.Contains(plain, "Workspace · shift+tab to cycle") || strings.Contains(plain, "Plan mode (shift+tab") {
 		t.Fatalf("statusline does not distinguish permission cycling from Plan mode: %q", plain)
 	}
 	if !strings.Contains(view.Content, "\x1b[48;2;243;244;246m") {
 		t.Fatalf("light composer/user bands did not use the surface background: %q", view.Content)
 	}
-	if !strings.Contains(view.Content, "48;2;236;253;245m") {
+	if !strings.Contains(view.Content, "48;2;230;244;234m") || !strings.Contains(view.Content, "38;2;19;115;51") {
 		t.Fatalf("inline code did not use the green highlight surface: %q", view.Content)
 	}
+	assertStyledRun := func(value string) {
+		t.Helper()
+		for _, line := range parseTUIScreenshotLinesWithBackground(view.Content, codexLight.Primary, codexLight.Canvas) {
+			for _, run := range line {
+				if strings.Contains(run.text, value) {
+					if !strings.EqualFold(run.foreground, codexLight.CodeText) || !strings.EqualFold(run.background, codexLight.CodeSurface) {
+						t.Errorf("%q style = fg %s / bg %s, want %s / %s", value, run.foreground, run.background, codexLight.CodeText, codexLight.CodeSurface)
+					}
+					return
+				}
+			}
+		}
+		t.Errorf("styled run %q was not found", value)
+	}
+	for _, value := range []string{"responses.go", "9124055", "origin/main", "TUI", "go test ./..."} {
+		assertStyledRun(value)
+	}
+	assertFullSurfaceLine := func(value string) {
+		t.Helper()
+		for _, line := range parseTUIScreenshotLinesWithBackground(view.Content, codexLight.Primary, codexLight.Canvas) {
+			var text strings.Builder
+			width := 0
+			lastBackground := ""
+			hasSurface := false
+			for _, run := range line {
+				text.WriteString(run.text)
+				width += lipgloss.Width(run.text)
+				if lipgloss.Width(run.text) > 0 {
+					lastBackground = run.background
+				}
+				if strings.EqualFold(run.background, codexLight.Surface) {
+					hasSurface = true
+				}
+			}
+			if !strings.Contains(text.String(), value) {
+				continue
+			}
+			if width != 100 || !hasSurface || !strings.EqualFold(lastBackground, codexLight.Surface) {
+				t.Errorf("%q surface row width/background = %d / %s (surface seen: %v), want 100 / %s", value, width, lastBackground, hasSurface, codexLight.Surface)
+			}
+			return
+		}
+		t.Errorf("surface row containing %q was not found", value)
+	}
+	assertFullSurfaceLine("Please inspect")
+	assertFullSurfaceLine("Ask Codex to do anything")
 	if !strings.Contains(plain, "? shortcuts") || lipgloss.Height(view.Content) != ui.height {
 		t.Fatalf("light footer or fixed viewport height is missing: height=%d content=%q", lipgloss.Height(view.Content), plain)
 	}
@@ -65,16 +115,18 @@ func TestLightComposerCursorAndViewportFitNarrowTerminals(t *testing.T) {
 		}
 		cursor := ui.input.Cursor()
 		wantY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + cursor.Y
-		if view.Cursor == nil || view.Cursor.X != cursor.X || view.Cursor.Y != wantY {
-			t.Errorf("%dx%d composer cursor = %#v, want (%d,%d)", size.width, size.height, view.Cursor, cursor.X, wantY)
+		wantX := cursor.X + 1
+		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY {
+			t.Errorf("%dx%d composer cursor = %#v, want (%d,%d)", size.width, size.height, view.Cursor, wantX, wantY)
 		}
 		ui.input.SetValue("first line\nsecond line")
 		ui.updateLayout()
 		view = ui.View()
 		cursor = ui.input.Cursor()
 		wantY = lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + cursor.Y
-		if view.Cursor == nil || view.Cursor.X != cursor.X || view.Cursor.Y != wantY || lipgloss.Height(view.Content) > size.height {
-			t.Errorf("%dx%d multiline composer cursor/layout = %#v / %d rows, want (%d,%d) within viewport", size.width, size.height, view.Cursor, lipgloss.Height(view.Content), cursor.X, wantY)
+		wantX = cursor.X + 1
+		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY || lipgloss.Height(view.Content) > size.height {
+			t.Errorf("%dx%d multiline composer cursor/layout = %#v / %d rows, want (%d,%d) within viewport", size.width, size.height, view.Cursor, lipgloss.Height(view.Content), wantX, wantY)
 		}
 	}
 }
@@ -85,8 +137,10 @@ func TestToolActivityPreviewAndExpansion(t *testing.T) {
 	}
 	output := []string{"first", "second", "third", "fourth", "fifth"}
 	collapsed := ansi.Strip(renderToolActivity("git status --short", output, false, 80))
-	if !strings.Contains(collapsed, "• Ran git status --short") || !strings.Contains(collapsed, "└ first") ||
-		!strings.Contains(collapsed, "+ 2 lines (ctrl+t to expand)") || strings.Contains(collapsed, "fourth") {
+	lines := strings.Split(collapsed, "\n")
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], "• Ran git status --short") ||
+		lines[1] != "  └ first" || lines[2] != "    second" || lines[3] != "    third" ||
+		lines[4] != "    + 2 lines (ctrl+t to expand)" || strings.Contains(collapsed, "fourth") {
 		t.Fatalf("collapsed tool preview = %q", collapsed)
 	}
 	expanded := ansi.Strip(renderToolActivity("git status --short", output, true, 80))
@@ -94,7 +148,7 @@ func TestToolActivityPreviewAndExpansion(t *testing.T) {
 		t.Fatalf("expanded tool output = %q", expanded)
 	}
 	header := renderToolActivity("git status --short", nil, false, 80)
-	if !strings.Contains(header, "48;2;236;253;245") || !strings.Contains(header, "38;2;185;28;28") {
+	if !strings.Contains(header, "48;2;230;244;234") || !strings.Contains(header, "38;2;185;28;28") {
 		t.Fatal("tool header is missing command and flag syntax colors")
 	}
 

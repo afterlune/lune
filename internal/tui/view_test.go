@@ -72,6 +72,9 @@ func TestTUILayoutFitsWideAndNarrowTerminals(t *testing.T) {
 			t.Fatal("focused composer did not expose a terminal cursor")
 		}
 		expectedX := inputCursor.X
+		if ui.lightLayout() {
+			expectedX++
+		}
 		expectedY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 1 + inputCursor.Y
 		if cursorView.Cursor.X != expectedX || cursorView.Cursor.Y != expectedY {
 			t.Errorf("cursor = (%d,%d), composer expects (%d,%d)", cursorView.Cursor.X, cursorView.Cursor.Y,
