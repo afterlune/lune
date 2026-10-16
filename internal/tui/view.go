@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -151,15 +152,43 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 	return header + "\n" + strings.Join(bodyLines, "\n")
 }
 
+// formatDuration formats elapsed duration into natural human-readable units:
+// - "12s" for seconds
+// - "1m 24s" or "16m 40s" for minutes and seconds
+// - "1h 5m 2s" for hours
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	totalSecs := int(d.Seconds())
+	if totalSecs <= 0 {
+		return "0s"
+	}
+	if totalSecs < 60 {
+		return fmt.Sprintf("%ds", totalSecs)
+	}
+	hours := totalSecs / 3600
+	minutes := (totalSecs % 3600) / 60
+	seconds := totalSecs % 60
+	if hours > 0 {
+		if seconds > 0 {
+			return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+		}
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	if seconds > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
 // renderWorking renders the active working indicator.
 func renderWorking(elapsed time.Duration, thinking bool) string {
 	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-	timeStr := fmt.Sprintf("%ds", int(elapsed.Seconds()))
+	timeStr := formatDuration(elapsed)
 	action := "Working"
 	if thinking {
 		action = "Thinking"
 	}
-	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%s (%s · esc to interrupt)", action, timeStr))
+	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%s (%s • esc to interrupt)", action, timeStr))
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("└ ")
 	tip := styleTextMuted().Render("Tip: When the composer is empty, press Esc to step back and edit your last message; Enter confirms.")
 	return bullet + title + "\n  " + branch + tip
@@ -373,11 +402,13 @@ func renderComposerBand(inputView string, width int) string {
 // renderFooter renders the bottom two-line status bar.
 func renderFooter(m *tuiModel, width int) string {
 	// Left side: Model · Workspace · Title
-	leftItems := []string{}
-	if m.currentModel != "" {
-		leftItems = append(leftItems, m.currentModel)
-	} else {
-		leftItems = append(leftItems, "GPT-6-Luna max fast")
+	var leftItems []string
+	modelName := m.currentModel
+	if modelName == "" && m.client != nil {
+		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
+	if modelName != "" {
+		leftItems = append(leftItems, modelName)
 	}
 	if m.workspace != "" {
 		leftItems = append(leftItems, m.workspace)

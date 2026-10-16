@@ -187,9 +187,43 @@ func TestModelUpdateKeys(t *testing.T) {
 	}
 }
 
+func TestComposerBandRendering(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+	m.updateLayout()
+	rendered := renderComposerBand(m.composer.View(), 76)
+	lines := strings.Split(rendered, "\n")
+	for i, l := range lines {
+		t.Logf("Line %d: %q", i, l)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		d        time.Duration
+		expected string
+	}{
+		{0, "0s"},
+		{5 * time.Second, "5s"},
+		{40 * time.Second, "40s"},
+		{60 * time.Second, "1m"},
+		{1000 * time.Second, "16m 40s"},
+		{3600 * time.Second, "1h 0m"},
+		{3665 * time.Second, "1h 1m 5s"},
+	}
+
+	for _, tt := range tests {
+		actual := formatDuration(tt.d)
+		if actual != tt.expected {
+			t.Errorf("formatDuration(%v) = %q, expected %q", tt.d, actual, tt.expected)
+		}
+	}
+}
+
 func TestWorkingIndicator(t *testing.T) {
 	working := renderWorking(40*time.Second, false)
-	if !strings.Contains(working, "Working (40s · esc to interrupt)") {
+	if !strings.Contains(working, "Working (40s • esc to interrupt)") {
 		t.Errorf("expected Working title, got: %s", working)
 	}
 	if !strings.Contains(working, "Tip:") {
@@ -197,8 +231,13 @@ func TestWorkingIndicator(t *testing.T) {
 	}
 
 	thinking := renderWorking(15*time.Second, true)
-	if !strings.Contains(thinking, "Thinking (15s · esc to interrupt)") {
+	if !strings.Contains(thinking, "Thinking (15s • esc to interrupt)") {
 		t.Errorf("expected Thinking title, got: %s", thinking)
+	}
+
+	longer := renderWorking(1000*time.Second, false)
+	if !strings.Contains(longer, "Working (16m 40s • esc to interrupt)") {
+		t.Errorf("expected Working 16m 40s, got: %s", longer)
 	}
 }
 
@@ -332,4 +371,61 @@ func TestSystemMarkdownRendering(t *testing.T) {
 		t.Errorf("expected Plan mode text, got: %s", rendered)
 	}
 }
+
+func TestMouseDragSelectionAndCopy(t *testing.T) {
+	m := &tuiModel{
+		viewport: newTUIModel(nil, nil, "test-sess").viewport,
+	}
+	m.width = 80
+	m.height = 24
+	m.viewport.SetWidth(80)
+	m.viewport.SetHeight(10)
+	m.viewport.SetContent("Line 0: Hello World\nLine 1: Second line of text\nLine 2: Third line")
+
+	// Click at (8, 3) -> row 0 in viewport, col 8 ("Hello World")
+	mod, _ := m.Update(tea.MouseClickMsg{
+		X:      8,
+		Y:      3,
+		Button: tea.MouseLeft,
+	})
+	m = mod.(*tuiModel)
+	if !m.isSelecting {
+		t.Fatalf("expected isSelecting to be true")
+	}
+
+	// Drag to (13, 3) -> "Hello"
+	mod, _ = m.Update(tea.MouseMotionMsg{
+		X: 13,
+		Y: 3,
+	})
+	m = mod.(*tuiModel)
+	if m.selectEndX != 13 || m.selectEndY != 3 {
+		t.Fatalf("expected selectEnd to be (13, 3), got (%d, %d)", m.selectEndX, m.selectEndY)
+	}
+
+	// Release mouse
+	mod, _ = m.Update(tea.MouseReleaseMsg{
+		X:      13,
+		Y:      3,
+		Button: tea.MouseLeft,
+	})
+	m = mod.(*tuiModel)
+	if m.isSelecting {
+		t.Fatalf("expected isSelecting to be false after release")
+	}
+	if m.selectedText != "Hello" {
+		t.Fatalf("expected selected text to be 'Hello', got %q", m.selectedText)
+	}
+	if !strings.Contains(m.copyFeedback, "Copied 5 chars to host clipboard") {
+		t.Fatalf("expected copyFeedback with 5 chars, got %q", m.copyFeedback)
+	}
+
+	// Esc clears selection
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.selectedText != "" {
+		t.Fatalf("expected selectedText to be cleared on Esc, got %q", m.selectedText)
+	}
+}
+
 

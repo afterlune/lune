@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	"github.com/atotto/clipboard"
 )
 
 type planImplementedMsg struct {
 	impl core.PlanImplementation
 	err  error
+}
+
+type clearCopyFeedbackMsg struct {
+	at time.Time
 }
 
 // Update handles all incoming Bubble Tea messages and key events.
@@ -187,6 +193,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case clearCopyFeedbackMsg:
+		if !time.Now().Before(msg.at) {
+			m.copyFeedback = ""
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
 
@@ -197,9 +209,66 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, vpCmd
 
 	case tea.MouseClickMsg:
-		if m.scrolledUp && msg.Button == tea.MouseLeft {
-			m.viewport.GotoBottom()
-			m.scrolledUp = false
+		headerHeight := 3
+		vpEnd := headerHeight + m.viewport.Height()
+		if msg.Button == tea.MouseLeft {
+			if msg.Y >= headerHeight && msg.Y < vpEnd {
+				m.isSelecting = true
+				m.selectStartX = msg.X
+				m.selectStartY = msg.Y
+				m.selectEndX = msg.X
+				m.selectEndY = msg.Y
+				m.selectedText = ""
+				return m, nil
+			}
+			if m.scrolledUp {
+				m.viewport.GotoBottom()
+				m.scrolledUp = false
+				m.isSelecting = false
+				m.selectedText = ""
+				m.selectStartX = 0
+				m.selectEndX = 0
+				m.selectStartY = 0
+				m.selectEndY = 0
+				return m, nil
+			}
+			m.isSelecting = false
+			m.selectedText = ""
+			m.selectStartX = 0
+			m.selectEndX = 0
+			m.selectStartY = 0
+			m.selectEndY = 0
+		}
+
+	case tea.MouseMotionMsg:
+		if m.isSelecting {
+			m.selectEndX = msg.X
+			m.selectEndY = msg.Y
+			return m, nil
+		}
+
+	case tea.MouseReleaseMsg:
+		if m.isSelecting {
+			m.selectEndX = msg.X
+			m.selectEndY = msg.Y
+			text := m.extractSelectedText()
+			m.isSelecting = false
+			if strings.TrimSpace(text) != "" {
+				m.selectedText = text
+				_ = clipboard.WriteAll(text)
+				count := utf8.RuneCountInString(text)
+				m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
+				m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+				expiresAt := m.copyFeedbackExpiresAt
+				return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearCopyFeedbackMsg{at: expiresAt}
+				})
+			}
+			m.selectedText = ""
+			m.selectStartX = 0
+			m.selectEndX = 0
+			m.selectStartY = 0
+			m.selectEndY = 0
 			return m, nil
 		}
 	}
@@ -220,6 +289,16 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// 1. Interrupt / Quit / Esc
 	switch keyStr {
 	case "ctrl+c":
+		if m.selectedText != "" {
+			_ = clipboard.WriteAll(m.selectedText)
+			count := utf8.RuneCountInString(m.selectedText)
+			m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
+			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+			expiresAt := m.copyFeedbackExpiresAt
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearCopyFeedbackMsg{at: expiresAt}
+			})
+		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			m.runtime.Interrupt(m.runningExecution)
 			m.running = false
@@ -230,6 +309,15 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.selectedText != "" || m.hasSelection() {
+			m.isSelecting = false
+			m.selectedText = ""
+			m.selectStartX = 0
+			m.selectEndX = 0
+			m.selectStartY = 0
+			m.selectEndY = 0
+			return m, nil
+		}
 		if m.autocompleteOpen {
 			m.autocompleteOpen = false
 			m.updateLayout()

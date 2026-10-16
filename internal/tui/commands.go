@@ -99,6 +99,57 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "/model":
+		if m.client == nil {
+			m.addSystemEntry("Model switching is unavailable.")
+			return m, nil
+		}
+		if len(parts) > 1 {
+			targetProfile := parts[1]
+			profiles := m.client.ListModelProfiles()
+			valid := false
+			for _, p := range profiles {
+				if strings.EqualFold(p.Profile, targetProfile) || strings.EqualFold(p.Model, targetProfile) {
+					valid = true
+					targetProfile = p.Profile
+					break
+				}
+			}
+			if valid {
+				err := m.client.SetSessionSettings(context.Background(), m.sessionID, core.SessionSettings{
+					ModelProfile: targetProfile,
+				})
+				if err != nil {
+					m.addSystemEntry("Failed to set model: " + err.Error())
+				} else {
+					m.currentModel = m.client.ModelForSession(context.Background(), m.sessionID)
+					m.addSystemEntry(fmt.Sprintf("Active model switched to `%s`.", m.currentModel))
+					m.updateLayout()
+				}
+			} else {
+				var names []string
+				for _, p := range profiles {
+					names = append(names, p.Profile)
+				}
+				m.addSystemEntry(fmt.Sprintf("Unknown model profile `%s`. Available profiles: %s", parts[1], strings.Join(names, ", ")))
+			}
+		} else {
+			profiles := m.client.ListModelProfiles()
+			var lines []string
+			lines = append(lines, fmt.Sprintf("**Current model:** `%s`", m.currentModel))
+			lines = append(lines, "\n**Available model profiles:**")
+			for _, p := range profiles {
+				marker := "  "
+				if strings.EqualFold(p.Profile, m.currentModel) || strings.EqualFold(p.Model, m.currentModel) {
+					marker = "* "
+				}
+				lines = append(lines, fmt.Sprintf("%s`%s` (%s / %s)", marker, p.Profile, p.Provider, p.Model))
+			}
+			lines = append(lines, "\nUsage: `/model <profile>` to switch.")
+			m.addSystemEntry(strings.Join(lines, "\n"))
+		}
+		return m, nil
+
 	case "/status":
 		statusText := m.renderStatusTable()
 		m.addSystemEntry(statusText)
@@ -144,8 +195,11 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 // renderStatusTable renders a status table matching Screenshot 12.
 func (m *tuiModel) renderStatusTable() string {
 	modelName := m.currentModel
+	if modelName == "" && m.client != nil {
+		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
 	if modelName == "" {
-		modelName = "GPT-6-Luna (reasoning max, summaries auto)"
+		modelName = "<default>"
 	}
 	permStr := string(m.permissionMode)
 	if m.planMode {

@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type tuiModel struct {
@@ -44,6 +45,16 @@ type tuiModel struct {
 	streamActive      bool
 	currentStreamText string
 	thinking          bool
+
+	// Mouse text selection and copy feedback
+	isSelecting           bool
+	selectStartX          int
+	selectStartY          int
+	selectEndX            int
+	selectEndY            int
+	selectedText          string
+	copyFeedback          string
+	copyFeedbackExpiresAt time.Time
 }
 
 func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID string) *tuiModel {
@@ -60,13 +71,23 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SoftWrap = true
 
+	currentModel := ""
+	workspace := ""
+	permMode := core.PermissionWorkspace
+	if client != nil {
+		workspace = client.Workspace()
+		permMode = client.PermissionMode()
+		currentModel = client.ModelForSession(context.Background(), sessionID)
+	}
+
 	m := &tuiModel{
 		client:         client,
 		runtime:        runtime,
-		workspace:      client.Workspace(),
+		workspace:      workspace,
 		sessionID:      sessionID,
-		permissionMode: client.PermissionMode(),
-		savedMode:      client.PermissionMode(),
+		currentModel:   currentModel,
+		permissionMode: permMode,
+		savedMode:      permMode,
 		composer:       comp,
 		viewport:       vp,
 		entries:        []TranscriptEntry{},
@@ -79,13 +100,23 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 
 func (m *tuiModel) applyThemeStyles() {
 	th := activeTheme()
+	bg := lipgloss.Color(th.CardBg)
+
 	styles := textarea.DefaultLightStyles()
-	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true)
-	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
-	styles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
-	styles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
-	styles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
-	styles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
+	styles.Focused.Base = lipgloss.NewStyle().Background(bg)
+	styles.Focused.CursorLine = lipgloss.NewStyle().Background(bg)
+	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Background(bg).Bold(true)
+	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Background(bg)
+	styles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Background(bg)
+	styles.Focused.EndOfBuffer = lipgloss.NewStyle().Background(bg)
+
+	styles.Blurred.Base = lipgloss.NewStyle().Background(bg)
+	styles.Blurred.CursorLine = lipgloss.NewStyle().Background(bg)
+	styles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Background(bg)
+	styles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Background(bg)
+	styles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Background(bg)
+	styles.Blurred.EndOfBuffer = lipgloss.NewStyle().Background(bg)
+
 	m.composer.SetStyles(styles)
 }
 
@@ -176,6 +207,112 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 }
 
+func (m *tuiModel) hasSelection() bool {
+	return m.selectStartX != m.selectEndX || m.selectStartY != m.selectEndY
+}
+
+func (m *tuiModel) normalizedSelection() (r1, c1, r2, c2 int) {
+	headerHeight := 3
+	r1 = m.selectStartY - headerHeight
+	c1 = m.selectStartX
+	r2 = m.selectEndY - headerHeight
+	c2 = m.selectEndX
+	if r1 > r2 || (r1 == r2 && c1 > c2) {
+		r1, r2 = r2, r1
+		c1, c2 = c2, c1
+	}
+	return r1, c1, r2, c2
+}
+
+func (m *tuiModel) extractSelectedText() string {
+	if !m.hasSelection() {
+		return ""
+	}
+	r1, c1, r2, c2 := m.normalizedSelection()
+	lines := strings.Split(m.viewport.View(), "\n")
+	var selectedLines []string
+
+	for r := r1; r <= r2 && r < len(lines); r++ {
+		if r < 0 {
+			continue
+		}
+		rawLine := lines[r]
+		lineWidth := ansi.StringWidth(rawLine)
+		if lineWidth == 0 {
+			if r1 < r2 {
+				selectedLines = append(selectedLines, "")
+			}
+			continue
+		}
+
+		startCol := 0
+		endCol := lineWidth
+
+		if r == r1 && r == r2 {
+			startCol = max(0, min(c1, lineWidth))
+			endCol = max(0, min(c2, lineWidth))
+		} else if r == r1 {
+			startCol = max(0, min(c1, lineWidth))
+		} else if r == r2 {
+			endCol = max(0, min(c2, lineWidth))
+		}
+
+		if startCol < endCol {
+			selPiece := ansi.Strip(ansi.Cut(rawLine, startCol, endCol))
+			selectedLines = append(selectedLines, strings.TrimRight(selPiece, " "))
+		}
+	}
+	return strings.Join(selectedLines, "\n")
+}
+
+func (m *tuiModel) renderViewportWithSelection() string {
+	viewStr := m.viewport.View()
+	if !m.hasSelection() {
+		return viewStr
+	}
+
+	r1, c1, r2, c2 := m.normalizedSelection()
+	lines := strings.Split(viewStr, "\n")
+	styleSel := lipgloss.NewStyle().
+		Background(lipgloss.Color(activeTheme().SelectBg)).
+		Foreground(lipgloss.Color(activeTheme().SelectFg))
+
+	for r := r1; r <= r2 && r < len(lines); r++ {
+		if r < 0 {
+			continue
+		}
+		rawLine := lines[r]
+		lineWidth := ansi.StringWidth(rawLine)
+		if lineWidth == 0 {
+			continue
+		}
+
+		startCol := 0
+		endCol := lineWidth
+
+		if r == r1 && r == r2 {
+			startCol = max(0, min(c1, lineWidth))
+			endCol = max(0, min(c2, lineWidth))
+		} else if r == r1 {
+			startCol = max(0, min(c1, lineWidth))
+		} else if r == r2 {
+			endCol = max(0, min(c2, lineWidth))
+		}
+
+		if startCol >= endCol {
+			continue
+		}
+
+		prefix := ansi.Cut(rawLine, 0, startCol)
+		selText := ansi.Strip(ansi.Cut(rawLine, startCol, endCol))
+		suffix := ansi.Cut(rawLine, endCol, lineWidth)
+
+		lines[r] = prefix + styleSel.Render(selText) + suffix
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 // View implements tea.Model and renders the complete screen frame.
 func (m *tuiModel) View() tea.View {
 	contentWidth := max(20, m.width-4)
@@ -185,15 +322,10 @@ func (m *tuiModel) View() tea.View {
 	// 1. Top Header
 	sections = append(sections, renderHeader(m.workspace))
 
-	// 2. Viewport (Transcript / Empty State)
-	sections = append(sections, m.viewport.View())
+	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
+	sections = append(sections, m.renderViewportWithSelection())
 
-	// 3. Scroll pill if scrolled up
-	if m.scrolledUp {
-		sections = append(sections, renderScrollPill(contentWidth))
-	}
-
-	// 4. Modal (Question / Approval / Plan Review / Autocomplete)
+	// 3. Modal (Question / Approval / Plan Review / Autocomplete)
 	if m.activeQuestion != nil {
 		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
 	} else if m.activeApproval != nil {
@@ -204,8 +336,16 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderAutocompletePopup(m.autocompleteItems, m.autocompleteIndex, contentWidth))
 	}
 
-	// Spacing gap before composer
-	sections = append(sections, "")
+	// 4. Composer gap (shared with copy feedback, scroll pill, or blank line)
+	gapLine := ""
+	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
+		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(m.copyFeedback)
+		leftPad := max(0, contentWidth-lipgloss.Width(styled))
+		gapLine = strings.Repeat(" ", leftPad) + styled
+	} else if m.scrolledUp {
+		gapLine = renderScrollPill(contentWidth)
+	}
+	sections = append(sections, gapLine)
 
 	// 5. Composer
 	sections = append(sections, renderComposerBand(m.composer.View(), contentWidth))
@@ -239,6 +379,9 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 	m.runtime = rt
 	m.sessionID = sessionID
+	if m.client != nil {
+		m.currentModel = m.client.ModelForSession(ctx, sessionID)
+	}
 	rt.SetUserInteractionAvailable(true)
 	m.checkPendingState(ctx)
 	return nil
