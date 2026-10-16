@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { Events } from '@wailsio/runtime';
   import Markdown from './lib/Markdown.svelte';
+  import ExecutionActivity from './lib/ExecutionActivity.svelte';
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
@@ -11,14 +12,22 @@
 
   type LocalMessage = ConversationMessage & {
     local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'submitted' | 'failed';
-    deliveryError?: string; request?: SubmitInput; executionID?: string;
+    deliveryError?: string; request?: SubmitInput; executionID?: string; userMessageIndex?: number; interrupted?: boolean;
   };
   type Activity = {
-    id: string; kind: 'phase' | 'tool'; label: string; detail: string;
+    id: string; invocationId: string; agentId?: string; label: string; detail: string;
+    arguments?: unknown; details?: { output?: string; command?: { text: string; output?: string; status?: string; exitCode?: number | null; truncated?: boolean; error?: string }; changes?: { path: string; added: number; removed: number; lines?: { kind: string; oldLine?: number; newLine?: number; text: string }[]; truncated?: boolean }[]; truncated?: boolean };
+    truncated?: boolean;
     status: 'running' | 'done' | 'failed' | 'cancelled' | 'info' | 'waiting';
     durationMs?: number; error?: string;
   };
-  type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'disconnected';
+  type ActivityRun = {
+    key: string; executionId: string; userMessageIndex: number; status: string; statusLabel: string;
+    startedAt: string; finishedAt?: string | null; tools: Activity[]; expanded: boolean; elapsedSeconds?: number;
+  };
+  type StoredActivityRun = NonNullable<WorkspaceState['executionHistory']>[number];
+  type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
+  type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
   type Modal = 'settings' | 'migration' | 'switch' | 'close' | null;
 
@@ -35,16 +44,19 @@
   let pending = $state<PendingRequestView[]>([]);
   let messages = $state<LocalMessage[]>([]);
   let activities = $state<Activity[]>([]);
+  let activityHistory = $state<ActivityRun[]>([]);
   let streamText = $state('');
   let running = $state(false);
   let executionID = $state('');
   let executionState = $state<ExecutionState>('idle');
   let currentStatus = $state('');
-  let activityDetailsOpen = $state(false);
   let elapsedSeconds = $state(0);
   let turnStartedAt = $state(0);
   let elapsedTimer: number | undefined;
   let submitPendingMessageID = '';
+  let activeActivityRunKey = '';
+  let interrupting = $state(false);
+  let interruptRequestedExecutionID = '';
   let previewFailedOnce = false;
   let composerText = $state('');
   let attachments = $state<{ name: string; mediaType: string; data: string; preview: string }[]>([]);
@@ -69,7 +81,21 @@
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const approvals = $derived(pending.filter((item) => item.kind === 'approval'));
   const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery'));
-  const canSend = $derived(models.configured && !running && !busy && pending.length === 0 && !planReview);
+  const canSend = $derived(models.configured && !running && !busy && !interrupting && pending.length === 0 && !planReview);
+  const transcriptRows = $derived.by(() => {
+    let userMessageIndex = -1;
+    return messages.map((message) => {
+      if (message.role === 'user') userMessageIndex++;
+      const index = message.role === 'user' ? userMessageIndex : -1;
+      return {
+        message,
+        userMessageIndex: index,
+        activityRuns: index < 0 ? [] : activityHistory.filter((run) => run.userMessageIndex === index),
+      };
+    });
+  });
+  const userMessageCount = $derived(messages.filter((message) => message.role === 'user').length);
+  const orphanActivityRuns = $derived(activityHistory.filter((run) => run.userMessageIndex < 0 || run.userMessageIndex >= userMessageCount));
 
   function applyTheme(value: string) {
     theme = value;
@@ -110,6 +136,103 @@
     messages = messages.map((message) => message.id === id ? { ...message, ...update } : message);
   }
 
+  function mergeToolActivities(serverTools: Activity[], localTools: Activity[]) {
+    const localByID = new Map(localTools.map((tool) => [tool.invocationId || tool.id, tool]));
+    const merged = serverTools.map((tool) => {
+      const previous = localByID.get(tool.invocationId || tool.id);
+      if (previous) localByID.delete(tool.invocationId || tool.id);
+      return { ...tool, ...previous, arguments: tool.arguments ?? previous?.arguments, details: tool.details ?? previous?.details };
+    });
+    return [...merged, ...localByID.values()];
+  }
+
+  function mergeExecutionHistory(serverRuns: WorkspaceState['executionHistory'], localRuns: ActivityRun[]) {
+    const localByID = new Map(localRuns.filter((run) => run.executionId).map((run) => [run.executionId, run]));
+    const merged = (serverRuns ?? []).map((run) => {
+      const previous = localByID.get(run.executionId);
+      if (previous) localByID.delete(run.executionId);
+      const tools = (run.tools ?? []).map(activityFromView);
+      const previousStatusIsTerminal = previous && ['completed', 'failed', 'cancelled', 'interrupted'].includes(previous.status);
+      return {
+        key: run.executionId,
+        ...run,
+        status: previousStatusIsTerminal ? previous.status : run.status,
+        statusLabel: previous?.statusLabel || activityRunStatusLabel(run.status),
+        tools: mergeToolActivities(tools, previous?.tools ?? []),
+        expanded: previous?.expanded ?? false,
+        elapsedSeconds: previous?.elapsedSeconds,
+      };
+    });
+    const unmatchedLocal = localRuns.filter((run) => !run.executionId || localByID.has(run.executionId));
+    return [...merged, ...unmatchedLocal];
+  }
+
+  function activityFromView(activity: StoredActivityTool): Activity {
+    return {
+      id: activity.id,
+      invocationId: activity.invocationId,
+      agentId: activity.agentId,
+      label: toolLabel(activity.name),
+      detail: compactActivityDetail(activity.arguments),
+      arguments: activity.arguments,
+      details: activity.details ? {
+        output: activity.details.output,
+        command: activity.details.command ? {
+          text: activity.details.command.text,
+          output: activity.details.command.output,
+          status: activity.details.command.status,
+          exitCode: activity.details.command.exitCode,
+          truncated: activity.details.command.truncated,
+          error: activity.details.command.error,
+        } : undefined,
+        changes: activity.details.changes?.map((change) => ({
+          path: change.path, added: change.added, removed: change.removed,
+          lines: change.lines ?? undefined, truncated: change.truncated,
+        })) ?? undefined,
+        truncated: activity.details.truncated,
+      } : undefined,
+      status: activity.status === 'running' ? 'running' : activity.status === 'failed' ? 'failed' : activity.status === 'cancelled' ? 'cancelled' : 'done',
+      durationMs: activity.durationMs,
+      error: activity.error,
+      truncated: activity.truncated,
+    };
+  }
+
+  function activityRunStatusLabel(status: string) {
+    if (status === 'completed') return '任务已完成';
+    if (status === 'failed') return '任务执行失败';
+    if (status === 'interrupted' || status === 'discarded' || status === 'cancelled') return '任务已中断';
+    if (status === 'paused') return '任务已暂停';
+    return '正在处理请求';
+  }
+
+  function currentUserMessageIndex() {
+    const message = messages.find((item) => item.id === submitPendingMessageID);
+    return message?.userMessageIndex ?? messages.filter((item) => item.role === 'user').length - 1;
+  }
+
+  function upsertActivityRun(update: Partial<ActivityRun> & { executionId?: string; key?: string }) {
+    const key = update.key || update.executionId || activeActivityRunKey || `local:${submitPendingMessageID || 'current'}`;
+    const index = activityHistory.findIndex((run) => run.key === key || (!!update.executionId && run.executionId === update.executionId));
+    const previous = index >= 0 ? activityHistory[index] : undefined;
+    const next: ActivityRun = {
+      key,
+      executionId: update.executionId ?? previous?.executionId ?? '',
+      userMessageIndex: update.userMessageIndex !== undefined && update.userMessageIndex >= 0
+        ? update.userMessageIndex : previous?.userMessageIndex ?? -1,
+      status: update.status ?? previous?.status ?? 'running',
+      statusLabel: update.statusLabel ?? previous?.statusLabel ?? currentStatus,
+      startedAt: update.startedAt ?? previous?.startedAt ?? new Date().toISOString(),
+      finishedAt: update.finishedAt ?? previous?.finishedAt,
+      tools: update.tools ?? previous?.tools ?? activities,
+      expanded: update.expanded ?? previous?.expanded ?? false,
+      elapsedSeconds: update.elapsedSeconds ?? previous?.elapsedSeconds,
+    };
+    if (index < 0) activityHistory = [...activityHistory, next];
+    else activityHistory = activityHistory.map((run, runIndex) => runIndex === index ? next : run);
+    return next;
+  }
+
   function clearElapsedTimer() {
     if (elapsedTimer !== undefined) {
       window.clearInterval(elapsedTimer);
@@ -144,21 +267,40 @@
   }
 
   let activitySequence = 0;
-  function addActivity(activity: Omit<Activity, 'id'> & { id?: string }) {
+  function addActivity(activity: Omit<Activity, 'id' | 'invocationId'> & { id?: string; invocationId?: string }) {
     const id = activity.id || `activity-${++activitySequence}`;
-    const index = activities.findIndex((item) => item.id === id);
-    const next: Activity = { ...activity, id };
+    const invocationId = activity.invocationId || id;
+    const index = activities.findIndex((item) => item.invocationId === invocationId || item.id === id);
+    const previous = index >= 0 ? activities[index] : undefined;
+    const next: Activity = {
+      ...previous, ...activity, id, invocationId,
+      arguments: activity.arguments ?? previous?.arguments,
+      details: activity.details ?? previous?.details,
+    };
     if (index >= 0) activities = activities.map((item, itemIndex) => itemIndex === index ? next : item);
     else activities = [...activities, next];
+    if (activeActivityRunKey) {
+      upsertActivityRun({ key: activeActivityRunKey, executionId: executionID, tools: activities });
+    }
   }
 
   function setExecutionStatus(state: ExecutionState, label: string, options: { expand?: boolean; record?: boolean } = {}) {
-    if (options.record !== false && label && label !== currentStatus) {
-      addActivity({ kind: 'phase', label, detail: '', status: state === 'waiting' ? 'waiting' : 'info' });
-    }
     executionState = state;
     currentStatus = label;
-    if (options.expand !== undefined) activityDetailsOpen = options.expand;
+    const runStatus = state === 'completed' ? 'completed'
+      : state === 'failed' || state === 'disconnected' ? 'failed'
+        : state === 'interrupted' || state === 'cancelled' ? 'interrupted'
+          : state === 'waiting' ? 'paused' : 'running';
+    const key = activeActivityRunKey || executionID || `local:${submitPendingMessageID || 'current'}`;
+    activeActivityRunKey = key;
+	const run = upsertActivityRun({
+      key, executionId: executionID, userMessageIndex: currentUserMessageIndex(),
+      status: runStatus, statusLabel: label, tools: activities,
+      elapsedSeconds: turnStartedAt ? Math.floor((Date.now() - turnStartedAt) / 1000) : undefined,
+    });
+    if (options.expand === false && run.expanded) {
+      activityHistory = activityHistory.map((item) => item.key === key ? { ...item, expanded: false } : item);
+    }
     scrollToLatest();
   }
 
@@ -176,9 +318,28 @@
     return detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
   }
 
-  function formatElapsed(seconds: number) {
-    if (seconds < 60) return `用时 ${seconds} 秒`;
-    return `用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  function activitySummary(activity: Activity) {
+    const raw = activity.arguments;
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>;
+        for (const key of ['command', 'path', 'pattern', 'glob', 'query', 'directory', 'dir', 'url', 'file']) {
+          const value = record[key];
+          if (typeof value === 'string' && value.trim()) return value.trim();
+        }
+      }
+    } catch { /* compactActivityDetail handles opaque arguments. */ }
+    return compactActivityDetail(raw);
+  }
+
+  function formatActivityArguments(value: unknown) {
+    try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
+    catch { return String(value ?? ''); }
+  }
+
+  function toggleActivityRun(key: string) {
+    activityHistory = activityHistory.map((run) => run.key === key ? { ...run, expanded: !run.expanded } : run);
   }
 
   const previewBootstrap: Bootstrap = {
@@ -202,6 +363,7 @@
     sessions: [{ id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00' }],
     runtimeState: { Task: { Status: TaskStatus.TaskIdle, SessionID: 'session-preview', TaskID: '', ExecutionID: '', QueueID: '', ContextWindow: 0, ReserveOutputTokens: 0, AutoCompact: false, AutoCompactThreshold: 0, Goal: '', MaxToolRounds: 0, ModelOverride: '', ModelProfile: '工作模型', Provider: 'deepseek', Model: 'deepseek-chat', ReasoningEffort: '', Execution: {} }, Queue: [] },
     pending: [],
+    executionHistory: [],
   };
 
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
@@ -215,6 +377,7 @@
     pending = state.pending ?? [];
     messages = [...(state.session.messages ?? [])];
     activities = [];
+    activityHistory = mergeExecutionHistory(state.executionHistory ?? [], []);
     streamText = '';
     planReview = currentPlanReview;
     const status = state.runtimeState?.Task?.Status;
@@ -222,10 +385,23 @@
     executionID = state.runtimeState?.Task?.ExecutionID ?? '';
     executionState = running ? 'running' : 'idle';
     currentStatus = running ? (status === 'queued' ? '任务排队中' : '正在处理请求') : '';
-    activityDetailsOpen = running;
     elapsedSeconds = 0;
     turnStartedAt = 0;
-    if (running) startElapsedTimer(true);
+    activeActivityRunKey = running ? executionID : '';
+    if (running) {
+      const currentRun = activityHistory.find((run) => run.executionId === executionID);
+      if (currentRun) {
+        activities = currentRun.tools;
+        currentStatus = currentRun.statusLabel || currentStatus;
+        activeActivityRunKey = currentRun.key;
+        const startedAt = Date.parse(currentRun.startedAt);
+        if (Number.isFinite(startedAt)) {
+          turnStartedAt = startedAt;
+          elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+          startElapsedTimer(false);
+        } else startElapsedTimer(true);
+      } else startElapsedTimer(true);
+    }
   }
 
   function applySessionRefresh(state: WorkspaceState) {
@@ -235,6 +411,7 @@
     if (state.models) models = state.models;
     pending = state.pending ?? [];
     messages = mergeMessagesFromSession(state.session.messages ?? [], messages);
+    activityHistory = mergeExecutionHistory(state.executionHistory ?? [], activityHistory);
     scrollToLatest();
 
     const task = state.runtimeState?.Task;
@@ -242,7 +419,7 @@
     const wasRunning = running;
     const snapshotRunning = taskStatus === 'running' || taskStatus === 'queued';
     const localExecutionActive = executionState === 'submitting' || executionState === 'running' || executionState === 'disconnected';
-    const localExecutionTerminal = executionState === 'completed' || executionState === 'failed' || executionState === 'cancelled';
+    const localExecutionTerminal = executionState === 'completed' || executionState === 'failed' || executionState === 'cancelled' || executionState === 'interrupted';
     running = !localExecutionTerminal && (snapshotRunning || localExecutionActive);
     if (task?.ExecutionID) executionID = task.ExecutionID;
 
@@ -290,29 +467,49 @@
       models = previewBootstrap.models;
       installWorkspaceState(previewState);
       const variant = previewVariant;
-      activities = [
-        { id: 'a1', kind: 'tool', label: '读取文件', detail: 'internal/desktop/service.go', status: 'done', durationMs: 420 },
-        { id: 'a2', kind: 'tool', label: '搜索文件内容', detail: 'pending request and event handlers', status: 'done', durationMs: 180 },
-      ];
+      activities = [];
+      if (variant === 'empty') {
+        messages = [];
+        workspace = 'D:\\Git\\sample-project';
+      }
       if (variant === 'markdown') {
         messages = [
           { id: 'markdown-user', role: 'user', text: '整理一下检查结果。' },
           { id: 'markdown-assistant', role: 'assistant', text: '检查完成，主要结论如下：\n\n## 发现的问题\n\n- 会话刷新会覆盖尚未持久化的用户消息。\n- 流式状态缺少明确阶段。\n\n| 状态 | 当前表现 |\n| --- | --- |\n| 消息 | 延迟出现 |\n| 模型 | 没有明确进度 |\n\n```go\nfunc ready() bool {\n    return true\n}\n```\n\n> 修复后，用户消息应立即显示。\n\n<scr' + 'ipt>window.__markdownXSS = true</scr' + 'ipt>\n[危险链接](javascript:alert(1))' },
         ];
       }
-      if (variant === 'running') {
+      if (variant === 'running' || variant === 'interrupt') {
         running = true;
         executionID = 'exec-preview-running';
         executionState = 'running';
-        currentStatus = '正在读取 internal/desktop/service.go';
-        activityDetailsOpen = true;
+        currentStatus = '模型正在分析请求';
+        activeActivityRunKey = executionID;
         turnStartedAt = Date.now() - 12_000;
         elapsedSeconds = 12;
         activities = [
-          { id: 'phase-preview', kind: 'phase', label: '模型正在分析请求', detail: '', status: 'info' },
-          { id: 'tool-preview', kind: 'tool', label: '读取文件', detail: 'internal/desktop/service.go', status: 'running' },
+          {
+            id: 'tool-preview', invocationId: 'invocation-preview', label: '读取文件', detail: 'internal/desktop/service.go',
+            arguments: { path: 'internal/desktop/service.go' },
+            details: { output: 'package desktop\n\nfunc service() {}' }, status: 'running',
+          },
         ];
+        activityHistory = [{
+          key: executionID, executionId: executionID, userMessageIndex: 0, status: 'running', statusLabel: currentStatus,
+          startedAt: new Date(turnStartedAt).toISOString(), tools: activities, expanded: false, elapsedSeconds,
+        }];
         streamText = '我会先检查消息的乐观更新和会话刷新流程。';
+      }
+      if (variant === 'activity-history') {
+        const historyTool: Activity = {
+          id: 'history-read', invocationId: 'history-read', label: '读取文件', detail: 'internal/desktop/service.go',
+          arguments: { path: 'internal/desktop/service.go' },
+          details: { output: 'package desktop\n\nfunc persistedDetails() {}' }, status: 'done', durationMs: 420,
+        };
+        activityHistory = [{
+          key: 'exec-preview-history', executionId: 'exec-preview-history', userMessageIndex: 0, status: 'interrupted',
+          statusLabel: '任务已中断', startedAt: '2026-10-17T00:03:00+08:00',
+          tools: [historyTool], expanded: false,
+        }];
       }
       if (variant === 'question') {
         pending = [{
@@ -377,7 +574,11 @@
 
   type AgentEvent = {
     kind: string; sessionId: string; taskId: string; executionId: string; status: string; error?: string;
-    approvalId?: string; tool?: { id: string; name: string; arguments?: unknown; failed: boolean; canceled: boolean; durationMs: number };
+    approvalId?: string; tool?: {
+      id: string; invocationId?: string; agentId?: string; name: string; arguments?: unknown;
+      details?: Activity['details']; started?: boolean; failed: boolean; canceled: boolean; durationMs: number;
+      truncated?: boolean;
+    };
     stream?: { type: string; delta: string };
   };
   type TurnResultEvent = { sessionId: string; executionId: string; status: string; text: string; plan?: string; error?: string };
@@ -388,7 +589,19 @@
   }
 
   function startExecution(event: AgentEvent) {
+    const previousRunKey = activeActivityRunKey;
     if (event.executionId) executionID = event.executionId;
+    if (event.executionId && activeActivityRunKey.startsWith('local:')) {
+      const localKey = activeActivityRunKey;
+      const localRun = activityHistory.find((run) => run.key === localKey);
+      if (localRun) {
+        activityHistory = activityHistory.map((run) => run.key === localKey ? { ...run, key: event.executionId, executionId: event.executionId } : run);
+      }
+      activeActivityRunKey = event.executionId;
+    } else if (event.executionId) {
+      activeActivityRunKey = event.executionId;
+    }
+    if (interruptRequestedExecutionID === previousRunKey && event.executionId) interruptRequestedExecutionID = event.executionId;
     pendingMessageForExecution(event);
     running = true;
     if (turnStartedAt === 0) startElapsedTimer(true);
@@ -402,26 +615,32 @@
     const rawName = tool?.name || 'tool';
     const label = toolLabel(rawName);
     const detail = tool?.arguments ? compactActivityDetail(tool.arguments) : '';
-    const isStarted = event.kind === 'tool_started';
+    const isStarted = tool?.started ?? event.kind === 'tool_started';
     const status: Activity['status'] = isStarted ? 'running' : tool?.failed ? 'failed' : tool?.canceled ? 'cancelled' : 'done';
     addActivity({
-      id: `tool-${id}`, kind: 'tool', label, detail, status,
-      durationMs: tool?.durationMs, error: event.error,
+      id: `tool-${id}`, invocationId: tool?.invocationId || id, agentId: tool?.agentId,
+      label, detail, arguments: tool?.arguments, details: tool?.details, status,
+      durationMs: tool?.durationMs, error: event.error, truncated: tool?.truncated,
     });
     running = true;
     if (isStarted) {
-      setExecutionStatus('running', `正在${label}${detail ? `：${detail}` : ''}`, { expand: true });
+      setExecutionStatus('running', '正在执行工具', { expand: true });
     } else {
-      const resultLabel = status === 'failed' ? `${label}失败` : status === 'cancelled' ? `${label}已取消` : `${label}已完成`;
-      setExecutionStatus('running', `${resultLabel}，继续处理`, { expand: true });
+      setExecutionStatus('running', '工具已完成，继续处理', { expand: true });
     }
   }
 
   function finishExecution(status: string, message = '') {
-    running = false;
-    stopElapsedTimer();
     const normalized = status.toLowerCase();
+    const currentRun = activityHistory.find((run) => run.key === activeActivityRunKey || (!!executionID && run.executionId === executionID));
+    if (currentRun?.status === 'interrupted' && (normalized === 'paused' || normalized === 'discarded')) return;
     if (normalized === 'paused') {
+      if (interruptRequestedExecutionID && (interruptRequestedExecutionID === executionID || interruptRequestedExecutionID === activeActivityRunKey)) {
+        setExecutionStatus('running', '正在中断任务');
+        return;
+      }
+      running = false;
+      stopElapsedTimer();
       const waitingLabel = pending.some((item) => item.kind === 'approval')
         ? '等待你的授权'
         : pending.some((item) => item.kind === 'user_question')
@@ -430,8 +649,11 @@
       setExecutionStatus('waiting', waitingLabel, { expand: true });
       return;
     }
-    if (normalized === 'cancelled' || normalized === 'discarded') {
-      setExecutionStatus('cancelled', '任务已取消', { expand: false });
+    running = false;
+    stopElapsedTimer();
+    if (normalized === 'interrupted' || normalized === 'discarded' || normalized === 'cancelled') {
+      const interrupted = normalized !== 'cancelled' || interruptRequestedExecutionID === executionID;
+      setExecutionStatus(interrupted ? 'interrupted' : 'cancelled', interrupted ? '任务已中断' : '任务已取消', { expand: false });
       return;
     }
     if (normalized === 'failed') {
@@ -461,13 +683,6 @@
       setExecutionStatus('running', '正在处理子任务', { expand: true });
     }
     if (event.kind === 'agent_finished') {
-      const activityStatus: Activity['status'] = event.status === 'completed' ? 'done'
-        : event.status === 'cancelled' ? 'cancelled'
-          : event.status === 'failed' ? 'failed' : 'info';
-      addActivity({
-        kind: 'phase', label: event.status === 'completed' ? '子任务已完成' : event.status === 'cancelled' ? '子任务已取消' : '子任务失败',
-        detail: '', status: activityStatus,
-      });
       if (event.status === 'completed') setExecutionStatus('running', '正在继续处理', { expand: true });
     }
     if (event.kind === 'model_stream' && event.stream?.type === 'reasoning_delta') {
@@ -480,7 +695,7 @@
       setExecutionStatus('running', '正在生成回复', { expand: true });
       scrollToLatest();
     }
-    if (event.kind === 'tool_started' || event.kind === 'tool_finished') {
+    if (event.kind === 'tool_started' || event.kind === 'tool_finished' || event.kind === 'tool_details') {
       handleToolEvent(event);
     }
 
@@ -516,20 +731,24 @@
       setExecutionStatus('disconnected', '状态连接中断，正在同步任务', { expand: true });
       void refreshSession();
     }
-    if (event.error) showError(event.error);
+    if (event.error && event.status !== 'paused' && !(interruptRequestedExecutionID && interruptRequestedExecutionID === event.executionId)) showError(event.error);
   }
 
   function onTurnResult(result: TurnResultEvent) {
     if (result.sessionId !== session?.id) return;
     if (executionID && result.executionId && executionID !== result.executionId) return;
     executionID = result.executionId;
+    const currentRun = activityHistory.find((run) => run.executionId === result.executionId || run.key === activeActivityRunKey);
+    const interrupted = interruptRequestedExecutionID === result.executionId || currentRun?.status === 'interrupted';
+    const partialText = result.status === 'paused' && interrupted ? streamText.trim() : '';
+    const responseText = result.text || partialText;
     streamText = '';
     finishExecution(result.status || (result.error ? 'failed' : 'completed'), result.error);
-    if (result.error) showError(result.error);
-    if (result.text && !messages.some((message) => message.role === 'assistant' && message.text === result.text && message.executionID === result.executionId)) {
+    if (result.error && result.status !== 'paused' && !interrupted) showError(result.error);
+    if (responseText && !messages.some((message) => message.role === 'assistant' && message.text === responseText && message.executionID === result.executionId)) {
       messages = [...messages, {
-        id: `assistant-${result.executionId}`, role: 'assistant', text: result.text,
-        local: true, deliveryState: 'submitted', executionID: result.executionId,
+        id: `assistant-${result.executionId}${partialText ? '-interrupted' : ''}`, role: 'assistant', text: responseText,
+        local: true, deliveryState: 'submitted', executionID: result.executionId, interrupted: !!partialText,
       }];
     }
     if (result.plan) planReview = { executionID: result.executionId, text: result.plan };
@@ -541,9 +760,13 @@
     try {
       const parsed = typeof value === 'string' ? JSON.parse(value) : value;
       if (typeof parsed === 'string') return parsed;
-      if (parsed.command) return String(parsed.command);
-      if (parsed.path) return String(parsed.path);
-      if (parsed.query) return String(parsed.query);
+      if (parsed && typeof parsed === 'object') {
+        const record = parsed as Record<string, unknown>;
+        for (const key of ['command', 'path', 'pattern', 'glob', 'query', 'directory', 'dir', 'url', 'file']) {
+          const target = record[key];
+          if (typeof target === 'string' && target.trim()) return target;
+        }
+      }
       return JSON.stringify(parsed);
     } catch { return String(value); }
   }
@@ -748,13 +971,14 @@
 
   async function sendMessage() {
     const text = composerText.trim();
-    const interactivePreview = previewVariant === 'send' || previewVariant === 'send-failure';
+    const interactivePreview = previewVariant === 'send' || previewVariant === 'send-failure' || previewVariant === 'interrupt';
     if ((!text && attachments.length === 0) || running || !models.configured || (previewMode && !interactivePreview)) return;
     const id = `user-${crypto.randomUUID()}`;
-    const request: SubmitInput = { text, images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) };
+    const userMessageIndex = messages.filter((message) => message.role === 'user').length;
+    const request: SubmitInput = { text, images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })), userMessageIndex };
     const message: LocalMessage = {
       id, role: 'user', text, images: attachments.map((item) => item.preview), local: true,
-      deliveryState: 'sending', request,
+      deliveryState: 'sending', request, userMessageIndex,
     };
     messages = [...messages, message];
     composerText = '';
@@ -766,8 +990,10 @@
   async function submitUserMessage(messageID: string, request: SubmitInput) {
     busy = true;
     executionID = '';
+    activeActivityRunKey = `local:${messageID}`;
+    const existingRun = activityHistory.find((run) => run.key === activeActivityRunKey);
+    activities = existingRun?.tools ?? [];
     streamText = '';
-    activities = [];
     activitySequence = 0;
     running = true;
     setExecutionStatus('submitting', '正在提交请求', { expand: true });
@@ -778,7 +1004,7 @@
       const submission = previewMode ? await submitPreviewRequest(request) : await Desktop.Submit(request);
       executionID = submission.ExecutionID;
       updateMessage(messageID, { deliveryState: 'submitted', deliveryError: undefined, executionID: submission.ExecutionID });
-      running = true;
+      running = executionState === 'interrupted' ? false : true;
       if (executionState === 'submitting') setExecutionStatus('running', '正在等待模型响应', { expand: true });
     } catch (error) {
       running = false;
@@ -809,8 +1035,8 @@
     applySessionRefresh(runningState);
 
     window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'reasoning_delta', delta: 'not rendered' } }), 350);
-    window.setTimeout(() => onAgentEvent({ kind: 'tool_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, failed: false, canceled: false, durationMs: 0 } }), 800);
-    window.setTimeout(() => onAgentEvent({ kind: 'tool_finished', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, failed: false, canceled: false, durationMs: 420 } }), 1200);
+    window.setTimeout(() => onAgentEvent({ kind: 'tool_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', invocationId: 'tool-preview-invocation', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, started: true, failed: false, canceled: false, durationMs: 0 } }), 800);
+    window.setTimeout(() => onAgentEvent({ kind: 'tool_finished', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', invocationId: 'tool-preview-invocation', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, details: { output: 'package desktop\n\nfunc Submit(input SubmitInput) {}' }, started: false, failed: false, canceled: false, durationMs: 420 } }), 1200);
     window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'text_delta', delta: '已读取服务代码，正在整理结果。' } }), 1500);
     window.setTimeout(() => onTurnResult({ sessionId: previewState.session.id, executionId: previewExecutionID, status: 'completed', text: '## 检查结果\n\n已完成读取。', }), 2600);
     return { ExecutionID: previewExecutionID };
@@ -824,9 +1050,36 @@
   }
 
   async function interruptTask() {
-    if (previewMode) { running = false; return; }
-    try { await Desktop.Interrupt(); }
-    catch (error) { showError(error); }
+    if (interrupting) return;
+    interrupting = true;
+    interruptRequestedExecutionID = executionID || activeActivityRunKey;
+    setExecutionStatus('running', '正在中断任务');
+    try {
+      const interrupted = previewMode ? true : await Desktop.Interrupt();
+      if (!interrupted) {
+        showError('无法完成中断，正在同步当前任务状态');
+        await refreshSession();
+        return;
+      }
+      running = false;
+      stopElapsedTimer();
+      finishExecution('interrupted');
+      if (streamText.trim()) {
+        const partialText = streamText.trim();
+        const partialID = `assistant-${executionID}-interrupted`;
+        if (!messages.some((message) => message.id === partialID)) {
+          messages = [...messages, { id: partialID, role: 'assistant', text: partialText, local: true, deliveryState: 'submitted', executionID, interrupted: true }];
+        }
+        streamText = '';
+      }
+      await refreshSession();
+    } catch (error) {
+      showError(error);
+      await refreshSession();
+    } finally {
+      interrupting = false;
+      interruptRequestedExecutionID = '';
+    }
   }
 
   async function addFiles(files: FileList | File[]) {
@@ -1013,64 +1266,33 @@
         <div class="conversation-scroll" id="conversation-scroll">
           <div class="conversation-content">
             {#if messages.length === 0}
-              <div class="conversation-intro"><span class="intro-mark">l</span><div><strong>你好，我是 luneAgent。</strong><p>我可以在 <b>{workspace.split(/[\\/]/).at(-1)}</b> 中帮你阅读和修改代码。</p></div></div>
+              <div class="conversation-intro"><p>可以在 <b>{workspace.split(/[\\/]/).at(-1)}</b> 中阅读、修改和运行代码。</p></div>
             {/if}
-            {#each messages as message (message.id)}
-              <article class:from-user={message.role === 'user'} class="message-row">
-                {#if message.role === 'assistant'}<div class="message-avatar">l</div>{/if}
+            {#each transcriptRows as row (row.message.id)}
+              <article class:from-user={row.message.role === 'user'} class="message-row">
                 <div class="message-body">
-                  {#if message.role === 'user'}<span class="message-author">你</span>{:else}<span class="message-author">luneAgent</span>{/if}
                   <div class="message-text">
-                    {#if message.role === 'assistant'}<Markdown source={message.text} />{:else}<div class="plain-text">{message.text}</div>{/if}
+                    {#if row.message.role === 'assistant'}<Markdown source={row.message.text} />{:else}<div class="plain-text">{row.message.text}</div>{/if}
                   </div>
-                  {#if message.images?.length}<div class="message-images">{#each message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
-                  {#if message.deliveryState === 'failed'}
-                    <div class="message-delivery-error"><span>{message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(message)}>重试</button></div>
-                  {:else if message.deliveryState === 'sending'}
+                  {#if row.message.images?.length}<div class="message-images">{#each row.message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
+                  {#if row.message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
+                  {#if row.message.deliveryState === 'failed'}
+                    <div class="message-delivery-error"><span>{row.message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(row.message)}>重试</button></div>
+                  {:else if row.message.deliveryState === 'sending'}
                     <div class="message-delivery-pending">正在发送…</div>
                   {/if}
                 </div>
               </article>
+              {#each row.activityRuns as run (run.key)}
+                <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} />
+              {/each}
+            {/each}
+            {#each orphanActivityRuns as run (run.key)}
+              <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} />
             {/each}
 
-            {#if currentStatus}
-              <section class:status-waiting={executionState === 'waiting'} class:status-failed={executionState === 'failed' || executionState === 'disconnected'} class="turn-progress" aria-label="本轮执行状态">
-                <div class="turn-status-row">
-                  <span class:status-spinner-active={running && executionState !== 'waiting' && executionState !== 'disconnected'} class:status-indicator={true} aria-hidden="true"></span>
-                  <span class="turn-status-text" role="status" aria-live="polite">{currentStatus}</span>
-                  {#if turnStartedAt}<span class="turn-elapsed">{formatElapsed(elapsedSeconds)}</span>{/if}
-                  {#if activities.length}
-                    <button class="activity-toggle" aria-expanded={activityDetailsOpen} onclick={() => activityDetailsOpen = !activityDetailsOpen}>
-                      {activities.length} 步骤 <span aria-hidden="true">{activityDetailsOpen ? '⌃' : '⌄'}</span>
-                    </button>
-                  {/if}
-                </div>
-                {#if activityDetailsOpen && activities.length}
-                  <ol class="activity-list" aria-label="本轮执行详情">
-                    {#each activities as activity (activity.id)}
-                      <li class:activity-failed={activity.status === 'failed'} class:activity-cancelled={activity.status === 'cancelled'} class="activity-row">
-                        <span class:activity-dot-live={activity.status === 'running'} class="activity-dot" aria-hidden="true">{activity.status === 'failed' ? '!' : activity.status === 'cancelled' ? '–' : activity.status === 'done' ? '✓' : '•'}</span>
-                        {#if activity.kind === 'tool'}
-                          <details class="activity-tool-details">
-                            <summary><span class="activity-label">{activity.label}</span>{#if activity.detail}<span class="activity-detail">{activity.detail}</span>{/if}<span class="activity-result">{activity.status === 'running' ? '进行中' : activity.status === 'failed' ? '失败' : activity.status === 'cancelled' ? '已取消' : '完成'}</span></summary>
-                            <div class="activity-tool-extra">
-                              {#if activity.detail}<code>{activity.detail}</code>{/if}
-                              {#if activity.durationMs}<span>用时 {activity.durationMs < 1000 ? `${activity.durationMs} 毫秒` : `${(activity.durationMs / 1000).toFixed(1)} 秒`}</span>{/if}
-                              {#if activity.error}<p>{activity.error}</p>{/if}
-                            </div>
-                          </details>
-                        {:else}
-                          <span class="activity-label">{activity.label}</span>
-                        {/if}
-                      </li>
-                    {/each}
-                  </ol>
-                {/if}
-              </section>
-            {/if}
-
             {#if streamText}
-              <article class="message-row"><div class="message-avatar">l</div><div class="message-body"><span class="message-author">luneAgent</span><div class="message-text"><Markdown source={streamText} live /><span class="stream-caret"></span></div></div></article>
+              <article class="message-row"><div class="message-body"><div class="message-text"><Markdown source={streamText} live /><span class="stream-caret"></span></div></div></article>
             {/if}
 
             {#if approvals.length}
@@ -1132,7 +1354,7 @@
             <div class="attachment-strip">{#each attachments as attachment, index}<div class="attachment-chip"><img src={attachment.preview} alt={attachment.name} /><span>{attachment.name}</span><button aria-label="移除图片" onclick={() => attachments = attachments.filter((_, i) => i !== index)}>×</button></div>{/each}</div>
           {/if}
           <div class:composer-disabled={!models.configured} class="composer">
-            <textarea bind:value={composerText} onkeydown={handleComposerKey} placeholder={!models.configured ? '先配置模型以开始对话' : pending.length ? '请先处理上方的请求' : planReview ? '请先选择方案操作' : '给 luneAgent 发送消息…'} disabled={!canSend} rows="1" aria-label="消息输入"></textarea>
+            <textarea bind:value={composerText} onkeydown={handleComposerKey} placeholder={!models.configured ? '先配置模型以开始对话' : pending.length ? '请先处理上方的请求' : planReview ? '请先选择方案操作' : '发送消息…'} disabled={!canSend} rows="1" aria-label="消息输入"></textarea>
             <div class="composer-toolbar">
               <div class="composer-left">
                 <button class="composer-tool" title="添加图片" onclick={() => document.getElementById('image-picker')?.click()} disabled={!models.configured}><span>＋</span><span>添加图片</span></button>
@@ -1146,7 +1368,7 @@
                     {#each models.profiles as profile}<option value={profile.name}>{profile.name}</option>{/each}
                   </select>
                 {:else}<span class="model-label">未配置模型</span>{/if}
-                {#if running}<button class="stop-button" onclick={() => void interruptTask()} title="中断任务">■ 中断</button>{:else}<button class="send-button" onclick={() => void sendMessage()} disabled={!canSend || (!composerText.trim() && !attachments.length)} aria-label="发送"><span>↑</span></button>{/if}
+                {#if running}<button class="stop-button" onclick={() => void interruptTask()} disabled={interrupting} title="中断任务">{interrupting ? '正在中断…' : '■ 中断'}</button>{:else}<button class="send-button" onclick={() => void sendMessage()} disabled={!canSend || (!composerText.trim() && !attachments.length)} aria-label="发送"><span>↑</span></button>{/if}
               </div>
             </div>
           </div>

@@ -14,6 +14,30 @@ import * as core$0 from "../../../luneCore/models.js";
 // @ts-ignore: Unused imports
 import * as model$0 from "../../../luneCore/model/models.js";
 
+export interface ActivityCommandOutput {
+    "text": string;
+    "output"?: string;
+    "status"?: string;
+    "exitCode"?: number | null;
+    "truncated"?: boolean;
+    "error"?: string;
+}
+
+export interface ActivityDiffLine {
+    "kind": string;
+    "oldLine"?: number;
+    "newLine"?: number;
+    "text": string;
+}
+
+export interface ActivityFileChange {
+    "path": string;
+    "added": number;
+    "removed": number;
+    "lines"?: ActivityDiffLine[] | null;
+    "truncated"?: boolean;
+}
+
 export interface Bootstrap {
     "theme": string;
     "recentWorkspaces": settings$0.RecentWorkspace[] | null;
@@ -28,6 +52,19 @@ export interface ConversationMessage {
     "role": string;
     "text": string;
     "images"?: string[] | null;
+}
+
+/**
+ * ExecutionActivityView is the desktop-owned transcript of one Core execution.
+ * Tool arguments and details are deliberately kept out of Core's runtime log.
+ */
+export interface ExecutionActivityView {
+    "executionId": string;
+    "userMessageIndex": number;
+    "status": string;
+    "startedAt": string;
+    "finishedAt"?: string | null;
+    "tools": ToolActivityView[] | null;
 }
 
 export interface ImageInput {
@@ -141,6 +178,27 @@ export interface SessionView {
 export interface SubmitInput {
     "text": string;
     "images": ImageInput[] | null;
+    "userMessageIndex"?: number | null;
+}
+
+export interface ToolActivityView {
+    "id": string;
+    "invocationId": string;
+    "agentId"?: string;
+    "name": string;
+    "arguments"?: json$0.RawMessage;
+    "details"?: ToolExecutionDetailsView | null;
+    "status": string;
+    "durationMs"?: number;
+    "error"?: string;
+    "truncated"?: boolean;
+}
+
+export interface ToolExecutionDetailsView {
+    "output"?: string;
+    "command"?: ActivityCommandOutput | null;
+    "changes"?: ActivityFileChange[] | null;
+    "truncated"?: boolean;
 }
 
 export interface WorkspaceOpenResult {
@@ -160,4 +218,5 @@ export interface WorkspaceState {
     "models"?: ModelSettingsView | null;
     "runtimeState": core$0.RuntimeState;
     "pending": PendingRequestView[] | null;
+    "executionHistory": ExecutionActivityView[] | null;
 }

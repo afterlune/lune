@@ -7,8 +7,12 @@ export {
 };
 
 export type {
+    ActivityCommandOutput,
+    ActivityDiffLine,
+    ActivityFileChange,
     Bootstrap,
     ConversationMessage,
+    ExecutionActivityView,
     ImageInput,
     MigrationItem,
     MigrationPreview,
@@ -24,6 +28,8 @@ export type {
     SessionSummary,
     SessionView,
     SubmitInput,
+    ToolActivityView,
+    ToolExecutionDetailsView,
     WorkspaceOpenResult,
     WorkspaceState
 } from "./models.js";

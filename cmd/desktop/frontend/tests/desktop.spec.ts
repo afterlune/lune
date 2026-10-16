@@ -46,19 +46,58 @@ test('assistant Markdown renders GFM structures and escapes untrusted HTML', asy
   await expect(page).toHaveScreenshot('desktop-markdown.png', { fullPage: true });
 });
 
-test('execution status expands into a nested activity timeline', async ({ page }) => {
+test('execution activity blends into the conversation and expands full tool details', async ({ page }) => {
   await page.goto('/?preview=running');
-  await expect(page.getByRole('status')).toHaveText('正在读取 internal/desktop/service.go');
+  await expect(page.getByRole('status')).toHaveText('模型正在分析请求');
   await expect(page.getByText('我会先检查消息的乐观更新和会话刷新流程。')).toBeVisible();
-  await expect(page.locator('.activity-list')).toBeVisible();
+  await expect(page.locator('.activity-current')).toContainText('internal/desktop/service.go');
+  await expect(page.locator('.activity-list')).toHaveCount(0);
   await expect(page).toHaveScreenshot('desktop-running.png', { fullPage: true });
 
-  const toggle = page.getByRole('button', { name: /2 步骤/ });
+  const toggle = page.getByRole('button', { name: /1 步骤/ });
   await toggle.click();
-  await expect(page.locator('.activity-list')).toHaveCount(0);
-  await toggle.click();
+  await expect(page.locator('.activity-list')).toBeVisible();
   await page.locator('.activity-tool-details summary').click();
   await expect(page.locator('.activity-tool-extra')).toContainText('internal/desktop/service.go');
+  await expect(page.locator('.activity-tool-extra')).toContainText('func service()');
+});
+
+test('interrupted activity stays in the transcript and accepts a follow-up message', async ({ page }) => {
+  await page.goto('/?preview=interrupt');
+  await expect(page.getByRole('status')).toHaveText('模型正在分析请求');
+  await page.getByRole('button', { name: '■ 中断' }).click();
+  await expect(page.getByRole('status')).toHaveText('任务已中断');
+  await expect(page.locator('.activity-list')).toHaveCount(0);
+  await expect(page.getByText('我会先检查消息的乐观更新和会话刷新流程。')).toBeVisible();
+
+  const composer = page.getByRole('textbox', { name: '消息输入' });
+  await expect(composer).toBeEnabled();
+  await composer.fill('继续');
+  await page.getByRole('button', { name: '发送' }).click();
+  await expect(page.getByText('继续', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').last()).toHaveText('正在等待模型响应', { timeout: 5_000 });
+  await expect(page.getByText('任务已中断')).toBeVisible();
+});
+
+test('stored execution details render again when the session is reopened', async ({ page }) => {
+  await page.goto('/?preview=activity-history');
+  await expect(page.getByRole('status')).toHaveText('任务已中断');
+  await page.getByRole('button', { name: /1 步骤/ }).click();
+  await page.locator('.activity-tool-details summary').click();
+  await expect(page.locator('.activity-tool-extra')).toContainText('persistedDetails');
+  await page.reload();
+  await expect(page.getByRole('status')).toHaveText('任务已中断');
+  await page.getByRole('button', { name: /1 步骤/ }).click();
+  await page.locator('.activity-tool-details summary').click();
+  await expect(page.locator('.activity-tool-extra')).toContainText('persistedDetails');
+});
+
+test('conversation messages do not show speaker names or avatars', async ({ page }) => {
+  await page.goto('/?preview=empty');
+  await expect(page.locator('.message-author')).toHaveCount(0);
+  await expect(page.locator('.message-avatar')).toHaveCount(0);
+  await expect(page.locator('.conversation-intro')).not.toContainText('luneAgent');
+  await expect(page.getByRole('textbox', { name: '消息输入' })).toHaveAttribute('placeholder', '发送消息…');
 });
 
 test('user message stays visible through submit, task events and stale session snapshots', async ({ page }) => {
@@ -69,6 +108,7 @@ test('user message stays visible through submit, task events and stale session s
   await expect(page.getByText('即时显示的测试消息', { exact: true })).toBeVisible();
   await expect(page.getByRole('status')).toHaveText('正在提交请求');
   await expect(page.getByRole('status')).toHaveText('正在等待模型响应', { timeout: 5_000 });
+  await page.getByRole('button', { name: /1 步骤/ }).click();
   await expect(page.locator('.activity-tool-details summary')).toContainText('internal/desktop/service.go');
   await expect(page.getByText('已读取服务代码，正在整理结果。')).toBeVisible();
   await expect(page.getByText('检查结果')).toBeVisible();

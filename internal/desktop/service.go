@@ -34,6 +34,7 @@ type DesktopService struct {
 	appContext       context.Context
 	core             *core.Core
 	runtime          *core.SessionRuntime
+	activityStore    *ActivityStore
 	workspace        string
 	sessionID        string
 	eventCancel      context.CancelFunc
@@ -394,7 +395,8 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 	if _, err := os.Stat(helperPath); err != nil {
 		helperPath = ""
 	}
-	config := core.Config{Workspace: path, Logger: slog.Default(), SandboxHelperPath: helperPath, ModelConfig: modelConfig}
+	stateDir := filepath.Join(path, ".luneagent")
+	config := core.Config{Workspace: path, StateDir: stateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ModelConfig: modelConfig}
 	created, err := core.New(config)
 	if err != nil {
 		if errors.Is(err, core.ErrStateDirInUse) {
@@ -402,11 +404,16 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 		}
 		return fmt.Errorf("打开工作区失败: %w", err)
 	}
+	activityStore, err := OpenActivityStore(stateDir)
+	if err != nil {
+		return errors.Join(fmt.Errorf("打开桌面执行记录: %w", err), created.Close())
+	}
 	if err := s.store.TouchWorkspace(path); err != nil {
-		return errors.Join(fmt.Errorf("保存最近工作区: %w", err), created.Close())
+		return errors.Join(fmt.Errorf("保存最近工作区: %w", err), activityStore.Close(), created.Close())
 	}
 	s.mu.Lock()
 	s.core, s.workspace, s.runtime, s.sessionID = created, path, nil, ""
+	s.activityStore = activityStore
 	s.projectModelView = projectView
 	s.mu.Unlock()
 	return nil
@@ -483,10 +490,15 @@ func (s *DesktopService) closeWorkspaceLocked(interrupt bool) error {
 	if err := s.core.Close(); err != nil {
 		return fmt.Errorf("关闭工作区: %w", err)
 	}
+	var activityCloseErr error
+	if s.activityStore != nil {
+		activityCloseErr = s.activityStore.Close()
+	}
 	s.core, s.runtime, s.workspace, s.sessionID = nil, nil, "", ""
+	s.activityStore = nil
 	s.projectModelView = nil
 	s.planMode, s.previousMode = false, ""
-	return nil
+	return activityCloseErr
 }
 
 func samePath(left, right string) bool {
@@ -509,13 +521,14 @@ type SessionView struct {
 }
 
 type WorkspaceState struct {
-	Workspace  string               `json:"workspace"`
-	Session    SessionView          `json:"session"`
-	Sessions   []SessionSummary     `json:"sessions"`
-	Permission string               `json:"permissionMode"`
-	Models     *ModelSettingsView   `json:"models,omitempty"`
-	State      core.RuntimeState    `json:"runtimeState"`
-	Pending    []PendingRequestView `json:"pending"`
+	Workspace        string                  `json:"workspace"`
+	Session          SessionView             `json:"session"`
+	Sessions         []SessionSummary        `json:"sessions"`
+	Permission       string                  `json:"permissionMode"`
+	Models           *ModelSettingsView      `json:"models,omitempty"`
+	State            core.RuntimeState       `json:"runtimeState"`
+	Pending          []PendingRequestView    `json:"pending"`
+	ExecutionHistory []ExecutionActivityView `json:"executionHistory"`
 }
 
 type PendingRequestView struct {
@@ -579,11 +592,16 @@ func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
 	if err != nil {
 		return WorkspaceState{}, err
 	}
+	activityHistory, err := s.loadExecutionHistoryLocked(sessionID)
+	if err != nil {
+		return WorkspaceState{}, err
+	}
 	view := SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)}
 	s.watchTurnLocked(runtime, sessionID, state.Task.ExecutionID)
 	return WorkspaceState{
 		Workspace: s.workspace, Session: view, Sessions: list.Sessions,
 		Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state, Pending: pendingRequestViews(pending),
+		ExecutionHistory: activityHistory,
 	}, nil
 }
 
@@ -667,8 +685,9 @@ type ImageInput struct {
 }
 
 type SubmitInput struct {
-	Text   string       `json:"text"`
-	Images []ImageInput `json:"images"`
+	Text             string       `json:"text"`
+	Images           []ImageInput `json:"images"`
+	UserMessageIndex *int         `json:"userMessageIndex,omitempty"`
 }
 
 type contentPart struct {
@@ -738,8 +757,34 @@ func (s *DesktopService) Submit(input SubmitInput) (core.TurnSubmission, error) 
 	if err != nil {
 		return core.TurnSubmission{}, err
 	}
+	messageIndex := userMessageIndex(input.UserMessageIndex, s.core, s.sessionID)
+	if s.activityStore != nil {
+		if err := s.activityStore.UpsertExecution(context.Background(), s.sessionID, submission.ExecutionID, &messageIndex, "running"); err != nil {
+			slog.Warn("save desktop execution activity", "error", err)
+		}
+	}
 	s.watchTurnLocked(s.runtime, s.sessionID, submission.ExecutionID)
 	return submission, nil
+}
+
+func userMessageIndex(requested *int, agent *core.Core, sessionID string) int {
+	if requested != nil && *requested >= 0 {
+		return *requested
+	}
+	if agent == nil || sessionID == "" {
+		return -1
+	}
+	saved, err := agent.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return -1
+	}
+	index := 0
+	for _, message := range transcriptMessages(saved.History) {
+		if message.Role == "user" {
+			index++
+		}
+	}
+	return index
 }
 
 func supportedImageFormat(format string) bool {
@@ -753,15 +798,58 @@ func supportedImageFormat(format string) bool {
 
 func (s *DesktopService) Interrupt() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.runtime == nil {
+	runtime := s.runtime
+	s.mu.Unlock()
+	if runtime == nil {
 		return false
 	}
-	state, err := s.runtime.State(context.Background())
+	state, err := runtime.State(context.Background())
 	if err != nil {
 		return false
 	}
-	return s.runtime.Interrupt(state.Task.ExecutionID)
+	if state.Task.Status == core.TaskPaused {
+		discarded, err := runtime.DiscardPaused(context.Background())
+		if err == nil && discarded {
+			saveInterruptedActivity(s, runtime.SessionID(), state.Task.ExecutionID)
+		}
+		return err == nil && discarded
+	}
+	if state.Task.Status != core.TaskRunning && state.Task.Status != core.TaskQueued {
+		return false
+	}
+	executionID := state.Task.ExecutionID
+	if executionID == "" || !runtime.Interrupt(executionID) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	result, err := runtime.WaitTurn(ctx, executionID)
+	if err != nil {
+		return false
+	}
+	if result.Status == core.TaskPaused {
+		discarded, discardErr := runtime.DiscardPaused(ctx)
+		if discardErr != nil || !discarded {
+			return false
+		}
+		saveInterruptedActivity(s, runtime.SessionID(), executionID)
+	}
+	return true
+}
+
+func saveInterruptedActivity(service *DesktopService, sessionID, executionID string) {
+	if service == nil || sessionID == "" || executionID == "" {
+		return
+	}
+	service.mu.Lock()
+	store := service.activityStore
+	service.mu.Unlock()
+	if store == nil {
+		return
+	}
+	if err := store.UpsertExecution(context.Background(), sessionID, executionID, nil, "interrupted"); err != nil {
+		slog.Warn("save interrupted execution activity", "error", err)
+	}
 }
 
 func (s *DesktopService) ResolveApproval(id string, allowed bool) error {
@@ -926,12 +1014,23 @@ func (s *DesktopService) RefreshSession() (WorkspaceState, error) {
 	if err != nil {
 		return WorkspaceState{}, err
 	}
+	activityHistory, err := s.loadExecutionHistoryLocked(s.sessionID)
+	if err != nil {
+		return WorkspaceState{}, err
+	}
 	return WorkspaceState{
 		Workspace: s.workspace,
 		Session:   SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
 		Sessions:  list.Sessions, Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state,
-		Pending: pendingRequestViews(requests),
+		Pending: pendingRequestViews(requests), ExecutionHistory: activityHistory,
 	}, nil
+}
+
+func (s *DesktopService) loadExecutionHistoryLocked(sessionID string) ([]ExecutionActivityView, error) {
+	if s.activityStore == nil {
+		return []ExecutionActivityView{}, nil
+	}
+	return s.activityStore.ListSession(context.Background(), sessionID)
 }
 
 type AgentEvent struct {
@@ -947,12 +1046,17 @@ type AgentEvent struct {
 }
 
 type ToolEvent struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Failed    bool            `json:"failed"`
-	Canceled  bool            `json:"canceled"`
-	Duration  int64           `json:"durationMs"`
+	ID           string                    `json:"id"`
+	InvocationID string                    `json:"invocationId"`
+	AgentID      string                    `json:"agentId,omitempty"`
+	Name         string                    `json:"name"`
+	Arguments    json.RawMessage           `json:"arguments,omitempty"`
+	Details      *ToolExecutionDetailsView `json:"details,omitempty"`
+	Started      bool                      `json:"started"`
+	Failed       bool                      `json:"failed"`
+	Canceled     bool                      `json:"canceled"`
+	Duration     int64                     `json:"durationMs"`
+	Truncated    bool                      `json:"truncated,omitempty"`
 }
 
 type StreamEvent struct {
@@ -990,6 +1094,7 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 				if !ok {
 					return
 				}
+				s.persistActivityEvent(event)
 				s.emit("agent-event", toAgentEvent(event))
 				if pendingRequestChanged(event.Kind) {
 					s.emit("pending-changed", sessionID)
@@ -997,6 +1102,92 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 			}
 		}
 	}()
+}
+
+func (s *DesktopService) persistActivityEvent(event core.Event) {
+	s.mu.Lock()
+	store := s.activityStore
+	s.mu.Unlock()
+	if store == nil || event.SessionID == "" || event.ExecutionID == "" {
+		return
+	}
+	ctx := context.Background()
+	switch event.Kind {
+	case core.EventTaskStarted, core.EventTaskQueued:
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "running"); err != nil {
+			slog.Warn("save desktop execution activity", "error", err)
+		}
+	case core.EventTaskFinished:
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, activityStatus(string(event.Status))); err != nil {
+			slog.Warn("save desktop execution activity status", "error", err)
+		}
+	case core.EventTaskDiscarded:
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "interrupted"); err != nil {
+			slog.Warn("save interrupted execution activity", "error", err)
+		}
+	case core.EventToolDetails:
+		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "running"); err != nil {
+			slog.Warn("save desktop execution activity", "error", err)
+		}
+		tool := toolActivityView(event)
+		if err := store.UpsertTool(ctx, event.SessionID, event.ExecutionID, tool); err != nil {
+			slog.Warn("save desktop tool activity", "error", err)
+		}
+	}
+}
+
+func activityStatus(status string) string {
+	switch strings.ToLower(status) {
+	case "completed":
+		return "completed"
+	case "failed":
+		return "failed"
+	case "cancelled", "canceled":
+		return "cancelled"
+	case "discarded":
+		return "interrupted"
+	case "paused":
+		return "paused"
+	default:
+		return "running"
+	}
+}
+
+func toolActivityView(event core.Event) ToolActivityView {
+	tool := event.Tool
+	status := "done"
+	if tool.Started {
+		status = "running"
+	} else if tool.Failed {
+		status = "failed"
+	} else if tool.Canceled {
+		status = "cancelled"
+	}
+	view := ToolActivityView{
+		ID: tool.ID, InvocationID: tool.InvocationID, AgentID: tool.AgentID, Name: tool.Name,
+		Arguments: append(json.RawMessage(nil), tool.Arguments...), Status: status, DurationMs: tool.Duration.Milliseconds(),
+	}
+	if tool.Details != nil {
+		details := &ToolExecutionDetailsView{Output: tool.Details.Output}
+		if command := tool.Details.Command; command != nil {
+			details.Command = &ActivityCommandOutput{
+				Text: command.Command.Command, Output: command.Output, Status: string(command.Command.Status),
+				ExitCode: command.Command.ExitCode, Truncated: command.Truncated, Error: command.Error,
+			}
+		}
+		for _, change := range tool.Details.Changes {
+			converted := ActivityFileChange{Path: change.Path, Added: change.Added, Removed: change.Removed, Truncated: change.Truncated}
+			for _, line := range change.Lines {
+				converted.Lines = append(converted.Lines, ActivityDiffLine{Kind: line.Kind, OldLine: line.OldLine, NewLine: line.NewLine, Text: line.Text})
+			}
+			details.Changes = append(details.Changes, converted)
+		}
+		view.Details = details
+	}
+	if payload, err := boundedToolActivityPayload(view); err == nil {
+		_ = json.Unmarshal(payload, &view)
+	}
+	return view
 }
 
 func pendingRequestChanged(kind core.EventKind) bool {
@@ -1050,11 +1241,14 @@ func latestEventCursor(runtime *core.SessionRuntime) int64 {
 }
 
 func toAgentEvent(event core.Event) AgentEvent {
+	tool := toolActivityView(event)
 	result := AgentEvent{
 		Kind: string(event.Kind), SessionID: event.SessionID, TaskID: event.TaskID, ExecutionID: event.ExecutionID,
 		Status: string(event.Status), Err: event.Err, ApprovalID: event.ApprovalID,
-		Tool: ToolEvent{ID: event.Tool.ID, Name: event.Tool.Name, Arguments: event.Tool.Arguments,
-			Failed: event.Tool.Failed, Canceled: event.Tool.Canceled, Duration: event.Tool.Duration.Milliseconds()},
+		Tool: ToolEvent{ID: event.Tool.ID, InvocationID: event.Tool.InvocationID, AgentID: event.Tool.AgentID,
+			Name: event.Tool.Name, Arguments: tool.Arguments, Details: tool.Details,
+			Started: event.Tool.Started, Failed: event.Tool.Failed, Canceled: event.Tool.Canceled,
+			Duration: event.Tool.Duration.Milliseconds(), Truncated: tool.Truncated},
 	}
 	if event.Stream != nil {
 		result.Stream = &StreamEvent{Type: event.Stream.Type, Delta: event.Stream.Delta}
