@@ -1,110 +1,110 @@
 package tui
 
 import (
-	"fmt"
-	"image/color"
-
 	"charm.land/lipgloss/v2"
 )
 
-type themeColors struct {
-	Background string
-	Foreground string
-	Muted      string
-	Accent     string
-	Secondary  string
-	Success    string
-	Warning    string
-	Error      string
-	User       string
-	Assistant  string
-	Tool       string
-	Code       string
+// CodexTheme defines the color palette matching Codex TUI.
+type CodexTheme struct {
+	// Canvas background
+	Canvas string
+	// Primary text (black / dark charcoal in light mode)
+	TextPrimary string
+	// Secondary text (cool gray)
+	TextMuted string
+	// Accent / links / prompts (classic blue)
+	AccentBlue string
+	// Selected row background (sky blue)
+	SelectBg string
+	// Selected row text
+	SelectFg string
+	// Plan mode accent (purple/magenta)
+	PlanPurple string
+	// Card / Composer background
+	CardBg string
+	// Border / divider color
+	Border string
+	// Tool status colors
+	SuccessGreen string
+	FailureRed   string
+	WarningAmber string
+	ExploredGray string
 }
 
-func colorsFor(theme themeName) themeColors {
-	switch theme {
-	case themeLight:
-		return themeColors{
-			Background: codexLight.Canvas, Foreground: codexLight.Primary, Muted: codexLight.Muted,
-			Accent: codexLight.TaskSummary, Secondary: codexLight.Muted, Success: codexLight.Success,
-			Warning: codexLight.TaskSummary, Error: codexLight.Error, User: codexLight.Primary,
-			Assistant: codexLight.Primary, Tool: codexLight.Muted, Code: codexLight.CodeText,
-		}
-	default:
-		return themeColors{
-			Background: "#0b1117", Foreground: "#e7dfd3", Muted: "#948f88",
-			Accent: "#d29a5a", Secondary: "#b8793f", Success: "#9ab378",
-			Warning: "#e0ae60", Error: "#d17a6e", User: "#e2b987",
-			Assistant: "#e7dfd3", Tool: "#c7b39a", Code: "#d4ad7a",
-		}
-	}
+// LightTheme returns the exact Codex Light theme (matches Screenshots 1-12).
+var LightTheme = CodexTheme{
+	Canvas:       "#FFFFFF",
+	CardBg:       "#F6F8FA",
+	TextPrimary:  "#1F2328",
+	TextMuted:    "#656D76",
+	AccentBlue:   "#0969DA",
+	SelectBg:     "#A4CDFB",
+	SelectFg:     "#0550AE",
+	PlanPurple:   "#8250DF",
+	Border:       "#D0D7DE",
+	SuccessGreen: "#1A7F37",
+	FailureRed:   "#CF222E",
+	WarningAmber: "#9A6700",
+	ExploredGray: "#57606A",
 }
 
-func (m *tuiModel) resolvedTheme() themeName {
-	switch m.preferences.Theme {
-	case themeLight, themeDark:
-		return m.preferences.Theme
-	default:
-		if m.terminalBackground != nil {
-			if !colorIsDark(m.terminalBackground) {
-				return themeLight
-			}
-		} else if m.terminalForeground != nil && colorIsDark(m.terminalForeground) {
-			return themeLight
-		}
-		return themeDark
-	}
+// DarkTheme returns the dark equivalent for terminals with dark backgrounds.
+var DarkTheme = CodexTheme{
+	Canvas:       "#0D1117",
+	CardBg:       "#161B22",
+	TextPrimary:  "#E6EDF3",
+	TextMuted:    "#8B949E",
+	AccentBlue:   "#58A6FF",
+	SelectBg:     "#1F6FEB",
+	SelectFg:     "#FFFFFF",
+	PlanPurple:   "#BC8CFF",
+	Border:       "#30363D",
+	SuccessGreen: "#3FB950",
+	FailureRed:   "#F85149",
+	WarningAmber: "#D29922",
+	ExploredGray: "#8B949E",
 }
 
-func (m *tuiModel) themeColors() themeColors {
-	colors := colorsFor(m.resolvedTheme())
-	if m.preferences.Theme == themeAuto {
-		if m.terminalBackground != nil {
-			colors.Background = colorHex(m.terminalBackground)
-		}
-		if m.terminalForeground != nil {
-			colors.Foreground = colorHex(m.terminalForeground)
-			colors.Assistant = colors.Foreground
-		}
-	}
-	return colors
+// Active theme default (Codex light by default).
+var currentTheme = LightTheme
+
+func activeTheme() CodexTheme {
+	return currentTheme
 }
 
-func (m *tuiModel) lightLayout() bool {
-	return m.resolvedTheme() == themeLight
+func styleTextPrimary() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary))
 }
 
-func (m *tuiModel) composerPlaceholder() string {
-	if m.lightLayout() {
-		return lightInputPlaceholder
-	}
-	return defaultInputPlaceholder
+func styleTextMuted() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted))
 }
 
-func (m *tuiModel) applyResolvedTheme() {
-	applyTextareaTheme(&m.input, m.resolvedTheme())
-	m.applyMCPInteractionTheme(m.resolvedTheme())
-	m.updateLayout()
-	m.refreshPanels()
+func styleAccentBlue() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue))
 }
 
-func colorIsDark(value color.Color) bool {
-	if value == nil {
-		return true
-	}
-	r, g, b, _ := value.RGBA()
-	return (0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)) < 0x8000
+func stylePlanPurple() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().PlanPurple))
 }
 
-func colorHex(value color.Color) string {
-	if value == nil {
-		return ""
-	}
-	r, g, b, _ := value.RGBA()
-	return fmt.Sprintf("#%02x%02x%02x", r>>8, g>>8, b>>8)
+func styleSuccess() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().SuccessGreen))
 }
 
-func (m *tuiModel) styled(color string) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+func styleFailure() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed))
+}
+
+func styleSelectedRow() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(activeTheme().SelectBg)).
+		Foreground(lipgloss.Color(activeTheme().SelectFg)).
+		Bold(true)
+}
+
+func styleCard() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(activeTheme().CardBg)).
+		Foreground(lipgloss.Color(activeTheme().TextPrimary))
 }

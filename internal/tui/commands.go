@@ -1,192 +1,204 @@
 package tui
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
-
 	core "github.com/afterlune/luneCore"
 )
 
-type tuiCommandSpec struct {
-	name        string
-	usage       string
-	description string
+var builtinCommands = []AutocompleteItem{
+	{Command: "/new", Description: "start a new chat during a conversation"},
+	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
+	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
+	{Command: "/model", Description: "choose an active model profile"},
+	{Command: "/compact", Description: "compact older conversation history"},
+	{Command: "/fork", Description: "fork the current chat"},
+	{Command: "/rewind", Description: "rewind the conversation to a previous turn"},
+	{Command: "/status", Description: "show session, model and token status"},
+	{Command: "/resume", Description: "resume the paused task in this session"},
+	{Command: "/discard", Description: "discard the paused task in this session"},
+	{Command: "/help", Description: "list all available slash commands"},
+	{Command: "/exit", Description: "exit the chat session"},
 }
 
-var tuiCommands = []tuiCommandSpec{
-	{name: "/autocompact", usage: "/autocompact [on|off|threshold|reset]", description: "Configure automatic context compaction for future tasks."},
-	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
-	{name: "/copyselect", usage: "/copyselect [auto|always|never]", description: "Configure automatic transcript selection copying."},
-	{name: "/context", usage: "/context [window <tokens>|reserve <tokens>|reset]", description: "View or set session context values."},
-	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
-	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
-	{name: "/effort", usage: "/effort [value]", description: "Choose reasoning effort."},
-	{name: "/exit", usage: "/exit", description: "Exit the chat."},
-	{name: "/details", usage: "/details [n]", description: "Show a user message in the session transcript."},
-	{name: "/fork", usage: "/fork", description: "Start a new session from completed history."},
-	{name: "/goal", usage: "/goal [text|clear]", description: "Show, set, or clear the goal for future tasks."},
-	{name: "/help", usage: "/help", description: "Show available commands."},
-	{name: "/keymap", usage: "/keymap [reset]", description: "Edit key bindings or restore defaults."},
-	{name: "/model", usage: "/model [profile]", description: "Choose a model profile."},
-	{name: "/mcp", usage: "/mcp <list|enable|disable|auth> [name]", description: "Manage configured Model Context Protocol servers."},
-	{name: "/new", usage: "/new", description: "Start a new session."},
-	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set the permission mode."},
-	{name: "/plan", usage: "/plan", description: "Lock permissions to read-only plan mode or review a plan."},
-	{name: "/queue", usage: "/queue", description: "Review or cancel turns in the Core queue."},
-	{name: "/resume", usage: "/resume", description: "Choose a session to resume."},
-	{name: "/rewind", usage: "/rewind <n>", description: "Remove the latest n user turns."},
-	{name: "/theme", usage: "/theme [auto|dark|light]", description: "Follow terminal colors or choose a fixed theme."},
-	{name: "/usage", usage: "/usage", description: "Show token usage, cache hits, and activity."},
-	{name: "/vim", usage: "/vim", description: "Toggle Vim input mode."},
-}
-
-func tuiCommandNames() []string {
-	names := make([]string, 0, len(tuiCommands))
-	for _, command := range tuiCommands {
-		names = append(names, command.name)
+func filterCommands(prefix string) []AutocompleteItem {
+	prefix = strings.ToLower(prefix)
+	var matches []AutocompleteItem
+	for _, item := range builtinCommands {
+		if strings.HasPrefix(strings.ToLower(item.Command), prefix) {
+			matches = append(matches, item)
+		}
 	}
-	return names
+	return matches
 }
 
-func tuiHelpText() string {
-	lines := []string{"Available commands:"}
-	for _, command := range tuiCommands {
-		lines = append(lines, fmt.Sprintf("  %-23s %s", command.usage, command.description))
+// handleSlashCommand executes slash commands entered by the user.
+func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(raw)
+	if len(parts) == 0 {
+		return m, nil
 	}
-	lines = append(lines,
-		"Use /keymap to view or change keyboard shortcuts.",
-		"Press ? with an empty composer to open the shortcut overlay.",
-	)
+	cmdName := strings.ToLower(parts[0])
+
+	switch cmdName {
+	case "/exit", "/quit":
+		return m, tea.Quit
+
+	case "/help":
+		var lines []string
+		lines = append(lines, "**Available slash commands:**")
+		for _, item := range builtinCommands {
+			lines = append(lines, fmt.Sprintf("- `%s`: %s", item.Command, item.Description))
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	case "/new":
+		return m, m.startNewSession()
+
+	case "/plan":
+		m.planMode = !m.planMode
+		if m.planMode {
+			m.savedMode = m.permissionMode
+			_ = m.client.SetPermissionMode(core.PermissionReadOnly)
+			m.permissionMode = core.PermissionReadOnly
+			m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
+		} else {
+			_ = m.client.SetPermissionMode(m.savedMode)
+			m.permissionMode = m.savedMode
+			m.addSystemEntry("Exited **Plan mode** (permissions restored).")
+		}
+		m.updateLayout()
+		return m, nil
+
+	case "/permissions":
+		if len(parts) > 1 {
+			mode := core.PermissionMode(strings.ToLower(parts[1]))
+			switch mode {
+			case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
+				if m.planMode {
+					m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
+				} else {
+					if err := m.client.SetPermissionMode(mode); err != nil {
+						m.addSystemEntry("Failed to set permission mode: " + err.Error())
+					} else {
+						m.permissionMode = mode
+						m.addSystemEntry(fmt.Sprintf("Permission mode set to `%s`.", mode))
+					}
+				}
+			default:
+				m.addSystemEntry("Unknown permission mode. Choose: `read-only`, `workspace`, `ask`, `full-access`.")
+			}
+		} else {
+			m.addSystemEntry(fmt.Sprintf("Current permission mode: `%s` (Plan mode: %v)", m.permissionMode, m.planMode))
+		}
+		return m, nil
+
+	case "/status":
+		statusText := m.renderStatusTable()
+		m.addSystemEntry(statusText)
+		return m, nil
+
+	case "/compact":
+		return m, func() tea.Msg {
+			n, err := m.client.Compact(context.Background(), m.sessionID)
+			return compactDoneMsg{trimmed: n, err: err}
+		}
+
+	case "/fork":
+		return m, func() tea.Msg {
+			session, err := m.client.ForkSession(context.Background(), m.sessionID)
+			return sessionForkedMsg{session: session, err: err}
+		}
+
+	case "/resume":
+		if m.runtime != nil {
+			m.running = true
+			m.taskStartedAt = time.Now()
+			m.updateLayout()
+			sessionID := m.sessionID
+			return m, func() tea.Msg {
+				sub, err := m.runtime.Recover(context.Background())
+				return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+			}
+		}
+
+	case "/discard":
+		if m.runtime != nil {
+			return m, func() tea.Msg {
+				ok, err := m.runtime.DiscardPaused(context.Background())
+				return taskDiscardedMsg{discarded: ok, err: err}
+			}
+		}
+	}
+
+	m.addSystemEntry(fmt.Sprintf("Unknown command: `%s`. Type `/help` for options.", raw))
+	return m, nil
+}
+
+// renderStatusTable renders a status table matching Screenshot 12.
+func (m *tuiModel) renderStatusTable() string {
+	modelName := m.currentModel
+	if modelName == "" {
+		modelName = "GPT-6-Luna (reasoning max, summaries auto)"
+	}
+	permStr := string(m.permissionMode)
+	if m.planMode {
+		permStr += " (Plan mode locked)"
+	}
+	title := m.sessionTitle
+	if title == "" {
+		title = "<none>"
+	}
+
+	lines := []string{
+		fmt.Sprintf("Model:          %s", modelName),
+		fmt.Sprintf("Directory:      %s", m.workspace),
+		fmt.Sprintf("Permissions:    %s", permStr),
+		fmt.Sprintf("Thread name:    %s", title),
+		fmt.Sprintf("Session:        %s", m.sessionID),
+	}
 	return strings.Join(lines, "\n")
 }
 
-func (m *tuiModel) enqueueInput() (tea.Model, tea.Cmd) {
-	raw := m.input.Value()
-	line := strings.TrimSpace(raw)
-	if line == "" && len(m.attachments) == 0 {
-		m.status = "Type a message before queueing it."
-		return m, nil
-	}
-	if strings.HasPrefix(line, "/") {
-		m.status = "Commands cannot be queued while a task is running."
-		return m, nil
-	}
-	input, err := draftTaskInput(raw, m.attachments)
-	if err != nil {
-		m.addEntry("error", err.Error(), true)
-		return m, nil
-	}
-	display := inputTranscriptText(input, raw)
-	m.setTaskTitle(display)
-	m.addEntry("you", display, false)
-	m.status = "Queueing this turn in Core…"
-	m.resetInput()
-	return m.submitTurn(input, core.QueueInput, false)
+func (m *tuiModel) addSystemEntry(text string) {
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:        fmt.Sprintf("sys-%d", time.Now().UnixNano()),
+		Kind:      KindSystem,
+		Text:      text,
+		Timestamp: time.Now(),
+	})
+	m.refreshViewportContent()
 }
 
-func (m *tuiModel) openQueuePicker() (tea.Model, tea.Cmd) {
-	if err := m.refreshRuntimeProjection(); err != nil {
-		m.status = "Could not load the Core queue."
-		m.addEntry("error", err.Error(), true)
-		return m, nil
+func (m *tuiModel) startNewSession() tea.Cmd {
+	return func() tea.Msg {
+		session, err := m.client.CreateSession(context.Background(), json.RawMessage("null"))
+		return sessionCreatedMsg{session: session, err: err}
 	}
-	if len(m.queued) == 0 {
-		m.status = "No queued messages."
-		m.resetInput()
-		return m, nil
-	}
-	m.queuePicker = true
-	m.queueIndex = min(m.queueIndex, len(m.queued)-1)
-	m.status = "Core queue · " + m.keyLabel("picker_previous") + "/" + m.keyLabel("picker_next") + " select · " + m.keyLabel("send") + " details · " + m.keyLabel("queue_remove") + " cancel."
-	m.resetInput()
-	return m, nil
 }
 
-func (m *tuiModel) editQueuedInput() (tea.Model, tea.Cmd) {
-	if m.queueIndex < 0 || m.queueIndex >= len(m.queued) {
-		m.queuePicker = false
-		return m, nil
-	}
-	queued := m.queued[m.queueIndex]
-	m.addEntry("notice", fmt.Sprintf("Queued turn %d · %s · execution %s", queued.Position, queued.Status, queued.ExecutionID), false)
-	m.status = "Queued input is managed by Core and cannot be edited here."
-	return m, nil
+type compactDoneMsg struct {
+	trimmed int
+	err     error
 }
 
-func (m *tuiModel) deleteQueuedInput() {
-	if m.queueIndex < 0 || m.queueIndex >= len(m.queued) {
-		return
-	}
-	queued := m.queued[m.queueIndex]
-	if m.runtime == nil || !m.runtime.Interrupt(queued.ExecutionID) {
-		m.status = "Core could not cancel this queued turn."
-		return
-	}
-	if err := m.refreshRuntimeProjection(); err != nil {
-		m.status = "Turn cancellation was requested, but the queue could not be refreshed."
-		return
-	}
-	if len(m.queued) == 0 {
-		m.queuePicker = false
-		m.status = "Queued turn cancelled."
-	} else {
-		m.queueIndex = min(m.queueIndex, len(m.queued)-1)
-		m.status = fmt.Sprintf("Queued turn cancelled · %d remain.", len(m.queued))
-	}
-	m.refreshPanels()
+type sessionForkedMsg struct {
+	session core.Session
+	err     error
 }
 
-func (m *tuiModel) clearQueue() {
-	m.queued = nil
-	m.queuePicker = false
-	m.queueIndex = 0
-	m.refreshPanels()
+type sessionCreatedMsg struct {
+	session core.Session
+	err     error
 }
 
-func (m *tuiModel) toggleVimMode() (tea.Model, tea.Cmd) {
-	m.vimMode = !m.vimMode
-	m.vimNormal = false
-	m.vimPendingDelete = false
-	if m.vimMode {
-		m.status = "Vim mode · insert (Esc normal, " + m.keyLabel("vim_insert") + " insert, " + m.keyLabel("vim_left") + "/" + m.keyLabel("vim_down") + "/" + m.keyLabel("vim_up") + "/" + m.keyLabel("vim_right") + " move)."
-	} else {
-		m.status = "Vim mode disabled."
-	}
-	m.resetInput()
-	return m, nil
-}
-
-func (m *tuiModel) resetInput() {
-	m.input.Reset()
-	m.attachments = nil
-	m.nextAttachmentID = 1
-	m.undoStack = nil
-	m.redoStack = nil
-	m.updateCommandSuggestions()
-	m.updateLayout()
-}
-
-func (m *tuiModel) updateCommandSuggestions() {
-	m.commandSuggestions = nil
-	m.suggestionIndex = 0
-	raw := m.input.Value()
-	if strings.ContainsAny(raw, "\r\n") {
-		return
-	}
-	line := strings.TrimSpace(raw)
-	if !strings.HasPrefix(line, "/") {
-		return
-	}
-	for _, command := range tuiCommands {
-		// Typing "/h" offers /help for completion; the renderer scrolls the
-		// full bare-slash list inside a bounded number of rows.
-		if line == "/" && command.name == "/help" {
-			continue
-		}
-		if strings.HasPrefix(command.name, line) {
-			m.commandSuggestions = append(m.commandSuggestions, command.name)
-		}
-	}
+type taskDiscardedMsg struct {
+	discarded bool
+	err       error
 }
