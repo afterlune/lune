@@ -50,6 +50,18 @@ VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 ManifestDPIAware true
 
 !include "MUI.nsh"
+!include "LogicLib.nsh"
+!include "nsDialogs.nsh"
+
+Var UninstallDeleteSettings
+Var UninstallDeleteSettingsCheckbox
+
+!ifndef LUNE_SETTINGS_DIRECTORY
+    !define LUNE_SETTINGS_DIRECTORY "$APPDATA\luneAgent"
+!endif
+!ifndef LUNE_WEBVIEW_DATA_DIRECTORY
+    !define LUNE_WEBVIEW_DATA_DIRECTORY "$APPDATA\${PRODUCT_EXECUTABLE}"
+!endif
 
 !define MUI_ICON "..\icon.ico"
 !define MUI_UNICON "..\icon.ico"
@@ -63,6 +75,8 @@ ManifestDPIAware true
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
 !insertmacro MUI_PAGE_FINISH # Finished installation page.
 
+!insertmacro MUI_UNPAGE_CONFIRM # Confirm removal before showing the data option.
+UninstPage custom un.SettingsOptionsPage un.SettingsOptionsPageLeave
 !insertmacro MUI_UNPAGE_INSTFILES # Uninstalling page
 
 !insertmacro MUI_LANGUAGE "English" # Set the Language of the installer
@@ -72,7 +86,10 @@ ManifestDPIAware true
 #!finalize 'signtool --file "%1"'
 
 Name "${INFO_PRODUCTNAME}"
-OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
+!ifndef LUNE_INSTALLER_OUTFILE
+    !define LUNE_INSTALLER_OUTFILE "..\..\..\..\..\bin\${INFO_PROJECTNAME}-${INFO_PRODUCTVERSION}-windows-${ARCH}-${WAILS_INSTALL_SCOPE}-setup.exe"
+!endif
+OutFile "${LUNE_INSTALLER_OUTFILE}"
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else
@@ -84,10 +101,65 @@ Function .onInit
    !insertmacro wails.checkArchitecture
 FunctionEnd
 
+Function un.onInit
+    StrCpy $UninstallDeleteSettings 0
+FunctionEnd
+
+Function EnsureWebView2Runtime
+    SetRegView 64
+    ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${If} $0 == ""
+        ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${EndIf}
+
+    ${If} $0 == ""
+        DetailPrint "Installing Microsoft Edge WebView2 Runtime..."
+        InitPluginsDir
+        CreateDirectory "$PLUGINSDIR\webview2bootstrapper"
+        SetOutPath "$PLUGINSDIR\webview2bootstrapper"
+        File "MicrosoftEdgeWebview2Setup.exe"
+        ExecWait '"$PLUGINSDIR\webview2bootstrapper\MicrosoftEdgeWebview2Setup.exe" /silent /install' $1
+
+        ${If} $1 == 3010
+            MessageBox MB_ICONEXCLAMATION|MB_OK "WebView2 Runtime installation requires a Windows restart. Restart Windows before launching luneAgent."
+        ${ElseIf} $1 != 0
+            MessageBox MB_ICONSTOP|MB_OK "WebView2 Runtime could not be installed (exit code $1). Check your internet connection, install Microsoft Edge WebView2 Runtime, then run this installer again."
+            Abort
+        ${EndIf}
+
+        ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+        ${If} $0 == ""
+            ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+        ${EndIf}
+        ${If} $0 == ""
+            MessageBox MB_ICONSTOP|MB_OK "The WebView2 Runtime was not detected after setup. Install Microsoft Edge WebView2 Runtime, then run this installer again."
+            Abort
+        ${EndIf}
+    ${EndIf}
+FunctionEnd
+
+Function un.SettingsOptionsPage
+    nsDialogs::Create 1018
+    Pop $0
+    ${If} $0 == error
+        Abort
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 0 100% 28u "Settings are stored separately from the application. Close luneAgent before uninstalling. Workspace folders and files are never removed."
+    Pop $0
+    ${NSD_CreateCheckbox} 0 40u 100% 18u "Also delete this Windows user's luneAgent settings and API keys"
+    Pop $UninstallDeleteSettingsCheckbox
+    ${NSD_SetState} $UninstallDeleteSettingsCheckbox ${BST_UNCHECKED}
+    nsDialogs::Show
+FunctionEnd
+
+Function un.SettingsOptionsPageLeave
+    ${NSD_GetState} $UninstallDeleteSettingsCheckbox $UninstallDeleteSettings
+FunctionEnd
+
 Section
     !insertmacro wails.setShellContext
-
-    !insertmacro wails.webview2runtime
+    Call EnsureWebView2Runtime
 
     SetOutPath $INSTDIR
     
@@ -105,7 +177,15 @@ SectionEnd
 Section "uninstall" 
     !insertmacro wails.setShellContext
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    RMDir /r "${LUNE_WEBVIEW_DATA_DIRECTORY}" # Remove the WebView2 DataPath
+
+    ${If} $UninstallDeleteSettings == 1
+        Delete "${LUNE_SETTINGS_DIRECTORY}\settings.db"
+        Delete "${LUNE_SETTINGS_DIRECTORY}\settings.db-wal"
+        Delete "${LUNE_SETTINGS_DIRECTORY}\settings.db-shm"
+        Delete "${LUNE_SETTINGS_DIRECTORY}\settings.db-journal"
+        RMDir "${LUNE_SETTINGS_DIRECTORY}"
+    ${EndIf}
 
     RMDir /r $INSTDIR
 

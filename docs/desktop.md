@@ -4,7 +4,7 @@
 
 ## 构建和运行
 
-安装 Go 1.26.9、Node.js 和 WebView2 Runtime，然后安装仓库固定的 Wails CLI：
+安装 Go 1.26.9、Node.js 和仓库固定的 Wails CLI：
 
 ```powershell
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.30
@@ -12,7 +12,26 @@ go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.30
 ./scripts/build-desktop.ps1
 ```
 
-桌面二进制输出到 `bin/lune-desktop.exe`。如果 Windows 没有 WebView2 Runtime，启动错误窗口会提供安装说明。
+桌面二进制输出到 `bin/lune-desktop.exe`。运行桌面程序需要 WebView2 Runtime；如果缺少运行时，启动错误窗口会提供安装说明。
+
+### Windows Beta 安装包
+
+安装 NSIS 3.x 并确保 `makensis` 在 `PATH` 中，然后运行：
+
+```powershell
+./scripts/package-desktop.ps1
+```
+
+脚本生成两个 Windows x64 安装包：
+
+- `bin/luneAgent-0.1.0-windows-amd64-user-setup.exe`：当前用户安装，无需管理员权限。
+- `bin/luneAgent-0.1.0-windows-amd64-machine-setup.exe`：所有用户安装，需要管理员权限。
+
+如果目标电脑缺少 WebView2 Runtime，安装器会运行 Microsoft Evergreen Bootstrapper，因此需要联网。运行时安装失败会中止桌面端安装并显示错误提示。
+
+卸载默认保留 `%APPDATA%\luneAgent\settings.db` 中的模型设置和加密 API 密钥。卸载器提供可选复选框，勾选后清除当前运行卸载器账户的设置；该选项不会删除工作区文件或其他 Windows 用户的数据。卸载前先退出 luneAgent。
+
+Beta 安装包尚未签名，Windows 可能显示 SmartScreen 提示。安装器和桌面端只包含 GUI 程序；现有 `bin/lune.exe` TUI/CLI 仍单独构建。
 
 ## 首次设置
 
