@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 	publictool "github.com/afterlune/luneCore/tool"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTranscriptSearchExpandsToolRowsAndPreservesComposerDraft(t *testing.T) {
@@ -175,5 +176,84 @@ func TestTranscriptKeepsReadOffsetAndCountsUnreadEntries(t *testing.T) {
 	ui.refreshPanels()
 	if ui.unreadEntries != 0 {
 		t.Fatalf("following latest should clear unread count, got %d", ui.unreadEntries)
+	}
+}
+
+func TestTranscriptWrappingKeepsInlineCodeWordsAndAllCharacters(t *testing.T) {
+	token := "internal/cli/paused_test.go"
+	text := "Read " + token + " now"
+	start := strings.Index(text, token)
+	lines := wrapTextSegments(text, 30, [][2]int{{start, start + len(token)}})
+
+	var reconstructed strings.Builder
+	codeLines := 0
+	for _, line := range lines {
+		reconstructed.WriteString(line.text)
+		if strings.Contains(line.text, token) {
+			codeLines++
+		}
+	}
+	if got := reconstructed.String(); got != text {
+		t.Fatalf("wrapped source lost or reordered bytes: got %q want %q", got, text)
+	}
+	if codeLines != 1 {
+		t.Fatalf("fitting code token occupied %d rows: %#v", codeLines, lines)
+	}
+
+	longToken := "D:/Git/very-long-folder/core_cli.go"
+	longText := "Read " + longToken + " now"
+	longStart := strings.Index(longText, longToken)
+	longLines := wrapTextSegments(longText, 9, [][2]int{{longStart, longStart + len(longToken)}})
+	reconstructed.Reset()
+	for _, line := range longLines {
+		reconstructed.WriteString(line.text)
+	}
+	if got := reconstructed.String(); got != longText {
+		t.Fatalf("long token split lost characters: got %q want %q; lines=%#v", got, longText, longLines)
+	}
+}
+
+func TestTranscriptWrappingPreservesUnicodeGraphemesAroundCode(t *testing.T) {
+	text := "前缀 👩‍💻 `core_cli.go` 后缀"
+	plain := plainConversationText(text)
+	token := "core_cli.go"
+	start := strings.Index(plain, token)
+	lines := wrapTextSegments(plain, 8, [][2]int{{start, start + len(token)}})
+	var reconstructed strings.Builder
+	for _, line := range lines {
+		reconstructed.WriteString(line.text)
+	}
+	if got := reconstructed.String(); got != plain {
+		t.Fatalf("Unicode wrap lost or reordered text: got %q want %q", got, plain)
+	}
+}
+
+func TestLightTranscriptViewportUsesTheStyledWrapRows(t *testing.T) {
+	ui := newTUIModel(nil, false)
+	ui.preferences.Theme = themeLight
+	ui.applyResolvedTheme()
+	ui.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
+	ui.entries = []tuiEntry{{role: "assistant", text: "Use `internal/cli/paused_test.go` and `internal/cli/core_cli.go`."}}
+	ui.refreshPanels()
+	if ui.chat.SoftWrap {
+		t.Fatal("light transcript should use its precomputed visual rows")
+	}
+
+	source, _ := ui.transcriptContent()
+	visual := wrapTextSegments(source, ui.chat.Width(), ui.inlineCodeRanges(source))
+	actual := strings.Split(ui.chat.GetContent(), "\n")
+	if len(actual) != len(visual) {
+		t.Fatalf("viewport rows=%d, styled rows=%d", len(actual), len(visual))
+	}
+	for index, line := range visual {
+		if actual[index] != line.text {
+			t.Fatalf("viewport row %d=%q, styled row=%q", index, actual[index], line.text)
+		}
+	}
+	styled := ansi.Strip(ui.styleLightTranscript(ui.chat.View()))
+	for _, token := range []string{"internal/cli/paused_test.go", "internal/cli/core_cli.go"} {
+		if !strings.Contains(styled, token) {
+			t.Fatalf("styled transcript lost inline code token %q: %q", token, styled)
+		}
 	}
 }

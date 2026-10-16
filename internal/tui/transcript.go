@@ -320,6 +320,16 @@ func (m *tuiModel) reflowAfterChatScroll(atBottom bool) {
 
 func (m *tuiModel) applyTranscriptHighlights() {
 	m.chat.ClearHighlights()
+	if m.lightLayout() {
+		ranges := m.searchMatches
+		if m.transcriptSelection.active && m.transcriptSelection.start < m.transcriptSelection.end {
+			ranges = [][]int{{m.transcriptSelection.start, m.transcriptSelection.end}}
+		}
+		if mapped := m.lightViewportHighlights(ranges); len(mapped) > 0 {
+			m.chat.SetHighlights(mapped)
+		}
+		return
+	}
 	selection := m.transcriptSelection
 	if selection.active && selection.start < selection.end {
 		m.chat.SetHighlights([][]int{{selection.start, selection.end}})
@@ -328,6 +338,25 @@ func (m *tuiModel) applyTranscriptHighlights() {
 	if len(m.searchMatches) > 0 {
 		m.chat.SetHighlights(m.searchMatches)
 	}
+}
+
+func (m *tuiModel) lightViewportHighlights(sourceRanges [][]int) [][]int {
+	var mapped [][]int
+	viewportOffset := 0
+	for _, line := range m.lightVisualLines {
+		for _, sourceRange := range sourceRanges {
+			if len(sourceRange) < 2 {
+				continue
+			}
+			start := max(sourceRange[0], line.start)
+			end := min(sourceRange[1], line.end)
+			if start < end {
+				mapped = append(mapped, []int{viewportOffset + start - line.start, viewportOffset + end - line.start})
+			}
+		}
+		viewportOffset += len(line.text) + 1
+	}
+	return mapped
 }
 
 func findTranscriptMatches(content, query string) [][]int {
@@ -368,10 +397,7 @@ func cloneExpansionState(source map[string]bool) map[string]bool {
 func (m *tuiModel) updateTranscriptSearch() {
 	content, _ := m.transcriptContent()
 	m.searchMatches = findTranscriptMatches(content, m.searchQuery)
-	m.chat.ClearHighlights()
-	if len(m.searchMatches) > 0 {
-		m.chat.SetHighlights(m.searchMatches)
-	}
+	m.applyTranscriptHighlights()
 }
 
 func (m *tuiModel) handleTranscriptSearchKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -438,6 +464,9 @@ func (m *tuiModel) transcriptPointAt(x, y int) (int, int, bool) {
 	}
 	content, _ := m.transcriptContent()
 	lines := wrapTranscriptContent(content, m.chat.Width())
+	if m.lightLayout() {
+		lines = wrapTextSegments(content, m.chat.Width(), m.inlineCodeRanges(content))
+	}
 	lineIndex := m.chat.YOffset() + y
 	if lineIndex < 0 || lineIndex >= len(lines) {
 		return 0, 0, false
@@ -471,6 +500,10 @@ func firstGraphemeBytes(value string) int {
 }
 
 func wrapTranscriptContent(content string, width int) []transcriptVisualLine {
+	return wrapTextSegments(content, width, nil)
+}
+
+func wrapTextSegments(content string, width int, atomicRanges [][2]int) []transcriptVisualLine {
 	width = max(1, width)
 	var lines []transcriptVisualLine
 	for lineStart := 0; lineStart <= len(content); {
@@ -484,28 +517,75 @@ func wrapTranscriptContent(content string, width int) []transcriptVisualLine {
 		if logicalLine == "" {
 			lines = append(lines, transcriptVisualLine{start: lineStart, end: lineEnd})
 		} else {
-			graphemes := uniseg.NewGraphemes(logicalLine)
-			segmentStart, segmentEnd, columns := 0, 0, 0
-			for graphemes.Next() {
-				start, end := graphemes.Positions()
-				clusterWidth := max(1, graphemes.Width())
-				if columns > 0 && columns+clusterWidth > width {
-					lines = append(lines, transcriptVisualLine{
-						text: logicalLine[segmentStart:segmentEnd], start: lineStart + segmentStart, end: lineStart + segmentEnd,
-					})
-					segmentStart, columns = start, 0
+			var localRanges [][2]int
+			for _, current := range atomicRanges {
+				if current[0] >= lineStart && current[1] <= lineEnd && current[0] < current[1] {
+					localRanges = append(localRanges, [2]int{current[0] - lineStart, current[1] - lineStart})
 				}
-				segmentEnd = end
-				columns += clusterWidth
 			}
-			lines = append(lines, transcriptVisualLine{
-				text: logicalLine[segmentStart:segmentEnd], start: lineStart + segmentStart, end: lineStart + segmentEnd,
-			})
+			lines = append(lines, wrapParagraph(logicalLine, lineStart, width, localRanges)...)
 		}
 		if lineEnd == len(content) {
 			break
 		}
 		lineStart = lineEnd + 1
+	}
+	return lines
+}
+
+type textWrapUnit struct {
+	start int
+	end   int
+	width int
+}
+
+func wrapParagraph(text string, sourceStart, width int, atomicRanges [][2]int) []transcriptVisualLine {
+	var units []textWrapUnit
+	graphemes := uniseg.NewGraphemes(text)
+	for graphemes.Next() {
+		start, end := graphemes.Positions()
+		units = append(units, textWrapUnit{start: start, end: end, width: max(1, graphemes.Width())})
+	}
+	atomicByStart := make(map[int]int, len(atomicRanges))
+	for _, current := range atomicRanges {
+		atomicByStart[current[0]] = current[1]
+	}
+	var lines []transcriptVisualLine
+	segmentStart, columns := 0, 0
+	appendSegment := func(startUnit, endUnit int) {
+		if startUnit >= endUnit {
+			return
+		}
+		start, end := units[startUnit].start, units[endUnit-1].end
+		lines = append(lines, transcriptVisualLine{text: text[start:end], start: sourceStart + start, end: sourceStart + end})
+	}
+	for index := 0; index < len(units); {
+		if tokenEnd, ok := atomicByStart[units[index].start]; ok {
+			endUnit, tokenWidth := index, 0
+			for endUnit < len(units) && units[endUnit].end <= tokenEnd {
+				tokenWidth += units[endUnit].width
+				endUnit++
+			}
+			if endUnit > index && units[endUnit-1].end == tokenEnd && tokenWidth <= width {
+				if columns > 0 && columns+tokenWidth > width {
+					appendSegment(segmentStart, index)
+					segmentStart, columns = index, 0
+				}
+				columns += tokenWidth
+				index = endUnit
+				continue
+			}
+		}
+		unit := units[index]
+		if columns > 0 && columns+unit.width > width {
+			appendSegment(segmentStart, index)
+			segmentStart, columns = index, 0
+		}
+		columns += unit.width
+		index++
+	}
+	if len(units) > 0 {
+		appendSegment(segmentStart, len(units))
 	}
 	return lines
 }

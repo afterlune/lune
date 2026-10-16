@@ -53,15 +53,10 @@ func wrapAndPadLines(text, indent string, totalWidth int, textStyle lipgloss.Sty
 	var rows []string
 	for _, paragraph := range strings.Split(text, "\n") {
 		plain, ranges := parseQuestionMarkdown(paragraph, bg)
-		wrappedLines := strings.Split(ansi.Wrap(plain, contentWidth, ""), "\n")
-		offset := 0
-		for _, line := range wrappedLines {
-			start := wrappedLineOffset(plain, line, offset)
-			end := min(len(plain), start+len(line))
-			content := renderQuestionTextRange(plain, start, end, textStyle.Background(bg), ranges)
+		for _, segment := range wrapTextSegments(plain, contentWidth, questionAtomicRanges(ranges)) {
+			content := renderQuestionTextRange(plain, segment.start, segment.end, textStyle.Background(bg), ranges)
 			styled := styledIndent + content
 			rows = append(rows, lipgloss.PlaceHorizontal(totalWidth, lipgloss.Left, styled, whitespace))
-			offset = end
 		}
 	}
 	return rows

@@ -259,13 +259,18 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.question.submitting {
 				return m, nil
 			}
-			m.question.notes = true
-			m.question.selected = len(m.question.request.Options)
-			m.question.input.Focus()
+			var focusCmd tea.Cmd
+			if len(m.question.request.Options) > 0 {
+				focusCmd = m.question.setSelection(len(m.question.request.Options))
+			} else {
+				m.question.notes = true
+				focusCmd = m.question.input.Focus()
+			}
+			setQuestionInputPrompt(m.question)
 			var cmd tea.Cmd
 			m.question.input, cmd = m.question.input.Update(message)
 			m.updateLayout()
-			return m, cmd
+			return m, tea.Batch(focusCmd, cmd)
 		}
 		if m.pendingMCPInteraction != nil {
 			return m, m.updateMCPInteractionInput(message)

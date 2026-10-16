@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
-	"github.com/charmbracelet/x/ansi"
 )
 
 const maxCommandSuggestions = 8
@@ -30,11 +29,19 @@ func (m *tuiModel) refreshPanels() {
 	}
 	oldOffset := m.chat.YOffset()
 	lines := m.transcriptLines()
-	content, roles := transcriptContent(lines)
-	if m.lightLayout() {
-		m.lightVisualLines = wrapTranscriptContent(content, max(1, m.chat.Width()))
+	sourceContent, roles := transcriptContent(lines)
+	content := sourceContent
+	light := m.lightLayout()
+	m.chat.SoftWrap = !light
+	if light {
+		m.lightCodeRanges = m.inlineCodeRanges(sourceContent)
+		m.lightVisualLines = wrapTextSegments(sourceContent, max(1, m.chat.Width()), m.lightCodeRanges)
 		m.lightVisualRoles = visualTranscriptRoles(lines, m.lightVisualLines)
-		m.lightCodeRanges = m.inlineCodeRanges(content)
+		visualContent := make([]string, len(m.lightVisualLines))
+		for index, line := range m.lightVisualLines {
+			visualContent[index] = line.text
+		}
+		content = strings.Join(visualContent, "\n")
 	} else {
 		m.lightVisualLines = nil
 		m.lightVisualRoles = nil
@@ -63,7 +70,7 @@ func (m *tuiModel) refreshPanels() {
 	m.lastTranscriptSessionID = m.sessionID
 	m.lastRenderedEntryCount = len(m.entries)
 	if m.searchOpen {
-		m.searchMatches = findTranscriptMatches(content, m.searchQuery)
+		m.searchMatches = findTranscriptMatches(sourceContent, m.searchQuery)
 	}
 	m.applyTranscriptHighlights()
 	m.activity.SetContent(m.activityDetailsContent())
@@ -125,7 +132,7 @@ func (m *tuiModel) updateLayout() {
 	chromeRows := 1 + 2 // session header, then a blank separator and live activity row
 	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), dividerCount) - composerExtra - scrollPillRows - chromeRows
 	bodyHeight = max(1, bodyHeight)
-	m.chat.SoftWrap = true
+	m.chat.SoftWrap = !m.lightLayout()
 	m.chat.SetWidth(inputWidth)
 	m.chat.SetHeight(bodyHeight)
 	m.activity.SetHeight(max(1, bodyHeight))
@@ -396,6 +403,9 @@ func (m *tuiModel) renderSessionHeader(width int) string {
 }
 
 func (m *tuiModel) renderLiveActivity(width int) string {
+	if m.questionOpen && m.question != nil {
+		return ""
+	}
 	if m.hasPendingUserQuestion() || m.pendingApproval != nil {
 		text := "⚠ Waiting for your answer (see prompt above)"
 		if m.pendingApproval != nil {
@@ -934,7 +944,7 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 		if visualIndex < len(m.lightVisualRoles) {
 			role = m.lightVisualRoles[visualIndex]
 		}
-		plainLine := ansi.Strip(rows[rowIndex])
+		plainLine := visual.text
 		lineRanges := make([]lipgloss.Range, 0, 8)
 		for _, code := range m.lightCodeRanges {
 			start := max(code[0], visual.start)
