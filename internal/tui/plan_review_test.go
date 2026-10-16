@@ -136,7 +136,7 @@ func TestTUIPlanBodyAndConfirmationUseLightModeBlocks(t *testing.T) {
 			if lipgloss.Width(run.text) > 0 {
 				background = run.background
 			}
-			if strings.Contains(run.text, "Overview") && run.bold && strings.EqualFold(run.foreground, "#111827") {
+			if strings.Contains(run.text, "Overview") && run.bold && strings.EqualFold(run.foreground, codexLight.Primary) {
 				boldOverview = true
 			}
 			if strings.Contains(run.text, "Worked for 40s") && strings.EqualFold(run.foreground, codexLight.Muted) {
@@ -149,7 +149,7 @@ func TestTUIPlanBodyAndConfirmationUseLightModeBlocks(t *testing.T) {
 		if strings.Contains(line.String(), "• First implementation step") {
 			planBullet = strings.EqualFold(background, codexLight.Surface)
 		}
-		if strings.Contains(line.String(), "• Second implementation step") {
+		if strings.Contains(line.String(), "1. Second implementation step") {
 			numberedPlanBullet = strings.EqualFold(background, codexLight.Surface)
 		}
 		if strings.Contains(line.String(), "Worked for 40s") {
@@ -188,12 +188,12 @@ func TestTUIPlanBodyAndConfirmationUseLightModeBlocks(t *testing.T) {
 		for _, run := range runs {
 			text.WriteString(run.text)
 			width += lipgloss.Width(run.text)
-			if lipgloss.Width(run.text) > 0 && !strings.EqualFold(run.background, "#BFDBFE") {
+			if lipgloss.Width(run.text) > 0 && !strings.EqualFold(run.background, "#A4CDFB") {
 				allBlue = false
 			}
 		}
 		if strings.Contains(text.String(), "› 1. Yes, implement this plan") {
-			selectedRow = width == 100 && allBlue
+			selectedRow = width == ui.lightPanelWidth() && allBlue
 		}
 	}
 	if !selectedRow {

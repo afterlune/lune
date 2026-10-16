@@ -422,11 +422,14 @@ func pendingRequestSummary(request core.PendingRequest) string {
 		return "Waiting for a tool approval. Use /continue to review it."
 	case core.PendingUserQuestion:
 		if request.UserQuestion != nil {
-			question := strings.TrimSpace(request.UserQuestion.Question)
+			question := ""
+			if len(request.UserQuestion.Questions) > 0 {
+				question = request.UserQuestion.Questions[0].Question
+			}
 			if question != "" {
 				text := "Waiting for your answer: " + question
-				if len(request.UserQuestion.Options) >= 2 {
-					text += "\n" + formatUserQuestionOptions(request.UserQuestion.Options)
+				if len(request.UserQuestion.Questions[0].Options) >= 2 {
+					text += "\n" + formatUserQuestionOptions(request.UserQuestion.Questions[0].Options)
 				}
 				return text + "\nEnter an answer to continue."
 			}
@@ -481,15 +484,30 @@ func (m *tuiModel) answerUserQuestion(answer string) (tea.Model, tea.Cmd) {
 	}
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
-		if len(question.Options) >= 2 {
+		if len(m.question.item().Options) >= 2 {
 			m.question.err = "Choose an option or enter an answer."
 		} else {
 			m.question.err = "Enter an answer."
 		}
 		return m, nil
 	}
-	if i, err := strconv.Atoi(answer); numbered && len(question.Options) >= 2 && err == nil && i >= 1 && i <= len(question.Options) {
-		answer = question.Options[i-1].Label
+	if i, err := strconv.Atoi(answer); numbered && len(m.question.item().Options) >= 2 && err == nil && i >= 1 && i <= len(m.question.item().Options) {
+		answer = m.question.item().Options[i-1].Label
+		m.question.selected = i - 1
+	}
+	if numbered {
+		matched := false
+		for i, o := range m.question.item().Options {
+			if o.Label == answer {
+				m.question.selected = i
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			m.question.selected = len(m.question.item().Options)
+			m.question.customDraft = answer
+		}
 	}
 	m.question.submitting = true
 	m.question.err = ""

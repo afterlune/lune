@@ -138,6 +138,7 @@ type tuiModel struct {
 	streamToolCalls               map[string]*streamToolCall
 	lightVisualLines              []transcriptVisualLine
 	lightVisualRoles              []string
+	lightStyleSpans               []lightTextSpan
 	lightCodeRanges               [][2]int
 	lastTranscriptSessionID       string
 	lastRenderedEntryCount        int

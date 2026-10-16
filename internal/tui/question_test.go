@@ -13,7 +13,7 @@ func questionFixture() (*tuiModel, *fakeSessionRuntime) {
 	client := &fakeResponder{pending: true}
 	runtime := newFakeSessionRuntime(client, "session-1", client.runTask)
 	runtime.status = core.TaskPaused
-	question := core.UserQuestionRequest{RunID: "run", InvocationID: "wait-1", CallID: "call-1", ExecutionID: "execution-1", Question: "Which environment?", Options: []core.UserQuestionOption{{Label: "Local", Description: "Use the workspace"}, {Label: "Staging", Description: "Use the shared environment"}}}
+	question := core.UserQuestionRequest{RunID: "run", InvocationID: "wait-1", CallID: "call-1", ExecutionID: "execution-1", Questions: []core.UserQuestionItem{{ID: "q1", Question: "Which environment?", Options: []core.UserQuestionOption{{Label: "Local", Description: "Use the workspace"}, {Label: "Staging", Description: "Use the shared environment"}}}}}
 	runtime.pendingRequests = []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &question}}
 	ui := newTUIModel(client, true)
 	ui.sessionID = "session-1"
@@ -40,7 +40,7 @@ func TestQuestionNavigationDoesNotSubmitAndEnterSubmitsOnce(t *testing.T) {
 		t.Fatal("duplicate enter submitted twice")
 	}
 	ui.Update(command())
-	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answer != "Staging" {
+	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answers[0].Answer != "Staging" {
 		t.Fatalf("answers=%#v", runtime.resolvedQuestions)
 	}
 	if ui.question != nil || ui.questionOpen {
@@ -75,7 +75,7 @@ func TestQuestionNewIdentityReplacesOldQuestionAndEscapeInterruptsIt(t *testing.
 	next := *runtime.pendingRequests[0].UserQuestion
 	next.CallID = "call-2"
 	next.InvocationID = "wait-2"
-	next.Question = "Which region?"
+	next.Questions[0].Question = "Which region?"
 	runtime.pendingRequests = []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &next}}
 	ui.continueTask("/continue")
 	if !sameQuestion(ui.question.request, next) || ui.question.input.Value() != "" {
@@ -94,12 +94,12 @@ func TestQuestionNewIdentityReplacesOldQuestionAndEscapeInterruptsIt(t *testing.
 func TestQuestionNumericLabelIsNotRemapped(t *testing.T) {
 	ui, runtime := questionFixture()
 	q := *ui.pendingRequest.UserQuestion
-	q.Options = []core.UserQuestionOption{{Label: "2"}, {Label: "3"}}
+	q.Questions[0].Options = []core.UserQuestionOption{{Label: "2"}, {Label: "3"}}
 	ui.openQuestion(q)
 	ui.pendingRequest.UserQuestion = &q
 	_, cmd := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	ui.Update(cmd())
-	if runtime.resolvedQuestions[0].Answer != "2" {
+	if runtime.resolvedQuestions[0].Answers[0].Answer != "2" {
 		t.Fatal("selected label was interpreted as an option number")
 	}
 }
@@ -116,12 +116,12 @@ func TestQuestionChoiceUIShowsEverySuggestedOptionWithoutOpeningNotes(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ui := newTUIModel(&fakeResponder{}, false)
-			ui.openQuestion(core.UserQuestionRequest{Question: "What should we do?", Options: test.options})
+			ui.openQuestion(core.UserQuestionRequest{Questions: []core.UserQuestionItem{{ID: "q1", Question: "What should we do?", Options: test.options}}})
 			view := plainTUIView(ui)
 			if got := strings.Contains(view, "None of the above"); got != test.wantChoice {
 				t.Fatalf("choice fallback visible = %v, want %v: %q", got, test.wantChoice, view)
 			}
-			if ui.question.notes || ui.question.input.Focused() {
+			if len(test.options) > 0 && (ui.question.notes || ui.question.input.Focused()) {
 				t.Fatalf("question should open in choices state with notes hidden: %q", view)
 			}
 			if len(test.options) == 1 && !strings.Contains(view, "Only suggestion") {
@@ -137,12 +137,13 @@ func TestQuestionChoiceUIShowsEverySuggestedOptionWithoutOpeningNotes(t *testing
 func TestQuestionNoneOptionAcceptsFreeText(t *testing.T) {
 	ui, runtime := questionFixture()
 	question := *ui.pendingRequest.UserQuestion
-	question.Options = []core.UserQuestionOption{{Label: "Only suggestion"}}
+	question.Questions[0].Options = []core.UserQuestionOption{{Label: "Only suggestion"}}
 	ui.pendingRequest.UserQuestion = &question
 	ui.question.request = question
 	ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	_, openNotes := ui.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if openNotes != nil || !ui.question.notes || !ui.question.input.Focused() {
+	_ = openNotes
+	if !ui.question.notes || !ui.question.input.Focused() {
 		t.Fatal("Enter on None of the above did not open notes")
 	}
 	ui.question.input.SetValue("Use the standard approach")
@@ -152,7 +153,7 @@ func TestQuestionNoneOptionAcceptsFreeText(t *testing.T) {
 		t.Fatal("free-text answer was not submitted")
 	}
 	ui.Update(command())
-	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answer != "Use the standard approach" {
+	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answers[0].Answer != "Use the standard approach" {
 		t.Fatalf("resolved answer = %#v, want free text without the lone suggestion", runtime.resolvedQuestions)
 	}
 }
@@ -189,7 +190,7 @@ func TestQuestionArrowsAndTabLeaveNotesAndReturnToChoices(t *testing.T) {
 		t.Fatal("custom answer was not submitted")
 	}
 	ui.Update(command())
-	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answer != "custom response" {
+	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answers[0].Answer != "custom response" {
 		t.Fatalf("custom answer = %#v", runtime.resolvedQuestions)
 	}
 }
@@ -214,8 +215,8 @@ func TestQuestionOptionsUseOneAlignedRowAndTruncateDescriptions(t *testing.T) {
 	ui, _ := questionFixture()
 	ui.width = 54
 	ui.updateLayout()
-	ui.question.request.Options[0].Description = "The active explanation remains fully visible across multiple lines."
-	ui.question.request.Options[1].Description = "Brief preview followed by many words that should be clipped from this inactive option."
+	ui.question.request.Questions[0].Options[0].Description = "The active explanation remains fully visible across multiple lines."
+	ui.question.request.Questions[0].Options[1].Description = "Brief preview followed by many words that should be clipped from this inactive option."
 	plain := plainTUIView(ui)
 	for _, label := range []string{"1. Local", "2. Staging", "3. None of the above"} {
 		if !strings.Contains(plain, label) {
@@ -240,7 +241,7 @@ func TestQuestionOptionsUseOneAlignedRowAndTruncateDescriptions(t *testing.T) {
 
 func TestQuestionSplitsBackgroundIntoAgentMessage(t *testing.T) {
 	ui := newTUIModel(&fakeResponder{}, false)
-	ui.openQuestion(core.UserQuestionRequest{Question: "失败时保留上下文。\n\n取消后如何处理？\n\n失败或取消后，标题怎么显示？", Options: []core.UserQuestionOption{{Label: "保留状态"}}})
+	ui.openQuestion(core.UserQuestionRequest{Questions: []core.UserQuestionItem{{ID: "q1", Question: "失败时保留上下文。\n\n取消后如何处理？\n\n失败或取消后，标题怎么显示？", Options: []core.UserQuestionOption{{Label: "保留状态"}}}}})
 	if ui.question.displayText != "失败或取消后，标题怎么显示？" {
 		t.Fatalf("panel prompt = %q", ui.question.displayText)
 	}
@@ -263,7 +264,7 @@ func TestOpeningQuestionRemovesOnlyLastPreparingToolPlaceholder(t *testing.T) {
 	ui.activities[len(ui.activities)-1].summary = "Tool request (preparing)"
 	ui.entries[len(ui.entries)-1].text = "Tool request (preparing)"
 
-	ui.openQuestion(core.UserQuestionRequest{ExecutionID: "execution", Question: "Continue?", Options: []core.UserQuestionOption{{Label: "Yes"}}})
+	ui.openQuestion(core.UserQuestionRequest{ExecutionID: "execution", Questions: []core.UserQuestionItem{{ID: "q1", Question: "Continue?", Options: []core.UserQuestionOption{{Label: "Yes"}}}}})
 	if len(ui.activities) != 1 || len(ui.entries) != 1 || !strings.Contains(ui.entries[0].text, "README.md") {
 		t.Fatalf("question cleanup removed a real tool or kept the placeholder: activities=%#v entries=%#v", ui.activities, ui.entries)
 	}
@@ -274,7 +275,7 @@ func TestOpeningQuestionRemovesOnlyLastPreparingToolPlaceholder(t *testing.T) {
 		"pending": {taskID: "task", executionID: "execution", agentID: "lead", activityID: "stream-pending", preparing: true},
 	}
 	ui.entries = []tuiEntry{{role: "tool", activityID: "stream-pending", text: "Tool request (preparing)"}}
-	ui.openQuestion(core.UserQuestionRequest{ExecutionID: "execution", Question: "Continue?"})
+	ui.openQuestion(core.UserQuestionRequest{ExecutionID: "execution", Questions: []core.UserQuestionItem{{ID: "q1", Question: "Continue?"}}})
 	call := ui.streamToolCalls["pending"]
 	if call.preparing || !call.finished || !call.hidden || len(ui.entries) != 0 {
 		t.Fatalf("stream placeholder remained live after question: call=%#v entries=%#v", call, ui.entries)

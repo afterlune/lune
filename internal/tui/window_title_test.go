@@ -42,7 +42,7 @@ func TestTUIWindowTitleReflectsRunningQuestionAndApprovalStates(t *testing.T) {
 		t.Fatalf("running title = %q, want %q", got, want)
 	}
 
-	question := core.UserQuestionRequest{Question: "下一步优先做哪条线？"}
+	question := core.UserQuestionRequest{Questions: []core.UserQuestionItem{{ID: "q1", Question: "下一步优先做哪条线？"}}}
 	ui.pendingRequest = &core.PendingRequest{Kind: core.PendingUserQuestion, UserQuestion: &question}
 	if got, want := ui.View().WindowTitle, "[ ! ] Action Required | Old session title | luneAgent"; got != want {
 		t.Fatalf("question title = %q, want %q", got, want)

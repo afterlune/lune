@@ -401,11 +401,14 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 	items := rawHistoryItems(history)
 	var entries []transcriptEntry
 	turn := 0
+	questions := map[string]core.UserQuestionRequest{}
 	for _, item := range items {
 		var value struct {
 			Type      string          `json:"type"`
 			Role      string          `json:"role"`
 			Name      string          `json:"name"`
+			CallID    string          `json:"call_id"`
+			Output    json.RawMessage `json:"output"`
 			Arguments json.RawMessage `json:"arguments"`
 			Content   json.RawMessage `json:"content"`
 		}
@@ -422,6 +425,10 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 				role = "assistant"
 			}
 			if text := messageContentText(value.Content); text != "" {
+				if plan, ok := proposedPlanText(text); ok && role == "assistant" {
+					role = "plan"
+					text = plan
+				}
 				entries = append(entries, transcriptEntry{Role: role, Text: text})
 			}
 		case "function_call":
@@ -430,6 +437,15 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 				var text string
 				_ = json.Unmarshal(arguments, &text)
 				arguments = json.RawMessage(text)
+			}
+			if value.Name == "ask_user" {
+				var batch struct {
+					Questions []core.UserQuestionItem `json:"questions"`
+				}
+				if json.Unmarshal(arguments, &batch) == nil && len(batch.Questions) > 0 {
+					questions[value.CallID] = core.UserQuestionRequest{Questions: batch.Questions}
+					continue
+				}
 			}
 			title := humanizedToolSummary(value.Name, arguments, workspace...)
 			if strings.HasPrefix(title, "Run ") {
@@ -441,6 +457,15 @@ func transcriptFromHistory(history json.RawMessage, workspace ...string) []trans
 				Role: "tool", Text: title,
 				ActivityGroupID: "history-turn:" + strconv.Itoa(turn),
 			})
+		case "function_call_output":
+			if wait, ok := questions[value.CallID]; ok {
+				var text string
+				var answers []core.UserQuestionResponse
+				if json.Unmarshal(value.Output, &text) == nil && json.Unmarshal([]byte(text), &answers) == nil && len(answers) == len(wait.Questions) {
+					entries = append(entries, transcriptEntry{Role: "question_summary", Text: questionSummaryText(wait, answers)})
+				}
+			}
+
 		}
 	}
 	return entries

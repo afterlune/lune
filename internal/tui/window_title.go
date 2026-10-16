@@ -89,8 +89,11 @@ func (m *tuiModel) computeWindowTitle() string {
 }
 
 func (m *tuiModel) terminalState() terminalTaskState {
-	if m.planReview || m.hasPendingUserDecision() {
+	if m.hasPendingUserDecision() {
 		return terminalWaiting
+	}
+	if m.planReview {
+		return terminalIdle
 	}
 	if m.executionStarted {
 		return terminalRunning

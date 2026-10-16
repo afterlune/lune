@@ -19,6 +19,11 @@ var questionInlineMarkdown = regexp.MustCompile("`([^`]+)`|\\*\\*(.+?)\\*\\*")
 
 type questionPanel struct {
 	request      core.UserQuestionRequest
+	current      int
+	responses    []core.UserQuestionDraftResponse
+	answers      []core.UserQuestionResponse
+	revision     uint64
+	writer       *questionDraftWriter
 	displayText  string
 	background   string
 	selected     int
@@ -37,6 +42,7 @@ type questionAnsweredMsg struct {
 	sessionID string
 	question  core.UserQuestionRequest
 	answer    string
+	answers   []core.UserQuestionResponse
 	err       error
 }
 
@@ -99,15 +105,16 @@ func (m *tuiModel) clearQuestionPreparingTool(executionID string) {
 }
 
 func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
+	if len(request.Questions) == 0 {
+		return
+	}
 	m.clearQuestionPreparingTool(request.ExecutionID)
 	if m.question != nil && sameQuestion(m.question.request, request) {
-		parts := splitQuestionDisplay(request.Question)
+		parts := splitQuestionDisplay(request.Questions[m.question.current].Question)
 		m.question.request = request
-		m.question.selected = min(m.question.selected, len(request.Options))
+		m.question.selected = min(m.question.selected, len(request.Questions[m.question.current].Options))
 		m.question.displayText = parts.question
-		if parts.background != "" && parts.background != m.question.background {
-			m.addEntry("assistant", parts.background, false)
-		}
+
 		m.question.background = parts.background
 		setQuestionInputPrompt(m.question)
 		m.questionOpen = true
@@ -125,13 +132,44 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	input.SetVirtualCursor(false)
 	input.SetWidth(m.questionInputWidth())
 	applyTextareaTheme(&input, m.resolvedTheme())
-	parts := splitQuestionDisplay(request.Question)
-	m.question = &questionPanel{request: request, displayText: parts.question, background: parts.background, input: input}
-	if parts.background != "" {
-		m.addEntry("assistant", parts.background, false)
+	if len(request.Questions) == 0 {
+		return
 	}
+	parts := splitQuestionDisplay(request.Questions[0].Question)
+	m.question = &questionPanel{request: request, displayText: parts.question, background: parts.background, input: input, writer: &questionDraftWriter{}, responses: make([]core.UserQuestionDraftResponse, len(request.Questions)), answers: make([]core.UserQuestionResponse, len(request.Questions))}
+	seenBackground := map[string]bool{}
+	for _, item := range request.Questions {
+		background := splitQuestionDisplay(item.Question).background
+		if background != "" && !seenBackground[background] {
+			m.addEntry("assistant", background, false)
+			seenBackground[background] = true
+		}
+	}
+
+	for i, item := range request.Questions {
+		m.question.responses[i] = core.UserQuestionDraftResponse{QuestionID: item.ID}
+		m.question.answers[i].QuestionID = item.ID
+	}
+	if request.Draft != nil {
+		for _, d := range request.Draft.Responses {
+			for i, item := range request.Questions {
+				if item.ID == d.QuestionID {
+					m.question.responses[i] = d
+					m.question.answers[i].Answer = draftAnswer(item, d)
+				}
+			}
+		}
+		for i, item := range request.Questions {
+			if item.ID == request.Draft.CurrentQuestionID {
+				m.question.current = i
+			}
+		}
+	}
+	m.question.loadCurrent()
 	setQuestionInputPrompt(m.question)
-	m.question.input.Blur()
+	if !m.question.notes {
+		m.question.input.Blur()
+	}
 	m.questionOpen = true
 	m.status = ""
 	m.updateLayout()
@@ -148,7 +186,7 @@ func (q *questionPanel) setSelection(selected int) tea.Cmd {
 	if q == nil {
 		return nil
 	}
-	count := len(q.request.Options)
+	count := len(q.item().Options)
 	selected = max(0, min(count, selected))
 	if q.notes {
 		if q.selected == count {
@@ -171,7 +209,13 @@ func (q *questionPanel) setSelection(selected int) tea.Cmd {
 
 func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	q := m.question
-	if q.submitting || q.interrupting {
+	if q.submitting {
+		if q.writer != nil && q.writer.submitted && m.matchesKey("send", key) {
+			return m, m.retryQuestionSubmission()
+		}
+		return m, nil
+	}
+	if q.interrupting {
 		return m, nil
 	}
 	if key.String() == "esc" || key.String() == "ctrl+c" {
@@ -179,8 +223,18 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		q.err = "Interrupting paused task…"
 		return m, m.discardQuestionTask(q.request)
 	}
-	count := len(q.request.Options)
+	count := len(q.item().Options)
 	switch {
+	case !q.notes && (key.Code == tea.KeyLeft || key.Code == tea.KeyRight):
+		q.captureCurrent(false)
+		if key.Code == tea.KeyLeft {
+			q.current = max(0, q.current-1)
+		} else {
+			q.current = min(len(q.request.Questions)-1, q.current+1)
+		}
+		q.loadCurrent()
+		m.updateLayout()
+		return m, m.saveQuestionDraft(false)
 	case key.Code == tea.KeyTab || m.matchesKey("question_notes", key):
 		if q.notes {
 			if q.selected == count {
@@ -280,12 +334,12 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func questionChoiceAnswer(q *questionPanel) string {
-	if q == nil || q.selected < 0 || q.selected >= len(q.request.Options) {
+	if q == nil || q.selected < 0 || q.selected >= len(q.item().Options) {
 		return ""
 	}
-	answer := q.request.Options[q.selected].Label
+	answer := q.item().Options[q.selected].Label
 	notes := q.noteDraft
-	if q.notes && q.selected < len(q.request.Options) {
+	if q.notes && q.selected < len(q.item().Options) {
 		notes = q.input.Value()
 	}
 	if notes = strings.TrimSpace(notes); notes != "" {
@@ -341,6 +395,9 @@ func (m *tuiModel) renderQuestion() string {
 		return ""
 	}
 	width := max(1, m.width)
+	if m.lightLayout() {
+		width = m.lightPanelWidth()
+	}
 	innerWidth := max(1, width-4)
 	bg := color.Color(lipgloss.Color(codexLight.Surface))
 	colors := m.themeColors()
@@ -348,22 +405,28 @@ func (m *tuiModel) renderQuestion() string {
 		bg = m.questionSurface()
 	}
 	background := lipgloss.NewStyle().Background(bg)
-	rows := []string{fillQuestionRow("", width, bg)}
+	compact := m.lightLayout() && m.height < 10
+	rows := []string{}
+	if !compact {
+		rows = append(rows, fillQuestionRow("", width, bg))
+	}
 	questionTitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Muted)).Background(bg)
-	questionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#2563EB")).Background(bg)
+	questionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#1C64C8")).Background(bg)
 	if !m.lightLayout() {
 		questionTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Background(bg)
 		questionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent)).Background(bg)
 	}
-	rows = append(rows, fillQuestionRow(background.Render("  ")+questionTitleStyle.Render("Question 1/1 (1 unanswered)"), width, bg))
+	rows = append(rows, fillQuestionRow(background.Render("  ")+questionTitleStyle.Render(fmt.Sprintf("Question %d/%d (%d unanswered)", q.current+1, len(q.request.Questions), q.unanswered())), width, bg))
 	prompt := fitTerminalText(singleLineQuestionSummary(q.displayText), innerWidth)
 	rows = append(rows, fillQuestionRow(background.Render("  ")+questionStyle.Render(prompt), width, bg))
-	rows = append(rows, fillQuestionRow("", width, bg))
+	if !compact {
+		rows = append(rows, fillQuestionRow("", width, bg))
+	}
 
-	count := len(q.request.Options)
+	count := len(q.item().Options)
 	labels := make([]string, count+1)
 	descriptions := make([]string, count+1)
-	for index, option := range q.request.Options {
+	for index, option := range q.item().Options {
 		labels[index] = fmt.Sprintf("%d. %s", index+1, singleLineQuestionSummary(option.Label))
 		descriptions[index] = singleLineQuestionSummary(option.Description)
 	}
@@ -377,7 +440,24 @@ func (m *tuiModel) renderQuestion() string {
 	gapWidth := min(2, max(0, rowWidth-2))
 	labelWidth = min(labelWidth, max(1, rowWidth-gapWidth-1))
 	descriptionWidth := max(0, rowWidth-labelWidth-gapWidth)
-	for index, label := range labels {
+	visible := len(labels)
+	start := 0
+	if m.lightLayout() {
+		fixed := 7
+		if compact {
+			fixed = 3
+		}
+		if q.notes {
+			fixed++
+		}
+		if q.err != "" {
+			fixed++
+		}
+		visible = min(len(labels), max(1, m.height-fixed))
+		start = max(0, min(q.selected-visible/2, len(labels)-visible))
+	}
+	for index := start; index < start+visible; index++ {
+		label := labels[index]
 		selected := index == q.selected
 		rowBG := bg
 		marker, labelColor, descriptionColor := "  ", colors.Foreground, colors.Muted
@@ -387,9 +467,9 @@ func (m *tuiModel) renderQuestion() string {
 		if selected {
 			marker = "› "
 			if m.lightLayout() {
-				rowBG = lipgloss.Color("#BFDBFE")
-				labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(rowBG).Bold(true)
-				descriptionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#1E3A8A")).Background(rowBG)
+				rowBG = lipgloss.Color("#A4CDFB")
+				labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Background(rowBG).Bold(true)
+				descriptionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#24292F")).Background(rowBG)
 				markerStyle = labelStyle
 			} else {
 				rowBG = lipgloss.Color(colors.Accent)
@@ -420,13 +500,24 @@ func (m *tuiModel) renderQuestion() string {
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Error)).Background(bg)
 		rows = append(rows, fillQuestionRow(background.Render("  ")+style.Render(fitTerminalText(q.err, innerWidth)), width, bg))
 	}
+	if m.lightLayout() {
+		if !compact {
+			rows = append(rows, fillQuestionRow("", width, bg))
+		}
+		hint := m.renderQuestionHint(max(1, width-2))
+		rows = append(rows, fillQuestionRow(background.Render("  ")+hint, width, bg))
+		if !compact {
+			rows = append(rows, fillQuestionRow("", width, bg))
+		}
+		return strings.Join(rows, "\n")
+	}
 	rows = append(rows, fillQuestionRow("", width, bg))
 	return strings.Join(rows, "\n") + "\n" + m.renderQuestionHint(width)
 }
 
 func fillQuestionRow(content string, width int, bg color.Color) string {
 	background := lipgloss.NewStyle().Background(bg)
-	return lipgloss.PlaceHorizontal(width, lipgloss.Left, content, lipgloss.WithWhitespaceStyle(background))
+	return lipgloss.PlaceHorizontal(width, lipgloss.Left, ansi.Truncate(content, max(1, width), ""), lipgloss.WithWhitespaceStyle(background))
 }
 
 func truncateQuestionText(value string, width int) string {
@@ -448,7 +539,7 @@ func (m *tuiModel) renderQuestionHint(width int) string {
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true)
 	if m.lightLayout() {
 		muted = lightMutedStyle()
-		key = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F2937")).Bold(true)
+		key = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
 	}
 	var hint strings.Builder
 	hint.WriteString(key.Render("tab"))
@@ -457,6 +548,9 @@ func (m *tuiModel) renderQuestionHint(width int) string {
 	hint.WriteString(muted.Render(" to submit answer | "))
 	hint.WriteString(key.Render("esc"))
 	hint.WriteString(muted.Render(" to interrupt"))
+	if m.question != nil && len(m.question.request.Questions) > 1 {
+		hint.WriteString(muted.Render(" | ←/→ questions"))
+	}
 	return fitTerminalText(hint.String(), width)
 }
 
@@ -466,6 +560,9 @@ func singleLineQuestionSummary(description string) string {
 }
 
 func (m *tuiModel) questionInputWidth() int {
+	if m.lightLayout() {
+		return max(1, m.lightPanelWidth()-4)
+	}
 	return max(1, m.width-4)
 }
 
@@ -478,7 +575,7 @@ type questionInlineStyleRange struct {
 
 func parseQuestionMarkdown(text string, bg color.Color) (string, []questionInlineStyleRange) {
 	code := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText)).Background(lipgloss.Color("#E2E8F0"))
-	bold := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(bg).Bold(true)
+	bold := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Background(bg).Bold(true)
 	var plain strings.Builder
 	var ranges []questionInlineStyleRange
 	last := 0
@@ -535,11 +632,10 @@ func renderQuestionTextRange(plain string, start, end int, textStyle lipgloss.St
 }
 
 func (m *tuiModel) submitQuestionAnswer(question core.UserQuestionRequest, answer string) tea.Cmd {
-	runtime, sessionID := m.runtime, m.sessionID
-	return func() tea.Msg {
-		err := runtime.ResolveUserQuestion(context.Background(), core.UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer})
-		return questionAnsweredMsg{sessionID: sessionID, question: question, answer: answer, err: err}
-	}
+	q := m.question
+	q.captureCurrent(true)
+	q.answers[q.current].Answer = answer
+	return m.saveQuestionDraft(true)
 }
 
 func (m *tuiModel) discardQuestionTask(question core.UserQuestionRequest) tea.Cmd {

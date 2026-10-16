@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
 	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
@@ -174,6 +175,9 @@ func internalToolMetadataLine(line string) bool {
 func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolActivityGroup, selected, expanded bool) []transcriptLine {
 	activities := m.toolActivitiesForGroup(group)
 	if m.lightLayout() {
+		if m.explorationGroup(group) {
+			return m.appendExplorationGroup(lines, group, selected, expanded)
+		}
 		var activity tuiActivity
 		hasActivity := false
 		if len(activities) > 0 {
@@ -280,6 +284,69 @@ func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolAct
 			detail.text = "  │ " + detail.text
 			lines = append(lines, detail)
 		}
+	}
+	return lines
+}
+
+func (m *tuiModel) explorationGroup(group toolActivityGroup) bool {
+	if len(group.entries) == 0 {
+		return false
+	}
+	for _, index := range group.entries {
+		title := m.entries[index].text
+		for _, activity := range m.activities {
+			if activity.callID == m.entries[index].activityID {
+				if activity.status != "done" {
+					return false
+				}
+				title = toolActivityTitle(activity, m.workspace)
+				break
+			}
+		}
+		if !strings.HasPrefix(title, "Read ") && !strings.HasPrefix(title, "Listed ") && !strings.HasPrefix(title, "Searched ") {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *tuiModel) appendExplorationGroup(lines []transcriptLine, group toolActivityGroup, selected, expanded bool) []transcriptLine {
+	marker := "• "
+	if selected {
+		marker = "› "
+	}
+	lines = append(lines, transcriptLine{text: marker + "Explored", role: "exploration_heading", spans: []lightTextSpan{{len(marker), len(marker) + len("Explored"), lightTextStyle().Bold(true)}}})
+	for i, index := range group.entries {
+		title := strings.TrimSuffix(m.entries[index].text, " · done")
+		var details []transcriptLine
+		for _, activity := range m.activities {
+			if activity.callID == m.entries[index].activityID {
+				title = toolActivityTitle(activity, m.workspace)
+				if expanded {
+					details = activityDetailLines(activity)
+				}
+				break
+			}
+		}
+		prefix := "    "
+		if i == 0 {
+			prefix = "  └ "
+		}
+		spans := []lightTextSpan{}
+		if verb, _, ok := strings.Cut(title, " "); ok {
+			spans = append(spans, lightTextSpan{len(prefix), len(prefix) + len(verb), lipgloss.NewStyle().Foreground(lipgloss.Color("#1C64C8"))})
+		}
+		lines = append(lines, transcriptLine{text: prefix + title, role: "exploration", spans: spans})
+		for _, detail := range details {
+			if !internalToolMetadataLine(detail.text) {
+				detail.text = "    " + detail.text
+				detail.role = "tool_done"
+				lines = append(lines, detail)
+			}
+		}
+	}
+	if !expanded {
+		lines = append(lines, transcriptLine{text: "    + Show details", role: "tool_done"})
 	}
 	return lines
 }

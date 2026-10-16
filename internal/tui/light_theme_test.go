@@ -40,19 +40,19 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 	if !strings.Contains(plain, "Workspace · shift+tab to cycle") || strings.Contains(plain, "Plan mode (shift+tab") {
 		t.Fatalf("statusline does not distinguish permission cycling from Plan mode: %q", plain)
 	}
-	if !strings.Contains(view.Content, "\x1b[48;2;243;244;246m") {
+	if !strings.Contains(view.Content, "\x1b[48;2;244;244;244m") {
 		t.Fatalf("light composer/user bands did not use the surface background: %q", view.Content)
 	}
-	if !strings.Contains(view.Content, "48;2;230;244;234m") || !strings.Contains(view.Content, "38;2;21;128;61") {
-		t.Fatalf("inline code did not use the green highlight surface: %q", view.Content)
+	if strings.Contains(view.Content, "48;2;230;244;234m") || !strings.Contains(view.Content, "38;2;87;110;78") {
+		t.Fatalf("inline code did not use the green text without a chip background: %q", view.Content)
 	}
 	assertStyledRun := func(value string) {
 		t.Helper()
 		for _, line := range parseTUIScreenshotLinesWithBackground(view.Content, codexLight.Primary, codexLight.Canvas) {
 			for _, run := range line {
 				if strings.Contains(run.text, value) {
-					if !strings.EqualFold(run.foreground, codexLight.CodeText) || !strings.EqualFold(run.background, codexLight.CodeSurface) {
-						t.Errorf("%q style = fg %s / bg %s, want %s / %s", value, run.foreground, run.background, codexLight.CodeText, codexLight.CodeSurface)
+					if !strings.EqualFold(run.foreground, codexLight.CodeText) || !strings.EqualFold(run.background, codexLight.Canvas) {
+						t.Errorf("%q style = fg %s / bg %s, want %s / %s", value, run.foreground, run.background, codexLight.CodeText, codexLight.Canvas)
 					}
 					return
 				}
@@ -60,7 +60,7 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 		}
 		t.Errorf("styled run %q was not found", value)
 	}
-	for _, value := range []string{"responses.go", "9124055", "origin/main", "TUI", "go test ./..."} {
+	for _, value := range []string{"TUI", "go test ./..."} {
 		assertStyledRun(value)
 	}
 	assertFullSurfaceLine := func(value string) {
@@ -83,8 +83,8 @@ func TestLightTranscriptUsesBandsAndIndependentPermissionStatus(t *testing.T) {
 			if !strings.Contains(text.String(), value) {
 				continue
 			}
-			if width != 100 || !hasSurface || !strings.EqualFold(lastBackground, codexLight.Surface) {
-				t.Errorf("%q surface row width/background = %d / %s (surface seen: %v), want 100 / %s", value, width, lastBackground, hasSurface, codexLight.Surface)
+			if width != 98 || !hasSurface || !strings.EqualFold(lastBackground, codexLight.Surface) {
+				t.Errorf("%q surface row width/background = %d / %s (surface seen: %v), want 98 / %s", value, width, lastBackground, hasSurface, codexLight.Surface)
 			}
 			return
 		}
@@ -114,8 +114,8 @@ func TestLightComposerCursorAndViewportFitNarrowTerminals(t *testing.T) {
 			t.Errorf("%dx%d light viewport dimensions = %dx%d", size.width, size.height, lipgloss.Width(view.Content), lipgloss.Height(view.Content))
 		}
 		cursor := ui.input.Cursor()
-		wantY := lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 4 + cursor.Y
-		wantX := cursor.X + 1
+		wantY := ui.lightGeometry().bottomY + 1 + cursor.Y
+		wantX := cursor.X + ui.lightGeometry().margin + 1
 		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY {
 			t.Errorf("%dx%d composer cursor = %#v, want (%d,%d)", size.width, size.height, view.Cursor, wantX, wantY)
 		}
@@ -123,8 +123,8 @@ func TestLightComposerCursorAndViewportFitNarrowTerminals(t *testing.T) {
 		ui.updateLayout()
 		view = ui.View()
 		cursor = ui.input.Cursor()
-		wantY = lipgloss.Height(ui.renderSessionWorkspaceBody(size.width)) + 4 + cursor.Y
-		wantX = cursor.X + 1
+		wantY = ui.lightGeometry().bottomY + 1 + cursor.Y
+		wantX = cursor.X + ui.lightGeometry().margin + 1
 		if view.Cursor == nil || view.Cursor.X != wantX || view.Cursor.Y != wantY || lipgloss.Height(view.Content) > size.height {
 			t.Errorf("%dx%d multiline composer cursor/layout = %#v / %d rows, want (%d,%d) within viewport", size.width, size.height, view.Cursor, lipgloss.Height(view.Content), wantX, wantY)
 		}
@@ -136,13 +136,10 @@ func TestQuestionPanelUsesFullWidthLightSurfaceAndSingleRowSelection(t *testing.
 	ui.preferences.Theme = themeLight
 	ui.applyResolvedTheme()
 	ui.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	ui.openQuestion(core.UserQuestionRequest{
-		Question: "下一步要落在哪条线上？",
-		Options: []core.UserQuestionOption{
-			{Label: "保留结果状态", Description: "成功显示已完成，失败显示警告"},
-			{Label: "全部恢复普通标题", Description: "失败或取消后也立刻恢复普通任务标题"},
-		},
-	})
+	ui.openQuestion(core.UserQuestionRequest{Questions: []core.UserQuestionItem{{ID: "q1", Question: "下一步要落在哪条线上？", Options: []core.UserQuestionOption{
+		{Label: "保留结果状态", Description: "成功显示已完成，失败显示警告"},
+		{Label: "全部恢复普通标题", Description: "失败或取消后也立刻恢复普通任务标题"},
+	}}}})
 	ui.question.selected = 1
 	ui.updateLayout()
 	panel := ui.renderQuestion()
@@ -173,8 +170,8 @@ func TestQuestionPanelUsesFullWidthLightSurfaceAndSingleRowSelection(t *testing.
 			width += lipgloss.Width(run.text)
 			foundSurface = foundSurface || strings.EqualFold(run.background, surface)
 		}
-		if width != 100 || !foundSurface {
-			t.Fatalf("row %q width/background = %d / %v, want 100 columns filled with %s", needle, width, foundSurface, surface)
+		if width != ui.lightPanelWidth() || !foundSurface {
+			t.Fatalf("row %q width/background = %d / %v, want panel columns filled with %s", needle, width, foundSurface, surface)
 		}
 		return runs
 	}
@@ -187,21 +184,21 @@ func TestQuestionPanelUsesFullWidthLightSurfaceAndSingleRowSelection(t *testing.
 	question := assertSurfaceRow("下一步要落在哪条线上？", codexLight.Surface)
 	questionBlue := false
 	for _, run := range question {
-		if strings.Contains(run.text, "下一步要落在哪条线上？") && strings.EqualFold(run.foreground, "#2563EB") {
+		if strings.Contains(run.text, "下一步要落在哪条线上？") && strings.EqualFold(run.foreground, "#1C64C8") {
 			questionBlue = true
 		}
 	}
 	if !questionBlue {
 		t.Fatal("core question was not rendered in bright blue")
 	}
-	selected := assertSurfaceRow("› 2. 全部恢复普通标题", "#BFDBFE")
+	selected := assertSurfaceRow("› 2. 全部恢复普通标题", "#A4CDFB")
 	selectedLabel, selectedDescription := false, false
 	for _, run := range selected {
 		if strings.Contains(run.text, "全部恢复普通标题") {
-			selectedLabel = run.bold && strings.EqualFold(run.foreground, "#111827")
+			selectedLabel = run.bold && strings.EqualFold(run.foreground, codexLight.Primary)
 		}
 		if strings.Contains(run.text, "失败或取消") {
-			selectedDescription = strings.EqualFold(run.foreground, "#1E3A8A")
+			selectedDescription = strings.EqualFold(run.foreground, "#24292F")
 		}
 	}
 	if !selectedLabel || !selectedDescription {
@@ -214,7 +211,7 @@ func TestQuestionPanelUsesFullWidthLightSurfaceAndSingleRowSelection(t *testing.
 	hint := findLine("tab to add notes | enter to submit answer | esc to interrupt")
 	for _, run := range hint {
 		if run.text == "tab" || run.text == "enter" || run.text == "esc" {
-			if !run.bold || !strings.EqualFold(run.foreground, "#1F2937") {
+			if !run.bold || !strings.EqualFold(run.foreground, codexLight.Primary) {
 				t.Errorf("shortcut %q style = %#v", run.text, run)
 			}
 		}
@@ -241,15 +238,15 @@ func TestToolActivityPreviewAndExpansion(t *testing.T) {
 		t.Fatalf("expanded tool output = %q", expanded)
 	}
 	header := renderToolActivity("git status --short", nil, false, 80)
-	if !strings.Contains(header, "38;2;37;99;235") || !strings.Contains(header, "38;2;185;28;28") {
+	if !strings.Contains(header, "38;2;89;111;159") || !strings.Contains(header, "38;2;154;99;104") {
 		t.Fatal("tool header is missing blue command and brick-red flag syntax colors")
 	}
 	quoted := renderToolActivity(`Get-Content "a b.txt" -Skip 2`, nil, false, 80)
-	if !strings.Contains(quoted, "38;2;21;128;61") {
+	if !strings.Contains(quoted, "38;2;87;110;78") {
 		t.Fatal("quoted shell string is missing dark-green syntax color")
 	}
 	path := renderLightToolActivity("Read internal/tui/view.go", nil, false, 80, "•")
-	for _, color := range []string{"38;2;22;163;74", "38;2;21;128;61", "48;2;230;244;234"} {
+	for _, color := range []string{"38;2;12;134;12", "38;2;87;110;78"} {
 		if !strings.Contains(path, color) {
 			t.Errorf("Read activity row is missing required color %q: %q", color, path)
 		}
@@ -270,7 +267,7 @@ func TestLightScrollPillClickAndEscapeReturnToLatest(t *testing.T) {
 	if !strings.Contains(ansi.Strip(ui.View().Content), "Back to bottom") {
 		t.Fatal("scrolling away from the latest message should show the scroll pill")
 	}
-	ui.Update(tea.MouseClickMsg{X: ui.width / 2, Y: ui.chat.Height() + 1, Button: tea.MouseLeft})
+	ui.Update(tea.MouseClickMsg{X: ui.width / 2, Y: ui.lightGeometry().header + ui.lightGeometry().body, Button: tea.MouseLeft})
 	if !ui.chat.AtBottom() || strings.Contains(ansi.Strip(ui.View().Content), "Back to bottom") {
 		t.Fatal("clicking the scroll pill should return to the latest message")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -238,18 +239,38 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(windowTitleCmd, m.inspectPausedTask(message.result.coreResult.BudgetReason))
 		}
 		return m, windowTitleCmd
+	case questionDraftTick:
+		if m.question != nil && sameQuestion(m.question.request, message.wait) && m.question.revision == message.revision && !m.question.submitting && !m.question.interrupting {
+			return m, m.saveQuestionDraft(false)
+		}
+		return m, nil
+	case questionDraftSavedMsg:
+		if m.question == nil || !sameQuestion(m.question.request, message.wait) {
+			return m, nil
+		}
+		if message.err != nil {
+			m.question.submitting = false
+			m.question.err = "Could not save answers: " + message.err.Error()
+		} else if message.advance {
+			m.question.submitting = false
+			m.question.current = message.next
+			m.question.loadCurrent()
+		}
+		m.updateLayout()
+		m.refreshPanels()
+		return m, nil
 	case questionAnsweredMsg:
 		if message.sessionID != m.sessionID || m.question == nil || !sameQuestion(m.question.request, message.question) {
 			return m, nil
 		}
-		m.question.submitting = false
 		if message.err != nil {
-			m.question.err = "Could not submit answer: " + message.err.Error()
+			m.question.submitting = true
+			m.question.err = "Could not submit answer: " + message.err.Error() + " · press enter to retry"
 			m.updateLayout()
 			return m, m.inspectPausedTask("")
 		}
-		m.addEntry("question", m.question.displayText, false)
-		m.addEntry("you", message.answer, false)
+		m.question.submitting = false
+		m.addQuestionSummary(message.question, message.answers)
 		if m.question.fromComposer {
 			m.resetInput()
 		}
@@ -324,13 +345,13 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			message.Content = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(message.Content, "\r\n", " "), "\n", " "), "\r", " ")
 			var cmd tea.Cmd
 			m.question.input, cmd = m.question.input.Update(message)
-			if m.question.selected == len(m.question.request.Options) {
+			if m.question.selected == len(m.question.item().Options) {
 				m.question.customDraft = m.question.input.Value()
 			} else {
 				m.question.noteDraft = m.question.input.Value()
 			}
 			m.updateLayout()
-			return m, cmd
+			return m, tea.Batch(cmd, m.saveQuestionDraft(false))
 		}
 		if m.pendingMCPInteraction != nil {
 			return m, m.updateMCPInteractionInput(message)
@@ -391,7 +412,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.questionOpen && m.question != nil {
-			return m.handleQuestionKey(message)
+			model, cmd := m.handleQuestionKey(message)
+			if m.question != nil && !m.question.submitting && !m.question.interrupting {
+				m.question.revision++
+				revision := m.question.revision
+				wait := m.question.request
+				cmd = tea.Batch(cmd, tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return questionDraftTick{wait: wait, revision: revision} }))
+			}
+			return model, cmd
 		}
 		if m.exitConfirm {
 			switch message.String() {

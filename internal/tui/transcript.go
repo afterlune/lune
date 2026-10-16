@@ -29,8 +29,9 @@ type transcriptSelection struct {
 }
 
 type transcriptLine struct {
-	text string
-	role string
+	spans []lightTextSpan
+	text  string
+	role  string
 }
 
 type transcriptVisualLine struct {
@@ -49,6 +50,9 @@ var orderedPlanListItem = regexp.MustCompile(`^\d+[.)]\s+`)
 
 func (m *tuiModel) transcriptLines() []transcriptLine {
 	lines := make([]transcriptLine, 0, len(m.entries)*2)
+	if m.lightLayout() {
+		lines = append(lines, transcriptLine{text: "›_ luneAgent", role: "startup_heading", spans: []lightTextSpan{{0, 2, lipgloss.NewStyle().Foreground(lipgloss.Color("#1C64C8"))}, {3, len("›_ luneAgent"), lightTextStyle().Bold(true)}}}, transcriptLine{text: "   " + m.workspace, role: "startup"}, transcriptLine{})
+	}
 	groups := m.toolActivityGroups()
 	groupAt := make(map[int]toolActivityGroup, len(groups))
 	for _, group := range groups {
@@ -64,7 +68,27 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		entry := &m.entries[entryIndex]
 		width := max(1, m.chat.Width()-2)
 		if entry.role == "plan" && m.lightLayout() {
-			lines = append(lines, lightPlanTranscriptLines(entry.text, max(1, m.chat.Width()-4))...)
+			lines = append(lines, transcriptLine{text: "• Proposed Plan", role: "assistant_heading", spans: []lightTextSpan{{len("• "), len("• Proposed Plan"), lightTextStyle().Bold(true)}}}, transcriptLine{})
+			lines = append(lines, transcriptLine{text: "  ", role: "plan"})
+			lines = append(lines, lightMarkdownLines(entry.text, "plan", m.chat.Width())...)
+			lines = append(lines, transcriptLine{text: "  ", role: "plan"})
+			return
+		}
+		if m.lightLayout() && entry.role == "assistant" {
+			lines = append(lines, lightMarkdownLines(entry.text, "assistant", m.chat.Width())...)
+			return
+		}
+		if m.lightLayout() && entry.role == "question_summary" {
+			for i, line := range strings.Split(entry.text, "\n") {
+				spans := []lightTextSpan{}
+				if i == 0 {
+					line = "• " + line
+					spans = append(spans, lightTextSpan{len("• "), len(line), lightTextStyle().Bold(true)})
+				} else if at := strings.Index(line, "answer: "); at >= 0 {
+					spans = append(spans, lightTextSpan{at, at + 7, lightMutedStyle()}, lightTextSpan{at + 8, len(line), lipgloss.NewStyle().Foreground(lipgloss.Color("#1C64C8"))})
+				}
+				lines = append(lines, transcriptLine{text: line, role: "question_summary", spans: spans})
+			}
 			return
 		}
 		cacheKey := entry.role + "\x00" + entry.text + "\x00" + strconv.FormatBool(entry.incomplete) + "\x00" + strconv.FormatBool(m.lightLayout())
@@ -144,6 +168,9 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		}
 
 		nextIndex := index + 1
+		if m.explorationGroup(group) {
+			nextIndex = group.entries[len(group.entries)-1] + 1
+		}
 		for nextIndex < len(m.entries) && m.entries[nextIndex].role == "tool" && toolActivityGroupKey(m.entries, nextIndex) == group.key {
 			nextIndex++
 		}
@@ -158,42 +185,6 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 		index = nextIndex
 	}
 	return lines
-}
-
-func lightPlanTranscriptLines(text string, width int) []transcriptLine {
-	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
-	var result []transcriptLine
-	for _, raw := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(raw)
-		role := "plan"
-		display := raw
-		switch {
-		case strings.HasPrefix(trimmed, "### "):
-			role = "plan_heading"
-			display = strings.TrimPrefix(trimmed, "### ")
-		case strings.HasPrefix(trimmed, "## "):
-			role = "plan_heading"
-			display = strings.TrimPrefix(trimmed, "## ")
-		case strings.HasPrefix(trimmed, "# "):
-			role = "plan_heading"
-			display = strings.TrimPrefix(trimmed, "# ")
-		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ "):
-			display = "• " + strings.TrimSpace(trimmed[2:])
-		case orderedPlanListItem.MatchString(trimmed):
-			display = "• " + orderedPlanListItem.ReplaceAllString(trimmed, "")
-		default:
-			display = plainConversationText(display)
-		}
-		if strings.TrimSpace(display) == "" {
-			result = append(result, transcriptLine{text: "  ", role: "plan"})
-			continue
-		}
-		wrapped := renderConversationText(display, max(1, width-2))
-		for _, line := range strings.Split(wrapped, "\n") {
-			result = append(result, transcriptLine{text: "  " + line, role: role})
-		}
-	}
-	return result
 }
 
 func (m *tuiModel) toolGroupHasPreview(group toolActivityGroup) bool {
@@ -272,6 +263,21 @@ func (m *tuiModel) toolActivityGroups() []toolActivityGroup {
 			key: key, start: index - 1, entries: []int{index - 1},
 		})
 	}
+	if m.lightLayout() {
+		merged := make([]toolActivityGroup, 0, len(groups))
+		for _, group := range groups {
+			if len(merged) > 0 {
+				last := &merged[len(merged)-1]
+				if last.entries[len(last.entries)-1]+1 == group.start && m.explorationGroup(*last) && m.explorationGroup(group) {
+					last.entries = append(last.entries, group.entries...)
+					continue
+				}
+			}
+			merged = append(merged, group)
+		}
+		groups = merged
+	}
+
 	return groups
 }
 
@@ -284,8 +290,10 @@ func (m *tuiModel) toolActivitiesForGroup(group toolActivityGroup) []tuiActivity
 					activities = append(activities, activity)
 				}
 			}
-			return activities
 		}
+	}
+	if len(activities) > 0 {
+		return activities
 	}
 	for _, activity := range m.activities {
 		if activity.callID == group.key {
@@ -500,14 +508,20 @@ func (m *tuiModel) closeTranscriptSearch(keepMatch bool) {
 }
 
 func (m *tuiModel) transcriptPointAt(x, y int) (int, int, bool) {
-	y-- // the session header occupies the first terminal row
+	if m.lightLayout() {
+		g := m.lightGeometry()
+		y -= g.header
+		x -= g.margin
+	} else {
+		y--
+	}
 	if m.detailsOpen || y < 0 || y >= m.chat.Height() {
 		return 0, 0, false
 	}
 	content, _ := m.transcriptContent()
 	lines := wrapTranscriptContent(content, m.chat.Width())
 	if m.lightLayout() {
-		lines = wrapTextSegments(content, m.chat.Width(), m.inlineCodeRanges(content))
+		lines = m.lightVisualLines
 	}
 	lineIndex := m.chat.YOffset() + y
 	if lineIndex < 0 || lineIndex >= len(lines) {

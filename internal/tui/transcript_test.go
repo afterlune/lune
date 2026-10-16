@@ -241,7 +241,7 @@ func TestLightTranscriptViewportUsesTheStyledWrapRows(t *testing.T) {
 	}
 
 	source, _ := ui.transcriptContent()
-	visual := wrapTextSegments(source, ui.chat.Width(), ui.inlineCodeRanges(source))
+	visual := wrapTextSegments(source, ui.chat.Width(), nil)
 	actual := strings.Split(ui.chat.GetContent(), "\n")
 	if len(actual) != len(visual) {
 		t.Fatalf("viewport rows=%d, styled rows=%d", len(actual), len(visual))
@@ -253,7 +253,7 @@ func TestLightTranscriptViewportUsesTheStyledWrapRows(t *testing.T) {
 	}
 	styled := ansi.Strip(ui.styleLightTranscript(ui.chat.View()))
 	for _, token := range []string{"internal/cli/paused_test.go", "internal/cli/core_cli.go"} {
-		if !strings.Contains(styled, token) {
+		if !strings.Contains(strings.ReplaceAll(styled, "\n", ""), token) {
 			t.Fatalf("styled transcript lost inline code token %q: %q", token, styled)
 		}
 	}

@@ -310,6 +310,7 @@ type fakeSessionRuntime struct {
 	pendingRequests    []core.PendingRequest
 	pendingRequestsErr error
 	resolvedQuestions  []core.UserQuestionAnswer
+	resolveQuestionErr error
 }
 
 type fakeTurn struct {
@@ -464,7 +465,9 @@ func (r *fakeSessionRuntime) ResolveApproval(id string, allowed bool) error {
 
 func (r *fakeSessionRuntime) ResolveUserQuestion(_ context.Context, answer core.UserQuestionAnswer) error {
 	r.resolvedQuestions = append(r.resolvedQuestions, answer)
-	return nil
+	err := r.resolveQuestionErr
+	r.resolveQuestionErr = nil
+	return err
 }
 func (r *fakeSessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {
 	return r.owner.ResolveUserInteraction(id, response)
@@ -475,4 +478,15 @@ func (*fakeSessionRuntime) ResolveToolRecovery(context.Context, string, core.Too
 }
 func (*fakeSessionRuntime) ImplementPlan(context.Context, string, core.PlanImplementationMode, ...core.PlanAuthorization) (core.PlanImplementation, error) {
 	return core.PlanImplementation{}, nil
+}
+
+func (r *fakeSessionRuntime) SaveUserQuestionDraft(_ context.Context, wait core.UserQuestionAnswer, draft core.UserQuestionDraft) error {
+	for i := range r.pendingRequests {
+		if q := r.pendingRequests[i].UserQuestion; q != nil && q.CallID == wait.CallID {
+			copy := draft
+			copy.Responses = append([]core.UserQuestionDraftResponse(nil), draft.Responses...)
+			q.Draft = &copy
+		}
+	}
+	return nil
 }

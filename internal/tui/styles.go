@@ -19,7 +19,6 @@ type LightTheme struct {
 	Muted       string
 	Subtle      string
 	Success     string
-	CodeSurface string
 	CodeText    string
 	Flag        string
 	PillSurface string
@@ -30,10 +29,10 @@ type LightTheme struct {
 }
 
 var codexLight = LightTheme{
-	Canvas: "#FFFFFF", Surface: "#F3F4F6", Primary: "#1F2937", Muted: "#6B7280",
-	Subtle: "#9CA3AF", Success: "#16A34A", CodeSurface: "#E6F4EA", CodeText: "#15803D",
-	Flag: "#B91C1C", PillSurface: "#E0F2FE", PillText: "#0284C7", Mode: "#C026D3",
-	TaskSummary: "#B45309", Error: "#B91C1C",
+	Canvas: "#FFFFFF", Surface: "#F4F4F4", Primary: "#24292F", Muted: "#9A9C9F",
+	Subtle: "#A3A6A9", Success: "#0C860C", CodeText: "#576E4E",
+	Flag: "#9A6368", PillSurface: "#E0F2FE", PillText: "#0284C7", Mode: "#C026D3",
+	TaskSummary: "#9A9C9F", Error: "#9A6368",
 }
 
 func wrapAndPadLines(text, indent string, totalWidth int, textStyle lipgloss.Style, bg color.Color) []string {
@@ -68,7 +67,7 @@ func renderFullWidthBlankLine(width int, bg color.Color) string {
 }
 
 func inlineCodeStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText)).Background(lipgloss.Color(codexLight.CodeSurface))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText))
 }
 
 func lightTextStyle() lipgloss.Style {
@@ -131,7 +130,7 @@ func renderLightToolHeader(marker, title, markerColor string) string {
 	if verb == "" {
 		return markerRun + space + lightTextStyle().Render(title)
 	}
-	verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)
+	verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
 	if strings.HasPrefix(verb, "Failed") {
 		verbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Bold(true)
 	}
@@ -181,7 +180,7 @@ func renderLightActionTarget(verb, target string) string {
 	style := lightTextStyle()
 	fields := strings.Fields(target)
 	if len(fields) > 0 && actionTargetIsPath(verb, target) {
-		style = lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color(codexLight.CodeSurface))
+		style = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText))
 	}
 	return style.Render(target) + lightTextStyle().Render(details)
 }
@@ -257,9 +256,9 @@ func lightCommandLineRanges(line string, commandStart int, command string) []lip
 }
 
 func lightCommandSegments(command string) []lightCommandStyleRange {
-	commandStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#2563EB"))
-	flagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#B91C1C"))
-	quotedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D"))
+	commandStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#596F9F"))
+	flagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9A6368"))
+	quotedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText))
 	var ranges []lightCommandStyleRange
 	tokenIndex := 0
 	for cursor := 0; cursor < len(command); {

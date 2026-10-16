@@ -31,11 +31,12 @@ func (m *tuiModel) refreshPanels() {
 	oldOffset := m.chat.YOffset()
 	lines := m.transcriptLines()
 	sourceContent, roles := transcriptContent(lines)
+	m.lightStyleSpans = transcriptStyleSpans(lines)
 	content := sourceContent
 	light := m.lightLayout()
 	m.chat.SoftWrap = !light
 	if light {
-		m.lightCodeRanges = m.inlineCodeRanges(sourceContent)
+		m.lightCodeRanges = nil
 		m.lightVisualLines = wrapTextSegments(sourceContent, max(1, m.chat.Width()), m.lightCodeRanges)
 		m.lightVisualRoles = visualTranscriptRoles(lines, m.lightVisualLines)
 		visualContent := make([]string, len(m.lightVisualLines))
@@ -75,6 +76,13 @@ func (m *tuiModel) refreshPanels() {
 	}
 	m.applyTranscriptHighlights()
 	m.activity.SetContent(m.activityDetailsContent())
+	if m.lightLayout() {
+		m.updateLightLayout()
+		if followLatest {
+			m.chat.GotoBottom()
+		}
+		m.updateLightLayout()
+	}
 }
 
 func visualTranscriptRoles(lines []transcriptLine, visual []transcriptVisualLine) []string {
@@ -104,6 +112,10 @@ func (m *tuiModel) updateLayout() {
 	}
 	if m.height <= 0 {
 		m.height = 24
+	}
+	if m.lightLayout() {
+		m.updateLightLayout()
+		return
 	}
 	contentWidth := max(1, m.width)
 	inputWidth := contentWidth
@@ -169,6 +181,10 @@ func (m *tuiModel) handleScrollPillClick(x, y int) bool {
 		return false
 	}
 	pillY := 1 + m.chat.Height()
+	if m.lightLayout() {
+		g := m.lightGeometry()
+		pillY = g.header + g.body
+	}
 	if m.searchOpen {
 		pillY++
 	}
@@ -290,6 +306,9 @@ func (m *tuiModel) renderAuxiliaryPanel(suggestions string) string {
 }
 
 func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
+	if m.lightLayout() {
+		return m.renderLightWorkspace()
+	}
 	colors := m.themeColors()
 	body := m.renderSessionWorkspaceBody(width)
 	centerWidth := max(1, width)
@@ -417,10 +436,13 @@ func (m *tuiModel) renderLiveActivity(width int) string {
 	action := m.currentLiveAction()
 	frame := titleSpinner[m.windowTitleFrame%len(titleSpinner)]
 	label := fmt.Sprintf("%s Working · %s (%s · Esc to cancel)", frame, action, m.taskElapsed())
+	if m.lightLayout() {
+		label = fmt.Sprintf("• Working (%s • esc to interrupt)", m.taskElapsed())
+	}
 	colors := m.themeColors()
 	color := colors.Accent
 	if m.lightLayout() {
-		color = codexLight.Mode
+		color = codexLight.Muted
 	}
 	return fitTerminalText(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(label), max(1, width))
 }
@@ -701,13 +723,16 @@ func (m *tuiModel) renderQueuePicker() string {
 func (m *tuiModel) renderPlanReview() string {
 	colors := m.themeColors()
 	width := max(1, m.width)
+	if m.lightLayout() {
+		width = m.lightPanelWidth()
+	}
 	innerWidth := max(1, width-4)
 	bg := color.Color(lipgloss.Color(codexLight.Surface))
 	if !m.lightLayout() {
 		bg = m.questionSurface()
 	}
 	background := lipgloss.NewStyle().Background(bg)
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Background(bg).Bold(true)
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Background(bg).Bold(true)
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Muted))
 	if !m.lightLayout() {
 		titleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Background(bg).Bold(true)
@@ -736,7 +761,7 @@ func (m *tuiModel) renderPlanReview() string {
 		if index == selected {
 			marker = "› "
 			if m.lightLayout() {
-				rowBG, foreground, descriptionForeground = lipgloss.Color("#BFDBFE"), "#111827", "#1E3A8A"
+				rowBG, foreground, descriptionForeground = lipgloss.Color("#A4CDFB"), codexLight.Primary, "#24292F"
 			} else {
 				rowBG, foreground, descriptionForeground = lipgloss.Color(colors.Accent), colors.Background, colors.Background
 			}
@@ -761,7 +786,7 @@ func (m *tuiModel) renderPlanReview() string {
 	rows = append(rows, fillQuestionRow("", width, bg))
 	hintKey := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true)
 	if m.lightLayout() {
-		hintKey = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F2937")).Bold(true)
+		hintKey = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
 	}
 	var hint strings.Builder
 	hint.WriteString(hintKey.Render("enter"))
@@ -784,6 +809,9 @@ func (m *tuiModel) renderCommandSuggestions() string {
 }
 
 func (m *tuiModel) renderCommandSuggestionsForHeight(maxLines int) string {
+	if m.lightLayout() {
+		return m.renderLightCommandSuggestions(maxLines)
+	}
 	colors := m.themeColors()
 	if m.permissionMenu || len(m.commandSuggestions) == 0 || maxLines <= 0 {
 		return ""
@@ -995,7 +1023,7 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 	for rowIndex := range rows {
 		visualIndex := m.chat.YOffset() + rowIndex
 		if visualIndex < 0 || visualIndex >= len(m.lightVisualLines) {
-			rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.width), lipgloss.Left, "",
+			rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.chat.Width()), lipgloss.Left, "",
 				lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color(codexLight.Canvas))))
 			continue
 		}
@@ -1006,22 +1034,15 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 		}
 		plainLine := visual.text
 		lineRanges := make([]lipgloss.Range, 0, 8)
-		for _, code := range m.lightCodeRanges {
-			start := max(code[0], visual.start)
-			end := min(code[1], visual.end)
+		for _, span := range m.lightStyleSpans {
+			start, end := max(span.start, visual.start), min(span.end, visual.end)
 			if start >= end {
 				continue
 			}
-			left := lipgloss.Width(visual.text[:start-visual.start])
-			right := lipgloss.Width(visual.text[:end-visual.start])
-			lineRanges = append(lineRanges, lipgloss.NewRange(left, right, inlineCodeStyle()))
+			left, right := lipgloss.Width(visual.text[:start-visual.start]), lipgloss.Width(visual.text[:end-visual.start])
+			lineRanges = append(lineRanges, lipgloss.NewRange(left, right, span.style))
 		}
 		lineRanges = append(lineRanges, lightToolLineRanges(plainLine, role)...)
-		lineRanges = append(lineRanges, lightTokenRanges(plainLine)...)
-		if role == "plan_heading" && lipgloss.Width(plainLine) > 2 {
-			lineRanges = append(lineRanges, lipgloss.NewRange(2, lipgloss.Width(plainLine),
-				lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)))
-		}
 		for _, match := range m.searchMatches {
 			start, end := max(match[0], visual.start), min(match[1], visual.end)
 			if start < end {
@@ -1047,16 +1068,19 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 			foreground, background = codexLight.Primary, codexLight.Surface
 		} else if role == "tool_done" {
 			foreground = codexLight.Muted
-		} else if role == "turn_footer" {
+		} else if role == "turn_footer" || role == "startup" {
 			foreground = codexLight.Muted
 		} else if role == "error" {
 			foreground = codexLight.Error
 		}
 		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(lipgloss.Color(background)).Render(plainLine)
 		if len(lineRanges) > 0 {
+			for i := range lineRanges {
+				lineRanges[i].Style = lineRanges[i].Style.Background(lipgloss.Color(background))
+			}
 			styled = lipgloss.StyleRanges(styled, lineRanges...)
 		}
-		rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.width), lipgloss.Left, styled,
+		rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.chat.Width()), lipgloss.Left, styled,
 			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color(background))))
 	}
 	return strings.Join(rows, "\n")
@@ -1173,7 +1197,7 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 		}
 		start := markerWidth + 1
 		verbByteStart := markerByteWidth + 1
-		verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#111827")).Bold(true)
+		verbStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Primary)).Bold(true)
 		if verb == "Failed" {
 			verbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.Error)).Bold(true)
 		}
@@ -1220,44 +1244,13 @@ func lightToolLineRanges(line, role string) []lipgloss.Range {
 			}
 			pathTarget := strings.TrimSpace(target[:targetEnd])
 			if actionTargetIsPath(verb, pathTarget) {
-				pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#15803D")).Background(lipgloss.Color("#E6F4EA"))
+				pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.CodeText))
 				pathStart := commandStart + strings.Index(command, pathTarget)
 				pathEnd := pathStart + len(pathTarget)
 				ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:pathStart]), lipgloss.Width(line[:pathEnd]), pathStyle))
 			}
 		}
 		break
-	}
-	return ranges
-}
-
-func lightTokenRanges(line string) []lipgloss.Range {
-	var ranges []lipgloss.Range
-	for cursor := 0; cursor < len(line); {
-		for cursor < len(line) && (line[cursor] == ' ' || line[cursor] == '\t') {
-			cursor++
-		}
-		start := cursor
-		for cursor < len(line) && line[cursor] != ' ' && line[cursor] != '\t' {
-			cursor++
-		}
-		if start == cursor {
-			break
-		}
-		word := strings.Trim(line[start:cursor], "()[]{}.,:;\"'")
-		isHash := len(word) >= 7 && len(word) <= 40
-		for _, character := range word {
-			if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
-				isHash = false
-				break
-			}
-		}
-		if !isHash && !strings.HasPrefix(word, "origin/") {
-			continue
-		}
-		wordStart := start + strings.Index(line[start:cursor], word)
-		wordEnd := wordStart + len(word)
-		ranges = append(ranges, lipgloss.NewRange(lipgloss.Width(line[:wordStart]), lipgloss.Width(line[:wordEnd]), inlineCodeStyle()))
 	}
 	return ranges
 }

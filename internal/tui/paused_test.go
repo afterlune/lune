@@ -43,7 +43,7 @@ func TestPausedQuestionIsRestoredAsAnAnswerTarget(t *testing.T) {
 	runtime.status = core.TaskPaused
 	runtime.pendingRequests = []core.PendingRequest{{
 		Kind:         core.PendingUserQuestion,
-		UserQuestion: &core.UserQuestionRequest{Question: "Choose a number", Options: []core.UserQuestionOption{{Label: "1"}, {Label: "2"}}},
+		UserQuestion: &core.UserQuestionRequest{Questions: []core.UserQuestionItem{{ID: "q1", Question: "Choose a number", Options: []core.UserQuestionOption{{Label: "1"}, {Label: "2"}}}}},
 	}}
 	ui := newTUIModel(client, true)
 	ui.sessionID = "session-1"
@@ -70,11 +70,7 @@ func TestPausedQuestionAcceptsNumberedChoice(t *testing.T) {
 	client := &fakeResponder{pending: true}
 	runtime := newFakeSessionRuntime(client, "session-1", client.runTask)
 	runtime.status = core.TaskPaused
-	question := core.UserQuestionRequest{
-		ExecutionID: "execution-1",
-		Question:    "Choose a color",
-		Options:     []core.UserQuestionOption{{Label: "blue"}, {Label: "green"}},
-	}
+	question := core.UserQuestionRequest{ExecutionID: "execution-1", Questions: []core.UserQuestionItem{{ID: "q1", Question: "Choose a color", Options: []core.UserQuestionOption{{Label: "blue"}, {Label: "green"}}}}}
 	ui := newTUIModel(client, true)
 	ui.sessionID = "session-1"
 	ui.runtime = runtime
@@ -85,7 +81,7 @@ func TestPausedQuestionAcceptsNumberedChoice(t *testing.T) {
 	if command != nil {
 		ui.Update(command())
 	}
-	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answer != "blue" {
+	if len(runtime.resolvedQuestions) != 1 || runtime.resolvedQuestions[0].Answers[0].Answer != "blue" {
 		t.Fatalf("numeric answer was not mapped to the first option: %#v", runtime.resolvedQuestions)
 	}
 }

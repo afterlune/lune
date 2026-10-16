@@ -67,7 +67,7 @@ func TestSessionHeaderStaysSeparateFromFilteredToolOutput(t *testing.T) {
 	ui.activityExpanded[group.key] = true
 	ui.refreshPanels()
 	lines := strings.Split(plainTUIView(ui), "\n")
-	if len(lines) == 0 || !strings.HasPrefix(lines[0], "• luneAgent") || strings.Contains(lines[0], "visible result") {
+	if len(lines) == 0 || !strings.HasPrefix(strings.TrimSpace(lines[0]), "›_ luneAgent") || strings.Contains(lines[0], "visible result") {
 		t.Fatalf("session header absorbed tool output: %#v", lines)
 	}
 	plain := strings.Join(lines, "\n")
