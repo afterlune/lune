@@ -18,13 +18,10 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case windowTitleTickMsg:
-		if message.sessionID != m.sessionID || message.token != m.windowTitleAnimationToken || !m.running || m.hasPendingUserQuestion() {
+		if message.sessionID != m.sessionID || message.token != m.windowTitleAnimationToken || !m.running {
 			return m, nil
 		}
-		m.windowTitleFrame = (m.windowTitleFrame + 1) % len(windowTitleSpinner)
-		if m.hasCollapsedRunningToolActivity() {
-			m.refreshPanels()
-		}
+		m.windowTitleFrame = (m.windowTitleFrame + 1) % len(titleSpinner)
 		return m, nextWindowTitleTick(message.sessionID, message.token)
 	case sessionWindowTitleMsg:
 		if message.sessionID == m.sessionID && message.revision == m.windowTitleRevision && message.err == nil {
@@ -276,11 +273,17 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.detailsOpen {
 			m.activity, _ = m.activity.Update(message)
 		} else {
+			if message.Button == tea.MouseWheelUp {
+				m.autoScroll = false
+			}
 			m.chat, _ = m.chat.Update(message)
 			if m.chat.AtBottom() {
 				m.unreadEntries = 0
+				if message.Button == tea.MouseWheelDown {
+					m.autoScroll = true
+				}
 			}
-			m.reflowAfterChatScroll(m.chat.AtBottom())
+			m.reflowAfterChatScroll(m.chat.AtBottom() && m.autoScroll)
 		}
 		return m, nil
 	case tea.MouseClickMsg:
@@ -571,7 +574,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateLayout()
 				return m, nil
 			}
-			if !m.chat.AtBottom() {
+			if !m.autoScroll || !m.chat.AtBottom() {
 				m.jumpToLatest()
 			}
 			m.interrupt()
@@ -618,6 +621,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m.submit()
 		}
 		if m.matchesKey("chat_scroll_up", message) {
+			m.autoScroll = false
 			m.chat.HalfPageUp()
 			m.reflowAfterChatScroll(false)
 			return m, nil
@@ -625,12 +629,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.matchesKey("chat_scroll_down", message) {
 			m.chat.HalfPageDown()
 			if m.chat.AtBottom() {
+				m.autoScroll = true
 				m.unreadEntries = 0
 			}
 			m.reflowAfterChatScroll(m.chat.AtBottom())
 			return m, nil
 		}
 		if m.matchesKey("activity_scroll_up", message) {
+			m.autoScroll = false
 			m.chat.HalfPageUp()
 			m.reflowAfterChatScroll(false)
 			return m, nil
@@ -638,6 +644,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.matchesKey("activity_scroll_down", message) {
 			m.chat.HalfPageDown()
 			if m.chat.AtBottom() {
+				m.autoScroll = true
 				m.unreadEntries = 0
 			}
 			m.reflowAfterChatScroll(m.chat.AtBottom())

@@ -29,6 +29,7 @@ type questionPanel struct {
 	scroll       int
 	manualScroll bool
 	err          string
+	cursorRow    int
 }
 
 type questionAnsweredMsg struct {
@@ -46,7 +47,7 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	if m.question != nil && sameQuestion(m.question.request, request) {
 		m.question.request = request
 		m.question.selected = min(m.question.selected, len(request.Options))
-		if len(request.Options) < 2 {
+		if len(request.Options) < 2 || m.question.selected == len(request.Options) {
 			m.question.notes = true
 			m.question.input.Focus()
 		}
@@ -62,7 +63,7 @@ func (m *tuiModel) openQuestion(request core.UserQuestionRequest) {
 	input.DynamicHeight = true
 	input.MinHeight = 1
 	input.MaxHeight = 4
-	input.SetVirtualCursor(true)
+	input.SetVirtualCursor(false)
 	input.SetWidth(m.questionInputWidth())
 	applyTextareaTheme(&input, m.resolvedTheme())
 	m.question = &questionPanel{request: request, input: input, notes: len(request.Options) < 2}
@@ -116,12 +117,25 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hasChoices && !q.notes && m.matchesKey("question_previous", key):
 		q.selected = max(0, q.selected-1)
+		q.err = ""
 		q.manualScroll = false
 	case hasChoices && !q.notes && m.matchesKey("question_next", key):
 		q.selected = min(len(q.request.Options), q.selected+1)
+		q.err = ""
 		q.manualScroll = false
+		if q.selected == len(q.request.Options) {
+			q.notes = true
+			m.updateLayout()
+			return m, q.input.Focus()
+		}
 	case m.matchesKey("send", key):
 		answer := strings.TrimSpace(q.input.Value())
+		if answer == "" && (!hasChoices || q.selected == len(q.request.Options)) {
+			q.notes = true
+			q.err = "Type your own answer before submitting."
+			m.updateLayout()
+			return m, q.input.Focus()
+		}
 		if hasChoices && q.selected < len(q.request.Options) {
 			label := q.request.Options[q.selected].Label
 			if answer != "" {
@@ -136,6 +150,13 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if hasChoices {
 				if n, err := strconv.Atoi(key.String()); err == nil && n > 0 && n <= len(q.request.Options)+1 {
 					q.selected = n - 1
+					q.err = ""
+					q.manualScroll = false
+					if q.selected == len(q.request.Options) {
+						q.notes = true
+						m.updateLayout()
+						return m, q.input.Focus()
+					}
 					return m, nil
 				}
 			}
@@ -143,7 +164,7 @@ func (m *tuiModel) handleQuestionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			q.notes = true
-			q.selected = len(q.request.Options)
+			q.err = ""
 			q.input.Focus()
 		}
 		var cmd tea.Cmd
@@ -172,11 +193,12 @@ func (m *tuiModel) renderQuestion() string {
 	if light {
 		indent = "  "
 		textStyle = lightTextStyle()
-		descriptionStyle = lightTextStyle()
+		descriptionStyle = lightMutedStyle()
 		accent = lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary))
 		muted = lightMutedStyle()
 	}
 	lines := make([]string, 0, len(q.request.Options)*2+5)
+	notesLine := -1
 	appendText := func(value, lineIndent string, style lipgloss.Style) {
 		if light {
 			lines = append(lines, wrapAndPadLines(value, lineIndent, m.width, style, bg)...)
@@ -186,12 +208,19 @@ func (m *tuiModel) renderQuestion() string {
 			lines = append(lines, style.Render(line))
 		}
 	}
-	appendText("Question", indent, muted)
+	questionTitle := "⚠ Question"
+	questionTitleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Warning)).Bold(true)
+	appendText(questionTitle, indent, questionTitleStyle)
 	appendText(q.request.Question, indent, textStyle)
 	count := len(q.request.Options)
 	hasChoices := count >= 2
 	focusLine := 0
 	if hasChoices {
+		if light {
+			lines = append(lines, renderFullWidthBlankLine(m.width, bg))
+		} else {
+			lines = append(lines, "")
+		}
 		// Keep the selected choice visible even on short terminals.
 		for i := 0; i <= count; i++ {
 			label, description := "None of the above", "Type your own answer in notes"
@@ -212,7 +241,7 @@ func (m *tuiModel) renderQuestion() string {
 			appendText(row, indent, style)
 			if description != "" {
 				if light {
-					appendText(description, "      ", descriptionStyle)
+					appendText(description, "   ", descriptionStyle)
 				} else {
 					appendText("     "+description, "", muted)
 				}
@@ -220,11 +249,14 @@ func (m *tuiModel) renderQuestion() string {
 		}
 	}
 	if q.notes {
+		notesLine = len(lines)
+		var inputRows []string
 		if light {
-			lines = append(lines, wrapStyledQuestionInput(q.input.View(), indent, m.width, bg)...)
+			inputRows = wrapStyledQuestionInput(q.input.View(), indent, m.width, bg)
 		} else {
-			lines = append(lines, q.input.View())
+			inputRows = strings.Split(q.input.View(), "\n")
 		}
+		lines = append(lines, inputRows...)
 		focusLine = max(0, len(lines)-1)
 	}
 	if q.err != "" {
@@ -255,11 +287,24 @@ func (m *tuiModel) renderQuestion() string {
 	totalLines := len(body)
 	offset = min(offset, max(0, totalLines-budget))
 	body = body[offset:min(len(body), offset+budget)]
+	if notesLine >= 0 {
+		cursorY := 0
+		if cursor := q.input.Cursor(); cursor != nil {
+			cursorY = cursor.Y
+		}
+		q.cursorRow = notesLine - offset + cursorY
+		if light {
+			q.cursorRow++
+		}
+	} else {
+		q.cursorRow = 0
+	}
 	if offset > 0 || offset+budget < totalLines {
 		hint = "PgUp/PgDn scroll · " + hint
 	}
 	if light {
 		content := append([]string(nil), body...)
+		content = append(content, renderFullWidthBlankLine(m.width, bg))
 		content = append(content, wrapAndPadLines(hint, indent, m.width, muted, bg)...)
 		content = append([]string{renderFullWidthBlankLine(m.width, bg)}, content...)
 		content = append(content, renderFullWidthBlankLine(m.width, bg))

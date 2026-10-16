@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -51,7 +52,11 @@ func activityKey(event core.ToolCall) string {
 	return key
 }
 
-func toolActivityTitle(activity tuiActivity) string {
+func toolActivityTitle(activity tuiActivity, workspace ...string) string {
+	workspaceRoot := ""
+	if len(workspace) > 0 {
+		workspaceRoot = workspace[0]
+	}
 	if d := activity.details; d != nil {
 		if c := d.Command; c != nil {
 			status := c.Command.Status
@@ -62,15 +67,24 @@ func toolActivityTitle(activity tuiActivity) string {
 		}
 		if len(d.Changes) > 0 {
 			change := d.Changes[0]
-			title := fmt.Sprintf("Edited %s (+%d -%d)", safeDisplayPath(change.Path), change.Added, change.Removed)
-			return title + " · " + activity.status
+			title := fmt.Sprintf("Edited %s (+%d -%d)", displayToolPath(change.Path, workspaceRoot), change.Added, change.Removed)
+			return activityStatusSuffix(title, activity.status)
 		}
 	}
 	if strings.HasPrefix(activity.summary, "Run ") {
 		command := strings.TrimPrefix(activity.summary, "Run ")
 		return commandActivityTitle(command, publictool.CommandStatus(activity.status), nil)
 	}
-	return activity.summary + " · " + activity.status
+	return activityStatusSuffix(activity.summary, activity.status)
+}
+
+func activityStatusSuffix(title, status string) string {
+	switch status {
+	case "failed", "cancelled", "timed_out", "interrupted", "paused":
+		return title + " · " + strings.ReplaceAll(status, "_", " ")
+	default:
+		return title
+	}
 }
 
 func commandActivityTitle(command string, status publictool.CommandStatus, exitCode *int) string {
@@ -127,6 +141,9 @@ func activityDetailLines(activity tuiActivity) []transcriptLine {
 	}
 	if output != "" {
 		for _, s := range strings.Split(strings.TrimRight(safeToolText(output), "\n"), "\n") {
+			if internalToolMetadataLine(s) {
+				continue
+			}
 			lines = append(lines, transcriptLine{text: s, role: "tool"})
 		}
 	}
@@ -148,6 +165,12 @@ func activityDetailLines(activity tuiActivity) []transcriptLine {
 	return lines
 }
 
+var internalToolMetadata = regexp.MustCompile(`^\[next_start_line=\d+;\s*more=(?:true|false);\s*line_truncated=(?:true|false)\]$`)
+
+func internalToolMetadataLine(line string) bool {
+	return internalToolMetadata.MatchString(strings.TrimSpace(line))
+}
+
 func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolActivityGroup, selected, expanded bool) []transcriptLine {
 	activities := m.toolActivitiesForGroup(group)
 	if m.lightLayout() {
@@ -156,30 +179,47 @@ func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolAct
 		if len(activities) > 0 {
 			activity, hasActivity = activities[len(activities)-1], true
 		}
-		title := "Tool activity"
-		var output []string
-		if hasActivity {
-			title = safeToolText(toolActivityTitle(activity))
-			for _, detail := range activityDetailLines(activity) {
-				if detail.text != "" {
-					output = append(output, detail.text)
-				}
-			}
-		} else if len(group.entries) > 0 {
-			index := group.entries[len(group.entries)-1]
-			if index >= 0 && index < len(m.entries) {
-				title = safeToolText(m.entries[index].text)
-			}
-		}
 		marker := "•"
 		if selected {
 			marker = "›"
 		} else if hasActivity && activity.status == "running" {
-			marker = windowTitleSpinner[m.windowTitleFrame%len(windowTitleSpinner)]
+			marker = titleSpinner[m.windowTitleFrame%len(titleSpinner)]
 		} else if hasActivity && activity.status == "failed" {
 			marker = "×"
 		}
-		block := ansi.Strip(renderLightToolActivity(title, output, expanded, max(1, m.chat.Width()), marker))
+		width := max(1, m.chat.Width())
+		cacheable := hasActivity && !selected && activity.status != "running"
+		block := ""
+		if cacheable && activity.cachedRender != "" && activity.cachedWidth == width && activity.cachedOpen == expanded {
+			block = activity.cachedRender
+		} else {
+			title := "Tool activity"
+			var output []string
+			if hasActivity {
+				title = safeToolText(toolActivityTitle(activity, m.workspace))
+				for _, detail := range activityDetailLines(activity) {
+					if detail.text != "" {
+						output = append(output, detail.text)
+					}
+				}
+			} else if len(group.entries) > 0 {
+				index := group.entries[len(group.entries)-1]
+				if index >= 0 && index < len(m.entries) {
+					title = safeToolText(m.entries[index].text)
+				}
+			}
+			block = ansi.Strip(renderLightToolActivity(title, output, expanded, width, marker))
+			if cacheable {
+				for index := range m.activities {
+					if m.activities[index].callID == activity.callID {
+						m.activities[index].cachedRender = block
+						m.activities[index].cachedWidth = width
+						m.activities[index].cachedOpen = expanded
+						break
+					}
+				}
+			}
+		}
 		block = strings.ReplaceAll(block, "ctrl+t", m.keyLabel("activity_toggle_latest"))
 		for _, line := range strings.Split(block, "\n") {
 			role := "tool"
@@ -196,7 +236,7 @@ func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolAct
 		if latest, ok := m.latestToolActivity(group); ok {
 			role = activityTranscriptRole(latest)
 			if latest.status == "running" {
-				marker = windowTitleSpinner[m.windowTitleFrame%len(windowTitleSpinner)] + " "
+				marker = titleSpinner[m.windowTitleFrame%len(titleSpinner)] + " "
 			} else {
 				marker = activityBadge(latest.status) + " "
 			}
@@ -228,7 +268,7 @@ func (m *tuiModel) appendToolActivityGroup(lines []transcriptLine, group toolAct
 			marker = "• "
 		}
 		role := activityTranscriptRole(activity)
-		for lineIndex, title := range strings.Split(safeToolText(toolActivityTitle(activity)), "\n") {
+		for lineIndex, title := range strings.Split(safeToolText(toolActivityTitle(activity, m.workspace)), "\n") {
 			if lineIndex > 0 {
 				title = "  " + title
 			} else {

@@ -187,6 +187,13 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) tea.Cmd {
 		m.updateToolActivity(event.Tool)
 	case core.EventAgentStarted, core.EventAgentFinished:
 		m.updateTeamActivity(event)
+	case core.EventUserQuestionRequired:
+		if event.UserQuestion != nil {
+			request := *event.UserQuestion
+			m.pendingRequest = &core.PendingRequest{Kind: core.PendingUserQuestion, UserQuestion: &request}
+			m.pending = true
+			m.openQuestion(request)
+		}
 	case core.EventApprovalRequired:
 		if event.Approval != nil {
 			request := toolApprovalRequestMsg{request: *event.Approval}

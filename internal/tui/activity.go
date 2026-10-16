@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -214,7 +215,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 	if (event.Name == "command_status" || event.Name == "command_stop") && event.Details == nil {
 		return
 	}
-	key := activityKey(event)
+	key := m.toolActivityKey(event)
 	groupID := toolActivityGroupID(event, key, m.runningExecutionID, len(m.activities))
 	index := -1
 	for i := range m.activities {
@@ -231,6 +232,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 		m.activities = append(m.activities, tuiActivity{callID: key, groupID: groupID, status: "running"})
 	}
 	activity := &m.activities[index]
+	activity.cachedRender = ""
 	if groupID != "" {
 		activity.groupID = groupID
 	}
@@ -279,7 +281,7 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 			break
 		}
 	}
-	text := toolActivityTitle(*activity)
+	text := toolActivityTitle(*activity, m.workspace)
 	m.clearTranscriptSelection()
 	if entryIndex < 0 {
 		m.entries = append(m.entries, tuiEntry{role: "tool", text: text, err: activity.status == "failed", activityID: key, activityGroupID: groupID})
@@ -287,7 +289,44 @@ func (m *tuiModel) updateToolActivity(event core.ToolCall) {
 		m.entries[entryIndex].text = text
 		m.entries[entryIndex].err = activity.status == "failed"
 		m.entries[entryIndex].activityID = key
+		m.entries[entryIndex].cachedRender = ""
 	}
+}
+
+func (m *tuiModel) toolActivityKey(event core.ToolCall) string {
+	if event.Details != nil && event.Details.Command != nil {
+		command := event.Details.Command.Command
+		if command.InvocationID != "" {
+			event.InvocationID = command.InvocationID
+		}
+		if command.ExecutionID != "" {
+			event.ExecutionID = command.ExecutionID
+		}
+	}
+	key := activityKey(event)
+	if alias := m.toolActivityAliases[key]; alias != "" {
+		return alias
+	}
+	for _, id := range []string{event.ID, event.InvocationID} {
+		if id == "" {
+			continue
+		}
+		aliasKey := id
+		if event.AgentID != "" {
+			aliasKey = event.AgentID + ":" + aliasKey
+		}
+		if event.ExecutionID != "" {
+			aliasKey = event.ExecutionID + ":" + id
+			if event.AgentID != "" {
+				aliasKey = event.ExecutionID + ":" + event.AgentID + ":" + id
+			}
+		}
+		if alias := m.toolActivityAliases[aliasKey]; alias != "" {
+			m.toolActivityAliases[key] = alias
+			return alias
+		}
+	}
+	return key
 }
 
 func toolActivityGroupID(event core.ToolCall, key, currentExecutionID string, activityCount int) string {
@@ -309,12 +348,25 @@ func toolActivityGroupID(event core.ToolCall, key, currentExecutionID string, ac
 
 func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...string) string {
 	var args struct {
-		Path    string `json:"path"`
-		URL     string `json:"url"`
-		Command string `json:"command"`
+		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+		Target   string `json:"target"`
+		Pattern  string `json:"pattern"`
+		URL      string `json:"url"`
+		Command  string `json:"command"`
 	}
 	_ = json.Unmarshal(arguments, &args)
-	path := safeDisplayPath(args.Path)
+	if args.Path == "" {
+		args.Path = firstNonEmpty(partialJSONField(string(arguments), "path"), partialJSONField(string(arguments), "file_path"), partialJSONField(string(arguments), "target"))
+	}
+	if args.Pattern == "" {
+		args.Pattern = partialJSONField(string(arguments), "pattern")
+	}
+	workspaceRoot := ""
+	if len(workspace) > 0 {
+		workspaceRoot = workspace[0]
+	}
+	path := displayToolPath(firstNonEmpty(args.Path, args.FilePath, args.Target), workspaceRoot)
 	summary := "Tool request"
 	switch name {
 	case "read_file":
@@ -326,12 +378,15 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 	case "list_dir":
 		summary = summaryWithPath("Listed", path)
 	case "glob":
-		summary = "Found project files"
+		summary = summaryWithPath("Found", displayToolPath(args.Pattern, workspaceRoot))
 	case "grep":
 		if path != "" {
 			summary = "Searched " + path
+			if pattern := cleanInlineText(args.Pattern); pattern != "" {
+				summary += " for " + pattern
+			}
 		} else {
-			summary = "Searched project files"
+			summary = summaryWithPath("Searched", displayToolPath(args.Pattern, workspaceRoot))
 		}
 	case "web_search":
 		summary = "Searched the web"
@@ -339,17 +394,62 @@ func humanizedToolSummary(name string, arguments json.RawMessage, workspace ...s
 		if parsed, err := url.Parse(args.URL); err == nil && parsed.Hostname() != "" {
 			summary = "Fetched " + parsed.Hostname()
 		} else {
-			summary = "Fetched a web page"
+			summary = "Fetched (preparing)"
 		}
 	case "command":
-		summary = "Run " + safeToolText(args.Command)
+		if strings.TrimSpace(args.Command) == "" {
+			summary = "Run (preparing)"
+		} else {
+			summary = "Run " + safeToolText(args.Command)
+		}
 	case "html":
 		summary = "Processed web content"
-	}
-	if len(workspace) > 0 {
-		summary = absoluteToolSummary(summary, workspace[0])
+	default:
+		summary = "Tool request (preparing)"
 	}
 	return summary
+}
+
+func partialJSONField(raw, name string) string {
+	needle := `"` + name + `"`
+	index := strings.Index(raw, needle)
+	if index < 0 {
+		return ""
+	}
+	index += len(needle)
+	colon := strings.IndexByte(raw[index:], ':')
+	if colon < 0 {
+		return ""
+	}
+	index += colon + 1
+	for index < len(raw) && (raw[index] == ' ' || raw[index] == '\t' || raw[index] == '\r' || raw[index] == '\n') {
+		index++
+	}
+	if index >= len(raw) || raw[index] != '"' {
+		return ""
+	}
+	index++
+	var value strings.Builder
+	escaped := false
+	for index < len(raw) {
+		char := raw[index]
+		if char == '"' && !escaped {
+			break
+		}
+		value.WriteByte(char)
+		if char == '\\' && !escaped {
+			escaped = true
+		} else {
+			escaped = false
+		}
+		index++
+	}
+	quoted := `"` + value.String() + `"`
+	decoded, err := strconv.Unquote(quoted)
+	if err == nil {
+		return decoded
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(value.String(), `\"`, `"`), `\\`, `\`)
 }
 
 func safeDisplayPath(value string) string {
@@ -364,33 +464,36 @@ func safeDisplayPath(value string) string {
 	return filepath.ToSlash(clean)
 }
 
+func displayToolPath(value, workspace string) string {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) {
+		return safeDisplayPath(value)
+	}
+	clean := filepath.Clean(value)
+	if workspace != "" {
+		if relative, err := filepath.Rel(workspace, clean); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			if display := safeDisplayPath(relative); display != "" {
+				return display
+			}
+		}
+	}
+	return filepath.ToSlash(clean)
+}
+
 func summaryWithPath(action, path string) string {
 	if path == "" {
-		return action + " a workspace file"
+		return action + " (preparing)"
 	}
 	return action + " " + path
 }
 
-func absoluteToolSummary(summary, workspace string) string {
-	if workspace == "" {
-		return summary
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
-	for _, prefix := range []string{"Read ", "Wrote ", "Edited ", "Listed ", "Searched "} {
-		if !strings.HasPrefix(summary, prefix) {
-			continue
-		}
-		relative := strings.TrimSpace(strings.TrimPrefix(summary, prefix))
-		if relative == "" || relative == "a workspace file" || relative == "project files" || filepath.IsAbs(relative) {
-			return summary
-		}
-		absolute := filepath.Clean(filepath.Join(workspace, filepath.FromSlash(relative)))
-		inside, err := filepath.Rel(workspace, absolute)
-		if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-			return summary
-		}
-		return prefix + filepath.ToSlash(absolute)
-	}
-	return summary
+	return ""
 }
 
 func cleanInlineText(value string) string {
@@ -480,7 +583,7 @@ func (m *tuiModel) activityDetailsContent() string {
 }
 
 func (m *tuiModel) displayToolActivityTitle(activity tuiActivity) string {
-	title := toolActivityTitle(activity)
+	title := toolActivityTitle(activity, m.workspace)
 	if m.lightLayout() {
 		return strings.TrimSuffix(title, " · done")
 	}

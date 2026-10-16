@@ -13,10 +13,10 @@ import (
 
 const (
 	defaultWindowTitle    = "lune"
-	windowTitleTickPeriod = 200 * time.Millisecond
+	windowTitleTickPeriod = 100 * time.Millisecond
 )
 
-var windowTitleSpinner = [...]string{"|", "/", "-", "\\"}
+var titleSpinner = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type windowTitleTickMsg struct {
 	sessionID string
@@ -40,14 +40,14 @@ func (m *tuiModel) windowTitleText() string {
 	if title == "" {
 		title = defaultWindowTitle
 	}
-	if m.hasPendingUserQuestion() {
-		return "! " + title
+	if m.hasPendingUserQuestion() || m.pendingApproval != nil {
+		return "⚠ " + title + " | luneAgent"
 	}
 	if m.running {
-		frame := m.windowTitleFrame % len(windowTitleSpinner)
-		return windowTitleSpinner[frame] + " " + title
+		frame := m.windowTitleFrame % len(titleSpinner)
+		return titleSpinner[frame] + " " + title + " | luneAgent"
 	}
-	return title
+	return title + " | luneAgent"
 }
 
 func (m *tuiModel) hasPendingUserQuestion() bool {
@@ -57,7 +57,7 @@ func (m *tuiModel) hasPendingUserQuestion() bool {
 func (m *tuiModel) startWindowTitleAnimation() tea.Cmd {
 	m.windowTitleAnimationToken++
 	m.windowTitleFrame = 0
-	if !m.running || m.hasPendingUserQuestion() {
+	if !m.running {
 		return nil
 	}
 	return nextWindowTitleTick(m.sessionID, m.windowTitleAnimationToken)

@@ -98,7 +98,7 @@ func renderLightToolActivity(title string, output []string, expanded bool, width
 	if strings.HasPrefix(title, "Failed ") || strings.Contains(title, " · failed") {
 		markerColor = codexLight.Error
 	} else if strings.HasPrefix(title, "Run ") && marker == "•" {
-		marker = windowTitleSpinner[0]
+		marker = titleSpinner[0]
 	}
 	lines = append(lines, ansi.Truncate(renderLightToolHeader(marker, title, markerColor), width, "…"))
 	visible := len(output)

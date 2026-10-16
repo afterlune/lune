@@ -24,6 +24,9 @@ type tuiEntry struct {
 	incomplete      bool
 	activityID      string
 	activityGroupID string
+	cachedRender    string
+	cachedText      string
+	cachedWidth     int
 }
 
 type transcriptEntry struct {
@@ -38,12 +41,15 @@ type inputSnapshot struct {
 }
 
 type tuiActivity struct {
-	details  *publictool.ExecutionDetails
-	callID   string
-	groupID  string
-	summary  string
-	status   string
-	duration time.Duration
+	details      *publictool.ExecutionDetails
+	callID       string
+	groupID      string
+	summary      string
+	status       string
+	duration     time.Duration
+	cachedRender string
+	cachedWidth  int
+	cachedOpen   bool
 }
 
 type toolActivityMsg struct{ event core.ToolCall }
@@ -119,6 +125,11 @@ type tuiModel struct {
 	entries                       []tuiEntry
 	activities                    []tuiActivity
 	teamActivities                []tuiTeamActivity
+	toolActivityAliases           map[string]string
+	streamToolCalls               map[string]*streamToolCall
+	lightVisualLines              []transcriptVisualLine
+	lightVisualRoles              []string
+	lightCodeRanges               [][2]int
 	lastTranscriptSessionID       string
 	lastRenderedEntryCount        int
 	unreadEntries                 int
@@ -215,6 +226,7 @@ type tuiModel struct {
 	windowTitleFrame              int
 	windowTitleAnimationToken     uint64
 	windowTitleRevision           uint64
+	autoScroll                    bool
 	cancel                        context.CancelFunc
 	cancelled                     bool
 	status                        string
@@ -366,6 +378,7 @@ func newTUIModel(client CoreClient, pending bool) *tuiModel {
 		preferences:         defaultUIPreferences(),
 		agentUsage:          make(map[string]agentUsageSummary), agentUsageComplete: true,
 		activeExecutions: make(map[string]bool),
+		autoScroll:       true,
 	}
 	if client != nil {
 		model.attachmentLimits = normalizeAttachmentLimits(client.ProjectAttachmentLimits())

@@ -322,6 +322,9 @@ func (m *tuiModel) rewindSession(line string) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) restoreSessionState(saved core.Session) {
 	m.setSessionWindowTitle(saved)
+	m.autoScroll = true
+	m.toolActivityAliases = nil
+	m.streamToolCalls = nil
 	m.question = nil
 	m.questionOpen = false
 	m.pendingRequest = nil

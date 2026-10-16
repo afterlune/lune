@@ -14,6 +14,7 @@ func wrapDisplayText(text string, width int) string {
 // renderConversationText keeps code literal and only lays out complete tables.
 // An incomplete streamed row remains ordinary text until its separator arrives.
 func renderConversationText(text string, width int) string {
+	text = safeToolText(text)
 	source := strings.Split(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"), "\n")
 	var result []string
 	var prose []string

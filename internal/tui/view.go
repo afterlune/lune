@@ -17,9 +17,10 @@ import (
 const maxCommandSuggestions = 8
 
 func (m *tuiModel) refreshPanels() {
-	followLatest := m.chat.AtBottom()
+	followLatest := m.autoScroll
 	if m.lastTranscriptSessionID != "" && m.lastTranscriptSessionID != m.sessionID {
 		followLatest = true
+		m.autoScroll = true
 		m.unreadEntries = 0
 	}
 	if followLatest {
@@ -28,25 +29,29 @@ func (m *tuiModel) refreshPanels() {
 		m.unreadEntries += len(m.entries) - m.lastRenderedEntryCount
 	}
 	oldOffset := m.chat.YOffset()
-	content, roles := m.transcriptContent()
+	lines := m.transcriptLines()
+	content, roles := transcriptContent(lines)
+	if m.lightLayout() {
+		m.lightVisualLines = wrapTranscriptContent(content, max(1, m.chat.Width()))
+		m.lightVisualRoles = visualTranscriptRoles(lines, m.lightVisualLines)
+		m.lightCodeRanges = m.inlineCodeRanges(content)
+	} else {
+		m.lightVisualLines = nil
+		m.lightVisualRoles = nil
+		m.lightCodeRanges = nil
+	}
 	m.chat.SetContent(content)
 	colors := m.themeColors()
-	m.chat.StyleLineFunc = func(line int) lipgloss.Style {
-		role := "assistant"
-		if line >= 0 && line < len(roles) {
-			role = roles[line]
-		}
-		style := transcriptRoleStyle(role, colors)
-		if m.lightLayout() {
-			if role == "tool_done" {
-				style = style.Foreground(lipgloss.Color(colors.Muted))
+	m.chat.StyleLineFunc = nil
+	if !m.lightLayout() {
+		m.chat.StyleLineFunc = func(line int) lipgloss.Style {
+			role := "assistant"
+			if line >= 0 && line < len(roles) {
+				role = roles[line]
 			}
-			style = style.Width(max(1, m.width))
-			if role == "you" {
-				style = style.Foreground(lipgloss.Color(codexLight.Primary)).Background(lipgloss.Color(codexLight.Surface))
-			}
+			style := transcriptRoleStyle(role, colors)
+			return style
 		}
-		return style
 	}
 	m.chat.HighlightStyle = lipgloss.NewStyle().Background(lipgloss.Color(colors.Secondary)).Foreground(lipgloss.Color(colors.Foreground))
 	m.chat.SelectedHighlightStyle = lipgloss.NewStyle().Background(lipgloss.Color(colors.Accent)).Foreground(lipgloss.Color(colors.Background))
@@ -62,6 +67,27 @@ func (m *tuiModel) refreshPanels() {
 	}
 	m.applyTranscriptHighlights()
 	m.activity.SetContent(m.activityDetailsContent())
+}
+
+func visualTranscriptRoles(lines []transcriptLine, visual []transcriptVisualLine) []string {
+	roles := make([]string, len(visual))
+	if len(lines) == 0 {
+		return roles
+	}
+	starts := make([]int, len(lines))
+	position := 0
+	for index, line := range lines {
+		starts[index] = position
+		position += len(line.text) + 1
+	}
+	logical := 0
+	for index, line := range visual {
+		for logical+1 < len(starts) && line.start >= starts[logical+1] {
+			logical++
+		}
+		roles[index] = lines[logical].role
+	}
+	return roles
 }
 
 func (m *tuiModel) updateLayout() {
@@ -96,7 +122,8 @@ func (m *tuiModel) updateLayout() {
 			scrollPillRows = 1
 		}
 	}
-	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), dividerCount) - composerExtra - scrollPillRows
+	chromeRows := 1 + 2 // session header, then a blank separator and live activity row
+	bodyHeight := m.availableBodyHeight(contentWidth, lipgloss.Height(m.renderFooter(inputWidth)), dividerCount) - composerExtra - scrollPillRows - chromeRows
 	bodyHeight = max(1, bodyHeight)
 	m.chat.SoftWrap = true
 	m.chat.SetWidth(inputWidth)
@@ -133,7 +160,7 @@ func (m *tuiModel) handleScrollPillClick(x, y int) bool {
 	if !m.scrolledAwayFromBottom() {
 		return false
 	}
-	pillY := m.chat.Height()
+	pillY := 1 + m.chat.Height()
 	if m.searchOpen {
 		pillY++
 	}
@@ -258,12 +285,13 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	centerWidth := max(1, width)
 	light := m.lightLayout()
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(strings.Repeat("─", centerWidth))
+	header := m.renderWorkspaceRow(m.renderSessionHeader(centerWidth), centerWidth)
 	input := m.renderWorkspaceRow(m.renderInputView(), centerWidth)
 	if m.questionOpen && m.question != nil {
 		input = m.renderWorkspaceRow(m.renderQuestion(), centerWidth)
 	}
 	suggestions := m.renderCommandSuggestions()
-	parts := []string{body}
+	parts := []string{header, body}
 	if m.searchOpen {
 		parts = append(parts, m.renderWorkspaceRow(m.renderTranscriptSearch(), centerWidth))
 	}
@@ -271,6 +299,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	if pillShown {
 		parts = append(parts, m.renderWorkspaceRow(renderScrollPill(centerWidth, "esc"), centerWidth))
 	}
+	parts = append(parts, strings.Repeat(" ", centerWidth), m.renderWorkspaceRow(m.renderLiveActivity(centerWidth), centerWidth))
 	if !light {
 		parts = append(parts, m.renderWorkspaceRow(divider, centerWidth))
 	}
@@ -282,12 +311,7 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 			composer = m.renderQuestion()
 			parts = append(parts, composer)
 		} else {
-			composerStyle := lipgloss.NewStyle().
-				Width(max(1, m.width)).
-				Background(lipgloss.Color(codexLight.Surface)).
-				Foreground(lipgloss.Color(codexLight.Primary)).
-				Padding(1, 1)
-			parts = append(parts, composerStyle.Render(composer))
+			parts = append(parts, renderLightComposerBand(composer, centerWidth))
 		}
 		if auxiliary := m.renderAuxiliaryPanel(suggestions); !m.questionOpen && auxiliary != "" && auxiliary != suggestions {
 			parts = append(parts, m.renderWorkspaceRow(auxiliary, centerWidth))
@@ -307,23 +331,117 @@ func (m *tuiModel) renderSessionWorkspace(width int) tea.View {
 	}
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeAllMotion
-	if cursor := m.activeCursor(); cursor != nil && !m.planReview && !m.questionOpen && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
-		cursor.Y += lipgloss.Height(body)
+	if cursor := m.activeCursor(); cursor != nil && !m.planReview && !m.keymapOpen && (!m.sessionPicker || m.renamingSession) && !m.queuePicker && !m.permissionMenu && !m.modelPicker && !m.effortPicker {
+		cursor.Y += 1 + lipgloss.Height(body)
 		if m.searchOpen {
 			cursor.Y++
 		}
 		if pillShown {
 			cursor.Y++
 		}
+		cursor.Y += 2 // activity separator and status row
 		if light {
-			cursor.X++
-			cursor.Y++
+			if m.questionOpen && m.question != nil {
+				cursor.X += 2
+				cursor.Y += m.question.cursorRow
+			} else {
+				cursor.X++
+				cursor.Y++
+			}
 		} else {
 			cursor.Y += lipgloss.Height(divider)
+			if m.questionOpen && m.question != nil {
+				cursor.X++
+				cursor.Y += m.question.cursorRow
+			}
 		}
 		view.Cursor = cursor
 	}
 	return view
+}
+
+func renderLightComposerBand(content string, width int) string {
+	width = max(1, width)
+	background := lipgloss.NewStyle().Background(lipgloss.Color(codexLight.Surface))
+	whitespace := lipgloss.WithWhitespaceStyle(background)
+	rows := []string{renderFullWidthBlankLine(width, lipgloss.Color(codexLight.Surface))}
+	for _, line := range strings.Split(content, "\n") {
+		styled := background.Render(" ") + line
+		rows = append(rows, lipgloss.PlaceHorizontal(width, lipgloss.Left, styled, whitespace))
+	}
+	rows = append(rows, renderFullWidthBlankLine(width, lipgloss.Color(codexLight.Surface)))
+	return strings.Join(rows, "\n")
+}
+
+func (m *tuiModel) renderSessionHeader(width int) string {
+	title := safeWindowTitle(m.windowTitle)
+	if title == "" {
+		title = defaultWindowTitle
+	}
+	model := strings.TrimSpace(m.sessionSettings.ModelProfile)
+	if model == "" {
+		model = "default model"
+	}
+	workspace := m.workspace
+	if workspace == "" {
+		workspace = "workspace"
+	}
+	colors := m.themeColors()
+	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Success)).Bold(true).Render("● luneAgent")
+	name := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Foreground)).Bold(true).Render(title)
+	meta := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted)).Render(workspace + " · " + model)
+	return fitTerminalText(brand+"  "+name+"  "+meta, max(1, width))
+}
+
+func (m *tuiModel) renderLiveActivity(width int) string {
+	if m.hasPendingUserQuestion() || m.pendingApproval != nil {
+		text := "⚠ Waiting for your answer (see prompt above)"
+		if m.pendingApproval != nil {
+			text = "⚠ Waiting for permission approval (see prompt above)"
+		}
+		color := m.themeColors().Warning
+		return fitTerminalText(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(text), max(1, width))
+	}
+	if !m.running {
+		return ""
+	}
+	action := m.currentLiveAction()
+	frame := titleSpinner[m.windowTitleFrame%len(titleSpinner)]
+	label := fmt.Sprintf("%s Working · %s (%s · Esc to cancel)", frame, action, m.taskElapsed())
+	colors := m.themeColors()
+	color := colors.Accent
+	if m.lightLayout() {
+		color = codexLight.Mode
+	}
+	return fitTerminalText(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(label), max(1, width))
+}
+
+func (m *tuiModel) currentLiveAction() string {
+	for index := len(m.activities) - 1; index >= 0; index-- {
+		activity := m.activities[index]
+		if activity.status != "running" {
+			continue
+		}
+		title := toolActivityTitle(activity, m.workspace)
+		for prefix, replacement := range map[string]string{
+			"Read ": "Reading ", "Wrote ": "Writing ", "Edited ": "Editing ", "Listed ": "Listing ",
+			"Searched ": "Searching ", "Fetched ": "Fetching ", "Run ": "Running ",
+		} {
+			if strings.HasPrefix(title, prefix) {
+				return replacement + strings.TrimPrefix(title, prefix)
+			}
+		}
+		return title
+	}
+	for _, activity := range m.teamActivities {
+		if activity.status == "running" {
+			return "Coordinating team agents"
+		}
+	}
+	if m.modelStreamTaskID != "" {
+		return "Thinking"
+	}
+	return "Working"
 }
 
 func (m *tuiModel) renderWorkspaceRow(content string, centerWidth int) string {
@@ -411,12 +529,19 @@ func (m *tuiModel) renderFooter(width int) string {
 
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Muted))
 	statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colors.Accent))
+	statusLine := statusStyle.Render(fitTerminalText(status, width))
+	if team := m.teamStatusLabel(); team != "" {
+		separator := " · "
+		teamStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(m.teamStatusColor(colors.Success, colors.Muted)))
+		available := max(0, width-lipgloss.Width(separator)-lipgloss.Width(team))
+		statusLine = statusStyle.Render(fitTerminalText(status, available)) + separator + teamStyle.Render(team)
+	}
 	if context := contextUsageLabel(m.contextInput, m.contextWindow, m.contextEstimated); context != "" {
 		metadata += " · " + context
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		muted.Render(fitTerminalText(metadata, width)),
-		statusStyle.Render(fitTerminalText(status, width)),
+		statusLine,
 	)
 }
 
@@ -443,12 +568,21 @@ func (m *tuiModel) renderLightFooter(width int) string {
 	leftBudget -= lipgloss.Width(model) + 2
 	cwd = fitTerminalText(cwd, min(lipgloss.Width(cwd), max(0, leftBudget)))
 	leftBudget -= lipgloss.Width(cwd) + 3
+	team := m.teamStatusLabel()
+	if team != "" {
+		team = fitTerminalText(team, max(0, leftBudget))
+		leftBudget -= lipgloss.Width(team) + 3
+	}
 	summary := latestUserTaskSummary(m.entries)
 	if summary == "" {
 		summary = "Ready"
 	}
 	summary = fitTerminalText(summary, max(0, leftBudget))
 	left := lightMutedStyle().Render(model) + "  " + lightTextStyle().Render(cwd)
+	if team != "" {
+		color := m.teamStatusColor(codexLight.Success, codexLight.Muted)
+		left += " · " + lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(team)
+	}
 	if summary != "" {
 		left += " · " + lipgloss.NewStyle().Foreground(lipgloss.Color(codexLight.TaskSummary)).Render(summary)
 	}
@@ -782,42 +916,22 @@ func (m *tuiModel) renderBody(width int) string {
 
 func (m *tuiModel) styleLightTranscript(content string) string {
 	rows := strings.Split(content, "\n")
-	transcript, _ := m.transcriptContent()
-	visualLines := wrapTranscriptContent(transcript, max(1, m.chat.Width()))
-	codeRanges := m.inlineCodeRanges(transcript)
-	transcriptLines := m.transcriptLines()
-	lineStarts := make([]int, len(transcriptLines))
-	position := 0
-	for index, line := range transcriptLines {
-		lineStarts[index] = position
-		position += len(line.text) + 1
-	}
-	logicalLine := 0
+	colors := m.themeColors()
 	for rowIndex := range rows {
 		visualIndex := m.chat.YOffset() + rowIndex
-		if visualIndex >= len(visualLines) {
+		if visualIndex < 0 || visualIndex >= len(m.lightVisualLines) {
+			rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.width), lipgloss.Left, "",
+				lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color(codexLight.Canvas))))
 			continue
 		}
-		visual := visualLines[visualIndex]
-		for logicalLine+1 < len(lineStarts) && visual.start >= lineStarts[logicalLine+1] {
-			logicalLine++
-		}
+		visual := m.lightVisualLines[visualIndex]
 		role := "assistant"
-		if logicalLine < len(transcriptLines) {
-			role = transcriptLines[logicalLine].role
+		if visualIndex < len(m.lightVisualRoles) {
+			role = m.lightVisualRoles[visualIndex]
 		}
-		highlighted := m.transcriptSelection.active && m.transcriptSelection.start < visual.end && m.transcriptSelection.end > visual.start
-		for _, match := range m.searchMatches {
-			if match[0] < visual.end && match[1] > visual.start {
-				highlighted = true
-				break
-			}
-		}
-		if highlighted {
-			continue
-		}
+		plainLine := ansi.Strip(rows[rowIndex])
 		lineRanges := make([]lipgloss.Range, 0, 8)
-		for _, code := range codeRanges {
+		for _, code := range m.lightCodeRanges {
 			start := max(code[0], visual.start)
 			end := min(code[1], visual.end)
 			if start >= end {
@@ -827,16 +941,42 @@ func (m *tuiModel) styleLightTranscript(content string) string {
 			right := lipgloss.Width(visual.text[:end-visual.start])
 			lineRanges = append(lineRanges, lipgloss.NewRange(left, right, inlineCodeStyle()))
 		}
-		plainLine := ansi.Strip(rows[rowIndex])
 		lineRanges = append(lineRanges, lightToolLineRanges(plainLine, role)...)
 		lineRanges = append(lineRanges, lightTokenRanges(plainLine)...)
-		if len(lineRanges) > 0 {
-			sort.SliceStable(lineRanges, func(left, right int) bool {
-				return lineRanges[left].Start < lineRanges[right].Start
-			})
-			lineRanges = nonOverlappingStyleRanges(lineRanges)
-			rows[rowIndex] = lipgloss.StyleRanges(rows[rowIndex], lineRanges...)
+		for _, match := range m.searchMatches {
+			start, end := max(match[0], visual.start), min(match[1], visual.end)
+			if start < end {
+				left := lipgloss.Width(visual.text[:start-visual.start])
+				right := lipgloss.Width(visual.text[:end-visual.start])
+				lineRanges = append(lineRanges, lipgloss.NewRange(left, right, m.chat.HighlightStyle))
+			}
 		}
+		selection := m.transcriptSelection
+		if selection.active {
+			start, end := max(selection.start, visual.start), min(selection.end, visual.end)
+			if start < end {
+				left := lipgloss.Width(visual.text[:start-visual.start])
+				right := lipgloss.Width(visual.text[:end-visual.start])
+				lineRanges = append(lineRanges, lipgloss.NewRange(left, right, m.chat.SelectedHighlightStyle))
+			}
+		}
+		sort.SliceStable(lineRanges, func(left, right int) bool { return lineRanges[left].Start < lineRanges[right].Start })
+		lineRanges = nonOverlappingStyleRanges(lineRanges)
+		foreground := colors.Foreground
+		background := codexLight.Canvas
+		if role == "you" {
+			foreground, background = codexLight.Primary, codexLight.Surface
+		} else if role == "tool_done" {
+			foreground = codexLight.Muted
+		} else if role == "error" {
+			foreground = codexLight.Error
+		}
+		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(foreground)).Background(lipgloss.Color(background)).Render(plainLine)
+		if len(lineRanges) > 0 {
+			styled = lipgloss.StyleRanges(styled, lineRanges...)
+		}
+		rows[rowIndex] = lipgloss.PlaceHorizontal(max(1, m.width), lipgloss.Left, styled,
+			lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(lipgloss.Color(background))))
 	}
 	return strings.Join(rows, "\n")
 }

@@ -58,43 +58,51 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 			lines = append(lines, transcriptLine{text: line, role: role})
 		}
 	}
-	appendEntry := func(entry tuiEntry) {
-		text := renderConversationText(entry.text, max(1, m.chat.Width()-2))
+	appendEntry := func(entryIndex int) {
+		entry := &m.entries[entryIndex]
+		width := max(1, m.chat.Width()-2)
+		cacheKey := entry.role + "\x00" + entry.text + "\x00" + strconv.FormatBool(entry.incomplete) + "\x00" + strconv.FormatBool(m.lightLayout())
+		text := entry.cachedRender
+		if entry.cachedWidth != width || entry.cachedText != cacheKey {
+			text = renderConversationText(entry.text, width)
+			prefix := ""
+			switch entry.role {
+			case "you":
+				prefix = "› "
+			case "notice", "queued":
+				prefix = "· "
+			case "error", "permission":
+				prefix = "! "
+			case "question":
+				prefix = "? "
+			case "assistant":
+				if m.lightLayout() {
+					prefix = "• "
+				}
+				if entry.incomplete {
+					prefix += "Partial · "
+				}
+			case "turn_footer":
+				prefix = "  "
+			}
+			parts := strings.Split(text, "\n")
+			if len(parts) > 0 {
+				parts[0] = prefix + parts[0]
+			}
+			if entry.role == "turn_footer" || entry.role == "assistant" && m.lightLayout() {
+				for line := 1; line < len(parts); line++ {
+					if parts[line] != "" {
+						parts[line] = "  " + parts[line]
+					}
+				}
+			}
+			text = strings.Join(parts, "\n")
+			entry.cachedRender, entry.cachedWidth, entry.cachedText = text, width, cacheKey
+		}
 		if text == "" {
 			return
 		}
-		prefix := ""
-		switch entry.role {
-		case "you":
-			prefix = "› "
-		case "notice", "queued":
-			prefix = "· "
-		case "error":
-			prefix = "! "
-		case "permission":
-			prefix = "! "
-		case "question":
-			prefix = "? "
-		case "assistant":
-			if m.lightLayout() {
-				prefix = "• "
-			}
-			if entry.incomplete {
-				prefix += "Partial · "
-			}
-		case "turn_footer":
-			prefix = "  "
-		}
-		parts := strings.Split(text, "\n")
-		parts[0] = prefix + parts[0]
-		if entry.role == "turn_footer" || entry.role == "assistant" && m.lightLayout() {
-			for line := 1; line < len(parts); line++ {
-				if parts[line] != "" {
-					parts[line] = "  " + parts[line]
-				}
-			}
-		}
-		appendText(strings.Join(parts, "\n"), entry.role)
+		appendText(text, entry.role)
 	}
 	appendSpacer := func() {
 		if len(lines) > 0 && lines[len(lines)-1].text != "" {
@@ -105,7 +113,7 @@ func (m *tuiModel) transcriptLines() []transcriptLine {
 	for index := 0; index < len(m.entries); {
 		entry := m.entries[index]
 		if entry.role != "tool" {
-			appendEntry(entry)
+			appendEntry(index)
 			index++
 			if index < len(m.entries) {
 				appendSpacer()
@@ -163,7 +171,7 @@ func (m *tuiModel) collapsedToolGroupLabel(group toolActivityGroup) string {
 	activities := m.toolActivitiesForGroup(group)
 	title := "Tool activity"
 	if activity, ok := m.latestToolActivity(group); ok {
-		title = toolActivityTitle(activity)
+		title = toolActivityTitle(activity, m.workspace)
 	} else if len(group.entries) > 0 {
 		title = m.entries[group.entries[len(group.entries)-1]].text
 	}
@@ -245,18 +253,6 @@ func (m *tuiModel) toolActivitiesForGroup(group toolActivityGroup) []tuiActivity
 	return activities
 }
 
-func (m *tuiModel) hasCollapsedRunningToolActivity() bool {
-	for _, group := range m.toolActivityGroups() {
-		if m.activityExpanded[group.key] {
-			continue
-		}
-		if activity, ok := m.latestToolActivity(group); ok && activity.status == "running" {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *tuiModel) latestToolActivity(group toolActivityGroup) (tuiActivity, bool) {
 	for index := len(group.entries) - 1; index >= 0; index-- {
 		entryIndex := group.entries[index]
@@ -306,6 +302,7 @@ func (m *tuiModel) toggleLatestToolActivity() bool {
 }
 
 func (m *tuiModel) jumpToLatest() {
+	m.autoScroll = true
 	m.chat.GotoBottom()
 	m.unreadEntries = 0
 	m.updateLayout()
@@ -314,6 +311,7 @@ func (m *tuiModel) jumpToLatest() {
 }
 
 func (m *tuiModel) reflowAfterChatScroll(atBottom bool) {
+	m.autoScroll = atBottom
 	m.updateLayout()
 	if atBottom {
 		m.chat.GotoBottom()
@@ -434,6 +432,7 @@ func (m *tuiModel) closeTranscriptSearch(keepMatch bool) {
 }
 
 func (m *tuiModel) transcriptPointAt(x, y int) (int, int, bool) {
+	y-- // the session header occupies the first terminal row
 	if m.detailsOpen || y < 0 || y >= m.chat.Height() {
 		return 0, 0, false
 	}

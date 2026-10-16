@@ -20,19 +20,26 @@ type tuiTeamActivity struct {
 }
 
 func (m *tuiModel) updateTeamActivity(event core.Event) {
-	if event.SessionID != m.sessionID || event.TeamRunID == "" || event.AgentID == "" || event.AgentRole != "worker" {
+	if event.SessionID != m.sessionID || event.AgentID == "" || event.AgentRole != "worker" {
 		return
+	}
+	teamRunID := event.TeamRunID
+	if teamRunID == "" {
+		teamRunID = "agents:" + event.ExecutionID
+	}
+	if teamRunID == "agents:" {
+		teamRunID = "agents:session"
 	}
 	index := -1
 	for current := range m.teamActivities {
 		activity := &m.teamActivities[current]
-		if activity.teamRunID == event.TeamRunID && activity.agentID == event.AgentID {
+		if activity.teamRunID == teamRunID && activity.agentID == event.AgentID {
 			index = current
 			break
 		}
 	}
 	if index < 0 {
-		m.teamActivities = append(m.teamActivities, tuiTeamActivity{teamRunID: event.TeamRunID, agentID: event.AgentID})
+		m.teamActivities = append(m.teamActivities, tuiTeamActivity{teamRunID: teamRunID, agentID: event.AgentID})
 		index = len(m.teamActivities) - 1
 	}
 	activity := &m.teamActivities[index]
@@ -113,6 +120,59 @@ func (m *tuiModel) teamActivityDetails(colors themeColors) string {
 		}
 	}
 	return details.String()
+}
+
+func teamStatusGroup(activities []tuiTeamActivity) string {
+	for index := len(activities) - 1; index >= 0; index-- {
+		if activities[index].status == "running" && activities[index].teamRunID != "" {
+			return activities[index].teamRunID
+		}
+	}
+	for index := len(activities) - 1; index >= 0; index-- {
+		if activities[index].teamRunID != "" {
+			return activities[index].teamRunID
+		}
+	}
+	return ""
+}
+
+func (m *tuiModel) teamStatusLabel() string {
+	group := teamStatusGroup(m.teamActivities)
+	if group == "" {
+		return ""
+	}
+	members := make(map[string]string)
+	for _, activity := range m.teamActivities {
+		if activity.teamRunID == group && activity.agentID != "" {
+			members[activity.agentID] = activity.status
+		}
+	}
+	active := 0
+	for _, status := range members {
+		if status == "running" {
+			active++
+		}
+	}
+	if strings.HasPrefix(group, "agents:") {
+		if active == 1 {
+			return "agents: 1 running"
+		}
+		if active > 1 {
+			return fmt.Sprintf("agents: %d running", active)
+		}
+		return fmt.Sprintf("agents: %d complete", len(members))
+	}
+	return fmt.Sprintf("team: %d (%d active)", len(members), active)
+}
+
+func (m *tuiModel) teamStatusColor(activeColor, idleColor string) string {
+	group := teamStatusGroup(m.teamActivities)
+	for _, activity := range m.teamActivities {
+		if activity.teamRunID == group && activity.status == "running" {
+			return activeColor
+		}
+	}
+	return idleColor
 }
 
 func teamActivityColor(status string, colors themeColors) string {
