@@ -3,7 +3,39 @@ package desktop
 import (
 	"encoding/json"
 	"testing"
+
+	core "github.com/afterlune/luneCore"
 )
+
+func TestPendingRequestChangedOnlyForInteractionEvents(t *testing.T) {
+	for _, kind := range []core.EventKind{
+		core.EventApprovalRequired,
+		core.EventApprovalCancelled,
+		core.EventUserQuestionRequired,
+		core.EventUserInteractionRequired,
+		core.EventUserInteractionCancelled,
+		core.EventModelRecoveryRequired,
+		core.EventModelRecoveryResumed,
+		core.EventToolRecoveryRequired,
+	} {
+		if !pendingRequestChanged(kind) {
+			t.Errorf("pendingRequestChanged(%q) = false, want true", kind)
+		}
+	}
+
+	for _, kind := range []core.EventKind{
+		core.EventTaskStarted,
+		core.EventTaskFinished,
+		core.EventAgentStarted,
+		core.EventToolStarted,
+		core.EventToolFinished,
+		core.EventModelStream,
+	} {
+		if pendingRequestChanged(kind) {
+			t.Errorf("pendingRequestChanged(%q) = true, want false", kind)
+		}
+	}
+}
 
 func TestStripProposedPlanKeepsSurroundingResponse(t *testing.T) {
 	got := stripProposedPlan("Before the plan.\n<proposed_plan>## Steps\n- Inspect files</proposed_plan>\nAfter the plan.")

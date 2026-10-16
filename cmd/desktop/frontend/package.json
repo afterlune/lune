@@ -12,7 +12,9 @@
     "test:screenshots": "playwright test"
   },
   "dependencies": {
-    "@wailsio/runtime": "3.0.0-beta.30"
+    "@wailsio/runtime": "3.0.0-beta.30",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",

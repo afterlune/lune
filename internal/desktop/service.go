@@ -991,12 +991,28 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 					return
 				}
 				s.emit("agent-event", toAgentEvent(event))
-				if event.Kind != core.EventModelStream && event.Kind != core.EventToolDetails {
+				if pendingRequestChanged(event.Kind) {
 					s.emit("pending-changed", sessionID)
 				}
 			}
 		}
 	}()
+}
+
+func pendingRequestChanged(kind core.EventKind) bool {
+	switch kind {
+	case core.EventApprovalRequired,
+		core.EventApprovalCancelled,
+		core.EventUserQuestionRequired,
+		core.EventUserInteractionRequired,
+		core.EventUserInteractionCancelled,
+		core.EventModelRecoveryRequired,
+		core.EventModelRecoveryResumed,
+		core.EventToolRecoveryRequired:
+		return true
+	default:
+		return false
+	}
 }
 
 func latestEventCursor(runtime *core.SessionRuntime) int64 {

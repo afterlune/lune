@@ -1,19 +1,29 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { Events } from '@wailsio/runtime';
+  import Markdown from './lib/Markdown.svelte';
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
-    Bootstrap, ConversationMessage, MigrationPreview, ModelProfileInput, ModelSettingsView,
+    Bootstrap, ConversationMessage, MigrationPreview, ModelProfileInput, ModelSettingsView, SubmitInput,
     PendingRequestView, ProviderInput, SessionSummary, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
-  type LocalMessage = ConversationMessage & { local?: boolean };
-  type Activity = { id: string; label: string; detail: string; status: 'running' | 'done' | 'failed' | 'cancelled' };
+  type LocalMessage = ConversationMessage & {
+    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'submitted' | 'failed';
+    deliveryError?: string; request?: SubmitInput; executionID?: string;
+  };
+  type Activity = {
+    id: string; kind: 'phase' | 'tool'; label: string; detail: string;
+    status: 'running' | 'done' | 'failed' | 'cancelled' | 'info' | 'waiting';
+    durationMs?: number; error?: string;
+  };
+  type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
   type Modal = 'settings' | 'migration' | 'switch' | 'close' | null;
 
-  const previewMode = new URLSearchParams(location.search).has('preview');
+  const previewVariant = new URLSearchParams(location.search).get('preview') || '';
+  const previewMode = previewVariant !== '';
   let theme = $state('system');
   let recent = $state<Bootstrap['recentWorkspaces']>([]);
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
@@ -28,6 +38,14 @@
   let streamText = $state('');
   let running = $state(false);
   let executionID = $state('');
+  let executionState = $state<ExecutionState>('idle');
+  let currentStatus = $state('');
+  let activityDetailsOpen = $state(false);
+  let elapsedSeconds = $state(0);
+  let turnStartedAt = $state(0);
+  let elapsedTimer: number | undefined;
+  let submitPendingMessageID = '';
+  let previewFailedOnce = false;
   let composerText = $state('');
   let attachments = $state<{ name: string; mediaType: string; data: string; preview: string }[]>([]);
   let loading = $state(true);
@@ -58,6 +76,111 @@
     document.documentElement.dataset.theme = value;
   }
 
+  function sameMessageContent(left: ConversationMessage, right: ConversationMessage) {
+    const leftImages = left.images ?? [];
+    const rightImages = right.images ?? [];
+    return left.role === right.role && left.text === right.text &&
+      leftImages.length === rightImages.length && leftImages.every((image, index) => image === rightImages[index]);
+  }
+
+  function mergeMessagesFromSession(serverMessages: ConversationMessage[], currentMessages: LocalMessage[]): LocalMessage[] {
+    const consumed = new Set<string>();
+    const merged = serverMessages.map((serverMessage): LocalMessage => {
+      const byCanonicalID = currentMessages.find((message) =>
+        message.canonicalID === serverMessage.id || message.id === serverMessage.id,
+      );
+      const pendingMatch = byCanonicalID ?? currentMessages.find((message) =>
+        message.local && message.deliveryState !== 'failed' && !consumed.has(message.id) &&
+        sameMessageContent(message, serverMessage),
+      );
+      if (pendingMatch) consumed.add(pendingMatch.id);
+      return {
+        ...serverMessage,
+        id: pendingMatch?.id ?? serverMessage.id,
+        canonicalID: serverMessage.id,
+        executionID: pendingMatch?.executionID,
+      };
+    });
+
+    const unmatchedLocal = currentMessages.filter((message) => message.local && !consumed.has(message.id));
+    return [...merged, ...unmatchedLocal];
+  }
+
+  function updateMessage(id: string, update: Partial<LocalMessage>) {
+    messages = messages.map((message) => message.id === id ? { ...message, ...update } : message);
+  }
+
+  function clearElapsedTimer() {
+    if (elapsedTimer !== undefined) {
+      window.clearInterval(elapsedTimer);
+      elapsedTimer = undefined;
+    }
+  }
+
+  function startElapsedTimer(reset = false) {
+    if (reset || turnStartedAt === 0) {
+      turnStartedAt = Date.now();
+      elapsedSeconds = 0;
+    }
+    clearElapsedTimer();
+    elapsedTimer = window.setInterval(() => {
+      elapsedSeconds = Math.floor((Date.now() - turnStartedAt) / 1000);
+    }, 1000);
+  }
+
+  function stopElapsedTimer() {
+    if (turnStartedAt !== 0) elapsedSeconds = Math.floor((Date.now() - turnStartedAt) / 1000);
+    clearElapsedTimer();
+  }
+
+  function scrollToLatest(force = false) {
+    const scroll = document.getElementById('conversation-scroll');
+    if (!scroll) return;
+    const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 120;
+    if (!force && !nearBottom) return;
+    requestAnimationFrame(() => {
+      scroll.scrollTo({ top: scroll.scrollHeight, behavior: force ? 'smooth' : 'auto' });
+    });
+  }
+
+  let activitySequence = 0;
+  function addActivity(activity: Omit<Activity, 'id'> & { id?: string }) {
+    const id = activity.id || `activity-${++activitySequence}`;
+    const index = activities.findIndex((item) => item.id === id);
+    const next: Activity = { ...activity, id };
+    if (index >= 0) activities = activities.map((item, itemIndex) => itemIndex === index ? next : item);
+    else activities = [...activities, next];
+  }
+
+  function setExecutionStatus(state: ExecutionState, label: string, options: { expand?: boolean; record?: boolean } = {}) {
+    if (options.record !== false && label && label !== currentStatus) {
+      addActivity({ kind: 'phase', label, detail: '', status: state === 'waiting' ? 'waiting' : 'info' });
+    }
+    executionState = state;
+    currentStatus = label;
+    if (options.expand !== undefined) activityDetailsOpen = options.expand;
+    scrollToLatest();
+  }
+
+  function toolLabel(name: string) {
+    const labels: Record<string, string> = {
+      read_file: '读取文件', list_dir: '列出目录', glob: '查找文件', grep: '搜索文件内容',
+      edit_file: '编辑文件', write_file: '写入文件', command: '运行命令',
+      command_status: '检查命令状态', command_stop: '停止命令', web_search: '搜索网页', web_fetch: '读取网页',
+    };
+    return labels[name] ?? `运行工具 ${name || '操作'}`;
+  }
+
+  function compactActivityDetail(value: unknown) {
+    const detail = compactArguments(value).replace(/\s+/g, ' ').trim();
+    return detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
+  }
+
+  function formatElapsed(seconds: number) {
+    if (seconds < 60) return `用时 ${seconds} 秒`;
+    return `用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  }
+
   const previewBootstrap: Bootstrap = {
     theme: 'light', recentWorkspaces: [], models: {
       providers: [{ name: 'deepseek', protocol: 'responses', baseURL: 'https://api.deepseek.com', hasAPIKey: true, serverCompaction: false }],
@@ -83,6 +206,7 @@
 
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
     const currentPlanReview = preservePlanReview && session?.id === state.session.id ? planReview : null;
+    clearElapsedTimer();
     workspace = state.workspace;
     session = state.session;
     sessions = state.sessions ?? [];
@@ -96,6 +220,51 @@
     const status = state.runtimeState?.Task?.Status;
     running = status === 'running' || status === 'queued';
     executionID = state.runtimeState?.Task?.ExecutionID ?? '';
+    executionState = running ? 'running' : 'idle';
+    currentStatus = running ? (status === 'queued' ? '任务排队中' : '正在处理请求') : '';
+    activityDetailsOpen = running;
+    elapsedSeconds = 0;
+    turnStartedAt = 0;
+    if (running) startElapsedTimer(true);
+  }
+
+  function applySessionRefresh(state: WorkspaceState) {
+    session = state.session;
+    sessions = state.sessions ?? sessions;
+    permissionMode = state.permissionMode || permissionMode;
+    if (state.models) models = state.models;
+    pending = state.pending ?? [];
+    messages = mergeMessagesFromSession(state.session.messages ?? [], messages);
+    scrollToLatest();
+
+    const task = state.runtimeState?.Task;
+    const taskStatus = task?.Status;
+    const wasRunning = running;
+    const snapshotRunning = taskStatus === 'running' || taskStatus === 'queued';
+    const localExecutionActive = executionState === 'submitting' || executionState === 'running' || executionState === 'disconnected';
+    const localExecutionTerminal = executionState === 'completed' || executionState === 'failed' || executionState === 'cancelled';
+    running = !localExecutionTerminal && (snapshotRunning || localExecutionActive);
+    if (task?.ExecutionID) executionID = task.ExecutionID;
+
+    if (running && snapshotRunning) {
+      if (!wasRunning && executionState === 'idle') {
+        setExecutionStatus('running', taskStatus === 'queued' ? '任务排队中' : '正在处理请求', { expand: true });
+      } else if (elapsedTimer === undefined && turnStartedAt === 0) {
+        startElapsedTimer(true);
+      } else if (executionState === 'waiting' && pending.length === 0) {
+        startElapsedTimer(false);
+        setExecutionStatus('running', '正在继续处理', { expand: true });
+      }
+    } else if (pending.length > 0 && executionState !== 'completed' && executionState !== 'failed' && executionState !== 'cancelled') {
+      running = false;
+      stopElapsedTimer();
+      const waitingStatus = pending.some((item) => item.kind === 'approval')
+        ? '等待你的授权'
+        : pending.some((item) => item.kind === 'user_question')
+          ? '等待你的回答'
+          : '等待你处理恢复请求';
+      setExecutionStatus('waiting', waitingStatus, { expand: true });
+    }
   }
 
   async function refreshSession() {
@@ -105,7 +274,7 @@
     try {
       const state = await Desktop.RefreshSession();
       if (session?.id !== refreshingSessionID || state.session.id !== refreshingSessionID) return;
-      installWorkspaceState(state, true);
+      applySessionRefresh(state);
     } catch (error) {
       showError(error);
     } finally {
@@ -120,11 +289,31 @@
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       installWorkspaceState(previewState);
-      const variant = new URLSearchParams(location.search).get('preview');
+      const variant = previewVariant;
       activities = [
-        { id: 'a1', label: 'Read', detail: 'internal/desktop/service.go', status: 'done' },
-        { id: 'a2', label: 'Searched', detail: 'pending request and event handlers', status: 'done' },
+        { id: 'a1', kind: 'tool', label: '读取文件', detail: 'internal/desktop/service.go', status: 'done', durationMs: 420 },
+        { id: 'a2', kind: 'tool', label: '搜索文件内容', detail: 'pending request and event handlers', status: 'done', durationMs: 180 },
       ];
+      if (variant === 'markdown') {
+        messages = [
+          { id: 'markdown-user', role: 'user', text: '整理一下检查结果。' },
+          { id: 'markdown-assistant', role: 'assistant', text: '检查完成，主要结论如下：\n\n## 发现的问题\n\n- 会话刷新会覆盖尚未持久化的用户消息。\n- 流式状态缺少明确阶段。\n\n| 状态 | 当前表现 |\n| --- | --- |\n| 消息 | 延迟出现 |\n| 模型 | 没有明确进度 |\n\n```go\nfunc ready() bool {\n    return true\n}\n```\n\n> 修复后，用户消息应立即显示。\n\n<scr' + 'ipt>window.__markdownXSS = true</scr' + 'ipt>\n[危险链接](javascript:alert(1))' },
+        ];
+      }
+      if (variant === 'running') {
+        running = true;
+        executionID = 'exec-preview-running';
+        executionState = 'running';
+        currentStatus = '正在读取 internal/desktop/service.go';
+        activityDetailsOpen = true;
+        turnStartedAt = Date.now() - 12_000;
+        elapsedSeconds = 12;
+        activities = [
+          { id: 'phase-preview', kind: 'phase', label: '模型正在分析请求', detail: '', status: 'info' },
+          { id: 'tool-preview', kind: 'tool', label: '读取文件', detail: 'internal/desktop/service.go', status: 'running' },
+        ];
+        streamText = '我会先检查消息的乐观更新和会话刷新流程。';
+      }
       if (variant === 'question') {
         pending = [{
           kind: 'user_question', id: 'question-preview', executionId: 'exec-preview', runId: 'run-preview',
@@ -175,7 +364,9 @@
       applyTheme(theme);
       Events.On('agent-event', (event: { data: AgentEvent }) => onAgentEvent(event.data));
       Events.On('turn-result', (event: { data: TurnResultEvent }) => onTurnResult(event.data));
-      Events.On('pending-changed', () => void refreshSession());
+      Events.On('pending-changed', (event: { data: string }) => {
+        if (event.data === session?.id) void refreshSession();
+      });
       Events.On('agent-error', (event: { data: { message: string } }) => showError(event.data.message));
     } catch (error) {
       showError(error);
@@ -191,26 +382,138 @@
   };
   type TurnResultEvent = { sessionId: string; executionId: string; status: string; text: string; plan?: string; error?: string };
 
+  function pendingMessageForExecution(event: AgentEvent) {
+    const message = messages.find((item) => item.id === submitPendingMessageID && item.local);
+    if (message && event.executionId) updateMessage(message.id, { executionID: event.executionId });
+  }
+
+  function startExecution(event: AgentEvent) {
+    if (event.executionId) executionID = event.executionId;
+    pendingMessageForExecution(event);
+    running = true;
+    if (turnStartedAt === 0) startElapsedTimer(true);
+    const label = event.kind === 'task_queued' ? '任务排队中' : '正在等待模型响应';
+    setExecutionStatus('running', label, { expand: true });
+  }
+
+  function handleToolEvent(event: AgentEvent) {
+    const tool = event.tool;
+    const id = tool?.id || `${event.taskId}-${activities.length}`;
+    const rawName = tool?.name || 'tool';
+    const label = toolLabel(rawName);
+    const detail = tool?.arguments ? compactActivityDetail(tool.arguments) : '';
+    const isStarted = event.kind === 'tool_started';
+    const status: Activity['status'] = isStarted ? 'running' : tool?.failed ? 'failed' : tool?.canceled ? 'cancelled' : 'done';
+    addActivity({
+      id: `tool-${id}`, kind: 'tool', label, detail, status,
+      durationMs: tool?.durationMs, error: event.error,
+    });
+    running = true;
+    if (isStarted) {
+      setExecutionStatus('running', `正在${label}${detail ? `：${detail}` : ''}`, { expand: true });
+    } else {
+      const resultLabel = status === 'failed' ? `${label}失败` : status === 'cancelled' ? `${label}已取消` : `${label}已完成`;
+      setExecutionStatus('running', `${resultLabel}，继续处理`, { expand: true });
+    }
+  }
+
+  function finishExecution(status: string, message = '') {
+    running = false;
+    stopElapsedTimer();
+    const normalized = status.toLowerCase();
+    if (normalized === 'paused') {
+      const waitingLabel = pending.some((item) => item.kind === 'approval')
+        ? '等待你的授权'
+        : pending.some((item) => item.kind === 'user_question')
+          ? '等待你的回答'
+          : '等待你处理恢复请求';
+      setExecutionStatus('waiting', waitingLabel, { expand: true });
+      return;
+    }
+    if (normalized === 'cancelled' || normalized === 'discarded') {
+      setExecutionStatus('cancelled', '任务已取消', { expand: false });
+      return;
+    }
+    if (normalized === 'failed') {
+      setExecutionStatus('failed', message ? `任务失败：${message}` : '任务执行失败', { expand: false });
+      return;
+    }
+    setExecutionStatus('completed', '任务已完成', { expand: false });
+  }
+
   function onAgentEvent(event: AgentEvent) {
     if (event.sessionId !== session?.id) return;
+    if (executionID && event.executionId && executionID !== event.executionId &&
+      event.kind !== 'task_started' && event.kind !== 'task_queued') return;
+    if (!executionID && event.executionId && event.kind !== 'task_started' && event.kind !== 'task_queued') return;
+
     if (event.kind === 'task_started' || event.kind === 'task_queued') {
+      if (executionID && event.executionId !== executionID) {
+        activities = [];
+        streamText = '';
+        activitySequence = 0;
+      }
+      startExecution(event);
+    }
+
+    if (event.kind === 'agent_started') {
       running = true;
-      executionID = event.executionId;
-      streamText = '';
+      setExecutionStatus('running', '正在处理子任务', { expand: true });
     }
-    if (event.kind === 'model_stream' && event.stream?.type === 'text_delta') streamText += event.stream.delta;
+    if (event.kind === 'agent_finished') {
+      const activityStatus: Activity['status'] = event.status === 'completed' ? 'done'
+        : event.status === 'cancelled' ? 'cancelled'
+          : event.status === 'failed' ? 'failed' : 'info';
+      addActivity({
+        kind: 'phase', label: event.status === 'completed' ? '子任务已完成' : event.status === 'cancelled' ? '子任务已取消' : '子任务失败',
+        detail: '', status: activityStatus,
+      });
+      if (event.status === 'completed') setExecutionStatus('running', '正在继续处理', { expand: true });
+    }
+    if (event.kind === 'model_stream' && event.stream?.type === 'reasoning_delta') {
+      running = true;
+      setExecutionStatus('running', '模型正在分析请求', { expand: true });
+    }
+    if (event.kind === 'model_stream' && event.stream?.type === 'text_delta') {
+      running = true;
+      streamText += event.stream.delta;
+      setExecutionStatus('running', '正在生成回复', { expand: true });
+      scrollToLatest();
+    }
     if (event.kind === 'tool_started' || event.kind === 'tool_finished') {
-      const id = event.tool?.id || `${event.taskId}-${activities.length}`;
-      const label = event.tool?.name || '工具';
-      const status: Activity['status'] = event.kind === 'tool_started' ? 'running' : event.tool?.failed ? 'failed' : event.tool?.canceled ? 'cancelled' : 'done';
-      const args = event.tool?.arguments ? compactArguments(event.tool.arguments) : '';
-      const previous = activities.findIndex((item) => item.id === id);
-      const activity = { id, label, detail: args ? compactArguments(args) : '', status };
-      if (previous >= 0) activities[previous] = activity;
-      else activities = [...activities, activity];
+      handleToolEvent(event);
     }
-    if (event.kind === 'task_finished' || event.kind === 'task_discarded' || event.kind === 'runtime_stream_failed') {
-      running = false;
+
+    if (event.kind === 'model_retry') {
+      running = true;
+      setExecutionStatus('running', '模型请求暂时失败，正在重试', { expand: true });
+    }
+    if (event.kind === 'approval_required' || event.kind === 'user_question_required' ||
+      event.kind === 'user_interaction_required' || event.kind === 'model_recovery_required' ||
+      event.kind === 'tool_recovery_required') {
+      running = true;
+      stopElapsedTimer();
+      const label = event.kind === 'approval_required' ? '等待你的授权'
+        : event.kind === 'user_question_required' ? '等待你的回答'
+          : event.kind === 'user_interaction_required' ? '等待外部服务响应'
+            : '等待你处理恢复请求';
+      setExecutionStatus('waiting', label, { expand: true });
+    }
+    if (event.kind === 'model_recovery_resumed') {
+      startExecution({ ...event, kind: 'task_started' });
+    }
+    if (event.kind === 'approval_cancelled' || event.kind === 'user_interaction_cancelled') {
+      running = true;
+      setExecutionStatus('running', '操作已拒绝，正在结束本轮', { expand: true });
+    }
+    if (event.kind === 'task_finished') {
+      finishExecution(event.status, event.error);
+    }
+    if (event.kind === 'task_discarded') {
+      finishExecution('discarded');
+    }
+    if (event.kind === 'runtime_stream_failed') {
+      setExecutionStatus('disconnected', '状态连接中断，正在同步任务', { expand: true });
       void refreshSession();
     }
     if (event.error) showError(event.error);
@@ -218,12 +521,19 @@
 
   function onTurnResult(result: TurnResultEvent) {
     if (result.sessionId !== session?.id) return;
-    running = false;
+    if (executionID && result.executionId && executionID !== result.executionId) return;
     executionID = result.executionId;
     streamText = '';
+    finishExecution(result.status || (result.error ? 'failed' : 'completed'), result.error);
     if (result.error) showError(result.error);
-    if (result.text) messages = [...messages, { id: `assistant-${result.executionId}`, role: 'assistant', text: result.text }];
+    if (result.text && !messages.some((message) => message.role === 'assistant' && message.text === result.text && message.executionID === result.executionId)) {
+      messages = [...messages, {
+        id: `assistant-${result.executionId}`, role: 'assistant', text: result.text,
+        local: true, deliveryState: 'submitted', executionID: result.executionId,
+      }];
+    }
     if (result.plan) planReview = { executionID: result.executionId, text: result.plan };
+    scrollToLatest();
     void refreshSession();
   }
 
@@ -438,19 +748,79 @@
 
   async function sendMessage() {
     const text = composerText.trim();
-    if ((!text && attachments.length === 0) || running || !models.configured || previewMode) return;
-    busy = true;
-    streamText = '';
-    messages = [...messages, { id: `user-${Date.now()}`, role: 'user', text, images: attachments.map((item) => item.preview), local: true }];
-    const request = { text, images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) };
+    const interactivePreview = previewVariant === 'send' || previewVariant === 'send-failure';
+    if ((!text && attachments.length === 0) || running || !models.configured || (previewMode && !interactivePreview)) return;
+    const id = `user-${crypto.randomUUID()}`;
+    const request: SubmitInput = { text, images: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) };
+    const message: LocalMessage = {
+      id, role: 'user', text, images: attachments.map((item) => item.preview), local: true,
+      deliveryState: 'sending', request,
+    };
+    messages = [...messages, message];
     composerText = '';
     attachments = [];
+    submitPendingMessageID = id;
+    await submitUserMessage(id, request);
+  }
+
+  async function submitUserMessage(messageID: string, request: SubmitInput) {
+    busy = true;
+    executionID = '';
+    streamText = '';
+    activities = [];
+    activitySequence = 0;
+    running = true;
+    setExecutionStatus('submitting', '正在提交请求', { expand: true });
+    startElapsedTimer(true);
+    await tick();
+    scrollToLatest(true);
     try {
-      const submission = await Desktop.Submit(request);
+      const submission = previewMode ? await submitPreviewRequest(request) : await Desktop.Submit(request);
       executionID = submission.ExecutionID;
+      updateMessage(messageID, { deliveryState: 'submitted', deliveryError: undefined, executionID: submission.ExecutionID });
       running = true;
-    } catch (error) { showError(error); }
+      if (executionState === 'submitting') setExecutionStatus('running', '正在等待模型响应', { expand: true });
+    } catch (error) {
+      running = false;
+      stopElapsedTimer();
+      const reason = error instanceof Error ? error.message : String(error);
+      updateMessage(messageID, { deliveryState: 'failed', deliveryError: reason });
+      setExecutionStatus('failed', '消息发送失败', { expand: false });
+    }
     finally { busy = false; }
+  }
+
+  async function submitPreviewRequest(_request: SubmitInput) {
+    await new Promise((resolve) => window.setTimeout(resolve, 650));
+    if (previewVariant === 'send-failure' && !previewFailedOnce) {
+      previewFailedOnce = true;
+      throw new Error('模拟提交失败，请重试');
+    }
+
+    const previewExecutionID = 'exec-preview-send';
+    const runningState = {
+      ...previewState,
+      runtimeState: {
+        ...previewState.runtimeState,
+        Task: { ...previewState.runtimeState.Task, Status: TaskStatus.TaskRunning, ExecutionID: previewExecutionID },
+      },
+    };
+    onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running' });
+    applySessionRefresh(runningState);
+
+    window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'reasoning_delta', delta: 'not rendered' } }), 350);
+    window.setTimeout(() => onAgentEvent({ kind: 'tool_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, failed: false, canceled: false, durationMs: 0 } }), 800);
+    window.setTimeout(() => onAgentEvent({ kind: 'tool_finished', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, failed: false, canceled: false, durationMs: 420 } }), 1200);
+    window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'text_delta', delta: '已读取服务代码，正在整理结果。' } }), 1500);
+    window.setTimeout(() => onTurnResult({ sessionId: previewState.session.id, executionId: previewExecutionID, status: 'completed', text: '## 检查结果\n\n已完成读取。', }), 2600);
+    return { ExecutionID: previewExecutionID };
+  }
+
+  async function retryMessage(message: LocalMessage) {
+    if (!message.request || message.deliveryState !== 'failed' || busy || running) return;
+    updateMessage(message.id, { deliveryState: 'sending', deliveryError: undefined });
+    submitPendingMessageID = message.id;
+    await submitUserMessage(message.id, message.request);
   }
 
   async function interruptTask() {
@@ -489,8 +859,15 @@
   async function resolveApproval(request: PendingRequestView, allowed: boolean) {
     try {
       await Desktop.ResolveApproval(request.id, allowed);
+      if (allowed) resumeExecution('授权已完成，正在继续处理');
       await refreshSession();
     } catch (error) { showError(error); }
+  }
+
+  function resumeExecution(label: string) {
+    running = true;
+    startElapsedTimer(false);
+    setExecutionStatus('running', label, { expand: true });
   }
 
   async function answerQuestion(request: PendingRequestView) {
@@ -504,6 +881,7 @@
     try {
       await Desktop.AnswerQuestion({ executionId: request.executionId, runId: request.runId, invocationId: request.invocationId, callId: request.callId, answers });
       pending = pending.filter((item) => item.id !== request.id);
+      resumeExecution('回答已提交，正在继续处理');
     } catch (error) { showError(error); }
   }
 
@@ -512,7 +890,7 @@
       if (request.kind === 'model_recovery') await Desktop.RecoverModel();
       else await Desktop.ResolveToolRecovery(request.invocationId, 'retry');
       pending = pending.filter((item) => item.id !== request.id);
-      running = true;
+      resumeExecution('正在恢复任务');
     } catch (error) { showError(error); }
   }
 
@@ -520,6 +898,7 @@
     try {
       await Desktop.ResolveToolRecovery(request.invocationId, 'skip');
       pending = pending.filter((item) => item.id !== request.id);
+      resumeExecution('正在跳过失败步骤');
     } catch (error) { showError(error); }
   }
 
@@ -542,7 +921,10 @@
 
   function stayInPlan() { planReview = null; }
 
-  onMount(() => { void initialize(); });
+  onMount(() => {
+    void initialize();
+    return () => clearElapsedTimer();
+  });
 </script>
 
 <svelte:head>
@@ -638,24 +1020,57 @@
                 {#if message.role === 'assistant'}<div class="message-avatar">l</div>{/if}
                 <div class="message-body">
                   {#if message.role === 'user'}<span class="message-author">你</span>{:else}<span class="message-author">luneAgent</span>{/if}
-                  <div class="message-text">{message.text}</div>
+                  <div class="message-text">
+                    {#if message.role === 'assistant'}<Markdown source={message.text} />{:else}<div class="plain-text">{message.text}</div>{/if}
+                  </div>
                   {#if message.images?.length}<div class="message-images">{#each message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
+                  {#if message.deliveryState === 'failed'}
+                    <div class="message-delivery-error"><span>{message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(message)}>重试</button></div>
+                  {:else if message.deliveryState === 'sending'}
+                    <div class="message-delivery-pending">正在发送…</div>
+                  {/if}
                 </div>
               </article>
             {/each}
 
-            {#if activities.length > 0}
-              <section class="activity-list" aria-label="工具活动">
-                {#each activities as activity (activity.id)}
-                  <div class="activity-row"><span class:activity-live={activity.status === 'running'} class="activity-dot">{activity.status === 'failed' ? '!' : activity.status === 'cancelled' ? '–' : '•'}</span><span class="activity-label">{activity.label}</span><span class="activity-detail">{activity.detail}</span>{#if activity.status === 'running'}<span class="activity-spinner"></span>{/if}</div>
-                {/each}
+            {#if currentStatus}
+              <section class:status-waiting={executionState === 'waiting'} class:status-failed={executionState === 'failed' || executionState === 'disconnected'} class="turn-progress" aria-label="本轮执行状态">
+                <div class="turn-status-row">
+                  <span class:status-spinner-active={running && executionState !== 'waiting' && executionState !== 'disconnected'} class:status-indicator={true} aria-hidden="true"></span>
+                  <span class="turn-status-text" role="status" aria-live="polite">{currentStatus}</span>
+                  {#if turnStartedAt}<span class="turn-elapsed">{formatElapsed(elapsedSeconds)}</span>{/if}
+                  {#if activities.length}
+                    <button class="activity-toggle" aria-expanded={activityDetailsOpen} onclick={() => activityDetailsOpen = !activityDetailsOpen}>
+                      {activities.length} 步骤 <span aria-hidden="true">{activityDetailsOpen ? '⌃' : '⌄'}</span>
+                    </button>
+                  {/if}
+                </div>
+                {#if activityDetailsOpen && activities.length}
+                  <ol class="activity-list" aria-label="本轮执行详情">
+                    {#each activities as activity (activity.id)}
+                      <li class:activity-failed={activity.status === 'failed'} class:activity-cancelled={activity.status === 'cancelled'} class="activity-row">
+                        <span class:activity-dot-live={activity.status === 'running'} class="activity-dot" aria-hidden="true">{activity.status === 'failed' ? '!' : activity.status === 'cancelled' ? '–' : activity.status === 'done' ? '✓' : '•'}</span>
+                        {#if activity.kind === 'tool'}
+                          <details class="activity-tool-details">
+                            <summary><span class="activity-label">{activity.label}</span>{#if activity.detail}<span class="activity-detail">{activity.detail}</span>{/if}<span class="activity-result">{activity.status === 'running' ? '进行中' : activity.status === 'failed' ? '失败' : activity.status === 'cancelled' ? '已取消' : '完成'}</span></summary>
+                            <div class="activity-tool-extra">
+                              {#if activity.detail}<code>{activity.detail}</code>{/if}
+                              {#if activity.durationMs}<span>用时 {activity.durationMs < 1000 ? `${activity.durationMs} 毫秒` : `${(activity.durationMs / 1000).toFixed(1)} 秒`}</span>{/if}
+                              {#if activity.error}<p>{activity.error}</p>{/if}
+                            </div>
+                          </details>
+                        {:else}
+                          <span class="activity-label">{activity.label}</span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ol>
+                {/if}
               </section>
             {/if}
 
-            {#if running && streamText}
-              <article class="message-row"><div class="message-avatar">l</div><div class="message-body"><span class="message-author">luneAgent</span><div class="message-text">{streamText}<span class="stream-caret"></span></div></div></article>
-            {:else if running && activities.length === 0}
-              <div class="thinking-row"><span class="thinking-dots"><i></i><i></i><i></i></span><span>正在思考</span></div>
+            {#if streamText}
+              <article class="message-row"><div class="message-avatar">l</div><div class="message-body"><span class="message-author">luneAgent</span><div class="message-text"><Markdown source={streamText} live /><span class="stream-caret"></span></div></div></article>
             {/if}
 
             {#if approvals.length}
