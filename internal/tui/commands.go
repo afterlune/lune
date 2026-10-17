@@ -24,6 +24,8 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/open", Description: "switch to an existing session by ID or prefix"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/diff", Description: "inspect git code changes in workspace"},
+	{Command: "/review", Description: "summarize and review workspace changes"},
+	{Command: "/mcp", Description: "manage external MCP servers: list, enable, disable, auth"},
 	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
@@ -273,6 +275,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		var diffArgs []string
 		diffArgs = append(diffArgs, "diff")
 		if len(parts) > 1 {
+			diffArgs = append(diffArgs, "--")
 			diffArgs = append(diffArgs, parts[1:]...)
 		}
 		cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
@@ -295,6 +298,152 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		})
 		m.refreshViewportContent()
 		m.updateLayout()
+		return m, nil
+
+	case "/review":
+		if len(parts) > 1 {
+			diffArgs := append([]string{"diff", "--"}, parts[1:]...)
+			cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
+			cmd.Dir = m.workspace
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				m.addSystemEntry("Failed to run git diff: " + err.Error())
+				return m, nil
+			}
+			diffText := strings.TrimSpace(string(out))
+			if diffText == "" {
+				m.addSystemEntry("No changes found for: " + strings.Join(parts[1:], " "))
+				return m, nil
+			}
+			m.entries = append(m.entries, TranscriptEntry{
+				ID:        fmt.Sprintf("diff-%d", time.Now().UnixNano()),
+				Kind:      KindDiff,
+				Text:      diffText,
+				Timestamp: time.Now(),
+			})
+			m.refreshViewportContent()
+			m.updateLayout()
+			return m, nil
+		}
+
+		statusCmd := exec.CommandContext(context.Background(), "git", "status", "--short")
+		statusCmd.Dir = m.workspace
+		statusOut, err := statusCmd.CombinedOutput()
+		if err != nil {
+			m.addSystemEntry("Failed to check git status: " + err.Error())
+			return m, nil
+		}
+		statusText := strings.TrimSpace(string(statusOut))
+		if statusText == "" {
+			m.addSystemEntry("No unstaged or uncommitted changes in workspace.")
+			return m, nil
+		}
+
+		diffStatCmd := exec.CommandContext(context.Background(), "git", "diff", "--stat")
+		diffStatCmd.Dir = m.workspace
+		diffStatOut, _ := diffStatCmd.CombinedOutput()
+		statText := strings.TrimSpace(string(diffStatOut))
+
+		var lines []string
+		lines = append(lines, "**Workspace Changes Review:**\n```text")
+		lines = append(lines, statusText)
+		lines = append(lines, "```")
+		if statText != "" {
+			lines = append(lines, "\n**Diff Statistics:**\n```text")
+			lines = append(lines, statText)
+			lines = append(lines, "```")
+		}
+		lines = append(lines, "\n*Tip: Use `/review <path>` or `/diff <path>` to view full diff for a specific file.*")
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	case "/mcp":
+		if m.client == nil {
+			m.addSystemEntry("MCP management is unavailable.")
+			return m, nil
+		}
+		subcommand := "list"
+		if len(parts) > 1 {
+			subcommand = strings.ToLower(parts[1])
+		}
+		switch subcommand {
+		case "list":
+			servers := m.client.MCPServers()
+			if len(servers) == 0 {
+				m.addSystemEntry("No MCP servers configured in `mcpServers` (config.json).")
+				return m, nil
+			}
+			var lines []string
+			lines = append(lines, "**Configured MCP Servers:**")
+			for _, s := range servers {
+				status := "Disabled"
+				if s.Enabled {
+					status = "Enabled"
+				}
+				conn := "Disconnected"
+				if s.Connected {
+					conn = "Connected"
+				}
+				endpoint := s.Endpoint
+				if endpoint == "" {
+					endpoint = s.Command
+				}
+				errStr := ""
+				if s.LastError != "" {
+					errStr = fmt.Sprintf(" · *Error: %s*", s.LastError)
+				}
+				lines = append(lines, fmt.Sprintf("- **`%s`** (`%s`): %s, %s (%d tools)%s\n  Target: `%s`",
+					s.Name, s.Transport, status, conn, s.ToolCount, errStr, endpoint))
+			}
+			m.addSystemEntry(strings.Join(lines, "\n"))
+		case "enable":
+			if m.running {
+				m.addSystemEntry("Cannot change MCP servers while a task is running.")
+				return m, nil
+			}
+			if len(parts) < 3 {
+				m.addSystemEntry("Usage: `/mcp enable <server-name>`")
+				return m, nil
+			}
+			name := parts[2]
+			if err := m.client.EnableMCPServer(name); err != nil {
+				m.addSystemEntry(fmt.Sprintf("Failed to enable MCP server `%s`: %v", name, err))
+			} else {
+				m.addSystemEntry(fmt.Sprintf("MCP server `%s` enabled and tools registered.", name))
+			}
+		case "disable":
+			if m.running {
+				m.addSystemEntry("Cannot change MCP servers while a task is running.")
+				return m, nil
+			}
+			if len(parts) < 3 {
+				m.addSystemEntry("Usage: `/mcp disable <server-name>`")
+				return m, nil
+			}
+			name := parts[2]
+			if err := m.client.DisableMCPServer(name); err != nil {
+				m.addSystemEntry(fmt.Sprintf("Failed to disable MCP server `%s`: %v", name, err))
+			} else {
+				m.addSystemEntry(fmt.Sprintf("MCP server `%s` disabled and disconnected.", name))
+			}
+		case "auth":
+			if m.running {
+				m.addSystemEntry("Cannot authorize an MCP server while a task is running.")
+				return m, nil
+			}
+			if len(parts) < 3 {
+				m.addSystemEntry("Usage: `/mcp auth <server-name>`")
+				return m, nil
+			}
+			name := parts[2]
+			if err := m.client.AuthenticateMCPServer(context.Background(), name); err != nil {
+				m.addSystemEntry(fmt.Sprintf("Failed to authenticate MCP server `%s`: %v", name, err))
+			} else {
+				m.addSystemEntry(fmt.Sprintf("MCP server `%s` authorized successfully.", name))
+			}
+		default:
+			m.addSystemEntry(fmt.Sprintf("Unknown MCP subcommand `%s`. Usage: `/mcp [list|enable|disable|auth]`", subcommand))
+		}
 		return m, nil
 
 	case "/cancel-queue":

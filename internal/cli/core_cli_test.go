@@ -94,6 +94,71 @@ func (f *fakeCLICore) SetPermissionMode(mode core.PermissionMode) error {
 	}
 }
 
+func (f *fakeCLICore) GetSession(_ context.Context, id string) (core.Session, error) {
+	if f.latest.ID == id {
+		return f.latest, nil
+	}
+	if id == "non-existent" {
+		return core.Session{}, errors.New("not found")
+	}
+	return core.Session{ID: id, Title: "Session " + id}, nil
+}
+
+func (f *fakeCLICore) ListSessions(_ context.Context, limit int, reverse bool) ([]core.Session, error) {
+	if f.latest.ID != "" {
+		return []core.Session{f.latest}, nil
+	}
+	return []core.Session{{ID: "sess-1", Title: "First Session"}}, nil
+}
+
+func (f *fakeCLICore) ForkSession(_ context.Context, sessionID string) (core.Session, error) {
+	f.sequence++
+	f.latest = core.Session{ID: fmt.Sprintf("session-%d", f.sequence), Title: "Fork of " + sessionID}
+	return f.latest, nil
+}
+
+func (f *fakeCLICore) RewindSession(_ context.Context, sessionID string, turns int) (int, error) {
+	return turns, nil
+}
+
+func (f *fakeCLICore) SetSessionTitle(_ context.Context, sessionID, title string) error {
+	f.latest.Title = title
+	return nil
+}
+
+func (f *fakeCLICore) ListModelProfiles() []core.ModelOption {
+	return []core.ModelOption{
+		{Profile: "primary", Provider: "mock", Model: "mock-model"},
+		{Profile: "fast", Provider: "mock", Model: "mock-fast"},
+	}
+}
+
+func (f *fakeCLICore) ModelForSession(_ context.Context, sessionID string) string {
+	return "mock-model"
+}
+
+func (f *fakeCLICore) SetSessionSettings(_ context.Context, sessionID string, settings core.SessionSettings) error {
+	return nil
+}
+
+func (f *fakeCLICore) MCPServers() []core.MCPServerStatus {
+	return []core.MCPServerStatus{
+		{Name: "test-mcp", Transport: "stdio", Command: "test-cmd", Enabled: true, Connected: true, ToolCount: 3},
+	}
+}
+
+func (f *fakeCLICore) EnableMCPServer(name string) error {
+	return nil
+}
+
+func (f *fakeCLICore) DisableMCPServer(name string) error {
+	return nil
+}
+
+func (f *fakeCLICore) AuthenticateMCPServer(_ context.Context, name string) error {
+	return nil
+}
+
 func cliResponse(text string) json.RawMessage {
 	encoded, _ := json.Marshal(map[string]any{"output": []any{map[string]any{
 		"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": text}},
@@ -310,7 +375,7 @@ func runCLI(t *testing.T, client cliCore, input string, watchKeys keyEventWatche
 func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
 	client := &fakeCLICore{}
 	var stdout, stderr bytes.Buffer
-	handleCoreCLIPermissions(client, "/permissions ask", &stdout, &stderr)
+	handleCoreCLIPermissions(client, false, "/permissions ask", &stdout, &stderr)
 	if client.PermissionMode() != core.PermissionAsk {
 		t.Fatalf("permission mode = %q, want ask", client.PermissionMode())
 	}
@@ -319,11 +384,17 @@ func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
 	}
 
 	stdout.Reset()
-	handleCoreCLIPermissions(client, "/permissions", &stdout, &stderr)
+	handleCoreCLIPermissions(client, false, "/permissions", &stdout, &stderr)
 	for _, mode := range []string{"read-only", "workspace", "ask", "full-access"} {
 		if !strings.Contains(stdout.String(), mode) {
 			t.Errorf("permission list %q does not contain %q", stdout.String(), mode)
 		}
+	}
+
+	stderr.Reset()
+	handleCoreCLIPermissions(client, true, "/permissions full-access", &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "Cannot change permissions while Plan mode is active") {
+		t.Fatalf("stderr=%q, want Plan mode lock error", stderr.String())
 	}
 }
 
@@ -594,5 +665,119 @@ func TestChatLoopBlocksNewInputUntilPendingTaskIsResumedOrDiscarded(t *testing.T
 	}
 	if !strings.Contains(stdout, "Interrupted task discarded.") {
 		t.Fatalf("stdout = %q, want discard confirmation", stdout)
+	}
+}
+
+func TestCLICleanLaunchCreatesNewSession(t *testing.T) {
+	client := &fakeCLICore{
+		latest: core.Session{ID: "old-session-123", Title: "Old Session"},
+	}
+	stdout, stderr := runCLI(t, client, "/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	_ = stdout
+	// sequence must be 1 because CreateSession was called on startup instead of reusing old-session-123
+	if client.sequence != 1 {
+		t.Fatalf("client.sequence = %d, want 1 (new session created on launch)", client.sequence)
+	}
+	if client.latest.ID == "old-session-123" {
+		t.Fatalf("latest session ID = %q, want new session created", client.latest.ID)
+	}
+}
+
+func TestCLIStatusAndModel(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/status\n/model\n/model fast\n/status\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Session ID:") || !strings.Contains(stdout, "Workspace:") {
+		t.Fatalf("stdout = %q, want status details", stdout)
+	}
+	if !strings.Contains(stdout, "Available model profiles:") || !strings.Contains(stdout, "mock-model") {
+		t.Fatalf("stdout = %q, want model profiles list", stdout)
+	}
+	if !strings.Contains(stdout, "Active model set to") {
+		t.Fatalf("stdout = %q, want model switched message", stdout)
+	}
+}
+
+func TestCLIPlanMode(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/plan\n/permissions workspace\n/plan\n/exit\n", nil)
+	if !strings.Contains(stdout, "Switched to Plan mode (permissions locked to read-only).") {
+		t.Fatalf("stdout = %q, want Plan mode enter message", stdout)
+	}
+	if !strings.Contains(stderr, "Cannot change permissions while Plan mode is active.") {
+		t.Fatalf("stderr = %q, want Plan mode lock error", stderr)
+	}
+	if !strings.Contains(stdout, "Exited Plan mode (permissions restored).") {
+		t.Fatalf("stdout = %q, want Plan mode exit message", stdout)
+	}
+}
+
+func TestCLISessionsAndOpen(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/sessions\n/open session-1\n/open non-existent\n/exit\n", nil)
+	if !strings.Contains(stdout, "Recent sessions:") {
+		t.Fatalf("stdout = %q, want recent sessions list", stdout)
+	}
+	if !strings.Contains(stdout, "Already in session session-1.") {
+		t.Fatalf("stdout = %q, want already in session", stdout)
+	}
+	if !strings.Contains(stderr, "No session found matching prefix") {
+		t.Fatalf("stderr = %q, want no session found", stderr)
+	}
+}
+
+func TestCLITitleAndRewind(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/title My Work\n/title\n/rewind 2\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, `Session title set to "My Work".`) {
+		t.Fatalf("stdout = %q, want title set confirmation", stdout)
+	}
+	if !strings.Contains(stdout, "Current session title: My Work") {
+		t.Fatalf("stdout = %q, want title inspection", stdout)
+	}
+	if !strings.Contains(stdout, "Rewound 2 turn(s).") {
+		t.Fatalf("stdout = %q, want rewind confirmation", stdout)
+	}
+}
+
+func TestCLIMCPCommands(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/mcp\n/mcp enable test-mcp\n/mcp disable test-mcp\n/mcp auth test-mcp\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "MCP Servers:") || !strings.Contains(stdout, "test-mcp") {
+		t.Fatalf("stdout = %q, want mcp list", stdout)
+	}
+	if !strings.Contains(stdout, `MCP server "test-mcp" enabled.`) {
+		t.Fatalf("stdout = %q, want mcp enable confirmation", stdout)
+	}
+	if !strings.Contains(stdout, `MCP server "test-mcp" disabled.`) {
+		t.Fatalf("stdout = %q, want mcp disable confirmation", stdout)
+	}
+	if !strings.Contains(stdout, `MCP server "test-mcp" authentication completed.`) {
+		t.Fatalf("stdout = %q, want mcp auth confirmation", stdout)
+	}
+}
+
+func TestCLIClearAndFork(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLI(t, client, "/clear\n/fork\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "\033[H\033[2J") {
+		t.Fatalf("stdout does not contain clear escape sequence")
+	}
+	if !strings.Contains(stdout, "Forked to new session: session-2") {
+		t.Fatalf("stdout = %q, want forked session confirmation", stdout)
 	}
 }

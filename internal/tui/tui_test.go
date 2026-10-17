@@ -1069,4 +1069,40 @@ func TestTitleCommand(t *testing.T) {
 	}
 }
 
+func TestMCPCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.handleSlashCommand("/mcp")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "MCP management is unavailable") {
+		t.Errorf("expected unavailable message when client is nil, got: %s", lastSys)
+	}
+
+	// Unknown subcommand
+	m.handleSlashCommand("/mcp unknown-sub")
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "MCP management is unavailable") {
+		t.Errorf("expected unavailable message, got: %s", lastSys2)
+	}
+}
+
+func TestReviewCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.workspace = "."
+
+	// Non-existent file review
+	m.handleSlashCommand("/review non-existent-file-xyz.txt")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "No changes found for: non-existent-file-xyz.txt") {
+		t.Errorf("expected no changes message for non-existent file, got: %s", lastSys)
+	}
+
+	// Full workspace review
+	m.handleSlashCommand("/review")
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Workspace Changes Review") && !strings.Contains(lastSys2, "No unstaged or uncommitted changes in workspace") {
+		t.Errorf("expected review summary or no-changes message, got: %s", lastSys2)
+	}
+}
+
+
 

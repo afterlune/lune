@@ -78,6 +78,8 @@
 | **`/open <id\|prefix>`** | 切换至指定会话（支持唯一前缀模糊匹配，如前 6~8 位 ID；任务运行中受安全互锁保护禁止切换） |
 | **`/title [name]`** | 查看或自定义重命名当前会话标题，Header、Footer 与 `/sessions` 实时同步持久化 |
 | **`/diff [path]`** | 在视口中以红绿语法高亮直接查看当前 Git 工作区的代码修改差异（无需跳出 TUI） |
+| **`/review [path]`** | 结构化查看工作区代码变动汇总（修改、新增、删除及增删行统计），或细粒度审查特定文件 |
+| **`/mcp [subcommand]`** | 管理已配置的外部 MCP 服务器（`/mcp list` 查看列表、`/mcp enable <name>` 启用并发现工具、`/mcp disable <name>` 禁用卸载、`/mcp auth <name>` OAuth 授权） |
 | **`/cancel-queue`** | 取消当前处于等待队列中的后续任务（亦可直接按 `Esc`） |
 | **`/rewind [N]`** | 回滚会话至前 N 轮对话（默认 1 轮；严格保证 Core SQLite 事务一致性，自动重载转录历史；运行态下禁止回滚） |
 | **`/status`** | 查看会话状态（模型、工作区路径、权限、标题、Session ID、主题模式、Context Window 占用百分比与精确 Token 统计） |
@@ -134,6 +136,10 @@
 ### 4.6 工作区变更审查 (`WorkspaceDiff`)
 - 执行 `/diff [path]` 时，直接在当前视口内输出当前 Git 工作区的代码变更差异。
 - 包含文件头（粗体白字）、增量行（柔和绿）、删减行（柔和红）与分块位置（粗体深蓝），免除频繁在外部终端与 IDE 之间切屏的成本。
+
+### 4.7 工作区变更汇总与 MCP 生态管理 (`/review`, `/mcp`)
+- 执行 `/review`：输出当前 Git 工作区的变更文件状态清单（`M`/`A`/`D`/`??`）与增删行概览统计；指定文件路径时细粒度审查该文件的代码 diff。
+- 执行 `/mcp`：支持 `/mcp list` 查看已配置服务器状态与工具数；`/mcp enable <name>` 动态加载并注册工具；`/mcp disable <name>` 注销卸载；`/mcp auth <name>` 唤起浏览器完成 Streamable HTTP OAuth 认证。
 
 ---
 

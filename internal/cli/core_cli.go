@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -33,10 +35,22 @@ type cliCore interface {
 	Workspace() string
 	LatestSession(context.Context) (core.Session, bool, error)
 	CreateSession(context.Context, json.RawMessage) (core.Session, error)
+	GetSession(context.Context, string) (core.Session, error)
+	ListSessions(context.Context, int, bool) ([]core.Session, error)
+	ForkSession(context.Context, string) (core.Session, error)
+	RewindSession(context.Context, string, int) (int, error)
+	SetSessionTitle(context.Context, string, string) error
 	OpenSessionRuntime(context.Context, string) (cliRuntime, error)
 	Compact(context.Context, string) (int, error)
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
+	ListModelProfiles() []core.ModelOption
+	ModelForSession(context.Context, string) string
+	SetSessionSettings(context.Context, string, core.SessionSettings) error
+	MCPServers() []core.MCPServerStatus
+	EnableMCPServer(string) error
+	DisableMCPServer(string) error
+	AuthenticateMCPServer(context.Context, string) error
 }
 
 type cliCommandHelp struct {
@@ -46,13 +60,25 @@ type cliCommandHelp struct {
 }
 
 var cliCommands = []cliCommandHelp{
+	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
+	{name: "/fork", usage: "/fork", description: "Fork the current session."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
+	{name: "/mcp", usage: "/mcp [list|enable|disable|auth]", description: "Manage external MCP servers."},
+	{name: "/model", usage: "/model [profile]", description: "View or change active model profile."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
+	{name: "/open", usage: "/open [id|prefix]", description: "Switch to an existing session."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set mode: read-only, workspace, ask, full-access."},
+	{name: "/plan", usage: "/plan", description: "Toggle Plan mode (read-only exploration)."},
 	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
+	{name: "/review", usage: "/review [path]", description: "Summarize and review workspace changes."},
+	{name: "/rewind", usage: "/rewind [N]", description: "Rewind conversation to a previous turn."},
+	{name: "/sessions", usage: "/sessions", description: "List recent sessions in this workspace."},
+	{name: "/status", usage: "/status", description: "Show session, model, and token status."},
+	{name: "/title", usage: "/title [name]", description: "View or set custom title for this session."},
 }
 
 func cliCommandNames() []string {
@@ -81,18 +107,15 @@ type keyEventWatcher func() (<-chan cliInputEvent, func(), error)
 
 func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchKeys keyEventWatcher) error {
 	ctx := context.Background()
-	saved, found, err := client.LatestSession(ctx)
+	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
 	if err != nil {
-		return fmt.Errorf("load latest session: %w", err)
-	}
-	if !found {
-		saved, err = client.CreateSession(ctx, json.RawMessage("null"))
-		if err != nil {
-			return fmt.Errorf("create session: %w", err)
-		}
+		return fmt.Errorf("create session: %w", err)
 	}
 	sessionID := saved.ID
+	sessionTitle := saved.Title
 	workspace := saved.Workspace
+	planMode := false
+	savedPermissionMode := client.PermissionMode()
 	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
@@ -109,14 +132,17 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 		switch {
 		case line == "/help":
 			fmt.Fprint(stdout, cliHelpText())
-		case line == "/exit":
+		case line == "/exit" || line == "/quit":
 			return nil
+		case line == "/clear":
+			fmt.Fprint(stdout, "\033[H\033[2J")
 		case line == "/new":
 			saved, err = client.CreateSession(ctx, json.RawMessage("null"))
 			if err != nil {
 				fmt.Fprintf(stderr, "error: create session: %v\n", err)
 			} else {
 				sessionID = saved.ID
+				sessionTitle = saved.Title
 				workspace = saved.Workspace
 				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
 				if err != nil {
@@ -125,8 +151,69 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 					fmt.Fprintln(stdout, "New session.")
 				}
 			}
+		case line == "/plan":
+			planMode = !planMode
+			if planMode {
+				savedPermissionMode = client.PermissionMode()
+				_ = client.SetPermissionMode(core.PermissionReadOnly)
+				fmt.Fprintln(stdout, "Switched to Plan mode (permissions locked to read-only).")
+			} else {
+				_ = client.SetPermissionMode(savedPermissionMode)
+				fmt.Fprintln(stdout, "Exited Plan mode (permissions restored).")
+			}
+		case line == "/status":
+			handleCoreCLIStatus(client, sessionID, sessionTitle, planMode, stdout)
+		case line == "/model" || strings.HasPrefix(line, "/model "):
+			handleCoreCLIModel(client, sessionID, line, stdout, stderr)
+		case line == "/sessions":
+			handleCoreCLISessions(client, sessionID, stdout, stderr)
+		case line == "/open" || strings.HasPrefix(line, "/open "):
+			newID, newRuntime, openErr := handleCoreCLIOpen(client, sessionID, line, stdout, stderr)
+			if openErr != nil {
+				fmt.Fprintf(stderr, "error: open session: %v\n", openErr)
+			} else if newRuntime != nil {
+				sessionID = newID
+				runtime = newRuntime
+				if s, err := client.GetSession(ctx, sessionID); err == nil {
+					sessionTitle = s.Title
+					workspace = s.Workspace
+				}
+			}
+		case line == "/title" || strings.HasPrefix(line, "/title "):
+			sessionTitle = handleCoreCLITitle(client, sessionID, line, stdout, stderr)
+		case line == "/rewind" || strings.HasPrefix(line, "/rewind "):
+			handleCoreCLIRewind(client, sessionID, line, stdout, stderr)
+		case line == "/diff" || strings.HasPrefix(line, "/diff "):
+			targetWorkspace := workspace
+			if targetWorkspace == "" {
+				targetWorkspace = client.Workspace()
+			}
+			handleCoreCLIDiff(targetWorkspace, line, stdout, stderr)
+		case line == "/review" || strings.HasPrefix(line, "/review "):
+			targetWorkspace := workspace
+			if targetWorkspace == "" {
+				targetWorkspace = client.Workspace()
+			}
+			handleCoreCLIReview(targetWorkspace, line, stdout, stderr)
+		case line == "/mcp" || strings.HasPrefix(line, "/mcp "):
+			handleCoreCLIMCP(client, line, stdout, stderr)
+		case line == "/fork":
+			newSession, err := client.ForkSession(ctx, sessionID)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: fork session: %v\n", err)
+			} else {
+				sessionID = newSession.ID
+				sessionTitle = newSession.Title
+				workspace = newSession.Workspace
+				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
+				if err != nil {
+					fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
+				} else {
+					fmt.Fprintf(stdout, "Forked to new session: %s\n", sessionID)
+				}
+			}
 		case line == "/permissions" || strings.HasPrefix(line, "/permissions "):
-			handleCoreCLIPermissions(client, line, stdout, stderr)
+			handleCoreCLIPermissions(client, planMode, line, stdout, stderr)
 		case line == "/discard":
 			discarded, err := runtime.DiscardPaused(ctx)
 			if err != nil {
@@ -195,7 +282,7 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 	}
 }
 
-func handleCoreCLIPermissions(client cliCore, line string, stdout, stderr io.Writer) {
+func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout, stderr io.Writer) {
 	fields := strings.Fields(line)
 	if len(fields) == 1 {
 		mode := client.PermissionMode()
@@ -206,12 +293,323 @@ func handleCoreCLIPermissions(client cliCore, line string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "usage: /permissions [read-only|workspace|ask|full-access]")
 		return
 	}
+	if planMode {
+		fmt.Fprintln(stderr, "Cannot change permissions while Plan mode is active.")
+		return
+	}
 	mode := core.PermissionMode(fields[1])
 	if err := client.SetPermissionMode(mode); err != nil {
 		fmt.Fprintln(stderr, err)
 		return
 	}
 	fmt.Fprintf(stdout, "Permission mode set to %s.\n", mode)
+}
+
+func handleCoreCLIStatus(client cliCore, sessionID, sessionTitle string, planMode bool, stdout io.Writer) {
+	ctx := context.Background()
+	workspace := client.Workspace()
+	model := client.ModelForSession(ctx, sessionID)
+	mode := client.PermissionMode()
+	if sessionTitle == "" {
+		if s, err := client.GetSession(ctx, sessionID); err == nil && s.Title != "" {
+			sessionTitle = s.Title
+		} else {
+			sessionTitle = "<untitled>"
+		}
+	}
+	fmt.Fprintf(stdout, "Session ID:  %s\n", sessionID)
+	fmt.Fprintf(stdout, "Title:       %s\n", sessionTitle)
+	fmt.Fprintf(stdout, "Model:       %s\n", model)
+	fmt.Fprintf(stdout, "Workspace:   %s\n", workspace)
+	fmt.Fprintf(stdout, "Permissions: %s (Plan mode: %v)\n", mode, planMode)
+}
+
+func handleCoreCLIModel(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	ctx := context.Background()
+	profiles := client.ListModelProfiles()
+	if len(fields) == 1 {
+		current := client.ModelForSession(ctx, sessionID)
+		fmt.Fprintf(stdout, "Current model: %s\n", current)
+		if len(profiles) > 0 {
+			fmt.Fprintln(stdout, "Available model profiles:")
+			for _, p := range profiles {
+				fmt.Fprintf(stdout, "  - %-16s (%s / %s)\n", p.Profile, p.Provider, p.Model)
+			}
+		}
+		return
+	}
+	target := fields[1]
+	valid := false
+	for _, p := range profiles {
+		if strings.EqualFold(p.Profile, target) || strings.EqualFold(p.Model, target) {
+			target = p.Profile
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		var names []string
+		for _, p := range profiles {
+			names = append(names, p.Profile)
+		}
+		fmt.Fprintf(stderr, "Unknown model profile %q. Available profiles: %s\n", fields[1], strings.Join(names, ", "))
+		return
+	}
+	if err := client.SetSessionSettings(ctx, sessionID, core.SessionSettings{ModelProfile: target}); err != nil {
+		fmt.Fprintf(stderr, "error: set model: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stdout, "Active model set to %s.\n", client.ModelForSession(ctx, sessionID))
+}
+
+func handleCoreCLISessions(client cliCore, currentSessionID string, stdout, stderr io.Writer) {
+	ctx := context.Background()
+	sessions, err := client.ListSessions(ctx, 20, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: list sessions: %v\n", err)
+		return
+	}
+	if len(sessions) == 0 {
+		fmt.Fprintln(stdout, "No sessions found.")
+		return
+	}
+	fmt.Fprintln(stdout, "Recent sessions:")
+	for _, s := range sessions {
+		prefix := "  "
+		if s.ID == currentSessionID {
+			prefix = "> "
+		}
+		shortID := s.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		title := s.Title
+		if title == "" {
+			title = "<untitled>"
+		}
+		timeStr := s.UpdatedAt.Format("2006-01-02 15:04:05")
+		fmt.Fprintf(stdout, "%s%-14s %-25s %s\n", prefix, shortID, title, timeStr)
+	}
+}
+
+func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) (string, cliRuntime, error) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		fmt.Fprintln(stderr, "usage: /open <session-id|prefix>")
+		return currentSessionID, nil, nil
+	}
+	targetPrefix := fields[1]
+	ctx := context.Background()
+	targetID := ""
+	if _, err := client.GetSession(ctx, targetPrefix); err == nil {
+		targetID = targetPrefix
+	} else {
+		sessions, err := client.ListSessions(ctx, 100, false)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: query sessions: %v\n", err)
+			return currentSessionID, nil, nil
+		}
+		var matches []core.Session
+		for _, s := range sessions {
+			if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
+				matches = append(matches, s)
+			}
+		}
+		if len(matches) == 0 {
+			fmt.Fprintf(stderr, "No session found matching prefix %q.\n", targetPrefix)
+			return currentSessionID, nil, nil
+		} else if len(matches) > 1 {
+			var ids []string
+			for _, match := range matches {
+				short := match.ID
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				ids = append(ids, short)
+			}
+			fmt.Fprintf(stderr, "Prefix %q is ambiguous. Matches: %s\n", targetPrefix, strings.Join(ids, ", "))
+			return currentSessionID, nil, nil
+		}
+		targetID = matches[0].ID
+	}
+	if targetID == currentSessionID {
+		fmt.Fprintf(stdout, "Already in session %s.\n", targetID)
+		return currentSessionID, nil, nil
+	}
+	rt, err := client.OpenSessionRuntime(ctx, targetID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
+		return currentSessionID, nil, nil
+	}
+	fmt.Fprintf(stdout, "Switched to session %s.\n", targetID)
+	return targetID, rt, nil
+}
+
+func handleCoreCLITitle(client cliCore, sessionID, line string, stdout, stderr io.Writer) string {
+	fields := strings.Fields(line)
+	ctx := context.Background()
+	if len(fields) == 1 {
+		title := "<untitled>"
+		if s, err := client.GetSession(ctx, sessionID); err == nil && s.Title != "" {
+			title = s.Title
+		}
+		fmt.Fprintf(stdout, "Current session title: %s (ID: %s)\n", title, sessionID)
+		return title
+	}
+	newTitle := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+	if err := client.SetSessionTitle(ctx, sessionID, newTitle); err != nil {
+		fmt.Fprintf(stderr, "error: set session title: %v\n", err)
+		return ""
+	}
+	fmt.Fprintf(stdout, "Session title set to %q.\n", newTitle)
+	return newTitle
+}
+
+func handleCoreCLIRewind(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	turns := 1
+	if len(fields) > 1 {
+		n, err := strconv.Atoi(fields[1])
+		if err != nil || n <= 0 {
+			fmt.Fprintf(stderr, "usage: /rewind [N] (N must be a positive integer)\n")
+			return
+		}
+		turns = n
+	}
+	ctx := context.Background()
+	removed, err := client.RewindSession(ctx, sessionID, turns)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: rewind session: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stdout, "Rewound %d turn(s).\n", removed)
+}
+
+func handleCoreCLIDiff(workspace, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	args := []string{"diff"}
+	if len(fields) > 1 {
+		args = append(args, "--")
+		args = append(args, fields[1:]...)
+	}
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = workspace
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: git diff: %v\n", err)
+		return
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		fmt.Fprintln(stdout, "No unstaged or uncommitted changes in workspace.")
+		return
+	}
+	fmt.Fprintln(stdout, trimmed)
+}
+
+func handleCoreCLIReview(workspace, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	if len(fields) > 1 {
+		handleCoreCLIDiff(workspace, line, stdout, stderr)
+		return
+	}
+	statusCmd := exec.CommandContext(context.Background(), "git", "status", "--short")
+	statusCmd.Dir = workspace
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: git status: %v\n", err)
+		return
+	}
+	statusText := strings.TrimSpace(string(statusOut))
+	if statusText == "" {
+		fmt.Fprintln(stdout, "No unstaged or uncommitted changes in workspace.")
+		return
+	}
+	diffStatCmd := exec.CommandContext(context.Background(), "git", "diff", "--stat")
+	diffStatCmd.Dir = workspace
+	diffStatOut, _ := diffStatCmd.CombinedOutput()
+	statText := strings.TrimSpace(string(diffStatOut))
+
+	fmt.Fprintln(stdout, "Workspace Changes Summary:")
+	fmt.Fprintln(stdout, statusText)
+	if statText != "" {
+		fmt.Fprintln(stdout, "---")
+		fmt.Fprintln(stdout, statText)
+	}
+	fmt.Fprintln(stdout, "\nTip: Use /review <path> or /diff <path> to view full diff for a specific file.")
+}
+
+func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	subcommand := "list"
+	if len(fields) > 1 {
+		subcommand = strings.ToLower(fields[1])
+	}
+	ctx := context.Background()
+	switch subcommand {
+	case "list":
+		servers := client.MCPServers()
+		if len(servers) == 0 {
+			fmt.Fprintln(stdout, "No MCP servers configured.")
+			return
+		}
+		fmt.Fprintln(stdout, "MCP Servers:")
+		for _, s := range servers {
+			status := "Disabled"
+			if s.Enabled {
+				status = "Enabled"
+			}
+			conn := "Disconnected"
+			if s.Connected {
+				conn = "Connected"
+			}
+			endpoint := s.Endpoint
+			if endpoint == "" {
+				endpoint = s.Command
+			}
+			errInfo := ""
+			if s.LastError != "" {
+				errInfo = fmt.Sprintf(" (Error: %s)", s.LastError)
+			}
+			fmt.Fprintf(stdout, "  - %-16s [%s, %s] %s (%d tools)%s\n", s.Name, status, conn, endpoint, s.ToolCount, errInfo)
+		}
+	case "enable":
+		if len(fields) < 3 {
+			fmt.Fprintln(stderr, "usage: /mcp enable <server-name>")
+			return
+		}
+		name := fields[2]
+		if err := client.EnableMCPServer(name); err != nil {
+			fmt.Fprintf(stderr, "error: enable MCP server %q: %v\n", name, err)
+			return
+		}
+		fmt.Fprintf(stdout, "MCP server %q enabled.\n", name)
+	case "disable":
+		if len(fields) < 3 {
+			fmt.Fprintln(stderr, "usage: /mcp disable <server-name>")
+			return
+		}
+		name := fields[2]
+		if err := client.DisableMCPServer(name); err != nil {
+			fmt.Fprintf(stderr, "error: disable MCP server %q: %v\n", name, err)
+			return
+		}
+		fmt.Fprintf(stdout, "MCP server %q disabled.\n", name)
+	case "auth":
+		if len(fields) < 3 {
+			fmt.Fprintln(stderr, "usage: /mcp auth <server-name>")
+			return
+		}
+		name := fields[2]
+		if err := client.AuthenticateMCPServer(ctx, name); err != nil {
+			fmt.Fprintf(stderr, "error: authenticate MCP server %q: %v\n", name, err)
+			return
+		}
+		fmt.Fprintf(stdout, "MCP server %q authentication completed.\n", name)
+	default:
+		fmt.Fprintf(stderr, "Unknown MCP subcommand %q. Usage: /mcp [list|enable|disable|auth]\n", subcommand)
+	}
 }
 
 func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.TurnRequest, resume bool, watchKeys keyEventWatcher, stderr io.Writer) (core.TurnResult, error, bool) {
