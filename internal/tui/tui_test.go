@@ -2007,6 +2007,135 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	}
 }
 
+func TestDiffModalInteractions(t *testing.T) {
+	// 1. Test parseGitDiff parser
+	sampleDiff := `diff --git a/pkg/auth/login.go b/pkg/auth/login.go
+index 1111111..2222222 100644
+--- a/pkg/auth/login.go
++++ b/pkg/auth/login.go
+@@ -10,25 +10,27 @@ func Login() {
+-	oldCheck()
++	newCheck()
++	auditLog()
++	line4()
++	line5()
++	line6()
++	line7()
++	line8()
++	line9()
++	line10()
++	line11()
++	line12()
++	line13()
++	line14()
++	line15()
++	line16()
++	line17()
++	line18()
++	line19()
++	line20()
++	line21()
++	line22()
++	line23()
++	line24()
++	line25()
+ }
+diff --git a/pkg/auth/token.go b/pkg/auth/token.go
+index 3333333..4444444 100644
+--- a/pkg/auth/token.go
++++ b/pkg/auth/token.go
+@@ -5,3 +5,2 @@ func Token() {
+-	deprecated()
+ }`
+	parsed := parseGitDiff(sampleDiff)
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 diff files, got %d", len(parsed))
+	}
+	if parsed[0].Path != "pkg/auth/login.go" || parsed[0].Additions != 24 || parsed[0].Deletions != 1 {
+		t.Fatalf("file 0 parsed stats mismatch: %+v", parsed[0])
+	}
+	if parsed[1].Path != "pkg/auth/token.go" || parsed[1].Additions != 0 || parsed[1].Deletions != 1 {
+		t.Fatalf("file 1 parsed stats mismatch: %+v", parsed[1])
+	}
+
+	// 2. Setup model with diff files
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 100
+	m.height = 30
+	m.diffModalOpen = true
+	m.diffFiles = parsed
+	m.diffFileIndex = 0
+	m.diffScrollY = 0
+	m.updateLayout()
+
+	// Verify renderDiffModal output
+	viewContent := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewContent, "Workspace Diff Pager") {
+		t.Errorf("expected View to contain Workspace Diff Pager, got: %s", viewContent)
+	}
+	if !strings.Contains(viewContent, "File 1 of 2") {
+		t.Errorf("expected View to show File 1 of 2, got: %s", viewContent)
+	}
+	if !strings.Contains(viewContent, "pkg/auth/login.go") {
+		t.Errorf("expected View to show login.go, got: %s", viewContent)
+	}
+	if !strings.Contains(viewContent, "+24") || !strings.Contains(viewContent, "-1") {
+		t.Errorf("expected View to show +24 -1 stats, got: %s", viewContent)
+	}
+
+	// 3. Test scrolling (down/up)
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.diffScrollY != 1 {
+		t.Errorf("expected diffScrollY to be 1 after down arrow, got %d", m.diffScrollY)
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.diffScrollY != 0 {
+		t.Errorf("expected diffScrollY to be 0 after up arrow, got %d", m.diffScrollY)
+	}
+
+	// 4. Test file switching (Tab / ])
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = mod.(*tuiModel)
+	if m.diffFileIndex != 1 {
+		t.Errorf("expected diffFileIndex to be 1 after Tab, got %d", m.diffFileIndex)
+	}
+	viewContent2 := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewContent2, "File 2 of 2") || !strings.Contains(viewContent2, "pkg/auth/token.go") {
+		t.Errorf("expected View to show File 2 of 2 token.go, got: %s", viewContent2)
+	}
+
+	// Previous file ([ / p)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '['}))
+	m = mod.(*tuiModel)
+	if m.diffFileIndex != 0 {
+		t.Errorf("expected diffFileIndex to wrap back to 0, got %d", m.diffFileIndex)
+	}
+
+	// 5. Test Copy (c)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'c'}))
+	m = mod.(*tuiModel)
+	if !strings.Contains(m.copyFeedback, "Copied") {
+		t.Errorf("expected copy feedback, got %q", m.copyFeedback)
+	}
+
+	// 6. Test Esc closes modal
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.diffModalOpen {
+		t.Fatalf("expected diffModalOpen to be false after Esc")
+	}
+
+	// 7. Test /diff command with non-existent path
+	m.handleSlashCommand("/diff non-existent-path-abc.txt")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "No changes found for: non-existent-path-abc.txt") {
+		t.Errorf("expected no changes notice, got: %s", lastSys)
+	}
+}
+
 func BenchmarkRefreshViewportContent_Cached(b *testing.B) {
 	m := newTUIModel(nil, nil, "bench-sess")
 	m.width = 120

@@ -35,7 +35,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session conversation transcript to a markdown file"},
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
-	{Command: "/diff", Description: "inspect git code changes in workspace"},
+	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)"},
 	{Command: "/review", Description: "summarize and review workspace changes"},
 	{Command: "/mcp", Description: "manage external MCP servers: list, enable, disable, auth"},
 	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
@@ -311,58 +311,16 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/diff":
-		var diffArgs []string
-		diffArgs = append(diffArgs, "diff")
+		targetPath := ""
 		if len(parts) > 1 {
-			diffArgs = append(diffArgs, "--")
-			diffArgs = append(diffArgs, parts[1:]...)
+			targetPath = strings.Join(parts[1:], " ")
 		}
-		cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
-		cmd.Dir = m.workspace
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			m.addSystemEntry("Failed to run git diff: " + err.Error())
-			return m, nil
-		}
-		diffText := strings.TrimSpace(string(out))
-		if diffText == "" {
-			m.addSystemEntry("No unstaged or uncommitted changes in workspace.")
-			return m, nil
-		}
-		m.entries = append(m.entries, TranscriptEntry{
-			ID:        fmt.Sprintf("diff-%d", time.Now().UnixNano()),
-			Kind:      KindDiff,
-			Text:      diffText,
-			Timestamp: time.Now(),
-		})
-		m.refreshViewportContent()
-		m.updateLayout()
-		return m, nil
+		return m.openDiffModal(targetPath)
 
 	case "/review":
 		if len(parts) > 1 {
-			diffArgs := append([]string{"diff", "--"}, parts[1:]...)
-			cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
-			cmd.Dir = m.workspace
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				m.addSystemEntry("Failed to run git diff: " + err.Error())
-				return m, nil
-			}
-			diffText := strings.TrimSpace(string(out))
-			if diffText == "" {
-				m.addSystemEntry("No changes found for: " + strings.Join(parts[1:], " "))
-				return m, nil
-			}
-			m.entries = append(m.entries, TranscriptEntry{
-				ID:        fmt.Sprintf("diff-%d", time.Now().UnixNano()),
-				Kind:      KindDiff,
-				Text:      diffText,
-				Timestamp: time.Now(),
-			})
-			m.refreshViewportContent()
-			m.updateLayout()
-			return m, nil
+			targetPath := strings.Join(parts[1:], " ")
+			return m.openDiffModal(targetPath)
 		}
 
 		statusCmd := exec.CommandContext(context.Background(), "git", "status", "--short")
@@ -392,7 +350,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			lines = append(lines, statText)
 			lines = append(lines, "```")
 		}
-		lines = append(lines, "\n*Tip: Use `/review <path>` or `/diff <path>` to view full diff for a specific file.*")
+		lines = append(lines, "\n*Tip: Press `Ctrl+D` or use `/diff [path]` to inspect full diff in the interactive diff viewer.*")
 		m.addSystemEntry(strings.Join(lines, "\n"))
 		return m, nil
 
@@ -1636,6 +1594,87 @@ func (m *tuiModel) openToolPager(targetIndex int) (tea.Model, tea.Cmd) {
 	} else {
 		m.toolPagerIndex = targetIndex
 	}
+
+	m.updateLayout()
+	return m, nil
+}
+
+// diffModalVisibleLines calculates the visible line capacity of the diff modal.
+func (m *tuiModel) diffModalVisibleLines() int {
+	if m.height <= 0 {
+		return 10
+	}
+	lines := m.height - 12
+	if lines > 20 {
+		lines = 20
+	}
+	if lines < 5 {
+		lines = 5
+	}
+	return lines
+}
+
+// openDiffModal fetches workspace git diffs and opens the floating diff viewer modal.
+func (m *tuiModel) openDiffModal(targetPath string) (tea.Model, tea.Cmd) {
+	ws := m.workspace
+	if ws == "" && m.client != nil {
+		ws = m.client.Workspace()
+	}
+
+	var diffArgs []string
+	diffArgs = append(diffArgs, "diff")
+	if targetPath != "" {
+		diffArgs = append(diffArgs, "--", targetPath)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
+	cmd.Dir = ws
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		m.addSystemEntry("Failed to run git diff: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
+
+	diffText := strings.TrimSpace(string(out))
+	if diffText == "" && targetPath == "" {
+		stagedCmd := exec.CommandContext(context.Background(), "git", "diff", "--cached")
+		stagedCmd.Dir = ws
+		stagedOut, err := stagedCmd.CombinedOutput()
+		if err == nil {
+			diffText = strings.TrimSpace(string(stagedOut))
+		}
+	}
+
+	if diffText == "" {
+		if targetPath != "" {
+			m.addSystemEntry(fmt.Sprintf("No changes found for: %s", targetPath))
+		} else {
+			m.addSystemEntry("No git changes detected in workspace.")
+		}
+		m.updateLayout()
+		return m, nil
+	}
+
+	files := parseGitDiff(diffText)
+	if len(files) == 0 {
+		if targetPath != "" {
+			m.addSystemEntry(fmt.Sprintf("No changes found for: %s", targetPath))
+		} else {
+			m.addSystemEntry("No git changes detected in workspace.")
+		}
+		m.updateLayout()
+		return m, nil
+	}
+
+	m.shortcutsOpen = false
+	m.sessionsModalOpen = false
+	m.autocompleteOpen = false
+	m.toolPagerOpen = false
+	m.diffModalOpen = true
+	m.diffFiles = files
+	m.diffFileIndex = 0
+	m.diffScrollY = 0
 
 	m.updateLayout()
 	return m, nil

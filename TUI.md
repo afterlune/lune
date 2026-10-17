@@ -93,6 +93,7 @@
 | **`Shift+Tab`** | 循环切换权限档位（`workspace` → `ask` → `full-access` → `read-only`；Plan 模式下锁定为只读不可提升） |
 | **`?`** | 输入框为空时打开快捷键速查面板（再次按 `?` 或 `Esc` 关闭） |
 | **`Ctrl+T`** | **超长工具输出检视翻页浮层 (Tool Output Pager Modal)**：呼出专用翻页器浮层，展示最近一次工具执行的全量原始输出；支持 `↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`[`/`]`（`p`/`n`）切换历史工具执行、`c`/`Ctrl+C` 一键完整复制至剪贴板、`Esc`/`q`/`Ctrl+T` 退出 |
+| **`Ctrl+D`** | **交互式工作区 Diff 检视翻页浮层 (Workspace Diff Pager Modal)**：呼出专用 Git 差异浮层检视器，绝不污染聊天主视口；支持按文件分页查看、`Tab`/`Shift+Tab` 或 `[`/`]`（`p`/`n`）快速切换不同被改动文件、`↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`c`/`Ctrl+C` 一键复制当前文件 diff 至剪贴板、`Esc`/`q`/`Ctrl+D` 退出 |
 | **`/detail [index]`** | 打开超长工具输出检视翻页浮层（`/detail [index]`，无参数默认最新，支持 1-based 序号）；CLI 模式下直接向终端输出指定工具的全量原始结果 |
 | **`/plan`** | 切换进入/退出 Plan 规划模式（进入时锁定为 `read-only`，退出时恢复之前档位） |
 | **`/permissions [mode]`** | 查看或直接设置权限模式（`read-only`、`workspace`、`ask`、`full-access`） |
@@ -108,7 +109,7 @@
 | **`/logs <id\|prefix> [--tail N]`** | 读取指定后台进程的输出日志流，支持尾部行数截取（默认 50 行） |
 | **`/export [path]`** | 将当前会话的完整转录历史一键导出为 GitHub Flavored Markdown 归档文件（包含会话元数据、对话流及工具调用折叠块） |
 | **`/context`** | 呈现当前会话的上下文全景诊断（工作区、权限、AGENTS.md / CLAUDE.md 规则注入、注册工具总数、工作区长期记忆统计、后台进程统计、Token 预算利用率进度条与轮次） |
-| **`/diff [path]`** | 在视口中以红绿语法高亮直接查看当前 Git 工作区的代码修改差异（无需跳出 TUI） |
+| **`/diff [path]`** | 打开交互式工作区 Diff 检视浮层（支持快捷键 `Ctrl+D` 或指定文件路径），支持红绿语法着色、多文件导航与复制（若工作区无任何变更则输出提示） |
 | **`/review [path]`** | 结构化查看工作区代码变动汇总（修改、新增、删除及增删行统计），或细粒度审查特定文件 |
 | **`/mcp [subcommand]`** | 管理已配置的外部 MCP 服务器（`/mcp list` 查看列表、`/mcp enable <name>` 启用并发现工具、`/mcp disable <name>` 禁用卸载、`/mcp auth <name>` OAuth 授权） |
 | **`/cancel-queue`** | 取消当前处于等待队列中的后续任务（亦可直接按 `Esc`） |

@@ -583,6 +583,100 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// 0.3 Workspace Diff Viewer Modal handling
+	if m.diffModalOpen {
+		fileCount := len(m.diffFiles)
+		if fileCount == 0 {
+			m.diffModalOpen = false
+			m.updateLayout()
+			return m, nil
+		}
+		if m.diffFileIndex < 0 {
+			m.diffFileIndex = 0
+		} else if m.diffFileIndex >= fileCount {
+			m.diffFileIndex = fileCount - 1
+		}
+
+		file := m.diffFiles[m.diffFileIndex]
+		totalLines := len(file.Lines)
+		visibleLines := m.diffModalVisibleLines()
+		maxScroll := max(0, totalLines-visibleLines)
+
+		switch keyStr {
+		case "esc", "q", "ctrl+d":
+			m.diffModalOpen = false
+			m.updateLayout()
+			return m, nil
+
+		case "up", "k":
+			if m.diffScrollY > 0 {
+				m.diffScrollY--
+				m.updateLayout()
+			}
+			return m, nil
+
+		case "down", "j":
+			if m.diffScrollY < maxScroll {
+				m.diffScrollY++
+				m.updateLayout()
+			}
+			return m, nil
+
+		case "pgup":
+			m.diffScrollY = max(0, m.diffScrollY-visibleLines)
+			m.updateLayout()
+			return m, nil
+
+		case "pgdown":
+			m.diffScrollY = min(maxScroll, m.diffScrollY+visibleLines)
+			m.updateLayout()
+			return m, nil
+
+		case "home", "g":
+			m.diffScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "end", "G":
+			m.diffScrollY = maxScroll
+			m.updateLayout()
+			return m, nil
+
+		case "tab", "]", "n", "ctrl+n":
+			if m.diffFileIndex < fileCount-1 {
+				m.diffFileIndex++
+			} else {
+				m.diffFileIndex = 0
+			}
+			m.diffScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "shift+tab", "[", "p", "ctrl+p":
+			if m.diffFileIndex > 0 {
+				m.diffFileIndex--
+			} else {
+				m.diffFileIndex = fileCount - 1
+			}
+			m.diffScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "c", "ctrl+c":
+			diffText := file.RawDiff
+			_ = clipboard.WriteAll(diffText)
+			count := utf8.RuneCountInString(diffText)
+			m.copyFeedback = fmt.Sprintf("Copied %d chars of diff to clipboard", count)
+			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+			expiresAt := m.copyFeedbackExpiresAt
+			m.updateLayout()
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearCopyFeedbackMsg{at: expiresAt}
+			})
+		}
+		return m, nil
+	}
+
 	// Trigger shortcut modal when typing '?' in an empty composer
 	if keyStr == "?" && m.composer.Value() == "" && !m.running {
 		m.shortcutsOpen = true
@@ -638,6 +732,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.toolPagerOpen {
 			m.toolPagerOpen = false
+			m.updateLayout()
+			return m, nil
+		}
+		if m.diffModalOpen {
+			m.diffModalOpen = false
 			m.updateLayout()
 			return m, nil
 		}
@@ -727,6 +826,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+t":
 		return m.openToolPager(-1)
+
+	case "ctrl+d":
+		return m.openDiffModal("")
 
 	case "ctrl+o":
 		if m.running {

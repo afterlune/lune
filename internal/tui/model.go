@@ -100,6 +100,12 @@ type tuiModel struct {
 	toolPagerIndex   int
 	toolPagerScrollY int
 
+	// Diff viewer modal
+	diffModalOpen bool
+	diffFiles     []DiffFile
+	diffFileIndex int
+	diffScrollY   int
+
 	// Prompt history navigation
 	promptHistory []string
 	historyIndex  int
@@ -249,6 +255,8 @@ func (m *tuiModel) updateLayout() {
 		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
 	} else if m.toolPagerOpen {
 		modalHeight = lipgloss.Height(renderToolPagerModal(m, contentWidth)) + 1
+	} else if m.diffModalOpen {
+		modalHeight = lipgloss.Height(renderDiffModal(m, contentWidth)) + 1
 	} else if m.activeRecovery != nil {
 		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
 	} else if m.activeToolRecovery != nil {
@@ -475,6 +483,8 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderSessionsModal(m, contentWidth))
 	} else if m.toolPagerOpen {
 		sections = append(sections, renderToolPagerModal(m, contentWidth))
+	} else if m.diffModalOpen {
+		sections = append(sections, renderDiffModal(m, contentWidth))
 	} else if m.activeRecovery != nil {
 		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
 	} else if m.activeToolRecovery != nil {

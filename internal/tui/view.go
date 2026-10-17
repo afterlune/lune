@@ -788,6 +788,128 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
 
+// renderDiffModal renders the floating workspace diff viewer modal.
+func renderDiffModal(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(th.Border)).
+		Padding(1, 2).
+		Width(width)
+
+	if len(m.diffFiles) == 0 {
+		emptyLine := styleTextMuted().Italic(true).Render("No git changes detected in workspace.")
+		hint := styleTextMuted().Render("esc/q/ctrl+d close")
+		return cardStyle.Render(emptyLine + "\n\n" + hint)
+	}
+
+	idx := m.diffFileIndex
+	if idx < 0 {
+		idx = 0
+	} else if idx >= len(m.diffFiles) {
+		idx = len(m.diffFiles) - 1
+	}
+
+	file := m.diffFiles[idx]
+	fileNum := idx + 1
+	totalFiles := len(m.diffFiles)
+
+	availWidth := max(20, width-4)
+
+	// Header line
+	titleLeft := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).
+		Render("Workspace Diff Pager") +
+		styleTextMuted().Render(fmt.Sprintf(" (File %d of %d)", fileNum, totalFiles))
+
+	totalLines := len(file.Lines)
+	visibleLines := m.diffModalVisibleLines()
+	maxScroll := max(0, totalLines-visibleLines)
+	scrollY := m.diffScrollY
+	if scrollY > maxScroll {
+		scrollY = maxScroll
+	}
+	if scrollY < 0 {
+		scrollY = 0
+	}
+
+	var scrollInfo string
+	if totalLines > 0 {
+		endLineNum := min(totalLines, scrollY+visibleLines)
+		scrollInfo = styleTextMuted().Render(fmt.Sprintf("Lines %d-%d of %d", scrollY+1, endLineNum, totalLines))
+	} else {
+		scrollInfo = styleTextMuted().Render("0 lines")
+	}
+
+	headerGap := max(1, availWidth-lipgloss.Width(titleLeft)-lipgloss.Width(scrollInfo))
+	headerLine := titleLeft + strings.Repeat(" ", headerGap) + scrollInfo
+
+	// File info line with path, additions (+) and deletions (-)
+	pathStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary)).Render(file.Path)
+	statsStyled := fmt.Sprintf(" %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(fmt.Sprintf("+%d", file.Additions)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render(fmt.Sprintf("-%d", file.Deletions)),
+	)
+	if file.IsBinary {
+		statsStyled += " " + lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Render("[binary]")
+	}
+
+	var lines []string
+	lines = append(lines, headerLine)
+	lines = append(lines, pathStyled+statsStyled)
+	lines = append(lines, "")
+
+	if totalLines == 0 {
+		lines = append(lines, "  "+styleTextMuted().Italic(true).Render("(no changes)"))
+	} else {
+		endIdx := min(totalLines, scrollY+visibleLines)
+		numWidth := len(strconv.Itoa(totalLines))
+		if numWidth < 2 {
+			numWidth = 2
+		}
+		for i := scrollY; i < endIdx; i++ {
+			lineNumStr := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
+				Render(fmt.Sprintf("%*d │ ", numWidth, i+1))
+			lineContent := file.Lines[i]
+			maxContentWidth := max(10, availWidth-numWidth-4)
+			if len(lineContent) > maxContentWidth {
+				lineContent = lineContent[:maxContentWidth-1] + "…"
+			}
+
+			var contentStyled string
+			if strings.HasPrefix(lineContent, "diff --git") || strings.HasPrefix(lineContent, "index ") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(lineContent)
+			} else if strings.HasPrefix(lineContent, "---") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render(lineContent)
+			} else if strings.HasPrefix(lineContent, "+++") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(lineContent)
+			} else if strings.HasPrefix(lineContent, "@@") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render(lineContent)
+			} else if strings.HasPrefix(lineContent, "+") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(lineContent)
+			} else if strings.HasPrefix(lineContent, "-") {
+				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Render(lineContent)
+			} else {
+				contentStyled = styleTextPrimary().Render(lineContent)
+			}
+
+			lines = append(lines, lineNumStr+contentStyled)
+		}
+	}
+
+	lines = append(lines, "")
+
+	// Footer hint or copy feedback
+	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
+	} else {
+		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] or tab switch file · c copy · esc/q/ctrl+d close")
+		lines = append(lines, hint)
+	}
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
 // renderShortcutsPanel renders the keyboard shortcut cheat sheet in a 3-column layout.
 func renderShortcutsPanel(width int) string {
 	title := styleTextPrimary().Bold(true).Render("Keyboard Shortcuts")
@@ -816,6 +938,7 @@ func renderShortcutsPanel(width int) string {
 		{"Mouse Drag", "Select & auto-copy"},
 		{"Scroll", "History scroll"},
 		{"Ctrl+T", "Tool output pager"},
+		{"Ctrl+D", "Workspace diff viewer"},
 		{"Ctrl+C", "Copy selection"},
 		{"Esc", "Clear selection"},
 	}
