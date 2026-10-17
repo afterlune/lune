@@ -1210,9 +1210,13 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.autocompleteIndex = 0
 			var items []AutocompleteItem
 			for _, match := range matches {
+				desc := FormatFileSize(match.Size)
+				if match.IsModified {
+					desc += " · modified"
+				}
 				items = append(items, AutocompleteItem{
 					Command:     "@" + match.Path,
-					Description: FormatFileSize(match.Size),
+					Description: desc,
 				})
 			}
 			m.autocompleteItems = items

@@ -31,9 +31,18 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("› ")
 		content := prefix + styleTextPrimary().Render(text)
 		pad := max(0, width-lipgloss.Width(content))
-		return lipgloss.NewStyle().
+		box := lipgloss.NewStyle().
 			Background(lipgloss.Color(activeTheme().CardBg)).
 			Render(content + strings.Repeat(" ", pad))
+		if len(entry.AttachedFiles) > 0 {
+			var chips []string
+			for _, file := range entry.AttachedFiles {
+				chips = append(chips, "📎 "+file)
+			}
+			chipLine := "  " + styleTextMuted().Render(strings.Join(chips, "  "))
+			return box + "\n" + chipLine
+		}
+		return box
 
 	case KindAssistant:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
@@ -91,9 +100,18 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		hint := styleTextMuted().Render(" (/cancel-queue to cancel)")
 		row := icon + label + content + hint
 		pad := max(0, width-lipgloss.Width(row))
-		return lipgloss.NewStyle().
+		box := lipgloss.NewStyle().
 			Background(lipgloss.Color(activeTheme().CardBg)).
 			Render(row + strings.Repeat(" ", pad))
+		if len(entry.AttachedFiles) > 0 {
+			var chips []string
+			for _, file := range entry.AttachedFiles {
+				chips = append(chips, "📎 "+file)
+			}
+			chipLine := "  " + styleTextMuted().Render(strings.Join(chips, "  "))
+			return box + "\n" + chipLine
+		}
+		return box
 
 	case KindDiff:
 		return renderDiffEntry(entry, width)
@@ -362,7 +380,17 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 		} else {
 			var cmdStyled string
 			if strings.HasPrefix(item.Command, "@") {
-				cmdStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(cmdText)
+				rawCmd := strings.TrimRight(cmdText, " ")
+				spaces := cmdText[len(rawCmd):]
+				if lastSlash := strings.LastIndex(rawCmd, "/"); lastSlash != -1 {
+					dirPart := rawCmd[:lastSlash+1]
+					filePart := rawCmd[lastSlash+1:]
+					cmdStyled = styleTextMuted().Render(dirPart) +
+						lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(filePart) +
+						spaces
+				} else {
+					cmdStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(rawCmd) + spaces
+				}
 			} else {
 				cmdStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Render(cmdText)
 			}

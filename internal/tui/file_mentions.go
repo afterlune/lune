@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,12 +19,13 @@ import (
 
 // WorkspaceFile represents a project file available for @ mentions.
 type WorkspaceFile struct {
-	Path      string // Relative slash-separated path, e.g. "internal/tui/tui.go"
-	PathLower string // Pre-lowercased path for zero-allocation fuzzy matching
-	Name      string // Base file name, e.g. "tui.go"
-	NameLower string // Pre-lowercased name for zero-allocation fuzzy matching
-	Size      int64  // File size in bytes
-	ModTime   time.Time
+	Path       string // Relative slash-separated path, e.g. "internal/tui/tui.go"
+	PathLower  string // Pre-lowercased path for zero-allocation fuzzy matching
+	Name       string // Base file name, e.g. "tui.go"
+	NameLower  string // Pre-lowercased name for zero-allocation fuzzy matching
+	Size       int64  // File size in bytes
+	ModTime    time.Time
+	IsModified bool   // True if modified/untracked in git status
 }
 
 // WorkspaceFileScanner scans and caches workspace files for fuzzy matching.
@@ -99,12 +105,44 @@ func isIgnoredExtension(ext string) bool {
 	}
 }
 
+// gitModifiedFiles returns a set of relative file paths currently modified according to git status.
+func (s *WorkspaceFileScanner) gitModifiedFiles() map[string]bool {
+	if s.workspace == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd.Dir = s.workspace
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	modified := make(map[string]bool)
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if len(line) < 4 {
+			continue
+		}
+		rawPath := strings.TrimSpace(line[3:])
+		rawPath = strings.Trim(rawPath, "\"")
+		if parts := strings.Split(rawPath, " -> "); len(parts) == 2 {
+			rawPath = parts[1]
+		}
+		slashPath := filepath.ToSlash(rawPath)
+		modified[slashPath] = true
+	}
+	return modified
+}
+
 // scanWorkspace walks the workspace directory and collects matching files.
 func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
 	if s.workspace == "" {
 		return nil
 	}
 
+	modifiedMap := s.gitModifiedFiles()
 	var results []WorkspaceFile
 	root := s.workspace
 
@@ -138,12 +176,13 @@ func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
 
 		slashPath := filepath.ToSlash(relPath)
 		results = append(results, WorkspaceFile{
-			Path:      slashPath,
-			PathLower: strings.ToLower(slashPath),
-			Name:      d.Name(),
-			NameLower: strings.ToLower(d.Name()),
-			Size:      info.Size(),
-			ModTime:   info.ModTime(),
+			Path:       slashPath,
+			PathLower:  strings.ToLower(slashPath),
+			Name:       d.Name(),
+			NameLower:  strings.ToLower(d.Name()),
+			Size:       info.Size(),
+			ModTime:    info.ModTime(),
+			IsModified: modifiedMap[slashPath],
 		})
 
 		if s.maxFiles > 0 && len(results) >= s.maxFiles {
@@ -170,10 +209,13 @@ func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []Workspace
 	q := strings.ToLower(trimmed)
 
 	if q == "" {
-		// No query: return the first `limit` files sorted by path
+		// No query: return modified files first, then sorted alphabetically by path
 		result := make([]WorkspaceFile, len(files))
 		copy(result, files)
 		sort.Slice(result, func(i, j int) bool {
+			if result[i].IsModified != result[j].IsModified {
+				return result[i].IsModified // Modified files rank first!
+			}
 			return result[i].Path < result[j].Path
 		})
 		if len(result) > limit {
@@ -186,6 +228,9 @@ func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []Workspace
 	for _, f := range files {
 		score := calculateMatchScore(f, q)
 		if score > 0 {
+			if f.IsModified {
+				score += 250 // Relevance boost for modified files
+			}
 			scored = append(scored, scoredFile{file: f, score: score})
 		}
 	}
@@ -341,4 +386,245 @@ func FormatFileSize(bytes int64) string {
 		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
 	}
 	return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+}
+
+var (
+	// Matches #L10-L20, #L10-20, #10-20, #L10, #10
+	hashLineRegex = regexp.MustCompile(`(?i)#(?:L)?(\d+)(?:-(?:L)?(\d+))?$`)
+	// Matches :10-20, :10
+	colonLineRegex = regexp.MustCompile(`:(\d+)(?:-(\d+))?$`)
+)
+
+func parseLineRangeSuffix(token string) (cleanPath string, startLine, endLine int) {
+	if m := hashLineRegex.FindStringSubmatchIndex(token); len(m) >= 4 {
+		cleanPath = token[:m[0]]
+		startStr := token[m[2]:m[3]]
+		s, _ := strconv.Atoi(startStr)
+		startLine = s
+		endLine = s
+		if m[4] != -1 && m[5] != -1 {
+			endStr := token[m[4]:m[5]]
+			if e, err := strconv.Atoi(endStr); err == nil && e >= startLine {
+				endLine = e
+			}
+		}
+		return cleanPath, startLine, endLine
+	}
+
+	if m := colonLineRegex.FindStringSubmatchIndex(token); len(m) >= 4 {
+		cleanPath = token[:m[0]]
+		startStr := token[m[2]:m[3]]
+		s, _ := strconv.Atoi(startStr)
+		startLine = s
+		endLine = s
+		if m[4] != -1 && m[5] != -1 {
+			endStr := token[m[4]:m[5]]
+			if e, err := strconv.Atoi(endStr); err == nil && e >= startLine {
+				endLine = e
+			}
+		}
+		return cleanPath, startLine, endLine
+	}
+
+	return token, 0, 0
+}
+
+// FileAttachment represents a workspace file referenced via @mention with its loaded content.
+type FileAttachment struct {
+	Path      string // Relative slash path, e.g. "internal/tui/view.go"
+	StartLine int    // 1-indexed start line, 0 if full file
+	EndLine   int    // 1-indexed end line, 0 if full file
+	Size      int64  // File size in bytes
+	Content   string // File content or line slice
+	Label     string // Short human-readable badge text, e.g. "internal/tui/view.go (lines 20-50)"
+}
+
+// maxAttachmentSizeBytes is the limit per file to prevent blowing up the context window.
+const maxAttachmentSizeBytes = 120 * 1024 // 120 KB
+
+// ExpandFileMentions parses @workspace/path mentions from the input prompt, verifies their
+// existence within workspace, extracts content (and line ranges if specified), and returns
+// both the attachments and the augmented prompt text with structured context blocks.
+func ExpandFileMentions(text string, workspace string) ([]FileAttachment, string) {
+	if workspace == "" || !strings.Contains(text, "@") {
+		return nil, text
+	}
+
+	var attachments []FileAttachment
+	seen := make(map[string]bool)
+
+	// Scan through text for @ tokens
+	for i := 0; i < len(text); i++ {
+		if text[i] != '@' {
+			continue
+		}
+
+		// Ensure '@' is at start or preceded by whitespace or common punctuation
+		if i > 0 {
+			prevRune, _ := utf8.DecodeLastRuneInString(text[:i])
+			if !unicode.IsSpace(prevRune) && prevRune != '(' && prevRune != '[' && prevRune != '{' && prevRune != '"' && prevRune != '\'' && prevRune != '`' {
+				continue // e.g. user@example.com
+			}
+		}
+
+		// Read token after '@' up to next whitespace or delimiter
+		tokenEnd := i + 1
+		for tokenEnd < len(text) {
+			r, size := utf8.DecodeRuneInString(text[tokenEnd:])
+			if unicode.IsSpace(r) || r == ')' || r == ']' || r == '}' || r == '"' || r == '\'' || r == '`' || r == ',' || r == ';' {
+				break
+			}
+			tokenEnd += size
+		}
+
+		rawToken := text[i+1 : tokenEnd]
+		i = tokenEnd - 1 // Move cursor forward
+		if rawToken == "" {
+			continue
+		}
+
+		cleanPath, startLine, endLine := parseLineRangeSuffix(rawToken)
+		if cleanPath == "" || strings.Contains(cleanPath, "..") {
+			continue
+		}
+
+		cleanPath = filepath.ToSlash(filepath.Clean(cleanPath))
+		if strings.HasPrefix(cleanPath, "/") || strings.HasPrefix(cleanPath, "./") {
+			cleanPath = strings.TrimPrefix(cleanPath, "./")
+			cleanPath = strings.TrimPrefix(cleanPath, "/")
+		}
+
+		dedupKey := fmt.Sprintf("%s:%d-%d", cleanPath, startLine, endLine)
+		if seen[dedupKey] {
+			continue
+		}
+
+		absPath := filepath.Join(workspace, filepath.FromSlash(cleanPath))
+		rel, err := filepath.Rel(workspace, absPath)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			continue // Prevent traversal outside workspace
+		}
+
+		info, err := os.Stat(absPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		// Skip binary files
+		ext := filepath.Ext(cleanPath)
+		if isIgnoredExtension(ext) {
+			continue
+		}
+
+		// Read file content
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			continue
+		}
+
+		// Enforce size limit
+		if int64(len(data)) > maxAttachmentSizeBytes {
+			data = data[:maxAttachmentSizeBytes]
+		}
+
+		content := string(data)
+		var label string
+		if startLine > 0 && endLine >= startLine {
+			lines := strings.Split(content, "\n")
+			totalLines := len(lines)
+			if startLine > totalLines {
+				startLine = totalLines
+			}
+			if endLine > totalLines {
+				endLine = totalLines
+			}
+			if startLine <= endLine && startLine > 0 {
+				sliced := lines[startLine-1 : endLine]
+				content = strings.Join(sliced, "\n")
+				if startLine == endLine {
+					label = fmt.Sprintf("%s (line %d)", cleanPath, startLine)
+				} else {
+					label = fmt.Sprintf("%s (lines %d-%d)", cleanPath, startLine, endLine)
+				}
+			} else {
+				label = fmt.Sprintf("%s (%s)", cleanPath, FormatFileSize(info.Size()))
+			}
+		} else {
+			label = fmt.Sprintf("%s (%s)", cleanPath, FormatFileSize(info.Size()))
+		}
+
+		seen[dedupKey] = true
+		attachments = append(attachments, FileAttachment{
+			Path:      cleanPath,
+			StartLine: startLine,
+			EndLine:   endLine,
+			Size:      info.Size(),
+			Content:   content,
+			Label:     label,
+		})
+	}
+
+	if len(attachments) == 0 {
+		return nil, text
+	}
+
+	// Build augmented prompt with context blocks
+	var b strings.Builder
+	b.WriteString(text)
+	b.WriteString("\n\n---")
+	for _, att := range attachments {
+		lang := fileExtensionToLanguage(att.Path)
+		header := fmt.Sprintf("\n[Attached File Context: %s]", att.Label)
+		b.WriteString(header)
+		b.WriteString("\n```")
+		b.WriteString(lang)
+		b.WriteString("\n")
+		b.WriteString(att.Content)
+		if !strings.HasSuffix(att.Content, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("```\n")
+	}
+
+	return attachments, b.String()
+}
+
+func fileExtensionToLanguage(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".go":
+		return "go"
+	case ".js", ".mjs", ".cjs":
+		return "javascript"
+	case ".ts", ".mts":
+		return "typescript"
+	case ".tsx":
+		return "tsx"
+	case ".jsx":
+		return "jsx"
+	case ".py":
+		return "python"
+	case ".json":
+		return "json"
+	case ".yaml", ".yml":
+		return "yaml"
+	case ".md":
+		return "markdown"
+	case ".html":
+		return "html"
+	case ".css":
+		return "css"
+	case ".sh", ".bash":
+		return "bash"
+	case ".rs":
+		return "rust"
+	case ".c", ".h":
+		return "c"
+	case ".cpp", ".hpp", ".cc":
+		return "cpp"
+	case ".sql":
+		return "sql"
+	default:
+		return ""
+	}
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -228,3 +229,123 @@ func TestFormatFileSize(t *testing.T) {
 		t.Errorf("FormatFileSize(2MB) = %q, want '2.0 MB'", FormatFileSize(2*1024*1024))
 	}
 }
+
+func TestParseLineRangeSuffix(t *testing.T) {
+	tests := []struct {
+		token     string
+		wantPath  string
+		wantStart int
+		wantEnd   int
+	}{
+		{"internal/tui/view.go#L10-L25", "internal/tui/view.go", 10, 25},
+		{"internal/tui/view.go#L10-25", "internal/tui/view.go", 10, 25},
+		{"internal/tui/view.go#10-25", "internal/tui/view.go", 10, 25},
+		{"internal/tui/view.go#L42", "internal/tui/view.go", 42, 42},
+		{"internal/tui/view.go#42", "internal/tui/view.go", 42, 42},
+		{"internal/tui/view.go:15-30", "internal/tui/view.go", 15, 30},
+		{"internal/tui/view.go:50", "internal/tui/view.go", 50, 50},
+		{"internal/tui/view.go", "internal/tui/view.go", 0, 0},
+	}
+
+	for _, tt := range tests {
+		cleanPath, start, end := parseLineRangeSuffix(tt.token)
+		if cleanPath != tt.wantPath || start != tt.wantStart || end != tt.wantEnd {
+			t.Errorf("parseLineRangeSuffix(%q) = (%q, %d, %d), want (%q, %d, %d)",
+				tt.token, cleanPath, start, end, tt.wantPath, tt.wantStart, tt.wantEnd)
+		}
+	}
+}
+
+func TestExpandFileMentions(t *testing.T) {
+	tempDir := t.TempDir()
+
+	file1 := filepath.Join(tempDir, "main.go")
+	content1 := "package main\n\nfunc main() {\n\tprintln(\"hello world\")\n}\n"
+	_ = os.WriteFile(file1, []byte(content1), 0644)
+
+	file2 := filepath.Join(tempDir, "config.json")
+	content2 := `{"port": 8080, "debug": true}`
+	_ = os.WriteFile(file2, []byte(content2), 0644)
+
+	// 1. Single file mention
+	p1 := "Please inspect @main.go and explain."
+	atts, aug := ExpandFileMentions(p1, tempDir)
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if atts[0].Path != "main.go" || atts[0].Content != content1 {
+		t.Errorf("attachment mismatch: %+v", atts[0])
+	}
+	if !strings.Contains(aug, "[Attached File Context: main.go") || !strings.Contains(aug, "package main") {
+		t.Errorf("expected augmented prompt to contain attached code fence: %s", aug)
+	}
+
+	// 2. Line range mention
+	p2 := "Check @main.go#L3-L4 for syntax"
+	atts2, aug2 := ExpandFileMentions(p2, tempDir)
+	if len(atts2) != 1 {
+		t.Fatalf("expected 1 attachment for line range, got %d", len(atts2))
+	}
+	if atts2[0].StartLine != 3 || atts2[0].EndLine != 4 {
+		t.Errorf("expected lines 3-4, got %d-%d", atts2[0].StartLine, atts2[0].EndLine)
+	}
+	if atts2[0].Content != "func main() {\n\tprintln(\"hello world\")" {
+		t.Errorf("unexpected sliced content: %q", atts2[0].Content)
+	}
+	if !strings.Contains(aug2, "lines 3-4") {
+		t.Errorf("expected header with lines 3-4 in augmented prompt: %s", aug2)
+	}
+
+	// 3. Multiple file mentions
+	p3 := "Compare @main.go with @config.json please"
+	atts3, _ := ExpandFileMentions(p3, tempDir)
+	if len(atts3) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(atts3))
+	}
+
+	// 4. Email address should NOT attach
+	p4 := "Contact support@example.com for issues"
+	atts4, aug4 := ExpandFileMentions(p4, tempDir)
+	if len(atts4) != 0 || aug4 != p4 {
+		t.Errorf("expected email to not trigger attachment, got %d attachments", len(atts4))
+	}
+
+	// 5. Directory traversal should be rejected
+	p5 := "Inspect @../secret.txt"
+	atts5, _ := ExpandFileMentions(p5, tempDir)
+	if len(atts5) != 0 {
+		t.Errorf("expected path traversal to be rejected, got %d attachments", len(atts5))
+	}
+
+	// 6. Non-existent file should be skipped
+	p6 := "Look at @nonexistent.go please"
+	atts6, aug6 := ExpandFileMentions(p6, tempDir)
+	if len(atts6) != 0 || aug6 != p6 {
+		t.Errorf("expected non-existent file to be skipped")
+	}
+}
+
+func TestGitModifiedFilesBoost(t *testing.T) {
+	files := []WorkspaceFile{
+		{Path: "cmd/main.go", Name: "main.go", Size: 500, IsModified: false},
+		{Path: "internal/tui/view.go", Name: "view.go", Size: 2000, IsModified: true},
+		{Path: "internal/tui/model.go", Name: "model.go", Size: 1500, IsModified: false},
+		{Path: "pkg/util.go", Name: "util.go", Size: 800, IsModified: true},
+	}
+
+	// Empty query: modified files must rank first
+	rankedEmpty := FuzzyMatchFiles(files, "", 4)
+	if len(rankedEmpty) != 4 {
+		t.Fatalf("expected 4 files, got %d", len(rankedEmpty))
+	}
+	if !rankedEmpty[0].IsModified || !rankedEmpty[1].IsModified {
+		t.Errorf("expected first 2 files to be modified files, got: %+v, %+v", rankedEmpty[0], rankedEmpty[1])
+	}
+
+	// Query matching both: modified file gets score boost
+	rankedSearch := FuzzyMatchFiles(files, "go", 4)
+	if len(rankedSearch) == 0 || !rankedSearch[0].IsModified {
+		t.Errorf("expected top search result to be modified file, got: %+v", rankedSearch[0])
+	}
+}
+

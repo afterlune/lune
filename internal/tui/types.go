@@ -55,6 +55,9 @@ type TranscriptEntry struct {
 	ReasoningDuration time.Duration
 	ReasoningExpanded bool
 	ReasoningLive     bool
+
+	// File mentions attachments
+	AttachedFiles []string
 }
 
 // AutocompleteItem represents a slash command suggestion.

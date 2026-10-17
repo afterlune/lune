@@ -95,7 +95,13 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.shortcutsOpen = false
 	m.autocompleteOpen = false
 
-	input, err := core.ParseTaskInput(text)
+	attachments, augmentedText := ExpandFileMentions(text, m.workspace)
+	var attachedLabels []string
+	for _, att := range attachments {
+		attachedLabels = append(attachedLabels, att.Label)
+	}
+
+	input, err := core.ParseTaskInput(augmentedText)
 	if err != nil {
 		m.addSystemEntry("Failed to parse task input: " + err.Error())
 		m.updateLayout()
@@ -112,10 +118,11 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	if m.running {
 		// Queue follow-up turn while active task runs
 		m.entries = append(m.entries, TranscriptEntry{
-			ID:        fmt.Sprintf("queued-%d", time.Now().UnixNano()),
-			Kind:      KindQueued,
-			Text:      text,
-			Timestamp: time.Now(),
+			ID:            fmt.Sprintf("queued-%d", time.Now().UnixNano()),
+			Kind:          KindQueued,
+			Text:          text,
+			AttachedFiles: attachedLabels,
+			Timestamp:     time.Now(),
 		})
 		m.refreshViewportContent()
 		m.updateLayout()
@@ -130,10 +137,11 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 
 	// Normal submission when idle
 	m.entries = append(m.entries, TranscriptEntry{
-		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
-		Kind:      KindUser,
-		Text:      text,
-		Timestamp: time.Now(),
+		ID:            fmt.Sprintf("user-%d", time.Now().UnixNano()),
+		Kind:          KindUser,
+		Text:          text,
+		AttachedFiles: attachedLabels,
+		Timestamp:     time.Now(),
 	})
 	m.running = true
 	m.thinking = false

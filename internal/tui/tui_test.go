@@ -1457,6 +1457,36 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	if m.composer.Value() != expectedVal {
 		t.Errorf("expected %q, got %q", expectedVal, m.composer.Value())
 	}
+
+	// 8. Submit turn with @ mention: verify attachments and visual chip
+	m.submitTurn(m.composer.Value())
+	if len(m.entries) == 0 {
+		t.Fatalf("expected user entry after submission")
+	}
+	lastEntry := m.entries[len(m.entries)-1]
+	if lastEntry.Kind != KindUser {
+		t.Errorf("expected KindUser entry, got %v", lastEntry.Kind)
+	}
+	if len(lastEntry.AttachedFiles) != 1 {
+		t.Fatalf("expected 1 attached file badge, got %d", len(lastEntry.AttachedFiles))
+	}
+	if !strings.Contains(lastEntry.AttachedFiles[0], "internal/tui/tui.go") {
+		t.Errorf("expected badge to contain 'internal/tui/tui.go', got: %s", lastEntry.AttachedFiles[0])
+	}
+	renderedUser := renderEntry(lastEntry, 80)
+	if !strings.Contains(renderedUser, "📎 internal/tui/tui.go") {
+		t.Errorf("expected rendered user entry to contain attachment chip, got: %s", renderedUser)
+	}
+
+	// 9. Autocomplete popup rendering test
+	popupItems := []AutocompleteItem{
+		{Command: "@internal/tui/tui.go", Description: "1.2 KB · modified"},
+		{Command: "@cmd/main.go", Description: "512 B"},
+	}
+	renderedPopup := renderAutocompletePopup(popupItems, 0, 80)
+	if !strings.Contains(ansi.Strip(renderedPopup), "@internal/tui/tui.go") || !strings.Contains(renderedPopup, "modified") {
+		t.Errorf("expected popup to render file path and modified tag, got: %s", renderedPopup)
+	}
 }
 
 func TestMemoryCommand(t *testing.T) {
