@@ -792,7 +792,6 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 	if queuedFound && queuedTarget.Status == "queued" {
 		submission, cancelled, replaceErr := s.runtime.ReplaceQueuedTurnInput(context.Background(), messageID, taskInput)
 		if replaceErr == nil {
-			s.suppressExecutionActivityLocked(cancelled)
 			index := *activityIndex
 			input.UserMessageIndex = &index
 			if s.activityStore != nil {
@@ -805,7 +804,11 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 				}
 				if err := s.activityStore.DeleteFromUserMessageIndexExcept(context.Background(), s.sessionID, index+1, ""); err != nil {
 					slog.Warn("remove queue entries after edited message", "error", err)
+				} else {
+					s.suppressExecutionActivityLocked(cancelled)
 				}
+			} else {
+				s.suppressExecutionActivityLocked(cancelled)
 			}
 			return submission, nil
 		}
@@ -842,14 +845,14 @@ func (s *DesktopService) editConversationFromIndexLocked(messageID string, reque
 	if len(pending) > 0 || state.Task.Status == core.TaskPaused {
 		return core.TurnSubmission{}, errors.New("请先处理当前等待中的请求")
 	}
+	var affected []string
 	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-		affected, err := s.runtime.CancelPendingTurns(ctx)
+		affected, err = s.runtime.CancelPendingTurns(ctx)
 		cancel()
 		if err != nil {
 			return core.TurnSubmission{}, fmt.Errorf("中断当前任务并清空后续队列失败: %w", err)
 		}
-		s.suppressExecutionActivityLocked(affected)
 	}
 	saved, err := s.core.GetSession(context.Background(), s.sessionID)
 	if err != nil {
@@ -868,29 +871,39 @@ func (s *DesktopService) editConversationFromIndexLocked(messageID string, reque
 			userMessageIndex = resolved
 		}
 	}
-	if userMessageIndex < 0 || userMessageIndex >= userMessageCount {
+	if userMessageIndex < 0 || userMessageIndex > userMessageCount || (userMessageIndex == userMessageCount && len(affected) == 0) {
 		return core.TurnSubmission{}, errors.New("要编辑的用户消息已不在当前会话历史中")
 	}
 	originalHistory := append(json.RawMessage(nil), saved.History...)
-	removeCount := userMessageCount - userMessageIndex
-	removed, err := s.core.RewindSession(context.Background(), s.sessionID, removeCount)
-	if err != nil {
-		return core.TurnSubmission{}, err
-	}
-	if removed != removeCount {
-		_ = s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
-		return core.TurnSubmission{}, errors.New("回退会话历史时消息数量发生变化")
+	rewound := false
+	if userMessageIndex < userMessageCount {
+		removeCount := userMessageCount - userMessageIndex
+		removed, err := s.core.RewindSession(context.Background(), s.sessionID, removeCount)
+		if err != nil {
+			return core.TurnSubmission{}, err
+		}
+		if removed != removeCount {
+			_ = s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
+			return core.TurnSubmission{}, errors.New("回退会话历史时消息数量发生变化")
+		}
+		rewound = true
 	}
 	input.UserMessageIndex = &userMessageIndex
 	submission, err := s.submitPreparedLocked(taskInput, input, core.StartIfIdle)
 	if err != nil {
-		rollbackErr := s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
-		return core.TurnSubmission{}, errors.Join(err, rollbackErr)
+		if rewound {
+			err = errors.Join(err, s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory))
+		}
+		return core.TurnSubmission{}, err
 	}
 	if s.activityStore != nil {
 		if err := s.activityStore.DeleteFromUserMessageIndexExcept(context.Background(), s.sessionID, userMessageIndex, submission.ExecutionID); err != nil {
 			slog.Warn("remove execution history after editing a user message", "error", err)
+		} else {
+			s.suppressExecutionActivityLocked(affected)
 		}
+	} else {
+		s.suppressExecutionActivityLocked(affected)
 	}
 	return submission, nil
 }

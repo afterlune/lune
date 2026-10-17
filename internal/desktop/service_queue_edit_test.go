@@ -364,6 +364,48 @@ func TestEditHistoricalMessageInterruptsCurrentTurnAndDropsQueue(t *testing.T) {
 	}
 }
 
+func TestEditActiveUncommittedMessageInterruptsAndReplacesItsTurn(t *testing.T) {
+	provider := &interruptThenCompleteDesktopProvider{started: make(chan string, 2)}
+	service, agent, sessionID := newDesktopServiceForTest(t, provider)
+	ctx := context.Background()
+	activeIndex := 0
+	active, err := service.Submit(SubmitInput{Text: "active original", UserMessageIndex: &activeIndex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("active task did not start")
+	}
+	queuedIndex := 1
+	queued, err := service.Submit(SubmitInput{Text: "queued follow-up", UserMessageIndex: &queuedIndex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.EditUserMessage(active.ExecutionID, SubmitInput{Text: "active revised", UserMessageIndex: &activeIndex})
+	if err != nil {
+		t.Fatalf("EditUserMessage(active execution): %v", err)
+	}
+	if result, err := service.runtime.WaitTurn(ctx, replacement.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+		t.Fatalf("replacement result = %#v, error=%v", result, err)
+	}
+	if result, err := service.runtime.WaitTurn(ctx, queued.ExecutionID); err != nil || result.Status != core.TaskCancelled {
+		t.Fatalf("queued result = %#v, error=%v; want cancelled", result, err)
+	}
+	if _, err := service.runtime.WaitTurn(ctx, active.ExecutionID); err != nil {
+		t.Fatalf("interrupted active result: %v", err)
+	}
+	saved, err := agent.GetSession(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := transcriptMessages(saved.History)
+	if len(messages) != 2 || messages[0].Role != "user" || messages[0].Text != "active revised" || messages[1].Role != "assistant" || messages[1].Text != "replacement response" {
+		t.Fatalf("history after active prompt edit = %#v, want only replacement turn", messages)
+	}
+}
+
 func TestEditUserMessageRewindsFollowingTurnsAndTheirActivity(t *testing.T) {
 	service, agent, sessionID := newDesktopServiceForTest(t, immediateDesktopProvider{})
 	ctx := context.Background()
