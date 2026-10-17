@@ -370,6 +370,14 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m.cancelQueuedTurn()
 
 	case "/plan":
+		if len(parts) > 1 {
+			sub := strings.ToLower(parts[1])
+			switch sub {
+			case "status", "progress", "steps":
+				m.addSystemEntry(m.renderPlanStatusMarkdown(m.activePlanExecution))
+				return m, nil
+			}
+		}
 		m.planMode = !m.planMode
 		if m.planMode {
 			m.savedMode = m.permissionMode

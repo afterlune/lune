@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -175,6 +177,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				m.currentStreamText = ""
 			}
+			if msg.result.Status == core.TaskCompleted || msg.result.Status == "" {
+				if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
+					m.activePlanExecution.MarkAllCompleted()
+					dur := time.Since(m.activePlanExecution.StartedAt)
+					summaryCard := m.formatPlanExecutionCompletedCard(m.activePlanExecution, dur)
+					m.addSystemEntry(summaryCard)
+				}
+			}
 		}
 		m.refreshViewportContent()
 		m.updateLayout()
@@ -234,12 +244,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case planImplementedMsg:
 		if msg.err != nil {
+			m.activePlanExecution = nil
 			m.addSystemEntry("Plan implementation failed: " + msg.err.Error())
 			return m, nil
 		}
 		var planCmds []tea.Cmd
 		if msg.impl.SessionID != "" && msg.impl.SessionID != m.sessionID {
 			if err := m.bindSessionRuntime(context.Background(), msg.impl.SessionID); err != nil {
+				m.activePlanExecution = nil
 				m.addSystemEntry("Failed to bind new plan session: " + err.Error())
 				return m, nil
 			}
@@ -248,6 +260,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewportContent()
 			m.updateLayout()
 			planCmds = append(planCmds, m.subscribeRuntimeEvents())
+		}
+		if m.activePlanExecution != nil {
+			m.activePlanExecution.ExecutionID = msg.impl.Submission.ExecutionID
+			archivedPath := m.archivePlan(m.activePlanExecution.SourcePlan)
+			startCard := m.formatPlanExecutionStartCard(m.activePlanExecution, archivedPath)
+			m.addSystemEntry(startCard)
 		}
 		m.running = true
 		m.taskStartedAt = time.Now()
@@ -1370,6 +1388,24 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	steps := ParsePlanSteps(review.Text)
+	if len(steps) > 0 {
+		for i := range steps {
+			if steps[i].Status == PlanStepPending {
+				steps[i].Status = PlanStepInProgress
+				break
+			}
+		}
+	}
+	m.activePlanExecution = &ActivePlanExecution{
+		SourcePlan:       review.Text,
+		ExecutionID:      review.ExecutionID,
+		Steps:            steps,
+		CurrentStepIndex: 0,
+		StartedAt:        time.Now(),
+		Completed:        false,
+	}
+
 	m.activePlanReview = nil
 	m.planMode = false
 	_ = m.client.SetPermissionMode(m.savedMode)
@@ -1551,9 +1587,119 @@ func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string
 	} else {
 		lines = append(lines, "• **Progress**: Interrupted during model output generation")
 	}
+	if m.activePlanExecution != nil && len(m.activePlanExecution.Steps) > 0 {
+		curr := m.activePlanExecution.CurrentStepIndex + 1
+		total := len(m.activePlanExecution.Steps)
+		title := ""
+		if m.activePlanExecution.CurrentStepIndex < len(m.activePlanExecution.Steps) {
+			title = m.activePlanExecution.Steps[m.activePlanExecution.CurrentStepIndex].Title
+		}
+		lines = append(lines, fmt.Sprintf("• **Plan Step**: Step %d of %d (%s)", curr, total, title))
+	}
 	lines = append(lines, "• **Actions**:")
 	lines = append(lines, "  - Type `/resume` to continue execution from this checkpoint")
 	lines = append(lines, "  - Type `/discard` to abandon this execution checkpoint")
+	return strings.Join(lines, "\n")
+}
+
+// archivePlan persists the raw markdown content of an approved plan to .luneagent/plans/.
+func (m *tuiModel) archivePlan(planText string) string {
+	if m.workspace == "" || planText == "" {
+		return ""
+	}
+	plansDir := filepath.Join(m.workspace, ".luneagent", "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		return ""
+	}
+	filename := fmt.Sprintf("plan-%s.md", time.Now().Format("20060102-150405"))
+	targetPath := filepath.Join(plansDir, filename)
+	if err := os.WriteFile(targetPath, []byte(planText), 0644); err != nil {
+		return ""
+	}
+	return targetPath
+}
+
+// formatPlanExecutionStartCard formats a starting card showing the planned checklist.
+func (m *tuiModel) formatPlanExecutionStartCard(plan *ActivePlanExecution, archivedPath string) string {
+	if plan == nil {
+		return "Starting plan implementation..."
+	}
+	var lines []string
+	lines = append(lines, "🚀 **Starting Plan Implementation**")
+	lines = append(lines, fmt.Sprintf("• **Total Steps**: %d planned step(s)", len(plan.Steps)))
+	if archivedPath != "" {
+		relPath, err := filepath.Rel(m.workspace, archivedPath)
+		if err == nil {
+			lines = append(lines, fmt.Sprintf("• **Archived Plan**: `%s`", relPath))
+		}
+	}
+	lines = append(lines, "• **Execution Checklist**:")
+	for _, s := range plan.Steps {
+		marker := "[ ]"
+		switch s.Status {
+		case PlanStepCompleted:
+			marker = "[x]"
+		case PlanStepInProgress:
+			marker = "[>]"
+		}
+		lines = append(lines, fmt.Sprintf("  %s %d. %s", marker, s.Index, s.Title))
+	}
+	lines = append(lines, "\n*Permissions switched to Workspace mode. Press `Esc` to interrupt or pause.*")
+	return strings.Join(lines, "\n")
+}
+
+// formatPlanExecutionCompletedCard formats a summary card when a plan finishes.
+func (m *tuiModel) formatPlanExecutionCompletedCard(plan *ActivePlanExecution, duration time.Duration) string {
+	if plan == nil {
+		return "Plan implementation completed."
+	}
+	var lines []string
+	lines = append(lines, "✅ **Plan Implementation Completed**")
+	durStr := formatDuration(duration)
+	lines = append(lines, fmt.Sprintf("• **Duration**: %s · %d/%d steps completed (100%%)", durStr, len(plan.Steps), len(plan.Steps)))
+	lines = append(lines, "• **Completed Checklist**:")
+	for _, s := range plan.Steps {
+		lines = append(lines, fmt.Sprintf("  ✓ %d. %s", s.Index, s.Title))
+	}
+	lines = append(lines, "\n*Review workspace changes using `Ctrl+D` or `/diff`.*")
+	return strings.Join(lines, "\n")
+}
+
+// renderPlanStatusMarkdown formats a markdown checklist report for /plan status.
+func (m *tuiModel) renderPlanStatusMarkdown(plan *ActivePlanExecution) string {
+	if plan == nil {
+		return "No active plan execution in this session."
+	}
+	var lines []string
+	completed := 0
+	for _, s := range plan.Steps {
+		if s.Status == PlanStepCompleted {
+			completed++
+		}
+	}
+	total := len(plan.Steps)
+	pct := 0
+	if total > 0 {
+		pct = int(float64(completed) / float64(total) * 100)
+	}
+
+	header := "📋 **Active Plan Execution Progress**"
+	if plan.Completed {
+		header = "✅ **Plan Execution Completed**"
+	}
+	lines = append(lines, header)
+	lines = append(lines, fmt.Sprintf("• **Progress**: %d/%d steps completed (%d%%)", completed, total, pct))
+	lines = append(lines, "• **Checklist**:")
+	for _, s := range plan.Steps {
+		marker := "[ ]"
+		switch s.Status {
+		case PlanStepCompleted:
+			marker = "[x]"
+		case PlanStepInProgress:
+			marker = "[>]"
+		}
+		lines = append(lines, fmt.Sprintf("  %s %d. %s", marker, s.Index, s.Title))
+	}
 	return strings.Join(lines, "\n")
 }
 

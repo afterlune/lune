@@ -219,6 +219,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 				if event.Stream.Delta != "" {
 					m.thinking = false
 					m.currentStreamText += event.Stream.Delta
+					if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
+						m.activePlanExecution.CheckTextForAdvance(m.currentStreamText)
+					}
 					m.refreshViewportContent()
 				}
 			}

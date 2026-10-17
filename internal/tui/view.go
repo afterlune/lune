@@ -512,6 +512,48 @@ func renderPausedBanner(width int) string {
 	return strings.Repeat(" ", pad) + banner
 }
 
+// renderPlanProgressBanner renders an active plan execution progress banner in the composer gap.
+func renderPlanProgressBanner(plan *ActivePlanExecution, width int) string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return ""
+	}
+	th := activeTheme()
+	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("📋 ")
+
+	total := len(plan.Steps)
+	current := plan.CurrentStepIndex + 1
+	if current > total {
+		current = total
+	}
+
+	completedCount := 0
+	for _, s := range plan.Steps {
+		if s.Status == PlanStepCompleted {
+			completedCount++
+		}
+	}
+
+	ratio := float64(completedCount) / float64(total)
+	bar := renderProgressBar(ratio, 14)
+
+	currentTitle := ""
+	if plan.CurrentStepIndex >= 0 && plan.CurrentStepIndex < len(plan.Steps) {
+		currentTitle = plan.Steps[plan.CurrentStepIndex].Title
+	}
+
+	statusText := fmt.Sprintf("Step %d/%d %s", current, total, bar)
+	styledStatus := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(statusText)
+
+	detailText := ""
+	if currentTitle != "" {
+		detailText = " " + styleTextMuted().Render("· "+truncateString(currentTitle, max(10, width-lipgloss.Width(icon)-lipgloss.Width(styledStatus)-12)))
+	}
+
+	banner := icon + styledStatus + detailText
+	pad := max(0, (width-lipgloss.Width(banner))/2)
+	return strings.Repeat(" ", pad) + banner
+}
+
 // renderRecoveryPanel renders the model recovery prompt when a provider times out or rate limits.
 func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	if recovery == nil {
@@ -1235,7 +1277,12 @@ func renderFooter(m *tuiModel, width int) string {
 	line2Left := styleTextMuted().Render("? for shortcuts")
 	var line2RightText string
 	if m.running {
-		line2RightText = "esc to interrupt"
+		if m.hasActivePlan() {
+			stepInfo := fmt.Sprintf("📋 step %d/%d · esc to interrupt", m.activePlanExecution.CurrentStepIndex+1, len(m.activePlanExecution.Steps))
+			line2RightText = stepInfo
+		} else {
+			line2RightText = "esc to interrupt"
+		}
 	} else if m.hasPausedTask() {
 		line2RightText = "⏸ task paused · /resume or /discard"
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {

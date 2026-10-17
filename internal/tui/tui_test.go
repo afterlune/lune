@@ -2848,6 +2848,286 @@ func TestActiveToolRecoveryDetailsAndShortcuts(t *testing.T) {
 	}
 }
 
+func TestParsePlanSteps(t *testing.T) {
+	// 1. Checklist format
+	chkPlan := `
+Here is our execution plan:
+
+- [ ] 1. Initialize data store
+- [x] 2. Implement caching layer
+- [ ] 3. Write unit tests
+`
+	steps := ParsePlanSteps(chkPlan)
+	if len(steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(steps))
+	}
+	if steps[0].Title != "Initialize data store" || steps[0].Status != PlanStepPending {
+		t.Errorf("step 0 mismatch: %+v", steps[0])
+	}
+	if steps[1].Title != "Implement caching layer" || steps[1].Status != PlanStepCompleted {
+		t.Errorf("step 1 mismatch: %+v", steps[1])
+	}
+	if steps[2].Title != "Write unit tests" || steps[2].Status != PlanStepPending {
+		t.Errorf("step 2 mismatch: %+v", steps[2])
+	}
+
+	// 2. Numbered checklist format
+	numChkPlan := `
+1. [ ] Create database tables
+2. [x] Add migration script
+3. [ ] Seed initial data
+`
+	stepsNumChk := ParsePlanSteps(numChkPlan)
+	if len(stepsNumChk) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(stepsNumChk))
+	}
+	if stepsNumChk[0].Title != "Create database tables" {
+		t.Errorf("expected 'Create database tables', got %s", stepsNumChk[0].Title)
+	}
+
+	// 3. Numbered list format
+	numPlan := `
+1. Refactor authentication middleware
+2. Update session cookie parameters
+3. Add rate limiting to login endpoint
+`
+	stepsNum := ParsePlanSteps(numPlan)
+	if len(stepsNum) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(stepsNum))
+	}
+	if stepsNum[1].Title != "Update session cookie parameters" {
+		t.Errorf("expected 'Update session cookie parameters', got %s", stepsNum[1].Title)
+	}
+
+	// 4. Headings format
+	headPlan := `
+## Step 1: Design schema
+We need to design the schema first.
+## Step 2: Implement models
+Then write model definitions.
+`
+	stepsHead := ParsePlanSteps(headPlan)
+	if len(stepsHead) != 2 {
+		t.Fatalf("expected 2 steps from headings, got %d", len(stepsHead))
+	}
+	if !strings.Contains(stepsHead[0].Title, "Design schema") {
+		t.Errorf("expected 'Design schema', got %s", stepsHead[0].Title)
+	}
+
+	// 5. Fallback for unformatted plan
+	rawPlan := "Just a single block of text describing the entire plan without lists."
+	stepsRaw := ParsePlanSteps(rawPlan)
+	if len(stepsRaw) != 1 {
+		t.Fatalf("expected 1 fallback step, got %d", len(stepsRaw))
+	}
+
+	// 6. ActivePlanExecution methods: AdvanceToStep, CheckTextForAdvance, MarkAllCompleted
+	exec := &ActivePlanExecution{
+		SourcePlan: chkPlan,
+		Steps:      steps,
+	}
+	exec.AdvanceToStep(1)
+	if exec.CurrentStepIndex != 1 {
+		t.Errorf("expected CurrentStepIndex=1, got %d", exec.CurrentStepIndex)
+	}
+	if exec.Steps[0].Status != PlanStepCompleted {
+		t.Errorf("expected step 0 to be completed, got %v", exec.Steps[0].Status)
+	}
+	if exec.Steps[1].Status != PlanStepInProgress {
+		t.Errorf("expected step 1 to be in progress, got %v", exec.Steps[1].Status)
+	}
+
+	// CheckTextForAdvance
+	advanced := exec.CheckTextForAdvance("Now starting with Step 3: Write unit tests right now")
+	if !advanced {
+		t.Errorf("expected CheckTextForAdvance to return true")
+	}
+	if exec.CurrentStepIndex != 2 {
+		t.Errorf("expected CurrentStepIndex=2 after text advance, got %d", exec.CurrentStepIndex)
+	}
+	if exec.Steps[1].Status != PlanStepCompleted {
+		t.Errorf("expected step 1 to be completed, got %v", exec.Steps[1].Status)
+	}
+	if exec.Steps[2].Status != PlanStepInProgress {
+		t.Errorf("expected step 2 to be in progress, got %v", exec.Steps[2].Status)
+	}
+
+	// MarkAllCompleted
+	exec.MarkAllCompleted()
+	if !exec.Completed {
+		t.Errorf("expected exec.Completed to be true")
+	}
+	for i, s := range exec.Steps {
+		if s.Status != PlanStepCompleted {
+			t.Errorf("step %d not completed: %v", i, s.Status)
+		}
+	}
+}
+
+func TestPlanExecutionHandoffAndTracking(t *testing.T) {
+	m := newTUIModel(nil, nil, "plan-sess")
+	tmpDir := t.TempDir()
+	m.workspace = tmpDir
+
+	planText := `
+Here is our execution plan:
+
+- [ ] 1. Initialize data store
+- [ ] 2. Implement caching layer
+- [ ] 3. Write unit tests
+`
+	// 1. Setup active plan review
+	m.activePlanReview = &ActivePlanReview{
+		ExecutionID: "exec-plan-test",
+		Text:        planText,
+		Selected:    0, // PlanImplementSameContext
+	}
+
+	// Resolve active plan review (approval)
+	m.resolveActivePlanReview()
+
+	if m.activePlanExecution == nil {
+		t.Fatalf("expected activePlanExecution to be initialized")
+	}
+	if !m.hasActivePlan() {
+		t.Errorf("expected hasActivePlan() to be true")
+	}
+	if len(m.activePlanExecution.Steps) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(m.activePlanExecution.Steps))
+	}
+	if m.activePlanExecution.Steps[0].Status != PlanStepInProgress {
+		t.Errorf("expected step 0 to be in progress, got %v", m.activePlanExecution.Steps[0].Status)
+	}
+
+	// 2. Simulate planImplementedMsg
+	planMsg := planImplementedMsg{
+		impl: core.PlanImplementation{
+			Submission: core.TurnSubmission{
+				ExecutionID: "exec-plan-live",
+			},
+		},
+	}
+	mod, _ := m.Update(planMsg)
+	m = mod.(*tuiModel)
+
+	if m.runningExecution != "exec-plan-live" {
+		t.Errorf("expected runningExecution to be exec-plan-live, got %s", m.runningExecution)
+	}
+	if !m.running {
+		t.Errorf("expected m.running to be true")
+	}
+
+	// Verify plan was archived to disk
+	planDir := filepath.Join(tmpDir, ".luneagent", "plans")
+	files, err := os.ReadDir(planDir)
+	if err != nil || len(files) == 0 {
+		t.Errorf("expected archived plan file in %s, err: %v, count: %d", planDir, err, len(files))
+	} else {
+		content, _ := os.ReadFile(filepath.Join(planDir, files[0].Name()))
+		if !strings.Contains(string(content), "Initialize data store") {
+			t.Errorf("expected archived plan content, got: %s", string(content))
+		}
+	}
+
+	// Verify start card in transcript
+	hasStartCard := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Starting Plan Implementation") && strings.Contains(entry.Text, "Initialize data store") {
+			hasStartCard = true
+			break
+		}
+	}
+	if !hasStartCard {
+		t.Errorf("expected plan start card in transcript entries")
+	}
+
+	// 3. Test Banner & Footer rendering
+	banner := renderPlanProgressBanner(m.activePlanExecution, 80)
+	strippedBanner := ansi.Strip(banner)
+	if !strings.Contains(strippedBanner, "Step 1/3") || !strings.Contains(strippedBanner, "Initialize data store") {
+		t.Errorf("expected banner to contain step 1 info, got: %s", strippedBanner)
+	}
+
+	footer := renderFooter(m, 80)
+	strippedFooter := ansi.Strip(footer)
+	if !strings.Contains(strippedFooter, "step 1/3") {
+		t.Errorf("expected footer to contain 'step 1/3', got: %s", strippedFooter)
+	}
+
+	// 4. Test Stream delta advances step
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventModelStream,
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Proceeding now to Step 2: Implement caching layer\n",
+		},
+	})
+
+	if m.activePlanExecution.CurrentStepIndex != 1 {
+		t.Errorf("expected CurrentStepIndex=1 after stream delta, got %d", m.activePlanExecution.CurrentStepIndex)
+	}
+	if m.activePlanExecution.Steps[0].Status != PlanStepCompleted {
+		t.Errorf("expected step 0 to be completed, got %v", m.activePlanExecution.Steps[0].Status)
+	}
+	if m.activePlanExecution.Steps[1].Status != PlanStepInProgress {
+		t.Errorf("expected step 1 to be in progress, got %v", m.activePlanExecution.Steps[1].Status)
+	}
+
+	// 5. Test /plan status command
+	m.handleSlashCommand("/plan status")
+	hasStatusCard := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Active Plan Execution Progress") &&
+			strings.Contains(entry.Text, "[x] 1. Initialize data store") &&
+			strings.Contains(entry.Text, "[>] 2. Implement caching layer") &&
+			strings.Contains(entry.Text, "[ ] 3. Write unit tests") {
+			hasStatusCard = true
+			break
+		}
+	}
+	if !hasStatusCard {
+		t.Errorf("expected /plan status checklist card in transcript")
+	}
+
+	// 6. Test Task Checkpoint includes current plan step
+	cp := &PausedCheckpoint{
+		ExecutionID:  "exec-plan-live",
+		ToolCount:    1,
+		LastToolName: "edit_file",
+	}
+	cpCard := m.formatCheckpointCard(cp, "path: /tmp/code.go")
+	if !strings.Contains(cpCard, "Plan Step") || !strings.Contains(cpCard, "Step 2 of 3") {
+		t.Errorf("expected checkpoint card to include plan step 2 of 3, got: %s", cpCard)
+	}
+
+	// 7. Test turnFinishedMsg marks completed and emits completed card
+	mod, _ = m.Update(turnFinishedMsg{err: nil})
+	m = mod.(*tuiModel)
+
+	if !m.activePlanExecution.Completed {
+		t.Errorf("expected activePlanExecution.Completed to be true")
+	}
+	if m.hasActivePlan() {
+		t.Errorf("expected hasActivePlan() to be false once completed")
+	}
+
+	hasCompletedCard := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Plan Implementation Completed") &&
+			strings.Contains(entry.Text, "✓ 1. Initialize data store") &&
+			strings.Contains(entry.Text, "✓ 2. Implement caching layer") &&
+			strings.Contains(entry.Text, "✓ 3. Write unit tests") &&
+			strings.Contains(entry.Text, "/diff") {
+			hasCompletedCard = true
+			break
+		}
+	}
+	if !hasCompletedCard {
+		t.Errorf("expected completion summary card in transcript")
+	}
+}
+
+
 
 
 
