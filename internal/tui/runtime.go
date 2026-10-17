@@ -369,6 +369,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.checkPendingState(context.Background())
 		m.refreshViewportContent()
 		m.updateLayout()
+		if m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero() {
+			return m, tickClock()
+		}
 
 	case core.EventToolRecoveryRequired:
 		m.thinking = false
@@ -379,6 +382,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil
+		m.pausedCheckpoint = nil
 		m.running = true
 		m.refreshViewportContent()
 		m.updateLayout()
@@ -399,8 +403,31 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 		m.running = false
 		if event.Status == core.TaskPaused {
+			if m.pausedCheckpoint == nil {
+				toolCount := 0
+				lastTool := ""
+				for i := len(m.entries) - 1; i >= 0; i-- {
+					if m.entries[i].Kind == KindUser {
+						break
+					}
+					if m.entries[i].Kind == KindTool {
+						toolCount++
+						if lastTool == "" {
+							lastTool = m.entries[i].ToolName
+						}
+					}
+				}
+				m.pausedCheckpoint = &PausedCheckpoint{
+					ExecutionID:  event.ExecutionID,
+					PausedAt:     time.Now(),
+					ToolCount:    toolCount,
+					LastToolName: lastTool,
+					Reason:       "Task paused",
+				}
+			}
 			m.checkPendingState(context.Background())
 		} else {
+			m.pausedCheckpoint = nil
 			m.activeRecovery = nil
 			m.activeToolRecovery = nil
 		}
@@ -410,6 +437,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	case core.EventTaskDiscarded:
 		m.thinking = false
 		m.running = false
+		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
 		m.currentStreamText = ""

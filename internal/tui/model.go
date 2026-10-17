@@ -45,6 +45,7 @@ type tuiModel struct {
 	activePlanReview   *ActivePlanReview
 	activeRecovery     *ActiveRecovery
 	activeToolRecovery *ActiveToolRecovery
+	pausedCheckpoint   *PausedCheckpoint
 	queuedTurns        []QueuedItem
 	autocompleteOpen  bool
 	autocompleteMode  AutocompleteMode
@@ -523,7 +524,7 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderAutocompletePopup(m.autocompleteItems, m.autocompleteIndex, contentWidth))
 	}
 
-	// 4. Composer gap (shared with copy feedback, scroll pill, or blank line)
+	// 4. Composer gap (shared with copy feedback, scroll pill, paused task banner, or blank line)
 	gapLine := ""
 	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
 		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(m.copyFeedback)
@@ -531,6 +532,8 @@ func (m *tuiModel) View() tea.View {
 		gapLine = strings.Repeat(" ", leftPad) + styled
 	} else if m.scrolledUp {
 		gapLine = renderScrollPill(contentWidth)
+	} else if m.hasPausedTask() && !m.running {
+		gapLine = renderPausedBanner(contentWidth)
 	}
 	sections = append(sections, gapLine)
 
@@ -593,7 +596,21 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 	rt.SetUserInteractionAvailable(true)
 	m.checkPendingState(ctx)
+	if state, err := rt.State(ctx); err == nil && state.Task.Status == core.TaskPaused {
+		m.pausedCheckpoint = &PausedCheckpoint{
+			ExecutionID: state.Task.ExecutionID,
+			PausedAt:    time.Now(),
+			Reason:      "Paused in session",
+		}
+	} else {
+		m.pausedCheckpoint = nil
+	}
 	return nil
+}
+
+// hasPausedTask reports whether the current session has an interrupted checkpoint or pending recovery.
+func (m *tuiModel) hasPausedTask() bool {
+	return m.pausedCheckpoint != nil || m.activeRecovery != nil || m.activeToolRecovery != nil
 }
 
 // checkPendingState queries Core for any pending user questions or approvals.
@@ -672,11 +689,19 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 
 	if foundToolRecovery != nil {
 		if m.activeToolRecovery == nil || m.activeToolRecovery.InvocationID != foundToolRecovery.InvocationID {
+			errOutput := ""
+			for i := len(m.entries) - 1; i >= 0; i-- {
+				if m.entries[i].Kind == KindTool && (m.entries[i].ToolCallID == foundToolRecovery.CallID || m.entries[i].ToolName == foundToolRecovery.Tool) {
+					errOutput = m.entries[i].ToolOutput
+					break
+				}
+			}
 			m.activeToolRecovery = &ActiveToolRecovery{
 				InvocationID: foundToolRecovery.InvocationID,
 				CallID:       foundToolRecovery.CallID,
 				ToolName:     foundToolRecovery.Tool,
 				Arguments:    string(foundToolRecovery.Arguments),
+				ErrorOutput:  errOutput,
 				Selected:     0,
 			}
 		}

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -476,6 +477,41 @@ func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 	return cardStyle.Width(max(20, width)).Render(content)
 }
 
+// renderCountdownProgressBar draws an ASCII progress bar representing cool-down completion.
+func renderCountdownProgressBar(remainingSecs, maxSecs, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if maxSecs <= 0 {
+		maxSecs = 60
+	}
+	ratio := float64(remainingSecs) / float64(maxSecs)
+	if ratio > 1.0 {
+		ratio = 1.0
+	}
+	if ratio < 0.0 {
+		ratio = 0.0
+	}
+	elapsedRatio := 1.0 - ratio
+	elapsedWidth := int(math.Round(elapsedRatio * float64(width)))
+	if elapsedWidth > width {
+		elapsedWidth = width
+	}
+	remainingWidth := width - elapsedWidth
+	return "[" + strings.Repeat("█", elapsedWidth) + strings.Repeat("░", remainingWidth) + "]"
+}
+
+// renderPausedBanner renders an actionable checkpoint status banner in the composer gap.
+func renderPausedBanner(width int) string {
+	th := activeTheme()
+	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render("⏸ ")
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Task Paused (Checkpoint saved)")
+	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · /resume to continue · /discard to drop")
+	banner := icon + label + actions
+	pad := max(0, (width-lipgloss.Width(banner))/2)
+	return strings.Repeat(" ", pad) + banner
+}
+
 // renderRecoveryPanel renders the model recovery prompt when a provider times out or rate limits.
 func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	if recovery == nil {
@@ -499,9 +535,23 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	}
 	lines = append(lines, styleTextPrimary().Render("Reason: "+reason))
 
-	if !recovery.RetryNotBefore.IsZero() && time.Now().Before(recovery.RetryNotBefore) {
-		remaining := time.Until(recovery.RetryNotBefore).Round(time.Second)
-		lines = append(lines, styleTextMuted().Render(fmt.Sprintf("Retry cool-down: %s remaining", remaining)))
+	if !recovery.RetryNotBefore.IsZero() {
+		lines = append(lines, "")
+		if time.Now().Before(recovery.RetryNotBefore) {
+			remaining := time.Until(recovery.RetryNotBefore).Round(time.Second)
+			secs := int(remaining.Seconds())
+			if secs < 0 {
+				secs = 0
+			}
+			bar := renderCountdownProgressBar(secs, 60, 20)
+			countdownLine := fmt.Sprintf("⏳ Rate limit cool-down: %s remaining  %s", remaining, bar)
+			lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render(countdownLine))
+			lines = append(lines, styleTextMuted().Render("   Provider rate limit active. Execution checkpoint is safely preserved."))
+		} else {
+			readyLine := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).
+				Render("✓ Cool-down elapsed — Ready to resume execution")
+			lines = append(lines, readyLine)
+		}
 	}
 
 	lines = append(lines, "")
@@ -531,7 +581,7 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, styleTextMuted().Render("enter select · esc discard"))
+	lines = append(lines, styleTextMuted().Render("enter select · esc / 2 discard · 1 retry · r / d quick action"))
 
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
@@ -564,6 +614,20 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 		lines = append(lines, styleTextMuted().Render("Arguments: "+argsStr))
 	}
 
+	if recovery.ErrorOutput != "" {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render("Failure Details:"))
+		errLines := strings.Split(strings.TrimSpace(recovery.ErrorOutput), "\n")
+		maxErrLines := 4
+		for i, el := range errLines {
+			if i >= maxErrLines {
+				lines = append(lines, styleTextMuted().Render(fmt.Sprintf("  ... (+%d more lines)", len(errLines)-maxErrLines)))
+				break
+			}
+			lines = append(lines, styleTextPrimary().Render("  "+truncateString(el, max(20, width-8))))
+		}
+	}
+
 	lines = append(lines, "")
 
 	options := []struct {
@@ -591,7 +655,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, styleTextMuted().Render("enter select · esc skip"))
+	lines = append(lines, styleTextMuted().Render("enter select · esc / 2 skip · 1 retry · r / s quick action"))
 
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
@@ -1172,6 +1236,8 @@ func renderFooter(m *tuiModel, width int) string {
 	var line2RightText string
 	if m.running {
 		line2RightText = "esc to interrupt"
+	} else if m.hasPausedTask() {
+		line2RightText = "⏸ task paused · /resume or /discard"
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
 	}

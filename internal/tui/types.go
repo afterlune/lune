@@ -107,6 +107,16 @@ type ActiveRecovery struct {
 	Selected       int // 0: retry/resume, 1: discard
 }
 
+// PausedCheckpoint holds execution metadata for an interrupted or paused task.
+type PausedCheckpoint struct {
+	ExecutionID  string
+	PausedAt     time.Time
+	ToolCount    int
+	LastToolName string
+	Interrupted  bool
+	Reason       string
+}
+
 // ActiveToolRecovery holds the state of a pending tool recovery decision.
 type ActiveToolRecovery struct {
 	ExecutionID  string
@@ -114,6 +124,7 @@ type ActiveToolRecovery struct {
 	CallID       string
 	ToolName     string
 	Arguments    string
+	ErrorOutput  string
 	Selected     int // 0: retry, 1: skip
 }
 

@@ -46,7 +46,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.running {
+		if m.running || (m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero()) {
 			m.refreshViewportContent()
 			return m, tickClock()
 		}
@@ -82,6 +82,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
+		m.pausedCheckpoint = nil
 		if msg.err != nil {
 			if len(m.queuedTurns) == 0 {
 				m.running = false
@@ -138,7 +139,16 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
 			if msg.result.Status == core.TaskPaused {
+				if m.pausedCheckpoint == nil {
+					m.pausedCheckpoint = &PausedCheckpoint{
+						ExecutionID: msg.result.ExecutionID,
+						PausedAt:    time.Now(),
+						Reason:      "Task paused",
+					}
+				}
 				m.checkPendingState(context.Background())
+			} else {
+				m.pausedCheckpoint = nil
 			}
 			if msg.result.ProposedPlan != nil && msg.result.ProposedPlan.Text != "" {
 				cleaned := stripProposedPlan(m.currentStreamText)
@@ -246,12 +256,16 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(planCmds...)
 
 	case taskDiscardedMsg:
+		m.pausedCheckpoint = nil
+		m.activeRecovery = nil
+		m.activeToolRecovery = nil
+		m.running = false
 		if msg.err != nil {
 			m.addSystemEntry("Discard failed: " + msg.err.Error())
 		} else {
-			m.running = false
 			m.addSystemEntry("Discarded paused task.")
 		}
+		m.updateLayout()
 		return m, nil
 
 	case clearCopyFeedbackMsg:
@@ -728,24 +742,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
-			if m.currentReasoningText != "" {
-				dur := time.Since(m.reasoningStartTime)
-				m.entries = append(m.entries, TranscriptEntry{
-					Kind:              KindReasoning,
-					Text:              m.currentReasoningText,
-					ReasoningDuration: dur,
-					ReasoningExpanded: false,
-					Timestamp:         time.Now(),
-				})
-				m.currentReasoningText = ""
-				m.reasoningStartTime = time.Time{}
-				m.invalidateEntryCache()
-			}
-			m.runtime.Interrupt(m.runningExecution)
-			m.running = false
-			m.addSystemEntry("Interrupted.")
-			m.refreshViewportContent()
-			return m, nil
+			return m.interruptRunningTask()
 		}
 		return m, tea.Quit
 
@@ -789,6 +786,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.activeRecovery != nil {
 			m.activeRecovery = nil
+			m.pausedCheckpoint = nil
 			if m.runtime != nil {
 				_, _ = m.runtime.DiscardPaused(context.Background())
 			}
@@ -803,6 +801,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.activeQuestion != nil {
 			m.activeQuestion = nil
+			m.pausedCheckpoint = nil
 			if m.runtime != nil {
 				_, _ = m.runtime.DiscardPaused(context.Background())
 			}
@@ -829,24 +828,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.cancelQueuedTurn()
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
-			if m.currentReasoningText != "" {
-				dur := time.Since(m.reasoningStartTime)
-				m.entries = append(m.entries, TranscriptEntry{
-					Kind:              KindReasoning,
-					Text:              m.currentReasoningText,
-					ReasoningDuration: dur,
-					ReasoningExpanded: false,
-					Timestamp:         time.Now(),
-				})
-				m.currentReasoningText = ""
-				m.reasoningStartTime = time.Time{}
-				m.invalidateEntryCache()
-			}
-			m.runtime.Interrupt(m.runningExecution)
-			m.running = false
-			m.addSystemEntry("Interrupted.")
-			m.refreshViewportContent()
-			return m, nil
+			return m.interruptRunningTask()
 		}
 		// If composer is empty and not running, Esc steps back to edit the last message
 		if !m.running && m.composer.Value() == "" && len(m.promptHistory) > 0 {
@@ -963,9 +945,32 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.updateLayout()
 			}
 			return m, nil
+		case "1", "r":
+			m.activeRecovery.Selected = 0
+			m.activeRecovery = nil
+			m.pausedCheckpoint = nil
+			m.running = true
+			m.taskStartedAt = time.Now()
+			m.updateLayout()
+			sessionID := m.sessionID
+			return m, func() tea.Msg {
+				sub, err := m.runtime.Recover(context.Background())
+				return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+			}
+		case "2", "d":
+			m.activeRecovery.Selected = 1
+			m.activeRecovery = nil
+			m.pausedCheckpoint = nil
+			m.running = false
+			m.updateLayout()
+			return m, func() tea.Msg {
+				ok, err := m.runtime.DiscardPaused(context.Background())
+				return taskDiscardedMsg{discarded: ok, err: err}
+			}
 		case "enter":
 			if m.activeRecovery.Selected == 0 {
 				m.activeRecovery = nil
+				m.pausedCheckpoint = nil
 				m.running = true
 				m.taskStartedAt = time.Now()
 				m.updateLayout()
@@ -976,6 +981,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			} else {
 				m.activeRecovery = nil
+				m.pausedCheckpoint = nil
 				m.running = false
 				m.updateLayout()
 				return m, func() tea.Msg {
@@ -1001,6 +1007,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.updateLayout()
 			}
 			return m, nil
+		case "1", "r":
+			m.activeToolRecovery.Selected = 0
+			return m.resolveActiveToolRecovery()
+		case "2", "s":
+			m.activeToolRecovery.Selected = 1
+			return m.resolveActiveToolRecovery()
 		case "enter":
 			return m.resolveActiveToolRecovery()
 		}
@@ -1444,6 +1456,107 @@ func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
 	}
 }
 
+// interruptRunningTask halts an ongoing execution, preserves the execution checkpoint,
+// and presents a rich checkpoint status card in the transcript.
+func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
+	if !m.running || m.runtime == nil || m.runningExecution == "" {
+		return m, nil
+	}
+
+	if m.currentReasoningText != "" {
+		dur := time.Since(m.reasoningStartTime)
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind:              KindReasoning,
+			Text:              m.currentReasoningText,
+			ReasoningDuration: dur,
+			ReasoningExpanded: false,
+			Timestamp:         time.Now(),
+		})
+		m.currentReasoningText = ""
+		m.reasoningStartTime = time.Time{}
+		m.invalidateEntryCache()
+	}
+	if m.currentStreamText != "" {
+		m.entries = append(m.entries, TranscriptEntry{
+			ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
+			Kind:      KindAssistant,
+			Text:      m.currentStreamText,
+			Timestamp: time.Now(),
+		})
+		m.currentStreamText = ""
+		m.invalidateEntryCache()
+	}
+
+	execID := m.runningExecution
+	toolCount := 0
+	lastToolName := ""
+	lastToolCmd := ""
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindUser {
+			break
+		}
+		if m.entries[i].Kind == KindTool {
+			toolCount++
+			if lastToolName == "" {
+				lastToolName = m.entries[i].ToolName
+				lastToolCmd = m.entries[i].ToolCommand
+			}
+		}
+	}
+
+	m.pausedCheckpoint = &PausedCheckpoint{
+		ExecutionID:  execID,
+		PausedAt:     time.Now(),
+		ToolCount:    toolCount,
+		LastToolName: lastToolName,
+		Interrupted:  true,
+		Reason:       "Interrupted by user",
+	}
+
+	m.runtime.Interrupt(execID)
+	m.running = false
+	m.thinking = false
+	m.streamActive = false
+
+	card := m.formatCheckpointCard(m.pausedCheckpoint, lastToolCmd)
+	m.addSystemEntry(card)
+	m.refreshViewportContent()
+	m.updateLayout()
+	return m, nil
+}
+
+// formatCheckpointCard constructs a markdown status block summarizing an interrupted task checkpoint.
+func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string) string {
+	if cp == nil {
+		return "Interrupted."
+	}
+	var lines []string
+	lines = append(lines, "⏸ **Task Execution Paused (Checkpoint Saved)**")
+	if cp.ExecutionID != "" {
+		lines = append(lines, fmt.Sprintf("• **Execution ID**: `%s`", cp.ExecutionID))
+	}
+	if cp.ToolCount > 0 {
+		toolDesc := fmt.Sprintf("%d tool step(s) completed", cp.ToolCount)
+		if cp.LastToolName != "" {
+			toolDesc += fmt.Sprintf(" (last: `%s`)", cp.LastToolName)
+		}
+		lines = append(lines, "• **Progress**: "+toolDesc)
+		if lastToolCmd != "" && lastToolCmd != cp.LastToolName {
+			cmdPreview := lastToolCmd
+			if len(cmdPreview) > 80 {
+				cmdPreview = cmdPreview[:77] + "..."
+			}
+			lines = append(lines, fmt.Sprintf("• **Last Command**: `%s`", cmdPreview))
+		}
+	} else {
+		lines = append(lines, "• **Progress**: Interrupted during model output generation")
+	}
+	lines = append(lines, "• **Actions**:")
+	lines = append(lines, "  - Type `/resume` to continue execution from this checkpoint")
+	lines = append(lines, "  - Type `/discard` to abandon this execution checkpoint")
+	return strings.Join(lines, "\n")
+}
+
 // toggleReasoningExpansion toggles the expanded/collapsed state of the latest reasoning block.
 func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 	if m.currentReasoningText != "" {
@@ -1463,4 +1576,5 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 	m.addSystemEntry("No thinking/reasoning blocks found in this session.")
 	return m, nil
 }
+
 

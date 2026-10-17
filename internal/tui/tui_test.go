@@ -2464,6 +2464,392 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	}
 }
 
+func TestExportMultiFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	exitZero := 0
+	m := &tuiModel{
+		workspace:         tmpDir,
+		sessionID:         "test-export-id-12345",
+		sessionTitle:      "Multi-Format Export Test",
+		currentModel:      "test-model-pro",
+		totalInputTokens:  1200,
+		totalOutputTokens: 600,
+		entries: []TranscriptEntry{
+			{
+				ID:        "u1",
+				Kind:      KindUser,
+				Text:      "Generate a sorting function",
+				Timestamp: time.Now(),
+			},
+			{
+				ID:          "t1",
+				Kind:        KindTool,
+				ToolName:    "run_command",
+				ToolCommand: "go test ./...",
+				ToolArgs:    `{"cmd":"go test"}`,
+				ToolOutput:  "PASS\nok\n",
+				ToolExitCode: &exitZero,
+				Timestamp:   time.Now(),
+			},
+			{
+				ID:        "a1",
+				Kind:      KindAssistant,
+				Text:      "Here is the sorting implementation.",
+				Timestamp: time.Now(),
+			},
+		},
+	}
+
+	// 1. Export HTML
+	htmlFile := filepath.Join(tmpDir, "report.html")
+	m.handleSlashCommand("/export " + htmlFile)
+	lastEntry := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastEntry, "Exported session transcript") {
+		t.Fatalf("expected export success message, got: %s", lastEntry)
+	}
+	htmlBytes, err := os.ReadFile(htmlFile)
+	if err != nil {
+		t.Fatalf("failed to read html export: %v", err)
+	}
+	htmlContent := string(htmlBytes)
+	if !strings.Contains(htmlContent, "<!DOCTYPE html>") || !strings.Contains(htmlContent, "Multi-Format Export Test") {
+		t.Errorf("HTML export missing doctype or title: %s", htmlContent)
+	}
+	if !strings.Contains(htmlContent, "Generate a sorting function") || !strings.Contains(htmlContent, "run_command") {
+		t.Errorf("HTML export missing user prompt or tool name")
+	}
+
+	// 2. Export JSONL
+	m.entries = m.entries[:3]
+	jsonlFile := filepath.Join(tmpDir, "data.jsonl")
+	m.handleSlashCommand("/export " + jsonlFile)
+	jsonlBytes, err := os.ReadFile(jsonlFile)
+	if err != nil {
+		t.Fatalf("failed to read jsonl export: %v", err)
+	}
+	jsonlLines := strings.Split(strings.TrimSpace(string(jsonlBytes)), "\n")
+	if len(jsonlLines) != 4 { // 1 metadata + 3 entries
+		t.Fatalf("expected 4 jsonl lines, got %d", len(jsonlLines))
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonlLines[0]), &meta); err != nil {
+		t.Fatalf("failed to parse metadata json line: %v", err)
+	}
+	if meta["type"] != "metadata" || meta["title"] != "Multi-Format Export Test" {
+		t.Errorf("unexpected metadata record: %+v", meta)
+	}
+	var userRec map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonlLines[1]), &userRec); err != nil {
+		t.Fatalf("failed to parse user json line: %v", err)
+	}
+	if userRec["role"] != "user" || userRec["content"] != "Generate a sorting function" {
+		t.Errorf("unexpected user record: %+v", userRec)
+	}
+}
+
+func TestRewindPreviewAndRestoration(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	// Create session with 2 turns of history
+	historyJSON := `[
+		{"type":"message","role":"user","content":"Initial prompt turn 1"},
+		{"type":"message","role":"assistant","content":"Assistant reply turn 1"},
+		{"type":"message","role":"user","content":"Detailed prompt turn 2"},
+		{"type":"message","role":"assistant","content":"Assistant reply turn 2"}
+	]`
+	sess, err := client.CreateSession(ctx, json.RawMessage(historyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTUIModel(client, nil, sess.ID)
+	m.width = 100
+	m.height = 30
+	m.entries = transcriptFromHistory(json.RawMessage(historyJSON))
+	for _, entry := range m.entries {
+		if entry.Kind == KindUser && entry.Text != "" {
+			m.promptHistory = append(m.promptHistory, entry.Text)
+		}
+	}
+	m.historyIndex = len(m.promptHistory)
+	m.updateLayout()
+
+	// 1. Preview mode does not delete history
+	mod, _ := m.handleSlashCommand("/rewind preview")
+	m = mod.(*tuiModel)
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Rewind Preview") || !strings.Contains(lastSys, "Detailed prompt turn 2") {
+		t.Fatalf("expected rewind preview with turn 2 details, got: %s", lastSys)
+	}
+
+	// 2. Execute rewind 1 turn: removes turn 2, restores "Detailed prompt turn 2" to composer
+	mod, _ = m.handleSlashCommand("/rewind 1")
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Detailed prompt turn 2" {
+		t.Fatalf("expected composer to restore 'Detailed prompt turn 2', got %q", m.composer.Value())
+	}
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Rewound 1 turn(s)") {
+		t.Fatalf("expected rewind success message, got: %s", lastSys2)
+	}
+
+	// 3. User turns left should be 1
+	userTurnCount := 0
+	for _, entry := range m.entries {
+		if entry.Kind == KindUser {
+			userTurnCount++
+		}
+	}
+	if userTurnCount != 1 {
+		t.Fatalf("expected 1 user turn remaining after rewind, got %d", userTurnCount)
+	}
+}
+
+func TestInterruptCheckpointCardAndBanner(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	sess, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := client.OpenSessionRuntime(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTUIModel(client, rt, sess.ID)
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// Simulate turn with user input and tool calls
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:        "u1",
+		Kind:      KindUser,
+		Text:      "Refactor the parser",
+		Timestamp: time.Now(),
+	})
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:          "t1",
+		Kind:        KindTool,
+		ToolCallID:  "call-read",
+		ToolName:    "read_file",
+		ToolCommand: "read_file parser.go",
+		ToolStatus:  "success",
+		Timestamp:   time.Now(),
+	})
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:          "t2",
+		Kind:        KindTool,
+		ToolCallID:  "call-cmd",
+		ToolName:    "run_command",
+		ToolCommand: "go test ./...",
+		ToolStatus:  "running",
+		Timestamp:   time.Now(),
+	})
+
+	m.running = true
+	m.runningExecution = "exec-test-int-001"
+	m.currentReasoningText = "Analyzing test failures..."
+	m.reasoningStartTime = time.Now().Add(-2 * time.Second)
+
+	// Press Esc to interrupt
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+
+	if m.running {
+		t.Fatalf("expected m.running to be false after Esc interrupt")
+	}
+	if m.pausedCheckpoint == nil {
+		t.Fatalf("expected m.pausedCheckpoint to be non-nil after interrupt")
+	}
+	if m.pausedCheckpoint.ExecutionID != "exec-test-int-001" {
+		t.Errorf("expected ExecutionID 'exec-test-int-001', got %q", m.pausedCheckpoint.ExecutionID)
+	}
+	if m.pausedCheckpoint.ToolCount != 2 {
+		t.Errorf("expected ToolCount 2, got %d", m.pausedCheckpoint.ToolCount)
+	}
+	if m.pausedCheckpoint.LastToolName != "run_command" {
+		t.Errorf("expected LastToolName 'run_command', got %q", m.pausedCheckpoint.LastToolName)
+	}
+	if !m.hasPausedTask() {
+		t.Fatalf("expected hasPausedTask() to be true")
+	}
+
+	// Verify checkpoint card in transcript
+	lastEntry := m.entries[len(m.entries)-1]
+	if lastEntry.Kind != KindSystem {
+		t.Fatalf("expected last entry to be KindSystem checkpoint card, got %v", lastEntry.Kind)
+	}
+	cardText := lastEntry.Text
+	if !strings.Contains(cardText, "Task Execution Paused (Checkpoint Saved)") {
+		t.Errorf("expected checkpoint title in card, got: %s", cardText)
+	}
+	if !strings.Contains(cardText, "exec-test-int-001") {
+		t.Errorf("expected execution ID in card, got: %s", cardText)
+	}
+	if !strings.Contains(cardText, "2 tool step(s) completed") || !strings.Contains(cardText, "run_command") {
+		t.Errorf("expected completed tools summary in card, got: %s", cardText)
+	}
+	if !strings.Contains(cardText, "/resume") || !strings.Contains(cardText, "/discard") {
+		t.Errorf("expected /resume and /discard hints in card, got: %s", cardText)
+	}
+
+	// Verify View contains the paused task banner in composer gap
+	viewOutput := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewOutput, "Task Paused (Checkpoint saved)") {
+		t.Errorf("expected View() to render paused task banner, got:\n%s", viewOutput)
+	}
+
+	// Verify footer shows paused task indicator
+	footerText := ansi.Strip(renderFooter(m, 100))
+	if !strings.Contains(footerText, "task paused · /resume or /discard") {
+		t.Errorf("expected footer to show paused task hint, got: %s", footerText)
+	}
+
+	// Discard paused task
+	mod, _ = m.handleSlashCommand("/discard")
+	m = mod.(*tuiModel)
+	if m.pausedCheckpoint != nil {
+		t.Fatalf("expected pausedCheckpoint to be nil after /discard")
+	}
+	if m.hasPausedTask() {
+		t.Fatalf("expected hasPausedTask() to be false after /discard")
+	}
+}
+
+func TestActiveRecoveryCountdownAndShortcuts(t *testing.T) {
+	// 1. Recovery panel with active cool-down
+	recActive := &ActiveRecovery{
+		ExecutionID:    "exec-rec-1",
+		CallID:         "call-rec-1",
+		Reason:         "rate_limit (status=429)",
+		RetryNotBefore: time.Now().Add(25 * time.Second),
+		Selected:       0,
+	}
+	renderedActive := ansi.Strip(renderRecoveryPanel(recActive, 80))
+	if !strings.Contains(renderedActive, "Model Recovery Required") {
+		t.Errorf("expected title in recovery panel, got: %s", renderedActive)
+	}
+	if !strings.Contains(renderedActive, "Rate limit cool-down:") {
+		t.Errorf("expected cool-down countdown line, got: %s", renderedActive)
+	}
+	if !strings.Contains(renderedActive, "[") || !strings.Contains(renderedActive, "]") {
+		t.Errorf("expected countdown progress bar in recovery panel, got: %s", renderedActive)
+	}
+	if !strings.Contains(renderedActive, "1 retry") || !strings.Contains(renderedActive, "r / d quick action") {
+		t.Errorf("expected quick action hints in recovery panel, got: %s", renderedActive)
+	}
+
+	// 2. Recovery panel with elapsed cool-down
+	recElapsed := &ActiveRecovery{
+		ExecutionID:    "exec-rec-2",
+		CallID:         "call-rec-2",
+		Reason:         "rate_limit (status=429)",
+		RetryNotBefore: time.Now().Add(-5 * time.Second),
+		Selected:       0,
+	}
+	renderedElapsed := ansi.Strip(renderRecoveryPanel(recElapsed, 80))
+	if !strings.Contains(renderedElapsed, "Cool-down elapsed — Ready to resume execution") {
+		t.Errorf("expected cool-down elapsed banner, got: %s", renderedElapsed)
+	}
+
+	// 3. Shortcuts testing
+	m := newTUIModel(nil, nil, "sess-rec")
+	m.width = 80
+	m.height = 24
+	m.activeRecovery = &ActiveRecovery{
+		ExecutionID: "exec-rec-keys",
+		CallID:      "call-rec-keys",
+		Selected:    0,
+	}
+
+	// Key 'j' (down) moves to discard
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'j'})
+	if m.activeRecovery.Selected != 1 {
+		t.Errorf("expected Selected=1 after 'j', got %d", m.activeRecovery.Selected)
+	}
+	// Key 'k' (up) moves back to retry
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'k'})
+	if m.activeRecovery.Selected != 0 {
+		t.Errorf("expected Selected=0 after 'k', got %d", m.activeRecovery.Selected)
+	}
+
+	// Esc discards recovery
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.activeRecovery != nil {
+		t.Fatalf("expected activeRecovery to be cleared after Esc")
+	}
+}
+
+func TestActiveToolRecoveryDetailsAndShortcuts(t *testing.T) {
+	rec := &ActiveToolRecovery{
+		InvocationID: "inv-test-err",
+		CallID:       "call-test-err",
+		ToolName:     "run_command",
+		Arguments:    `{"command":"npm run build"}`,
+		ErrorOutput:  "Exit code 1\nSyntaxError: Unexpected token '<' in bundle.js\n  at build (compiler.js:42)",
+		Selected:     0,
+	}
+
+	rendered := ansi.Strip(renderToolRecoveryPanel(rec, 90))
+	if !strings.Contains(rendered, "Tool Failure Recovery Required") {
+		t.Errorf("expected title in modal, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "Tool: run_command") {
+		t.Errorf("expected tool name in modal, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "Failure Details:") {
+		t.Errorf("expected Failure Details section, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "SyntaxError: Unexpected token") {
+		t.Errorf("expected error details in modal, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "1 retry") || !strings.Contains(rendered, "r / s quick action") {
+		t.Errorf("expected quick action hints in modal, got: %s", rendered)
+	}
+
+	// Navigation & selection
+	m := newTUIModel(nil, nil, "sess-tool-rec")
+	m.width = 80
+	m.height = 24
+	m.activeToolRecovery = rec
+
+	// Press 'j'
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'j'})
+	if m.activeToolRecovery.Selected != 1 {
+		t.Errorf("expected Selected=1 after 'j', got %d", m.activeToolRecovery.Selected)
+	}
+	// Press 'k'
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'k'})
+	if m.activeToolRecovery.Selected != 0 {
+		t.Errorf("expected Selected=0 after 'k', got %d", m.activeToolRecovery.Selected)
+	}
+}
+
+
+
 
 
 
