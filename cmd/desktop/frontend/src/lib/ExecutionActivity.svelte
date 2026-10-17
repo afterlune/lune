@@ -30,6 +30,7 @@
   };
   type FileChange = NonNullable<NonNullable<ActivityTool['details']>['changes']>[number];
   type ChangeGroup = { path: string; changes: { label: string; change: FileChange }[]; added: number; removed: number };
+  type CommandSummary = { tool: ActivityTool; command: NonNullable<NonNullable<ActivityTool['details']>['command']> };
 
   let { run, active = false, elapsedSeconds = 0, onToggle, onOpenFile }: {
     run: ActivityRun;
@@ -40,6 +41,24 @@
   } = $props();
 
   const latestTool = $derived(run.tools.at(-1));
+  const commandRuns = $derived.by((): CommandSummary[] => {
+    const summaries: CommandSummary[] = [];
+    for (const tool of run.tools) {
+      const command = tool.details?.command;
+      if (!command) continue;
+      if (tool.label === '检查命令状态') {
+        const pending = summaries.findLastIndex((item) =>
+          item.command.text === command.text && commandOutcome(item) === 'running',
+        );
+        if (pending >= 0) {
+          summaries[pending] = { tool, command };
+          continue;
+        }
+      }
+      summaries.push({ tool, command });
+    }
+    return summaries;
+  });
   const changedFiles = $derived.by(() => {
     const groups = new Map<string, ChangeGroup>();
     for (const tool of run.tools) {
@@ -75,6 +94,28 @@ function toolStatus(status: ActivityTool['status']) {
     return '完成';
   }
 
+  function commandOutcome(item: CommandSummary) {
+    const status = (item.command.status ?? '').toLowerCase();
+    if (item.tool.status === 'running' || status.includes('running') || status.includes('started')) return 'running';
+    if (item.tool.status === 'cancelled' || status.includes('cancel')) return 'cancelled';
+    if (item.tool.status === 'failed' || item.command.error || (item.command.exitCode !== undefined && item.command.exitCode !== null && item.command.exitCode !== 0) || status.includes('fail') || status.includes('error')) return 'failed';
+    if (item.command.exitCode === 0 || item.tool.status === 'done' || status.includes('complete') || status.includes('success')) return 'completed';
+    return 'unknown';
+  }
+
+  function commandOutcomeLabel(item: CommandSummary) {
+    const outcome = commandOutcome(item);
+    if (outcome === 'running') return '运行中';
+    if (outcome === 'failed') return '失败';
+    if (outcome === 'cancelled') return '已取消';
+    if (outcome === 'completed') return '已完成';
+    return '结果待同步';
+  }
+
+  function showArguments(tool: ActivityTool) {
+    return tool.label !== '检查命令状态' && tool.label !== '停止命令';
+  }
+
 </script>
 
 <section class:status-queued={run.status === 'queued'} class:status-waiting={run.status === 'paused'} class:status-failed={run.status === 'failed'} class:status-interrupted={run.status === 'interrupted' || run.status === 'cancelled'} class="turn-progress" aria-label="本轮执行状态">
@@ -97,7 +138,13 @@ function toolStatus(status: ActivityTool['status']) {
   {/if}
   {#if changedFiles.length}
     <section class="activity-review" aria-label="本轮文件改动">
-      <div class="activity-review-heading"><strong>本轮改动</strong><span>{changedFiles.length} 个文件</span><button class="activity-review-toggle" aria-expanded={changesExpanded} onclick={() => changesExpanded = !changesExpanded}>{changesExpanded ? '收起差异' : '查看差异'}</button></div>
+      <div class="activity-review-heading">
+        <strong>本轮改动</strong><span>{changedFiles.length} 个文件</span>
+        <span class="activity-review-paths" title={changedFiles.map((file) => file.path).join('\n')}>
+          {changedFiles.slice(0, 2).map((file) => file.path).join(' · ')}{changedFiles.length > 2 ? ` · +${changedFiles.length - 2}` : ''}
+        </span>
+        <button class="activity-review-toggle" aria-expanded={changesExpanded} onclick={() => changesExpanded = !changesExpanded}>{changesExpanded ? '收起差异' : '查看差异'}</button>
+      </div>
       {#if changesExpanded}
         <div class="activity-review-list">
           {#each changedFiles as file (file.path)}
@@ -115,6 +162,18 @@ function toolStatus(status: ActivityTool['status']) {
       {/if}
     </section>
   {/if}
+  {#if commandRuns.length}
+    <section class="execution-command-summary" aria-label="已运行命令结果">
+      <div class="execution-command-summary-heading"><strong>命令记录</strong><span>{commandRuns.length} 条</span></div>
+      {#each commandRuns as item (`${item.tool.invocationId}:command`)}
+        <div class="execution-command-row">
+          <code title={item.command.text}>{item.command.text}</code>
+          <span class={`execution-command-state execution-command-${commandOutcome(item)}`}>{commandOutcomeLabel(item)}</span>
+          {#if item.command.exitCode !== undefined && item.command.exitCode !== null}<small>退出码 {item.command.exitCode}</small>{/if}
+        </div>
+      {/each}
+    </section>
+  {/if}
   {#if run.expanded && run.tools.length}
     <ol class="activity-list" aria-label="本轮执行详情">
       {#each run.tools as activity (activity.invocationId || activity.id)}
@@ -127,7 +186,7 @@ function toolStatus(status: ActivityTool['status']) {
               <span class="activity-result">{toolStatus(activity.status)}</span>
             </summary>
             <div class="activity-tool-extra">
-              {#if activity.arguments}<section><span>调用参数</span><pre>{formatArguments(activity.arguments)}</pre></section>{/if}
+              {#if activity.arguments && showArguments(activity)}<section><span>调用参数</span><pre>{formatArguments(activity.arguments)}</pre></section>{/if}
               {#if activity.details?.command}
                 <section><span>命令</span><pre>{activity.details.command.text}</pre></section>
                 {#if activity.details.command.output}<section><span>命令输出</span><pre>{activity.details.command.output}</pre></section>{/if}

@@ -351,6 +351,9 @@ test('assistant Markdown renders GFM structures and escapes untrusted HTML', asy
 
 test('execution activity blends into the conversation and expands full tool details', async ({ page }) => {
   await page.goto('/?preview=running');
+  const execution = page.locator('.execution-unit[data-execution-id="exec-preview-running"]');
+  await expect(execution).toContainText('本次执行');
+  await expect(execution).toContainText('我会先检查消息的乐观更新和会话刷新流程。');
   await expect(page.getByRole('status')).toHaveText('模型正在分析请求');
   await expect(page.getByText('我会先检查消息的乐观更新和会话刷新流程。')).toBeVisible();
   await expect(page.locator('.activity-current')).toContainText('internal/desktop/service.go');
@@ -363,6 +366,33 @@ test('execution activity blends into the conversation and expands full tool deta
   await page.locator('.activity-tool-details summary').click();
   await expect(page.locator('.activity-tool-extra')).toContainText('internal/desktop/service.go');
   await expect(page.locator('.activity-tool-extra')).toContainText('func service()');
+});
+
+test('execution unit summarizes changed files and command outcomes at completion', async ({ page }) => {
+  await page.goto('/?preview=execution-summary');
+  const execution = page.locator('.execution-unit[data-execution-id="exec-preview-summary"]');
+
+  await expect(execution).toContainText('实现 Add 并运行测试。');
+  await expect(execution.locator('.execution-unit-status')).toHaveText('已完成');
+  await expect(execution.locator('.activity-review')).toContainText('calc.go');
+  await expect(execution.locator('.execution-command-summary')).toContainText('go test ./...');
+  await expect(execution.locator('.execution-command-summary')).toContainText('已完成');
+  await expect(execution.locator('.execution-command-summary')).toContainText('退出码 0');
+  await expect(execution.locator('.execution-command-row')).toHaveCount(1);
+  await expect(execution.locator('.activity-current')).not.toContainText('command_id');
+  await expect(execution).toContainText('已实现 Add');
+});
+
+test('waiting questions and Plan review stay inside their execution timeline', async ({ page }) => {
+  await page.goto('/?preview=question');
+  let execution = page.locator('.execution-unit').last();
+  await expect(execution.locator('.execution-unit-status')).toHaveText('待处理');
+  await expect(execution.locator('.question-card')).toContainText('任务失败或取消后，Tab 标题怎么显示？');
+
+  await page.goto('/?preview=plan');
+  execution = page.locator('.execution-unit').last();
+  await expect(execution.locator('.execution-unit-status')).toHaveText('待处理');
+  await expect(execution.locator('.plan-review')).toContainText('要开始实施这个方案吗？');
 });
 
 test('interrupted activity stays in the transcript and accepts a follow-up message', async ({ page }) => {

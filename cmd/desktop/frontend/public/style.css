@@ -221,6 +221,20 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 
 .conversation-scroll { min-height: 0; flex: 1; overflow: auto; scroll-behavior: smooth; }
 .conversation-content { width: min(1280px, calc(100% - 60px)); margin: 0 auto; padding: 42px 0 36px; }
+.execution-unit { min-width: 0; margin: 17px 0 28px; border-left: 2px solid var(--line); border-radius: 0 9px 9px 0; padding: 1px 15px 8px; }
+.execution-unit-active { border-left-color: var(--blue); background: color-mix(in srgb, var(--surface-soft) 35%, transparent); }
+.execution-unit-heading { min-height: 25px; display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.execution-unit-title { color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .25px; }
+.execution-unit-status { max-width: min(620px, 70%); overflow: hidden; border-radius: 10px; padding: 3px 8px; color: var(--muted-strong); background: var(--surface-soft); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.execution-state-running, .execution-state-submitting { color: var(--blue); background: var(--blue-soft); }
+.execution-state-waiting { color: var(--warning); background: var(--warning-soft); }
+.execution-state-queued { color: var(--muted-strong); background: var(--surface-soft); }
+.execution-state-completed { color: var(--green); background: var(--green-soft); }
+.execution-state-failed { color: var(--red); background: var(--red-soft); }
+.execution-state-interrupted { color: var(--muted); background: var(--surface-soft); }
+.execution-unit .message-row { margin-block: 13px; }
+.execution-unit .request-card, .execution-unit .plan-review, .execution-unit .mcp-interaction-card { margin-top: 13px; margin-bottom: 8px; }
+.execution-stream-row { border-left: 2px solid var(--blue-line); padding-left: 9px; }
 .conversation-intro { margin: 12px 0 40px; color: var(--muted-strong); line-height: 1.6; }
 .intro-mark, .message-avatar { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 9px; background: linear-gradient(145deg, #76a4f5, #3979e8); font-size: 16px; box-shadow: 0 2px 6px #3979e822; }
 .conversation-intro p { margin: 0; }
@@ -485,6 +499,9 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
   .top-actions { gap: 5px; }
   .theme-switch button { padding-inline: 6px; }
   .conversation-content { width: calc(100% - 28px); padding-top: 25px; }
+  .execution-unit { margin: 12px 0 22px; padding: 1px 9px 8px; }
+  .execution-unit-status { max-width: 70%; }
+  .execution-command-summary { margin-left: 20px; }
   .composer-wrap { width: calc(100% - 20px); padding-bottom: 9px; }
   .composer-toolbar { align-items: flex-start; flex-wrap: wrap; gap: 6px; }
   .composer-left { gap: 3px; }
@@ -654,6 +671,7 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .activity-review { margin: 8px 0 0 22px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--surface-soft) 65%, transparent); }
 .activity-review-heading { min-height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 9px; color: var(--muted); font-size: 9px; }
 .activity-review-heading strong { color: var(--muted-strong); font-size: 10px; }
+.activity-review-paths { min-width: 0; max-width: 58%; overflow: hidden; color: var(--muted-strong); text-overflow: ellipsis; white-space: nowrap; font: 8px Consolas, 'Cascadia Code', monospace; }
 .activity-review-toggle { margin-left: auto; border: 0; padding: 4px 6px; color: var(--blue); background: transparent; font-size: 9px; }
 .activity-review-list { display: flex; flex-direction: column; gap: 5px; padding: 0 7px 7px; }
 .activity-review-file { min-width: 0; border-top: 1px solid var(--line); padding-top: 5px; }
@@ -666,6 +684,17 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .activity-review-source { margin: 5px 0 3px; color: var(--muted); font-size: 8px; }
 .activity-review-file pre { max-height: 260px; margin: 0; overflow: auto; border-radius: 5px; padding: 8px; color: var(--muted-strong); background: var(--surface); font: 9px/1.5 Consolas, 'Cascadia Code', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-review-unavailable { padding: 6px 8px; color: var(--muted); font-size: 9px; }
+.execution-command-summary { margin: 8px 0 0 22px; border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; background: color-mix(in srgb, var(--surface-soft) 55%, transparent); }
+.execution-command-summary-heading { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+.execution-command-summary-heading strong { color: var(--muted-strong); font-size: 10px; }
+.execution-command-row { min-width: 0; min-height: 23px; display: flex; align-items: center; gap: 8px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.execution-command-row code { min-width: 0; flex: 1; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font: 9px Consolas, 'Cascadia Code', monospace; }
+.execution-command-row small { flex: 0 0 auto; color: var(--muted); font-size: 8px; }
+.execution-command-state { flex: 0 0 auto; color: var(--muted); font-size: 8px; }
+.execution-command-completed { color: var(--green); }
+.execution-command-failed { color: var(--red); }
+.execution-command-running { color: var(--blue); }
+.execution-command-cancelled { color: var(--muted); }
 .message-delivery-cancelled { margin-top: 7px; color: var(--muted); font-size: 10px; }
 .message-cancel-button { border: 0; border-radius: 5px; padding: 3px 6px; color: var(--red); background: transparent; font-size: 9px; }
 .message-cancel-button:hover { background: color-mix(in srgb, var(--red) 8%, transparent); }

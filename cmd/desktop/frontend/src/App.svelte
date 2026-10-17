@@ -29,6 +29,11 @@
     startedAt: string; finishedAt?: string | null; tools: Activity[]; expanded: boolean; elapsedSeconds?: number;
     queuePosition?: number; messageText?: string; messageImages?: string[];
   };
+  type ExecutionTimelineBlock = {
+    key: string; executionId: string; userMessageIndex: number; userMessage: LocalMessage | null;
+    assistantMessages: LocalMessage[]; activityRuns: ActivityRun[]; pendingRequests: PendingRequestView[];
+    planReview?: { executionID: string; text: string }; streamText: string;
+  };
   type StoredActivityRun = NonNullable<WorkspaceState['executionHistory']>[number];
   type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
   type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
@@ -191,9 +196,6 @@
   const cancelledPreviewExecutions = new Set<string>();
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
-  const approvals = $derived(pending.filter((item) => item.kind === 'approval'));
-  const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery' || item.kind === 'execution_blocker'));
-  const userInteractions = $derived(pending.filter((item) => item.kind === 'user_interaction'));
   const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
   const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
@@ -233,20 +235,95 @@
   });
   const canApplyWorktreeChanges = $derived(!worktreeApplyBlockedReason && (!previewMode || previewVariant.startsWith('changes')));
   const workspaceDiffLines = $derived(workspaceDiff?.content ? workspaceDiff.content.replace(/\r\n/g, '\n').split('\n') : []);
-  const transcriptRows = $derived.by(() => {
+  const executionTimeline = $derived.by(() => {
+    const leadingMessages: LocalMessage[] = [];
+    const blocks: ExecutionTimelineBlock[] = [];
+    let current: ExecutionTimelineBlock | undefined;
     let userMessageIndex = -1;
-    return messages.map((message) => {
-      if (message.role === 'user') userMessageIndex++;
-      const index = message.role === 'user' ? userMessageIndex : -1;
-      return {
-        message,
-        userMessageIndex: index,
-        activityRuns: index < 0 ? [] : activityHistory.filter((run) => run.userMessageIndex === index),
-      };
+    const createBlock = (index: number, userMessage: LocalMessage | null, id = ''): ExecutionTimelineBlock => ({
+      key: id || userMessage?.id || `execution-${index}-${blocks.length}`,
+      executionId: id || userMessage?.executionID || '', userMessageIndex: index, userMessage,
+      assistantMessages: [], activityRuns: [], pendingRequests: [], streamText: '',
     });
+    for (const message of messages) {
+      if (message.role === 'user') {
+        userMessageIndex++;
+        current = createBlock(userMessageIndex, message);
+        blocks.push(current);
+      } else if (current) {
+        current.assistantMessages.push(message);
+      } else {
+        leadingMessages.push(message);
+      }
+    }
+    const findBlock = (id: string) => id ? blocks.find((block) =>
+      block.executionId === id || block.userMessage?.executionID === id || block.activityRuns.some((run) => run.executionId === id),
+    ) : undefined;
+    for (const run of activityHistory) {
+      let block = run.userMessageIndex >= 0 ? blocks[run.userMessageIndex] : undefined;
+      block ??= findBlock(run.executionId);
+      if (!block) {
+        block = createBlock(run.userMessageIndex, null, run.executionId);
+        blocks.push(block);
+      }
+      block.activityRuns.push(run);
+      if (!block.executionId) block.executionId = run.executionId;
+    }
+    const activeBlock = findBlock(executionID) ?? blocks.at(-1);
+    for (const request of pending) {
+      const block = findBlock(request.executionId) ?? activeBlock ?? (blocks.length === 1 ? blocks[0] : undefined);
+      if (block) block.pendingRequests.push(request);
+      else {
+        const unattached = createBlock(-1, null, request.executionId);
+        unattached.pendingRequests.push(request);
+        blocks.push(unattached);
+      }
+    }
+    if (planReview) {
+      const block = findBlock(planReview.executionID) ?? activeBlock ?? blocks.at(-1);
+      if (block) block.planReview = planReview;
+      else {
+        const unattached = createBlock(-1, null, planReview.executionID);
+        unattached.planReview = planReview;
+        blocks.push(unattached);
+      }
+    }
+    if (streamText && activeBlock) activeBlock.streamText = streamText;
+    return { leadingMessages, blocks };
   });
-  const userMessageCount = $derived(messages.filter((message) => message.role === 'user').length);
-  const orphanActivityRuns = $derived(activityHistory.filter((run) => run.userMessageIndex < 0 || run.userMessageIndex >= userMessageCount));
+
+  function executionBlockState(block: ExecutionTimelineBlock) {
+    if (block.pendingRequests.length || block.planReview) return 'waiting';
+    if (block.userMessage?.deliveryState === 'failed') return 'failed';
+    if (block.userMessage?.deliveryState === 'cancelled') return 'interrupted';
+    if (block.userMessage?.deliveryState === 'queued') return 'queued';
+    if (block.userMessage?.deliveryState === 'sending') return 'submitting';
+    if (block.executionId === executionID && running) return 'running';
+    const run = block.activityRuns.at(-1);
+    if (run?.status === 'queued') return 'queued';
+    if (run?.status === 'running') return 'running';
+    if (run?.status === 'paused') return 'waiting';
+    if (run?.status === 'failed') return 'failed';
+    if (run?.status === 'interrupted' || run?.status === 'cancelled' || run?.status === 'discarded') return 'interrupted';
+    if (run?.status === 'completed' || block.assistantMessages.length) return 'completed';
+    return 'ready';
+  }
+
+  function executionBlockLabel(block: ExecutionTimelineBlock) {
+    const state = executionBlockState(block);
+    if (state === 'waiting') return '待处理';
+    if (state === 'queued') return '待执行';
+    if (state === 'submitting') return '提交中';
+    if (state === 'running') return '执行中';
+    if (state === 'completed') return '已完成';
+    if (state === 'failed') return '失败';
+    if (state === 'interrupted') return '已中断';
+    return '准备执行';
+  }
+
+  function executionBlockStateClass(block: ExecutionTimelineBlock) {
+    return `execution-state-${executionBlockState(block)}`;
+  }
 
   function applyTheme(value: string) {
     theme = value;
@@ -440,7 +517,7 @@
       invocationId: activity.invocationId,
       agentId: activity.agentId,
       label: toolLabel(activity.name),
-      detail: compactActivityDetail(activity.arguments),
+      detail: activityDetail(activity.name, activity.arguments),
       arguments: activity.arguments,
       details: activity.details ? {
         output: activity.details.output,
@@ -589,6 +666,11 @@
   function compactActivityDetail(value: unknown) {
     const detail = compactArguments(value).replace(/\s+/g, ' ').trim();
     return detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
+  }
+
+  function activityDetail(name: string, value: unknown) {
+    if (name === 'command_status' || name === 'command_stop') return '';
+    return compactActivityDetail(value);
   }
 
   function activitySummary(activity: Activity) {
@@ -1079,7 +1161,7 @@
   }
 
   function previewDesktopProcessList(): DesktopProcessList {
-    const now = new Date().toISOString();
+    const now = '2026-10-18T01:52:00+08:00';
     return {
       processes: desktopProcesses.length ? desktopProcesses : [
         { id: 'process-active', sessionId: 'session-main', sessionTitle: '跨会话进程中心', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-active', command: 'go test ./internal/desktop -run TestListDesktopProcesses', status: 'running', startedAt: now },
@@ -1468,6 +1550,35 @@
           tools: [historyTool], expanded: false,
         }];
       }
+      if (variant === 'execution-summary') {
+        const writeTool: Activity = {
+          id: 'summary-write', invocationId: 'summary-write', label: '编辑文件', detail: 'calc.go',
+          arguments: { path: 'calc.go' },
+          details: { changes: [{ path: 'calc.go', added: 1, removed: 1, lines: [{ kind: 'remove', oldLine: 1, text: 'return 0' }, { kind: 'add', newLine: 1, text: 'return a + b' }] }] },
+          status: 'done', durationMs: 84,
+        };
+        const testTool: Activity = {
+          id: 'summary-test', invocationId: 'summary-test', label: '运行命令', detail: 'go test ./...',
+          arguments: { command: 'go test ./...' },
+          details: { command: { text: 'go test ./...', status: 'running' } },
+          status: 'done', durationMs: 1480,
+        };
+        const commandStatusTool: Activity = {
+          id: 'summary-test-status', invocationId: 'summary-test-status', label: '检查命令状态',
+          detail: '', arguments: { command_id: 'summary-command-id', cursor: 240, wait_ms: 5000 },
+          details: { command: { text: 'go test ./...', output: 'ok  example.test/calc  0.012s', status: 'completed', exitCode: 0 } },
+          status: 'done', durationMs: 200,
+        };
+        messages = [
+          { id: 'summary-user', role: 'user', text: '实现 Add 并运行测试。', executionID: 'exec-preview-summary', deliveryState: 'submitted' },
+          { id: 'summary-assistant', role: 'assistant', text: '已实现 Add，`go test ./...` 通过。', executionID: 'exec-preview-summary' },
+        ];
+        activityHistory = [{
+          key: 'exec-preview-summary', executionId: 'exec-preview-summary', userMessageIndex: 0,
+          status: 'completed', statusLabel: '执行完成', startedAt: '2026-10-17T10:00:00Z', finishedAt: '2026-10-17T10:00:02Z',
+          tools: [writeTool, testTool, commandStatusTool], expanded: false, elapsedSeconds: 2,
+        }];
+      }
       if (variant === 'question') {
         pending = [{
           kind: 'user_question', id: 'question-preview', executionId: 'exec-preview', runId: 'run-preview',
@@ -1595,7 +1706,7 @@
     const id = tool?.id || `${event.taskId}-${activities.length}`;
     const rawName = tool?.name || 'tool';
     const label = toolLabel(rawName);
-    const detail = tool?.arguments ? compactActivityDetail(tool.arguments) : '';
+    const detail = tool?.arguments ? activityDetail(rawName, tool.arguments) : '';
     const isStarted = tool?.started ?? event.kind === 'tool_started';
     const status: Activity['status'] = isStarted ? 'running' : tool?.failed ? 'failed' : tool?.canceled ? 'cancelled' : 'done';
     addActivity({
@@ -3308,100 +3419,119 @@
             {#if messages.length === 0}
               <div class="conversation-intro"><p>可以在 <b>{workspace.split(/[\\/]/).at(-1)}</b> 中阅读、修改和运行代码。</p></div>
             {/if}
-            {#each transcriptRows as row (row.message.id)}
-              <article data-message-id={row.message.id} class:search-match={sessionSearchHighlightSession === session?.id && sessionSearchHighlightMessage === row.message.id} class:from-user={row.message.role === 'user'} class="message-row">
+            {#each executionTimeline.leadingMessages as message (message.id)}
+              <article data-message-id={message.id} class:search-match={sessionSearchHighlightSession === session?.id && sessionSearchHighlightMessage === message.id} class="message-row">
                 <div class="message-body">
-                  <div class="message-text">
-                    {#if row.message.role === 'assistant'}<Markdown source={row.message.text} />{:else}<div class="plain-text">{row.message.text}</div>{/if}
-                  </div>
-                  {#if row.message.images?.length}<div class="message-images">{#each row.message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
-                  {#if row.message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
-                  {#if row.message.deliveryState === 'failed'}
-                    <div class="message-delivery-error"><span>{row.message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(row.message)}>重试</button></div>
-                  {:else if row.message.deliveryState === 'queued'}
-                    <div class="message-delivery-pending">排队中{row.message.queuePosition !== undefined ? ` · 第 ${row.message.queuePosition} 位` : ''}</div>
-                  {:else if row.message.deliveryState === 'sending'}
-                    <div class="message-delivery-pending">正在发送…</div>
-                  {:else if row.message.deliveryState === 'cancelled'}
-                    <div class="message-delivery-cancelled">排队消息已撤回</div>
-                  {/if}
-                  {#if row.message.role === 'user'}
-                    <div class="message-actions">
-                      {#if row.message.deliveryState === 'queued'}<button class="message-cancel-button" aria-label="撤回排队消息" disabled={cancellingQueuedExecution === row.message.executionID} onclick={() => void cancelQueuedMessage(row.message)}>{cancellingQueuedExecution === row.message.executionID ? '正在撤回…' : '撤回'}</button>{/if}
-                      {#if canEditMessages && (row.message.deliveryState === 'queued' || row.message.deliveryState === 'submitted' || row.message.deliveryState === undefined)}<button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(row.message, row.userMessageIndex)}>编辑</button>{/if}
-                    </div>
-                  {:else if row.message.role === 'assistant' && row.message.text}
-                    <div class="message-actions assistant-message-actions">
-                      <button class="message-edit-button" aria-label="复制回复" title={copiedMessageID === row.message.id ? '已复制' : '复制回复'} onclick={() => void copyAssistantMessage(row.message)}>{copiedMessageID === row.message.id ? '✓' : '⧉'}</button>
-                      {#if canRegenerateAssistant(row.message)}<button class="message-edit-button" aria-label="重新生成回复" title="重新生成回复" onclick={() => void regenerateAssistantMessage(row.message)}>↻</button>{/if}
-                    </div>
-                  {/if}
+                  <div class="message-text"><Markdown source={message.text} /></div>
+                  {#if message.images?.length}<div class="message-images">{#each message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
                 </div>
               </article>
-              {#each row.activityRuns as run (run.key)}
-                <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} onOpenFile={openWorkspaceFile} />
-              {/each}
-            {/each}
-            {#each orphanActivityRuns as run (run.key)}
-              <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} onOpenFile={openWorkspaceFile} />
             {/each}
 
-            {#if streamText}
-              <article class="message-row"><div class="message-body"><div class="message-text"><Markdown source={streamText} live /><span class="stream-caret"></span></div></div></article>
-            {/if}
-
-            {#if approvals.length}
-              {#each approvals as approval (approval.id)}
-                <section class="request-card approval-card">
-                  <div class="request-heading"><span class="request-icon">!</span><div><strong>需要授权</strong><p>Agent 想要运行工具 <code>{approval.tool}</code></p></div></div>
-                  {#if approval.arguments}<pre>{formatArguments(approval.arguments)}</pre>{/if}
-                  <div class="request-actions"><button class="quiet-button" onclick={() => void resolveApproval(approval, false)}>拒绝</button><button class="primary-button" onclick={() => void resolveApproval(approval, true)}>允许本次操作</button></div>
-                </section>
-              {/each}
-            {/if}
-
-          {#if activeQuestion}
-              <section class="request-card question-card">
-                <div class="question-kicker">Agent 需要你的选择</div>
-                {#each activeQuestion.questions ?? [] as question (question.id)}
-                  <div class="question-item">
-                    <h3>{question.question}</h3>
-                    {#if question.options?.length}
-                      <div class="question-options">
-                        {#each question.options as option (option.label)}
-                          <label class:selected-option={answerValues[question.id] === option.label} class="question-option"><input type="radio" name={question.id} value={option.label} bind:group={answerValues[question.id]} /><span class="radio-mark"></span><span><b>{option.label}</b>{#if option.description}<small>{option.description}</small>{/if}</span></label>
-                        {/each}
+            {#each executionTimeline.blocks as block (block.key)}
+              <section data-execution-id={block.executionId || undefined} class:execution-unit-active={executionBlockState(block) === 'running' || executionBlockState(block) === 'waiting'} class="execution-unit" aria-label="一次任务执行">
+                <header class="execution-unit-heading">
+                  <span class="execution-unit-title">本次执行</span>
+                  <span class={`execution-unit-status ${executionBlockStateClass(block)}`}>{executionBlockLabel(block)}</span>
+                </header>
+                {#if block.userMessage}
+                  {@const message = block.userMessage}
+                  <article data-message-id={message.id} class:search-match={sessionSearchHighlightSession === session?.id && sessionSearchHighlightMessage === message.id} class="message-row from-user">
+                    <div class="message-body">
+                      <div class="message-text"><div class="plain-text">{message.text}</div></div>
+                      {#if message.images?.length}<div class="message-images">{#each message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
+                      {#if message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
+                      {#if message.deliveryState === 'failed'}
+                        <div class="message-delivery-error"><span>{message.deliveryError || '消息未能发送'}</span><button class="small-button" onclick={() => void retryMessage(message)}>重试</button></div>
+                      {:else if message.deliveryState === 'queued'}
+                        <div class="message-delivery-pending">排队中{message.queuePosition !== undefined ? ` · 第 ${message.queuePosition} 位` : ''}</div>
+                      {:else if message.deliveryState === 'sending'}
+                        <div class="message-delivery-pending">正在发送…</div>
+                      {:else if message.deliveryState === 'cancelled'}
+                        <div class="message-delivery-cancelled">排队消息已撤回</div>
+                      {/if}
+                      <div class="message-actions">
+                        {#if message.deliveryState === 'queued'}<button class="message-cancel-button" aria-label="撤回排队消息" disabled={cancellingQueuedExecution === message.executionID} onclick={() => void cancelQueuedMessage(message)}>{cancellingQueuedExecution === message.executionID ? '正在撤回…' : '撤回'}</button>{/if}
+                        {#if canEditMessages && (message.deliveryState === 'queued' || message.deliveryState === 'submitted' || message.deliveryState === undefined)}<button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(message, block.userMessageIndex)}>编辑</button>{/if}
                       </div>
-                    {/if}
-                    <input class="notes-input" placeholder={question.options?.length ? '补充说明（可选）' : '输入你的回答'} bind:value={noteValues[question.id]} />
-                  </div>
+                    </div>
+                  </article>
+                {/if}
+
+                {#each block.activityRuns as run (run.key)}
+                  <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} onOpenFile={openWorkspaceFile} />
                 {/each}
-                <div class="request-actions"><span class="request-hint">你的回答会继续当前任务</span><button class="primary-button" onclick={() => void answerQuestion(activeQuestion!)}>提交回答</button></div>
+
+                {#if block.streamText}
+                  <article class="message-row execution-stream-row"><div class="message-body"><div class="message-text"><Markdown source={block.streamText} live /><span class="stream-caret"></span></div></div></article>
+                {/if}
+
+                {#each block.assistantMessages as message (message.id)}
+                  <article data-message-id={message.id} class:search-match={sessionSearchHighlightSession === session?.id && sessionSearchHighlightMessage === message.id} class="message-row">
+                    <div class="message-body">
+                      <div class="message-text"><Markdown source={message.text} /></div>
+                      {#if message.images?.length}<div class="message-images">{#each message.images as image}<img src={image} alt="消息附件" />{/each}</div>{/if}
+                      {#if message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
+                      {#if message.text}
+                        <div class="message-actions assistant-message-actions">
+                          <button class="message-edit-button" aria-label="复制回复" title={copiedMessageID === message.id ? '已复制' : '复制回复'} onclick={() => void copyAssistantMessage(message)}>{copiedMessageID === message.id ? '✓' : '⧉'}</button>
+                          {#if canRegenerateAssistant(message)}<button class="message-edit-button" aria-label="重新生成回复" title="重新生成回复" onclick={() => void regenerateAssistantMessage(message)}>↻</button>{/if}
+                        </div>
+                      {/if}
+                    </div>
+                  </article>
+                {/each}
+
+                {#each block.pendingRequests.filter((request) => request.kind === 'approval') as approval (approval.id)}
+                  <section class="request-card approval-card execution-action-card">
+                    <div class="request-heading"><span class="request-icon">!</span><div><strong>需要授权</strong><p>Agent 想要运行工具 <code>{approval.tool}</code></p></div></div>
+                    {#if approval.arguments}<pre>{formatArguments(approval.arguments)}</pre>{/if}
+                    <div class="request-actions"><button class="quiet-button" onclick={() => void resolveApproval(approval, false)}>拒绝</button><button class="primary-button" onclick={() => void resolveApproval(approval, true)}>允许本次操作</button></div>
+                  </section>
+                {/each}
+
+                {#each block.pendingRequests.filter((request) => request.kind === 'user_question') as questionRequest (questionRequest.id)}
+                  <section class="request-card question-card execution-action-card">
+                    <div class="question-kicker">Agent 需要你的选择</div>
+                    {#each questionRequest.questions ?? [] as question (question.id)}
+                      <div class="question-item">
+                        <h3>{question.question}</h3>
+                        {#if question.options?.length}
+                          <div class="question-options">
+                            {#each question.options as option (option.label)}
+                              <label class:selected-option={answerValues[question.id] === option.label} class="question-option"><input type="radio" name={question.id} value={option.label} bind:group={answerValues[question.id]} /><span class="radio-mark"></span><span><b>{option.label}</b>{#if option.description}<small>{option.description}</small>{/if}</span></label>
+                            {/each}
+                          </div>
+                        {/if}
+                        <input class="notes-input" placeholder={question.options?.length ? '补充说明（可选）' : '输入你的回答'} bind:value={noteValues[question.id]} />
+                      </div>
+                    {/each}
+                    <div class="request-actions"><span class="request-hint">你的回答会继续当前任务</span><button class="primary-button" onclick={() => void answerQuestion(questionRequest)}>提交回答</button></div>
+                  </section>
+                {/each}
+
+                {#each block.pendingRequests.filter((request) => request.kind === 'tool_recovery' || request.kind === 'model_recovery' || request.kind === 'execution_blocker') as request (request.id)}
+                  <section class="request-card recovery-card execution-action-card"><strong>{request.kind === 'model_recovery' ? '模型请求未完成' : request.kind === 'execution_blocker' ? '执行受阻' : '工具执行暂停'}</strong><p>{request.reason || request.tool || '此操作需要恢复。'}</p><div class="request-actions"><button class="quiet-button" onclick={() => void dismissRecovery(request)}>{request.kind === 'tool_recovery' ? '跳过失败步骤' : '丢弃本轮'}</button><button class="primary-button" onclick={() => void recover(request)}>{request.kind === 'execution_blocker' ? '恢复执行' : '重试'}</button></div></section>
+                {/each}
+
+                {#each block.pendingRequests.filter((request) => request.kind === 'user_interaction') as request (request.id)}
+                  <MCPInteractionCard {request} onResolve={(response) => resolveUserInteraction(request, response)} onOpenURL={(target) => openMCPInteractionURL(request, target)} />
+                {/each}
+
+                {#if block.planReview}
+                  <section class="plan-review execution-action-card">
+                    <div class="plan-title"><span>方案已完成</span><span class="plan-badge">PLAN</span></div>
+                    <div class="plan-body">{#each block.planReview.text.split('\n') as line}<p class:plan-heading={line.startsWith('#')} class:plan-list={line.trimStart().startsWith('- ') || line.trimStart().startsWith('* ')}>{line.replace(/^#{1,3}\s*/, '').replace(/^[-*]\s*/, '• ') || '\u00a0'}</p>{/each}</div>
+                    <div class="plan-question"><strong>要开始实施这个方案吗？</strong><span>实施时会切换到工作区权限。</span></div>
+                    <div class="plan-options">
+                      <button onclick={() => void implementPlan('same_context')}><span class="plan-option-number">1</span><span><b>是，实施方案</b><small>在当前会话开始编码</small></span><span class="plan-arrow">↵</span></button>
+                      <button onclick={() => void implementPlan('new_context')}><span class="plan-option-number">2</span><span><b>清空上下文并实施</b><small>在新会话中开始，保留本方案</small></span><span class="plan-arrow">↵</span></button>
+                      <button onclick={stayInPlan}><span class="plan-option-number">3</span><span><b>继续规划</b><small>留在只读 Plan 模式</small></span><span class="plan-arrow">↵</span></button>
+                    </div>
+                  </section>
+                {/if}
               </section>
-            {/if}
-
-            {#if recoveries.length}
-              {#each recoveries as request (request.id)}
-                <section class="request-card recovery-card"><strong>{request.kind === 'model_recovery' ? '模型请求未完成' : request.kind === 'execution_blocker' ? '执行受阻' : '工具执行暂停'}</strong><p>{request.reason || request.tool || '此操作需要恢复。'}</p><div class="request-actions"><button class="quiet-button" onclick={() => void dismissRecovery(request)}>{request.kind === 'tool_recovery' ? '跳过失败步骤' : '丢弃本轮'}</button><button class="primary-button" onclick={() => void recover(request)}>{request.kind === 'execution_blocker' ? '恢复执行' : '重试'}</button></div></section>
-              {/each}
-            {/if}
-
-            {#each userInteractions as request (request.id)}
-              <MCPInteractionCard {request} onResolve={(response) => resolveUserInteraction(request, response)} onOpenURL={(target) => openMCPInteractionURL(request, target)} />
             {/each}
-
-            {#if planReview}
-              <section class="plan-review">
-                <div class="plan-title"><span>方案已完成</span><span class="plan-badge">PLAN</span></div>
-                <div class="plan-body">{#each planReview.text.split('\n') as line}<p class:plan-heading={line.startsWith('#')} class:plan-list={line.trimStart().startsWith('- ') || line.trimStart().startsWith('* ')}>{line.replace(/^#{1,3}\s*/, '').replace(/^[-*]\s*/, '• ') || '\u00a0'}</p>{/each}</div>
-                <div class="plan-question"><strong>要开始实施这个方案吗？</strong><span>实施时会切换到工作区权限。</span></div>
-                <div class="plan-options">
-                  <button onclick={() => void implementPlan('same_context')}><span class="plan-option-number">1</span><span><b>是，实施方案</b><small>在当前会话开始编码</small></span><span class="plan-arrow">↵</span></button>
-                  <button onclick={() => void implementPlan('new_context')}><span class="plan-option-number">2</span><span><b>清空上下文并实施</b><small>在新会话中开始，保留本方案</small></span><span class="plan-arrow">↵</span></button>
-                  <button onclick={stayInPlan}><span class="plan-option-number">3</span><span><b>继续规划</b><small>留在只读 Plan 模式</small></span><span class="plan-arrow">↵</span></button>
-                </div>
-              </section>
-            {/if}
           </div>
         </div>
 
