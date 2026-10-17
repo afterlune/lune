@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -27,7 +26,7 @@ type gitWorkspace struct {
 }
 
 func inspectGitWorkspace(workspace string) (gitWorkspace, error) {
-	command := exec.CommandContext(context.Background(), "git", "-C", workspace, "rev-parse", "--show-toplevel")
+	command := newGitCommand(context.Background(), "-C", workspace, "rev-parse", "--show-toplevel")
 	output, err := command.Output()
 	if err != nil {
 		return gitWorkspace{}, errors.New("Worktree 模式需要可用的 Git 仓库")
@@ -71,7 +70,7 @@ func createGitWorktree(workspace, destination string) (gitWorkspace, string, err
 	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 		return gitWorkspace{}, "", fmt.Errorf("创建 Worktree 父目录: %w", err)
 	}
-	command := exec.CommandContext(context.Background(), "git", "-C", info.Root, "worktree", "add", "--detach", destination, "HEAD")
+	command := newGitCommand(context.Background(), "-C", info.Root, "worktree", "add", "--detach", destination, "HEAD")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
@@ -101,7 +100,7 @@ func createGitWorktree(workspace, destination string) (gitWorkspace, string, err
 }
 
 func removeGitWorktree(repository, destination string) error {
-	command := exec.CommandContext(context.Background(), "git", "-C", repository, "worktree", "remove", destination)
+	command := newGitCommand(context.Background(), "-C", repository, "worktree", "remove", destination)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))

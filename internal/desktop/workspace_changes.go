@@ -453,7 +453,7 @@ func formatAddedFileDiff(path string, data []byte, mode os.FileMode) string {
 func runGitOutput(repository string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "git", args...)
+	command := newGitCommand(ctx, args...)
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "PAGER=cat")
 	output, err := command.Output()
@@ -466,7 +466,7 @@ func runGitOutput(repository string, args ...string) ([]byte, error) {
 func runGitOutputLimited(repository string, limit int, args ...string) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "git", args...)
+	command := newGitCommand(ctx, args...)
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "PAGER=cat")
 	stdout, err := command.StdoutPipe()

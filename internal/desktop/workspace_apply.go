@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -283,7 +282,7 @@ func canonicalExistingDirectory(path string) (string, error) {
 func runGitOutputWithEnv(repository string, env []string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "git", args...)
+	command := newGitCommand(ctx, args...)
 	command.Dir = repository
 	command.Env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "PAGER=cat")
 	output, err := command.CombinedOutput()
@@ -296,7 +295,7 @@ func runGitOutputWithEnv(repository string, env []string, args ...string) ([]byt
 func runGitOutputLimitedWithEnv(repository string, limit int, env []string, args ...string) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, "git", args...)
+	command := newGitCommand(ctx, args...)
 	command.Dir = repository
 	command.Env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "PAGER=cat")
 	stdout, err := command.StdoutPipe()
@@ -337,7 +336,7 @@ func readLimitedAndDrain(reader io.Reader, limit int) ([]byte, error) {
 func runGitInput(repository string, input []byte, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, "git", args...)
+	command := newGitCommand(ctx, args...)
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "PAGER=cat")
 	command.Stdin = bytes.NewReader(input)
