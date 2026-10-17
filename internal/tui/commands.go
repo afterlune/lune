@@ -28,7 +28,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/stop", Description: "stop running background process: /stop <id|all>"},
 	{Command: "/logs", Description: "view output logs of a background process: /logs <id>"},
 	{Command: "/sessions", Description: "list or search recent sessions in this workspace"},
-	{Command: "/open", Description: "switch to an existing session by ID or prefix"},
+	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session conversation transcript to a markdown file"},
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
@@ -177,7 +177,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			timeStr := s.UpdatedAt.Format("Jan 02 15:04")
 			lines = append(lines, fmt.Sprintf("%s`%s`  %-24s  %s", marker, shortID, title, timeStr))
 		}
-		lines = append(lines, "\nSwitch with `/open <id>` (supports unique prefix).")
+		lines = append(lines, "\nSwitch with Ctrl+O, or `/open <id>` (supports unique prefix).")
 		m.addSystemEntry(strings.Join(lines, "\n"))
 		return m, nil
 
@@ -187,8 +187,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(parts) < 2 {
-			m.addSystemEntry("Usage: `/open <session-id>` (or unique prefix).")
-			return m, nil
+			return m.openSessionsModal()
 		}
 		targetPrefix := parts[1]
 		ctx := context.Background()
@@ -230,19 +229,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if err := m.bindSessionRuntime(ctx, targetID); err != nil {
-			m.addSystemEntry("Failed to open session: " + err.Error())
-			return m, nil
-		}
-		m.activeQuestion = nil
-		m.activeApproval = nil
-		m.activePlanReview = nil
-		m.activeRecovery = nil
-		m.running = false
-		m.currentStreamText = ""
-		m.updateLayout()
-		m.addSystemEntry("Opened session: " + targetID)
-		return m, m.subscribeRuntimeEvents()
+		return m.switchToSession(targetID)
 
 	case "/rewind":
 		if m.running {
@@ -1456,5 +1443,72 @@ func (m *tuiModel) handleLogsCommand(parts []string) (tea.Model, tea.Cmd) {
 	logBlock := "```\n" + strings.Join(rawLines, "\n") + "\n```"
 	m.addSystemEntry(header + "\n" + logBlock)
 	return m, nil
+}
+
+// openSessionsModal queries workspace sessions and displays the interactive session switcher modal.
+func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
+	if m.client == nil {
+		m.addSystemEntry("Session management unavailable.")
+		return m, nil
+	}
+	sessions, err := m.client.ListSessions(context.Background(), 100, false)
+	if err != nil {
+		m.addSystemEntry("Failed to query sessions: " + err.Error())
+		return m, nil
+	}
+	m.sessionsModalOpen = true
+	m.shortcutsOpen = false
+	m.autocompleteOpen = false
+	m.sessionsItems = sessions
+	m.sessionsFilter = ""
+	m.sessionsFiltered = sessions
+	m.sessionsIndex = 0
+	for i, s := range m.sessionsFiltered {
+		if s.ID == m.sessionID {
+			m.sessionsIndex = i
+			break
+		}
+	}
+	m.updateLayout()
+	return m, nil
+}
+
+// filterSessions updates sessionsFiltered according to the current sessionsFilter.
+func (m *tuiModel) filterSessions() {
+	query := strings.ToLower(strings.TrimSpace(m.sessionsFilter))
+	if query == "" {
+		m.sessionsFiltered = m.sessionsItems
+	} else {
+		var matches []core.Session
+		for _, s := range m.sessionsItems {
+			if strings.Contains(strings.ToLower(s.ID), query) || strings.Contains(strings.ToLower(s.Title), query) {
+				matches = append(matches, s)
+			}
+		}
+		m.sessionsFiltered = matches
+	}
+	if m.sessionsIndex >= len(m.sessionsFiltered) {
+		m.sessionsIndex = max(0, len(m.sessionsFiltered)-1)
+	}
+}
+
+// switchToSession switches to the specified session runtime and refreshes TUI state.
+func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
+	ctx := context.Background()
+	if err := m.bindSessionRuntime(ctx, targetID); err != nil {
+		m.addSystemEntry("Failed to open session: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
+	m.activeQuestion = nil
+	m.activeApproval = nil
+	m.activePlanReview = nil
+	m.activeRecovery = nil
+	m.activeToolRecovery = nil
+	m.running = false
+	m.currentStreamText = ""
+	m.updateLayout()
+	m.addSystemEntry("Opened session: " + targetID)
+	return m, m.subscribeRuntimeEvents()
 }
 

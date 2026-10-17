@@ -545,6 +545,112 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
 
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
+}
+
+// renderSessionsModal renders the interactive floating session switcher modal.
+func renderSessionsModal(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+
+	var lines []string
+
+	total := len(m.sessionsItems)
+	filteredCount := len(m.sessionsFiltered)
+	countInfo := ""
+	if m.sessionsFilter != "" {
+		countInfo = fmt.Sprintf(" (%d/%d)", filteredCount, total)
+	} else if total > 0 {
+		countInfo = fmt.Sprintf(" (%d)", total)
+	}
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).
+		Render("Switch Session") + styleTextMuted().Render(countInfo)
+	lines = append(lines, title)
+
+	filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("Filter: ")
+	var filterVal string
+	if m.sessionsFilter == "" {
+		filterVal = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true).Render("type to filter...")
+	} else {
+		filterVal = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(m.sessionsFilter)
+	}
+	lines = append(lines, filterLabel+filterVal)
+	lines = append(lines, "")
+
+	if filteredCount == 0 {
+		lines = append(lines, "  "+styleTextMuted().Render("No matching sessions found."))
+	} else {
+		maxVisible := 8
+		startIdx := 0
+		if m.sessionsIndex >= maxVisible {
+			startIdx = m.sessionsIndex - maxVisible + 1
+		}
+		endIdx := min(filteredCount, startIdx+maxVisible)
+
+		for i := startIdx; i < endIdx; i++ {
+			s := m.sessionsFiltered[i]
+			marker := "  "
+			if i == m.sessionsIndex {
+				marker = "› "
+			}
+			shortID := s.ID
+			if len(shortID) > 12 {
+				shortID = shortID[:12]
+			}
+			currentBadge := ""
+			if s.ID == m.sessionID {
+				currentBadge = " [active]"
+			}
+			title := s.Title
+			if title == "" {
+				title = "<untitled>"
+			}
+			timeStr := s.UpdatedAt.Format("Jan 02 15:04")
+
+			availWidth := max(20, width-4)
+			idColWidth := 14
+			timeColWidth := 14
+			badgeWidth := len(currentBadge)
+			titleWidth := max(10, availWidth-idColWidth-timeColWidth-badgeWidth-len(marker)-2)
+
+			truncTitle := truncateString(title, titleWidth)
+
+			if i == m.sessionsIndex {
+				raw := fmt.Sprintf("%s%-12s  %-*s  %s%s", marker, shortID, titleWidth, truncTitle, timeStr, currentBadge)
+				pad := max(0, availWidth-lipgloss.Width(raw))
+				lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
+			} else {
+				idStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%-12s", shortID))
+				titleStyled := styleTextPrimary().Render(fmt.Sprintf("%-*s", titleWidth, truncTitle))
+				timeStyled := styleTextMuted().Render(timeStr)
+				badgeStyled := ""
+				if currentBadge != "" {
+					badgeStyled = " " + lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("[active]")
+				}
+				lines = append(lines, fmt.Sprintf("%s%s  %s  %s%s", marker, idStyled, titleStyled, timeStyled, badgeStyled))
+			}
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, styleTextMuted().Render("↑/↓ navigate · enter select · esc close"))
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
 // renderShortcutsPanel renders the keyboard shortcut cheat sheet in a 3-column layout.
 func renderShortcutsPanel(width int) string {
 	title := styleTextPrimary().Bold(true).Render("Keyboard Shortcuts")
@@ -561,10 +667,11 @@ func renderShortcutsPanel(width int) string {
 	col2Title := styleTextPrimary().Bold(true).Underline(true).Render("Session")
 	col2Items := []struct{ Key, Desc string }{
 		{"Enter", "Send message"},
+		{"Ctrl+O", "Switch session"},
 		{"Shift+Tab", "Cycle permissions"},
 		{"/model", "Switch model"},
 		{"/status", "Show status"},
-		{"/sessions", "List & switch"},
+		{"/sessions", "List sessions"},
 	}
 
 	col3Title := styleTextPrimary().Bold(true).Underline(true).Render("Transcript")

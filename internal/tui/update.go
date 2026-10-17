@@ -356,6 +356,73 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// 0.1 Session Switcher Modal handling
+	if m.sessionsModalOpen {
+		switch keyStr {
+		case "esc", "ctrl+o":
+			m.sessionsModalOpen = false
+			m.sessionsFilter = ""
+			m.updateLayout()
+			return m, nil
+		case "up", "ctrl+p":
+			if len(m.sessionsFiltered) > 0 {
+				if m.sessionsIndex > 0 {
+					m.sessionsIndex--
+				} else {
+					m.sessionsIndex = len(m.sessionsFiltered) - 1
+				}
+				m.updateLayout()
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			if len(m.sessionsFiltered) > 0 {
+				if m.sessionsIndex < len(m.sessionsFiltered)-1 {
+					m.sessionsIndex++
+				} else {
+					m.sessionsIndex = 0
+				}
+				m.updateLayout()
+			}
+			return m, nil
+		case "enter":
+			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
+				targetID := m.sessionsFiltered[m.sessionsIndex].ID
+				m.sessionsModalOpen = false
+				m.sessionsFilter = ""
+				if targetID == m.sessionID {
+					m.addSystemEntry("Already in session: " + targetID)
+					m.updateLayout()
+					return m, nil
+				}
+				return m.switchToSession(targetID)
+			}
+			m.sessionsModalOpen = false
+			m.sessionsFilter = ""
+			m.updateLayout()
+			return m, nil
+		case "backspace":
+			if len(m.sessionsFilter) > 0 {
+				runes := []rune(m.sessionsFilter)
+				m.sessionsFilter = string(runes[:len(runes)-1])
+				m.filterSessions()
+				m.updateLayout()
+			}
+			return m, nil
+		default:
+			text := msg.Key().Text
+			if text == "" && msg.Key().Code >= ' ' && msg.Key().Code <= '~' && msg.Key().Mod == 0 {
+				text = string(msg.Key().Code)
+			}
+			if text != "" {
+				m.sessionsFilter += text
+				m.filterSessions()
+				m.updateLayout()
+				return m, nil
+			}
+		}
+		return m, nil
+	}
+
 	// Trigger shortcut modal when typing '?' in an empty composer
 	if keyStr == "?" && m.composer.Value() == "" && !m.running {
 		m.shortcutsOpen = true
@@ -398,6 +465,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.shortcutsOpen {
 			m.shortcutsOpen = false
+			m.updateLayout()
+			return m, nil
+		}
+		if m.sessionsModalOpen {
+			m.sessionsModalOpen = false
+			m.sessionsFilter = ""
 			m.updateLayout()
 			return m, nil
 		}
@@ -495,6 +568,13 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case "ctrl+o":
+		if m.running {
+			m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
+			return m, nil
+		}
+		return m.openSessionsModal()
 	}
 
 	// 2. Navigation in Modal / Autocomplete

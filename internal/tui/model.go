@@ -79,6 +79,11 @@ type tuiModel struct {
 	copyFeedback          string
 	copyFeedbackExpiresAt time.Time
 	shortcutsOpen         bool
+	sessionsModalOpen     bool
+	sessionsItems         []core.Session
+	sessionsFiltered      []core.Session
+	sessionsFilter        string
+	sessionsIndex         int
 
 	// Prompt history navigation
 	promptHistory []string
@@ -219,6 +224,8 @@ func (m *tuiModel) updateLayout() {
 	var modalHeight int
 	if m.shortcutsOpen {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
+	} else if m.sessionsModalOpen {
+		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
 	} else if m.activeRecovery != nil {
 		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
 	} else if m.activeToolRecovery != nil {
@@ -399,9 +406,11 @@ func (m *tuiModel) View() tea.View {
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
 
-	// 3. Modal (Shortcuts / Recovery / Question / Approval / Plan Review / Autocomplete)
+	// 3. Modal (Shortcuts / Sessions / Recovery / Question / Approval / Plan Review / Autocomplete)
 	if m.shortcutsOpen {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
+	} else if m.sessionsModalOpen {
+		sections = append(sections, renderSessionsModal(m, contentWidth))
 	} else if m.activeRecovery != nil {
 		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
 	} else if m.activeToolRecovery != nil {

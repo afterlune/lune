@@ -1514,6 +1514,171 @@ func TestProcessCommands(t *testing.T) {
 	}
 }
 
+func TestSessionsModalInteractions(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	s1, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s1.ID, "Frontend UI feature")
+
+	s2, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s2.ID, "Backend API bugfix")
+
+	s3, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s3.ID, "Database migration")
+
+	rt1, err := client.OpenSessionRuntime(ctx, s1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTUIModel(client, rt1, s1.ID)
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// 1. Guard: Cannot open modal when running
+	m.running = true
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected sessions modal NOT to open while task is running")
+	}
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Cannot switch sessions while a task is running") {
+		t.Fatalf("expected running guard warning, got: %s", lastSys)
+	}
+	m.running = false
+
+	// 2. Open modal via Ctrl+O
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected sessions modal to open on Ctrl+O")
+	}
+	if len(m.sessionsItems) != 3 {
+		t.Fatalf("expected 3 sessions in modal, got %d", len(m.sessionsItems))
+	}
+	if len(m.sessionsFiltered) != 3 {
+		t.Fatalf("expected 3 filtered sessions, got %d", len(m.sessionsFiltered))
+	}
+	// Verify view rendering
+	viewStr := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewStr, "Switch Session") || !strings.Contains(viewStr, "Frontend UI feature") || !strings.Contains(viewStr, "[active]") {
+		t.Fatalf("expected modal view with session details, got:\n%s", viewStr)
+	}
+
+	// 3. Navigation with Down and Up
+	initialIdx := m.sessionsIndex
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.sessionsIndex == initialIdx && len(m.sessionsFiltered) > 1 {
+		t.Fatalf("expected sessionsIndex to change on Down")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.sessionsIndex != initialIdx {
+		t.Fatalf("expected sessionsIndex to return to initialIdx on Up")
+	}
+
+	// 4. Typing to filter
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'b', Text: "b"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
+	m = mod.(*tuiModel)
+	if m.sessionsFilter != "bug" {
+		t.Fatalf("expected filter to be 'bug', got %q", m.sessionsFilter)
+	}
+	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s2.ID {
+		t.Fatalf("expected filtered to contain only s2, got %d items", len(m.sessionsFiltered))
+	}
+
+	// 5. Backspace removes last char
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
+	m = mod.(*tuiModel)
+	if m.sessionsFilter != "bu" {
+		t.Fatalf("expected filter to be 'bu' after backspace, got %q", m.sessionsFilter)
+	}
+
+	// 6. Dismiss with Esc
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected sessions modal to close on Esc")
+	}
+	if m.sessionsFilter != "" {
+		t.Fatalf("expected filter to reset on Esc")
+	}
+
+	// 7. Open with /open command (without arguments)
+	mod, _ = m.handleSlashCommand("/open")
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected /open without args to open modal")
+	}
+
+	// 8. Filter to "data" and press Enter to switch
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Text: "d"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "t"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
+	m = mod.(*tuiModel)
+	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s3.ID {
+		t.Fatalf("expected filtered to match s3, got %d items", len(m.sessionsFiltered))
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected modal to close after Enter")
+	}
+	if m.sessionID != s3.ID {
+		t.Fatalf("expected session to switch to s3 (%s), got %s", s3.ID, m.sessionID)
+	}
+
+	// 9. Pressing Ctrl+O while modal is open toggles it closed
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected modal to open on Ctrl+O")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected modal to toggle closed on second Ctrl+O")
+	}
+
+	// 10. Verify shortcuts panel includes Ctrl+O
+	shortcutsStr := renderShortcutsPanel(100)
+	if !strings.Contains(shortcutsStr, "Ctrl+O") || !strings.Contains(shortcutsStr, "Switch session") {
+		t.Fatalf("expected shortcuts panel to list Ctrl+O Switch session, got:\n%s", shortcutsStr)
+	}
+}
+
+
 
 
 
