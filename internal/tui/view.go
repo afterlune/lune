@@ -255,7 +255,8 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 	for _, item := range items {
 		leftCol = max(leftCol, lipgloss.Width(item.Command)+2)
 	}
-	leftCol = min(leftCol, 24)
+	maxLeft := max(24, width*3/5)
+	leftCol = min(leftCol, maxLeft)
 
 	for i, item := range items {
 		marker := "  "

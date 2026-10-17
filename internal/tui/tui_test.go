@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
@@ -1252,6 +1253,69 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	lastSys := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys, "Session management unavailable") {
 		t.Errorf("expected unavailable message, got: %s", lastSys)
+	}
+}
+
+func TestFileMentionAutocomplete(t *testing.T) {
+	tempDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tempDir, "internal", "tui"), 0755)
+	_ = os.MkdirAll(filepath.Join(tempDir, "cmd"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "internal", "tui", "tui.go"), []byte("package tui"), 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "cmd", "main.go"), []byte("package main"), 0644)
+
+	m := &tuiModel{
+		workspace:   tempDir,
+		fileScanner: NewWorkspaceFileScanner(tempDir),
+	}
+	m.composer = textarea.New()
+	m.composer.Focus()
+
+	// 1. Trigger @
+	m.composer.SetValue("@")
+	m.composer.CursorEnd()
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "t"}))
+	m = mod.(*tuiModel)
+	if !m.autocompleteOpen {
+		t.Fatalf("expected autocomplete to open for @t")
+	}
+	if m.autocompleteMode != AutocompleteModeFile {
+		t.Errorf("expected AutocompleteModeFile, got: %v", m.autocompleteMode)
+	}
+
+	// 2. Select with Enter
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if m.autocompleteOpen {
+		t.Errorf("expected autocomplete to close after Enter")
+	}
+	if !strings.Contains(m.composer.Value(), "@internal/tui/tui.go ") {
+		t.Errorf("expected composer to contain '@internal/tui/tui.go ', got: %q", m.composer.Value())
+	}
+
+	// 3. Email address test: should not open autocomplete
+	m.composer.SetValue("contact alice@example.com")
+	m.composer.CursorEnd()
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: ' ', Text: " "}))
+	m = mod.(*tuiModel)
+	if m.autocompleteOpen {
+		t.Errorf("expected autocomplete to remain closed for email address")
+	}
+
+	// 4. Esc closes autocomplete
+	m.composer.SetValue("review @c")
+	m.composer.CursorEnd()
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm', Text: "m"}))
+	m = mod.(*tuiModel)
+	if !m.autocompleteOpen {
+		t.Fatalf("expected autocomplete to open for @cm")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.autocompleteOpen {
+		t.Errorf("expected autocomplete to close on Esc")
+	}
+	if m.composer.Value() != "review @cm" {
+		t.Errorf("expected composer to retain draft 'review @cm', got: %q", m.composer.Value())
 	}
 }
 

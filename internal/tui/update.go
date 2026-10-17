@@ -515,6 +515,30 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "tab", "enter":
+			if m.autocompleteMode == AutocompleteModeFile {
+				selected := m.autocompleteItems[m.autocompleteIndex].Command
+				if !strings.HasPrefix(selected, "@") {
+					selected = "@" + selected
+				}
+				val := m.composer.Value()
+				start := m.autocompleteStart
+				end := m.autocompleteEnd
+				if start < 0 {
+					start = 0
+				}
+				if end > len(val) {
+					end = len(val)
+				}
+				if start <= end {
+					replacement := selected + " "
+					newVal := val[:start] + replacement + val[end:]
+					m.composer.SetValue(newVal)
+					m.setCursorTo(start + len(replacement))
+				}
+				m.autocompleteOpen = false
+				m.updateLayout()
+				return m, nil
+			}
 			selected := m.autocompleteItems[m.autocompleteIndex].Command
 			m.composer.SetValue(selected + " ")
 			m.autocompleteOpen = false
@@ -738,8 +762,28 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		items := filterCommands(val)
 		if len(items) > 0 {
 			m.autocompleteOpen = true
+			m.autocompleteMode = AutocompleteModeCommand
 			m.autocompleteItems = items
 			m.autocompleteIndex = 0
+		} else {
+			m.autocompleteOpen = false
+		}
+	} else if query, start, end, ok := DetectAtQuery(val, m.cursorOffset()); ok {
+		matches := m.getFileScanner().Search(query, 8)
+		if len(matches) > 0 {
+			m.autocompleteOpen = true
+			m.autocompleteMode = AutocompleteModeFile
+			m.autocompleteStart = start
+			m.autocompleteEnd = end
+			m.autocompleteIndex = 0
+			var items []AutocompleteItem
+			for _, match := range matches {
+				items = append(items, AutocompleteItem{
+					Command:     "@" + match.Path,
+					Description: FormatFileSize(match.Size),
+				})
+			}
+			m.autocompleteItems = items
 		} else {
 			m.autocompleteOpen = false
 		}
@@ -749,6 +793,69 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.updateLayout()
 
 	return m, cmd
+}
+
+func (m *tuiModel) cursorOffset() int {
+	val := m.composer.Value()
+	lines := strings.Split(val, "\n")
+	line := m.composer.Line()
+	if line < 0 {
+		return 0
+	}
+	if line >= len(lines) {
+		return len(val)
+	}
+
+	offset := 0
+	for i := 0; i < line; i++ {
+		offset += len(lines[i]) + 1
+	}
+
+	col := m.composer.Column()
+	currentRunes := []rune(lines[line])
+	if col > len(currentRunes) {
+		col = len(currentRunes)
+	}
+	if col < 0 {
+		col = 0
+	}
+	offset += len(string(currentRunes[:col]))
+	if offset > len(val) {
+		offset = len(val)
+	}
+	return offset
+}
+
+func (m *tuiModel) setCursorTo(targetOffset int) {
+	val := m.composer.Value()
+	if targetOffset >= len(val) {
+		m.composer.CursorEnd()
+		return
+	}
+	if targetOffset <= 0 {
+		m.composer.MoveToBegin()
+		return
+	}
+
+	lines := strings.Split(val, "\n")
+	targetRow := 0
+	targetCol := 0
+	curr := 0
+	for r, line := range lines {
+		lineLen := len(line)
+		if curr+lineLen >= targetOffset {
+			targetRow = r
+			targetCol = len([]rune(val[curr:targetOffset]))
+			break
+		}
+		curr += lineLen + 1
+	}
+
+	m.composer.MoveToBegin()
+	for i := 0; i < targetRow; i++ {
+		m.composer.CursorDown()
+	}
+	m.composer.SetCursorColumn(targetCol)
 }
 
 func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {

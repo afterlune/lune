@@ -15,6 +15,14 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// AutocompleteMode distinguishes between slash command suggestions and @ file mentions.
+type AutocompleteMode int
+
+const (
+	AutocompleteModeCommand AutocompleteMode = iota
+	AutocompleteModeFile
+)
+
 type tuiModel struct {
 	client            *core.Core
 	runtime           *core.SessionRuntime
@@ -39,8 +47,12 @@ type tuiModel struct {
 	activeToolRecovery *ActiveToolRecovery
 	queuedTurns        []QueuedItem
 	autocompleteOpen  bool
+	autocompleteMode  AutocompleteMode
 	autocompleteItems []AutocompleteItem
 	autocompleteIndex int
+	autocompleteStart int
+	autocompleteEnd   int
+	fileScanner       *WorkspaceFileScanner
 	scrolledUp        bool
 	runningExecution  string
 	runtimeCancel     context.CancelFunc
@@ -130,11 +142,23 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		composer:          comp,
 		viewport:          vp,
 		entries:           entries,
+		fileScanner:       NewWorkspaceFileScanner(workspace),
 	}
 
 	m.applyThemeStyles()
 	m.checkPendingState(context.Background())
 	return m
+}
+
+func (m *tuiModel) getFileScanner() *WorkspaceFileScanner {
+	if m.fileScanner == nil {
+		ws := m.workspace
+		if ws == "" && m.client != nil {
+			ws = m.client.Workspace()
+		}
+		m.fileScanner = NewWorkspaceFileScanner(ws)
+	}
+	return m.fileScanner
 }
 
 func (m *tuiModel) applyThemeStyles() {
