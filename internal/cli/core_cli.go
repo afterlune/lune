@@ -110,16 +110,75 @@ type cliInputEvent struct {
 type keyEventWatcher func() (<-chan cliInputEvent, func(), error)
 
 func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchKeys keyEventWatcher) error {
+	return runCoreChatLoopWithOptions(client, reader, stdout, stderr, watchKeys, LaunchOptions{})
+}
+
+func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, stderr io.Writer, watchKeys keyEventWatcher, opts LaunchOptions) error {
 	ctx := context.Background()
-	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+
+	var sessionID string
+	var sessionTitle string
+	var workspace string
+
+	if opts.SessionID != "" {
+		targetID := ""
+		if s, err := client.GetSession(ctx, opts.SessionID); err == nil {
+			targetID = s.ID
+			sessionTitle = s.Title
+			workspace = s.Workspace
+		} else {
+			sessions, err := client.ListSessions(ctx, 100, false)
+			if err != nil {
+				return fmt.Errorf("list sessions: %w", err)
+			}
+			var matches []core.Session
+			for _, s := range sessions {
+				if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(opts.SessionID)) {
+					matches = append(matches, s)
+				}
+			}
+			if len(matches) == 0 {
+				return fmt.Errorf("session not found: %q", opts.SessionID)
+			}
+			if len(matches) > 1 {
+				return fmt.Errorf("session prefix %q is ambiguous (%d matches)", opts.SessionID, len(matches))
+			}
+			targetID = matches[0].ID
+			sessionTitle = matches[0].Title
+			workspace = matches[0].Workspace
+		}
+		sessionID = targetID
+	} else {
+		saved, err := client.CreateSession(ctx, json.RawMessage("null"))
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sessionID = saved.ID
+		sessionTitle = saved.Title
+		workspace = saved.Workspace
 	}
-	sessionID := saved.ID
-	sessionTitle := saved.Title
-	workspace := saved.Workspace
-	planMode := false
+
+	// Apply model profile if provided
+	if opts.ModelProfile != "" {
+		_ = client.SetSessionSettings(ctx, sessionID, core.SessionSettings{
+			ModelProfile: opts.ModelProfile,
+		})
+	}
+
+	// Apply permission mode if provided
 	savedPermissionMode := client.PermissionMode()
+	if opts.PermissionMode != "" {
+		if err := client.SetPermissionMode(opts.PermissionMode); err != nil {
+			return fmt.Errorf("set permission mode: %w", err)
+		}
+		savedPermissionMode = opts.PermissionMode
+	}
+
+	planMode := opts.PlanMode
+	if planMode {
+		_ = client.SetPermissionMode(core.PermissionReadOnly)
+	}
+
 	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
@@ -141,13 +200,13 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 		case line == "/clear":
 			fmt.Fprint(stdout, "\033[H\033[2J")
 		case line == "/new":
-			saved, err = client.CreateSession(ctx, json.RawMessage("null"))
+			created, err := client.CreateSession(ctx, json.RawMessage("null"))
 			if err != nil {
 				fmt.Fprintf(stderr, "error: create session: %v\n", err)
 			} else {
-				sessionID = saved.ID
-				sessionTitle = saved.Title
-				workspace = saved.Workspace
+				sessionID = created.ID
+				sessionTitle = created.Title
+				workspace = created.Workspace
 				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
 				if err != nil {
 					fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)

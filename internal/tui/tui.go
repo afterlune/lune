@@ -5,35 +5,112 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 )
 
-// Run starts the LuneAgent Bubble Tea TUI.
+// LaunchOptions configures initial TUI session settings.
+type LaunchOptions struct {
+	SessionID      string
+	ModelProfile   string
+	PermissionMode core.PermissionMode
+	PlanMode       bool
+}
+
+// Run starts the LuneAgent Bubble Tea TUI with default options.
 func Run(client *core.Core) error {
+	return RunWithOptions(client, LaunchOptions{})
+}
+
+// RunWithOptions starts the LuneAgent Bubble Tea TUI with custom launch options.
+func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	ctx := context.Background()
 
-	// 1. Always start a fresh session on launch (do not auto-load previous sessions)
-	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
-	if err != nil {
-		return fmt.Errorf("create initial session: %w", err)
+	var sessionID string
+	var sessionTitle string
+
+	if opts.SessionID != "" {
+		targetID := ""
+		if s, err := client.GetSession(ctx, opts.SessionID); err == nil {
+			targetID = s.ID
+			sessionTitle = s.Title
+		} else {
+			sessions, err := client.ListSessions(ctx, 100, false)
+			if err != nil {
+				return fmt.Errorf("list sessions: %w", err)
+			}
+			var matches []core.Session
+			for _, s := range sessions {
+				if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(opts.SessionID)) {
+					matches = append(matches, s)
+				}
+			}
+			if len(matches) == 0 {
+				return fmt.Errorf("session not found: %q", opts.SessionID)
+			}
+			if len(matches) > 1 {
+				return fmt.Errorf("session prefix %q is ambiguous (%d matches)", opts.SessionID, len(matches))
+			}
+			targetID = matches[0].ID
+			sessionTitle = matches[0].Title
+		}
+		sessionID = targetID
+	} else {
+		saved, err := client.CreateSession(ctx, json.RawMessage("null"))
+		if err != nil {
+			return fmt.Errorf("create initial session: %w", err)
+		}
+		sessionID = saved.ID
+		sessionTitle = saved.Title
 	}
 
-	// 2. Open session runtime
-	runtime, err := client.OpenSessionRuntime(ctx, saved.ID)
+	// Apply model profile if provided
+	if opts.ModelProfile != "" {
+		_ = client.SetSessionSettings(ctx, sessionID, core.SessionSettings{
+			ModelProfile: opts.ModelProfile,
+		})
+	}
+
+	// Apply permission mode if provided
+	savedMode := client.PermissionMode()
+	if opts.PermissionMode != "" {
+		if err := client.SetPermissionMode(opts.PermissionMode); err != nil {
+			return fmt.Errorf("set permission mode: %w", err)
+		}
+		savedMode = opts.PermissionMode
+	}
+
+	// Apply plan mode if provided
+	if opts.PlanMode {
+		_ = client.SetPermissionMode(core.PermissionReadOnly)
+	}
+
+	// Open session runtime
+	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
 	}
 
-	// 3. Initialize model
-	model := newTUIModel(client, runtime, saved.ID)
-	model.sessionTitle = saved.Title
+	// Initialize model
+	model := newTUIModel(client, runtime, sessionID)
+	if sessionTitle != "" {
+		model.sessionTitle = sessionTitle
+	}
+	if opts.PlanMode {
+		model.planMode = true
+		model.savedMode = savedMode
+		model.permissionMode = core.PermissionReadOnly
+	}
+	if opts.ModelProfile != "" {
+		model.currentModel = opts.ModelProfile
+	}
 
 	runtime.SetUserInteractionAvailable(true)
 	defer runtime.SetUserInteractionAvailable(false)
 
-	// 4. Run Bubble Tea v2 program
+	// Run Bubble Tea v2 program
 	program := tea.NewProgram(
 		model,
 		tea.WithInput(os.Stdin),
