@@ -56,13 +56,15 @@ type QuestionOption struct {
 
 // ActiveQuestion holds the state of a pending clarification question.
 type ActiveQuestion struct {
-	Request   core.UserQuestionRequest
-	Selected  int
-	Custom    string
-	NotesOpen bool
-	NoteText  string
-	Answered  bool
-	Error     string
+	Request      core.UserQuestionRequest
+	CurrentIndex int
+	Selected     int
+	Custom       string
+	NotesOpen    bool
+	NoteText     string
+	Answered     bool
+	Answers      []core.UserQuestionResponse
+	Error        string
 }
 
 // ActivePlanReview holds the state of a pending plan review.

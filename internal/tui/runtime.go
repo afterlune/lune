@@ -241,26 +241,19 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 
 	case core.EventUserQuestionRequired:
 		m.thinking = false
-		if event.UserQuestion != nil && len(event.UserQuestion.Questions) > 0 {
-			m.activeQuestion = &ActiveQuestion{
-				Request:  *event.UserQuestion,
-				Selected: 0,
-			}
-			m.updateLayout()
-		}
+		m.running = false
+		m.checkPendingState(context.Background())
+		m.refreshViewportContent()
+		m.updateLayout()
 
 	case core.EventApprovalRequired:
 		m.thinking = false
-		if event.Approval != nil {
-			if m.permissionMode == core.PermissionFullAccess {
-				_ = m.runtime.ResolveApproval(event.Approval.ID, true)
-			} else {
-				m.activeApproval = &ActiveApproval{
-					Request:  *event.Approval,
-					Selected: 0,
-				}
-				m.updateLayout()
-			}
+		if event.Approval != nil && m.permissionMode == core.PermissionFullAccess {
+			_ = m.runtime.ResolveApproval(event.Approval.ID, true)
+		} else {
+			m.checkPendingState(context.Background())
+			m.refreshViewportContent()
+			m.updateLayout()
 		}
 
 	case core.EventApprovalCancelled:

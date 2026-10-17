@@ -407,26 +407,44 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 		return
 	}
 	reqs, err := m.runtime.PendingRequests(ctx)
-	if err == nil {
-		for _, req := range reqs {
-			if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil {
-				m.activeQuestion = &ActiveQuestion{
-					Request:  *req.UserQuestion,
-					Selected: 0,
-				}
-				break
+	if err != nil {
+		return
+	}
+	var foundQuestion *core.UserQuestionRequest
+	var foundApproval *core.ApprovalRequest
+	for _, req := range reqs {
+		if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil && foundQuestion == nil {
+			foundQuestion = req.UserQuestion
+		}
+		if req.Kind == core.PendingApproval && req.Approval != nil && foundApproval == nil {
+			foundApproval = req.Approval
+		}
+	}
+
+	if foundQuestion != nil {
+		if m.activeQuestion == nil || m.activeQuestion.Request.ID != foundQuestion.ID {
+			m.activeQuestion = &ActiveQuestion{
+				Request:  *foundQuestion,
+				Selected: 0,
 			}
-			if req.Kind == core.PendingApproval && req.Approval != nil {
-				if m.permissionMode == core.PermissionFullAccess {
-					_ = m.runtime.ResolveApproval(req.Approval.ID, true)
-				} else {
-					m.activeApproval = &ActiveApproval{
-						Request:  *req.Approval,
-						Selected: 0,
-					}
+		}
+	} else {
+		m.activeQuestion = nil
+	}
+
+	if foundApproval != nil {
+		if m.permissionMode == core.PermissionFullAccess {
+			_ = m.runtime.ResolveApproval(foundApproval.ID, true)
+		} else {
+			if m.activeApproval == nil || m.activeApproval.Request.ID != foundApproval.ID {
+				m.activeApproval = &ActiveApproval{
+					Request:  *foundApproval,
+					Selected: 0,
 				}
 			}
 		}
+	} else {
+		m.activeApproval = nil
 	}
 }
 

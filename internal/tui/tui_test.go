@@ -627,4 +627,157 @@ func TestViewportAutoStickToBottomOnMultiTurn(t *testing.T) {
 	}
 }
 
+func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 100
+	m.height = 30
+
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{
+			ID: "req-batch-1",
+			Questions: []core.UserQuestionItem{
+				{
+					ID:       "q1",
+					Question: "First Question?",
+					Options: []core.UserQuestionOption{
+						{Label: "Choice 1A", Description: "Desc 1A"},
+						{Label: "Choice 1B", Description: "Desc 1B"},
+					},
+				},
+				{
+					ID:       "q2",
+					Question: "Second Question?",
+					Options: []core.UserQuestionOption{
+						{Label: "Choice 2A", Description: "Desc 2A"},
+						{Label: "Choice 2B", Description: "Desc 2B"},
+					},
+				},
+				{
+					ID:       "q3",
+					Question: "Third Question?",
+					Options: []core.UserQuestionOption{
+						{Label: "Choice 3A", Description: "Desc 3A"},
+					},
+				},
+			},
+		},
+		Selected: 0,
+	}
+
+	// 1. Initial view: Question 1/3 (3 unanswered)
+	rendered := renderQuestionPanel(m.activeQuestion, 100)
+	if !strings.Contains(rendered, "Question 1/3 (3 unanswered)") {
+		t.Fatalf("expected 'Question 1/3 (3 unanswered)', got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "First Question?") {
+		t.Fatalf("expected 'First Question?', got: %s", rendered)
+	}
+
+	// Down arrow to select Choice 1B
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.activeQuestion.Selected != 1 {
+		t.Fatalf("expected Selected=1 for Choice 1B, got %d", m.activeQuestion.Selected)
+	}
+
+	// Press Enter to submit answer for question 1
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+
+	// Question 1 should be recorded in transcript entries
+	if len(m.entries) != 1 || m.entries[0].Kind != KindQuestionAnswered || m.entries[0].AnswerText != "Choice 1B" {
+		t.Fatalf("expected Question 1 answered with Choice 1B, got %+v", m.entries)
+	}
+
+	// Active question should now be at Question 2/3 (2 unanswered)
+	if m.activeQuestion == nil || m.activeQuestion.CurrentIndex != 1 {
+		t.Fatalf("expected ActiveQuestion at CurrentIndex=1, got %+v", m.activeQuestion)
+	}
+	rendered2 := renderQuestionPanel(m.activeQuestion, 100)
+	if !strings.Contains(rendered2, "Question 2/3 (2 unanswered)") {
+		t.Fatalf("expected 'Question 2/3 (2 unanswered)', got: %s", rendered2)
+	}
+	if !strings.Contains(rendered2, "Second Question?") {
+		t.Fatalf("expected 'Second Question?', got: %s", rendered2)
+	}
+
+	// Press Enter to submit choice 2A for question 2
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if len(m.entries) != 2 || m.entries[1].AnswerText != "Choice 2A" {
+		t.Fatalf("expected Question 2 answered with Choice 2A, got %+v", m.entries)
+	}
+
+	// Active question should now be at Question 3/3 (1 unanswered)
+	if m.activeQuestion == nil || m.activeQuestion.CurrentIndex != 2 {
+		t.Fatalf("expected ActiveQuestion at CurrentIndex=2, got %+v", m.activeQuestion)
+	}
+	rendered3 := renderQuestionPanel(m.activeQuestion, 100)
+	if !strings.Contains(rendered3, "Question 3/3 (1 unanswered)") {
+		t.Fatalf("expected 'Question 3/3 (1 unanswered)', got: %s", rendered3)
+	}
+
+	// Press Enter to submit choice 3A for question 3
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+
+	// All 3 answered, activeQuestion is closed, task marked running to await Core response
+	if m.activeQuestion != nil {
+		t.Fatalf("expected activeQuestion to be nil after all questions answered")
+	}
+	if len(m.entries) != 3 {
+		t.Fatalf("expected 3 entries in transcript, got %d", len(m.entries))
+	}
+}
+
+func TestTurnFinishedPausedClearsRunningState(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.thinking = true
+
+	mod, _ := m.Update(turnFinishedMsg{
+		sessionID: "test-sess",
+		result: core.TurnResult{
+			Status: core.TaskPaused,
+		},
+	})
+	m = mod.(*tuiModel)
+
+	if m.running {
+		t.Errorf("expected m.running to be false when turn is paused")
+	}
+	if m.thinking {
+		t.Errorf("expected m.thinking to be false when turn is paused")
+	}
+}
+
+func TestEscCancelsActiveQuestion(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{
+			ID: "req-1",
+			Questions: []core.UserQuestionItem{
+				{ID: "q1", Question: "Test?"},
+			},
+		},
+	}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+
+	if m.activeQuestion != nil {
+		t.Errorf("expected activeQuestion to be nil after Esc")
+	}
+	foundCancelled := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Question cancelled") {
+			foundCancelled = true
+			break
+		}
+	}
+	if !foundCancelled {
+		t.Errorf("expected 'Question cancelled' system message in entries, got %+v", m.entries)
+	}
+}
+
 

@@ -52,7 +52,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindQuestionAnswered:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		title := styleTextPrimary().Bold(true).Render("Questions 1/1 answered")
+		title := styleTextPrimary().Bold(true).Render("Question answered")
 		qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(entry.QuestionText))
 		ansLabel := styleTextMuted().Render("    answer: ")
 		ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(entry.AnswerText)
@@ -236,8 +236,17 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if len(q.Request.Questions) == 0 {
 		return ""
 	}
-	qItem := q.Request.Questions[0]
-	meta := styleTextMuted().Render("Question 1/1 (1 unanswered)")
+	currIdx := q.CurrentIndex
+	if currIdx >= len(q.Request.Questions) {
+		currIdx = len(q.Request.Questions) - 1
+	}
+	total := len(q.Request.Questions)
+	unanswered := total - len(q.Answers)
+	if unanswered < 1 {
+		unanswered = 1
+	}
+	qItem := q.Request.Questions[currIdx]
+	meta := styleTextMuted().Render(fmt.Sprintf("Question %d/%d (%d unanswered)", currIdx+1, total, unanswered))
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(qItem.Question)
 
 	var optionsRows []string

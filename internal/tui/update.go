@@ -88,11 +88,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.runningExecution != "" && msg.result.ExecutionID != "" && msg.result.ExecutionID != m.runningExecution {
 			return m, nil
 		}
-		if msg.result.Status != core.TaskPaused {
-			m.running = false
-			m.thinking = false
-			m.streamActive = false
-		}
+		m.running = false
+		m.thinking = false
+		m.streamActive = false
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
@@ -102,6 +100,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Text: m.currentStreamText,
 				})
 				m.currentStreamText = ""
+			}
+			if msg.result.Status == core.TaskPaused {
+				m.checkPendingState(context.Background())
 			}
 			if msg.result.ProposedPlan != nil && msg.result.ProposedPlan.Text != "" {
 				m.entries = append(m.entries, TranscriptEntry{
@@ -329,6 +330,16 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return clearCopyFeedbackMsg{at: expiresAt}
 			})
 		}
+		if m.activeQuestion != nil {
+			m.activeQuestion = nil
+			if m.runtime != nil {
+				_, _ = m.runtime.DiscardPaused(context.Background())
+			}
+			m.running = false
+			m.addSystemEntry("Question cancelled.")
+			m.updateLayout()
+			return m, nil
+		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			m.runtime.Interrupt(m.runningExecution)
 			m.running = false
@@ -360,6 +371,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.activeQuestion != nil {
 			m.activeQuestion = nil
+			if m.runtime != nil {
+				_, _ = m.runtime.DiscardPaused(context.Background())
+			}
+			m.running = false
+			m.addSystemEntry("Question cancelled.")
 			m.updateLayout()
 			return m, nil
 		}
@@ -465,7 +481,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 {
-		maxOpt := len(m.activeQuestion.Request.Questions[0].Options) // including "None of the above"
+		currIdx := m.activeQuestion.CurrentIndex
+		if currIdx >= len(m.activeQuestion.Request.Questions) {
+			currIdx = len(m.activeQuestion.Request.Questions) - 1
+		}
+		currQ := m.activeQuestion.Request.Questions[currIdx]
+		maxOpt := len(currQ.Options) // including "None of the above"
 		switch keyStr {
 		case "up":
 			if m.activeQuestion.Selected > 0 {
@@ -615,7 +636,11 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	qItem := q.Request.Questions[0]
+	currIdx := q.CurrentIndex
+	if currIdx >= len(q.Request.Questions) {
+		currIdx = len(q.Request.Questions) - 1
+	}
+	qItem := q.Request.Questions[currIdx]
 	optCount := len(qItem.Options)
 	var answerText string
 	if q.Selected < optCount {
@@ -634,17 +659,30 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		AnswerText:   answerText,
 	})
 
+	q.Answers = append(q.Answers, core.UserQuestionResponse{
+		QuestionID: qItem.ID,
+		Answer:     answerText,
+	})
+
+	// If there are more questions in this batch, advance to the next question
+	if currIdx+1 < len(q.Request.Questions) {
+		q.CurrentIndex = currIdx + 1
+		q.Selected = 0
+		q.Custom = ""
+		q.NoteText = ""
+		q.NotesOpen = false
+		m.refreshViewportContent()
+		m.updateLayout()
+		return m, nil
+	}
+
+	// All questions answered, submit the full batch answer to Core
 	qAnswer := core.UserQuestionAnswer{
 		ExecutionID:  q.Request.ExecutionID,
 		RunID:        q.Request.RunID,
 		InvocationID: q.Request.InvocationID,
 		CallID:       q.Request.CallID,
-		Answers: []core.UserQuestionResponse{
-			{
-				QuestionID: qItem.ID,
-				Answer:     answerText,
-			},
-		},
+		Answers:      q.Answers,
 	}
 
 	m.activeQuestion = nil
