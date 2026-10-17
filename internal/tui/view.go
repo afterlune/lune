@@ -10,18 +10,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// renderHeader renders the top left Codex branding.
+// renderHeader renders the top left LuneAgent branding.
 func renderHeader(workspace string) string {
 	prompt := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(">_")
-	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("OpenAI Codex")
-	version := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("(v0.163.0)")
+	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render(AppName)
+	version := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render(fmt.Sprintf("(%s)", AppVersion))
 	top := fmt.Sprintf("%s %s %s", prompt, brand, version)
 
 	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Underline(true).Render(workspace)
 	return top + "\n" + cwd + "\n"
 }
 
-// renderEntry renders a single transcript item according to Codex visual patterns.
+// renderEntry renders a single transcript item according to LuneAgent visual patterns.
 func renderEntry(entry TranscriptEntry, width int) string {
 	switch entry.Kind {
 	case KindUser:
@@ -147,6 +147,10 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).
 			Render(fmt.Sprintf("  + %d lines (ctrl+t to expand)", remaining))
 		bodyLines = append(bodyLines, expandHint)
+	} else if entry.ToolExpanded && len(outLines) > 3 {
+		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).
+			Render(fmt.Sprintf("  - collapse %d lines (ctrl+t)", len(outLines)))
+		bodyLines = append(bodyLines, collapseHint)
 	}
 
 	return header + "\n" + strings.Join(bodyLines, "\n")
@@ -190,7 +194,7 @@ func renderWorking(elapsed time.Duration, thinking bool) string {
 	}
 	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%s (%s • esc to interrupt)", action, timeStr))
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("└ ")
-	tip := styleTextMuted().Render("Tip: When the composer is empty, press Esc to step back and edit your last message; Enter confirms.")
+	tip := styleTextMuted().Render("Tip: Use Up/Down to navigate prompt history; Esc to interrupt.")
 	return bullet + title + "\n  " + branch + tip
 }
 
@@ -321,7 +325,7 @@ func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 	return cardStyle.Width(max(20, width)).Render(content)
 }
 
-// renderApprovalPanel renders a permission approval modal matching Codex's aesthetic.
+// renderApprovalPanel renders a permission approval modal.
 func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	th := activeTheme()
 	cardStyle := lipgloss.NewStyle().
@@ -362,6 +366,70 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	lines = append(lines, hint)
 
 	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
+// renderShortcutsPanel renders the keyboard shortcut cheat sheet in a 3-column layout.
+func renderShortcutsPanel(width int) string {
+	title := styleTextPrimary().Bold(true).Render("Keyboard Shortcuts")
+
+	col1Title := styleTextPrimary().Bold(true).Underline(true).Render("Compose")
+	col1Items := []struct{ Key, Desc string }{
+		{"/", "Commands"},
+		{"Up / Down", "Prompt history"},
+		{"Shift+Enter", "New line"},
+		{"Esc", "Cancel / Exit"},
+		{"Ctrl+C", "Interrupt / Quit"},
+	}
+
+	col2Title := styleTextPrimary().Bold(true).Underline(true).Render("Session")
+	col2Items := []struct{ Key, Desc string }{
+		{"Enter", "Send message"},
+		{"Shift+Tab", "Cycle permissions"},
+		{"/model", "Switch model"},
+		{"/status", "Show status"},
+		{"/plan", "Toggle Plan mode"},
+	}
+
+	col3Title := styleTextPrimary().Bold(true).Underline(true).Render("Transcript")
+	col3Items := []struct{ Key, Desc string }{
+		{"Mouse Drag", "Select & auto-copy"},
+		{"Scroll", "History scroll"},
+		{"Ctrl+T", "Toggle tool expand"},
+		{"Ctrl+C", "Copy selection"},
+		{"Esc", "Clear selection"},
+	}
+
+	formatCol := func(colTitle string, items []struct{ Key, Desc string }) string {
+		lines := []string{colTitle}
+		for _, it := range items {
+			k := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(it.Key)
+			pad := max(1, 12-lipgloss.Width(k))
+			d := styleTextPrimary().Render(it.Desc)
+			lines = append(lines, k+strings.Repeat(" ", pad)+d)
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	col1 := formatCol(col1Title, col1Items)
+	col2 := formatCol(col2Title, col2Items)
+	col3 := formatCol(col3Title, col3Items)
+
+	var colsContent string
+	if width >= 94 {
+		colsContent = lipgloss.JoinHorizontal(lipgloss.Top, col1, "   ", col2, "   ", col3)
+	} else {
+		colsContent = col1 + "\n\n" + col2 + "\n\n" + col3
+	}
+
+	hint := styleTextMuted().Render("esc or ? to close")
+	panelContent := title + "\n\n" + colsContent + "\n\n" + hint
+
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(activeTheme().CardBg)).
+		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
+		Padding(1, 2)
+
+	return cardStyle.Width(max(20, width)).Render(panelContent)
 }
 
 // renderScrollPill renders the floating hint pill when scrolled away from bottom.

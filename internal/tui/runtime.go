@@ -89,20 +89,31 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Add user entry to transcript
+	// Add user entry to transcript and prompt history
 	m.entries = append(m.entries, TranscriptEntry{
 		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
 		Kind:      KindUser,
 		Text:      text,
 		Timestamp: time.Now(),
 	})
+	m.promptHistory = append(m.promptHistory, text)
+	m.historyIndex = len(m.promptHistory)
+	m.historyDraft = ""
 
 	m.running = true
 	m.thinking = false
 	m.taskStartedAt = time.Now()
 	m.currentStreamText = ""
 	m.streamActive = true
+	m.scrolledUp = false
+	m.activeQuestion = nil
+	m.activeApproval = nil
+	m.activePlanReview = nil
+	m.shortcutsOpen = false
+	m.autocompleteOpen = false
+	m.updateLayout()
 	m.refreshViewportContent()
+	m.viewport.GotoBottom()
 
 	input, err := core.ParseTaskInput(text)
 	if err != nil {
@@ -259,6 +270,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case core.EventTaskFinished:
+		if m.runningExecution != "" && event.ExecutionID != "" && event.ExecutionID != m.runningExecution {
+			return m, nil
+		}
 		m.thinking = false
 		if m.currentStreamText != "" {
 			m.entries = append(m.entries, TranscriptEntry{

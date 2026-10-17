@@ -28,20 +28,21 @@ import (
 )
 
 type DesktopService struct {
-	mu               sync.Mutex
-	store            *settings.Store
-	app              *application.App
-	appContext       context.Context
-	core             *core.Core
-	runtime          *core.SessionRuntime
-	activityStore    *ActivityStore
-	workspace        string
-	sessionID        string
-	eventCancel      context.CancelFunc
-	planMode         bool
-	previousMode     core.PermissionMode
-	waiting          map[string]bool
-	projectModelView *ModelSettingsView
+	mu                 sync.Mutex
+	store              *settings.Store
+	app                *application.App
+	appContext         context.Context
+	core               *core.Core
+	runtime            *core.SessionRuntime
+	activityStore      *ActivityStore
+	workspace          string
+	sessionID          string
+	eventCancel        context.CancelFunc
+	planMode           bool
+	previousMode       core.PermissionMode
+	waiting            map[string]bool
+	suppressedActivity map[string]struct{}
+	projectModelView   *ModelSettingsView
 }
 
 func NewDesktopService() (*DesktopService, error) {
@@ -735,12 +736,13 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 	if strings.TrimSpace(messageID) == "" {
 		return core.TurnSubmission{}, errors.New("用户消息标识无效")
 	}
-	state, err := s.runtime.State(context.Background())
+	taskInput, err := s.buildTaskInput(input)
 	if err != nil {
 		return core.TurnSubmission{}, err
 	}
-	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
-		return core.TurnSubmission{}, errors.New("当前任务或排队消息尚未结束")
+	state, err := s.runtime.State(context.Background())
+	if err != nil {
+		return core.TurnSubmission{}, err
 	}
 	pending, err := s.runtime.PendingRequests(context.Background())
 	if err != nil {
@@ -754,25 +756,120 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 		return core.TurnSubmission{}, err
 	}
 	conversation := transcriptMessages(saved.History)
-	userCount := 0
-	userMessageCount := 0
-	userMessageIndex := -1
-	for _, message := range conversation {
+	userMessageIndex := findTranscriptUserMessageIndex(conversation, messageID)
+	if userMessageIndex >= 0 {
+		return s.editConversationFromIndexLocked(messageID, userMessageIndex, input, taskInput)
+	}
+
+	queuedTarget := core.QueuedTurnState{}
+	queuedFound := false
+	for _, item := range state.Queue {
+		if item.ExecutionID == messageID {
+			queuedTarget, queuedFound = item, true
+			break
+		}
+	}
+	activityIndex := input.UserMessageIndex
+	if s.activityStore != nil {
+		runs, listErr := s.activityStore.ListSession(context.Background(), s.sessionID)
+		if listErr != nil {
+			return core.TurnSubmission{}, listErr
+		}
+		for _, run := range runs {
+			if run.ExecutionID == messageID {
+				index := run.UserMessageIndex
+				activityIndex = &index
+				break
+			}
+		}
+	}
+	if !queuedFound && activityIndex == nil {
+		return core.TurnSubmission{}, errors.New("要编辑的用户消息已不在当前会话历史或任务队列中")
+	}
+	if activityIndex == nil || *activityIndex < 0 {
+		return core.TurnSubmission{}, errors.New("无法确定排队消息在会话中的位置")
+	}
+	if queuedFound && queuedTarget.Status == "queued" {
+		submission, cancelled, replaceErr := s.runtime.ReplaceQueuedTurnInput(context.Background(), messageID, taskInput)
+		if replaceErr == nil {
+			s.suppressExecutionActivityLocked(cancelled)
+			index := *activityIndex
+			input.UserMessageIndex = &index
+			if s.activityStore != nil {
+				if err := s.activityStore.AssociateExecution(context.Background(), s.sessionID, submission.ExecutionID, index, "queued"); err != nil {
+					slog.Warn("update edited queued execution", "error", err)
+				}
+				images := imageDataURLs(input.Images)
+				if err := s.activityStore.SaveExecutionMessage(context.Background(), s.sessionID, submission.ExecutionID, strings.TrimSpace(input.Text), images, "queued", submission.Position); err != nil {
+					slog.Warn("update edited queued message", "error", err)
+				}
+				if err := s.activityStore.DeleteFromUserMessageIndexExcept(context.Background(), s.sessionID, index+1, ""); err != nil {
+					slog.Warn("remove queue entries after edited message", "error", err)
+				}
+			}
+			return submission, nil
+		}
+		if !errors.Is(replaceErr, core.ErrQueuedTurnStarted) && !errors.Is(replaceErr, core.ErrTurnNotFound) {
+			return core.TurnSubmission{}, replaceErr
+		}
+	}
+	return s.editConversationFromIndexLocked("", *activityIndex, input, taskInput)
+}
+
+func findTranscriptUserMessageIndex(messages []ConversationMessage, messageID string) int {
+	userIndex := 0
+	for _, message := range messages {
 		if message.Role != "user" {
 			continue
 		}
-		userMessageCount++
 		if message.ID == messageID {
-			userMessageIndex = userCount
+			return userIndex
 		}
-		userCount++
+		userIndex++
 	}
-	if userMessageIndex < 0 {
-		return core.TurnSubmission{}, errors.New("要编辑的用户消息已不在当前会话历史中")
-	}
-	taskInput, err := s.buildTaskInput(input)
+	return -1
+}
+
+func (s *DesktopService) editConversationFromIndexLocked(messageID string, requestedIndex int, input SubmitInput, taskInput core.TaskInput) (core.TurnSubmission, error) {
+	state, err := s.runtime.State(context.Background())
 	if err != nil {
 		return core.TurnSubmission{}, err
+	}
+	pending, err := s.runtime.PendingRequests(context.Background())
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	if len(pending) > 0 || state.Task.Status == core.TaskPaused {
+		return core.TurnSubmission{}, errors.New("请先处理当前等待中的请求")
+	}
+	if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		affected, err := s.runtime.CancelPendingTurns(ctx)
+		cancel()
+		if err != nil {
+			return core.TurnSubmission{}, fmt.Errorf("中断当前任务并清空后续队列失败: %w", err)
+		}
+		s.suppressExecutionActivityLocked(affected)
+	}
+	saved, err := s.core.GetSession(context.Background(), s.sessionID)
+	if err != nil {
+		return core.TurnSubmission{}, err
+	}
+	conversation := transcriptMessages(saved.History)
+	userMessageCount := 0
+	for _, message := range conversation {
+		if message.Role == "user" {
+			userMessageCount++
+		}
+	}
+	userMessageIndex := requestedIndex
+	if messageID != "" {
+		if resolved := findTranscriptUserMessageIndex(conversation, messageID); resolved >= 0 {
+			userMessageIndex = resolved
+		}
+	}
+	if userMessageIndex < 0 || userMessageIndex >= userMessageCount {
+		return core.TurnSubmission{}, errors.New("要编辑的用户消息已不在当前会话历史中")
 	}
 	originalHistory := append(json.RawMessage(nil), saved.History...)
 	removeCount := userMessageCount - userMessageIndex
@@ -784,8 +881,7 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 		_ = s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
 		return core.TurnSubmission{}, errors.New("回退会话历史时消息数量发生变化")
 	}
-	index := userMessageIndex
-	input.UserMessageIndex = &index
+	input.UserMessageIndex = &userMessageIndex
 	submission, err := s.submitPreparedLocked(taskInput, input, core.StartIfIdle)
 	if err != nil {
 		rollbackErr := s.core.SetSessionHistory(context.Background(), s.sessionID, originalHistory)
@@ -797,6 +893,14 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 		}
 	}
 	return submission, nil
+}
+
+func imageDataURLs(images []ImageInput) []string {
+	result := make([]string, 0, len(images))
+	for _, item := range images {
+		result = append(result, "data:"+item.MediaType+";base64,"+item.Data)
+	}
+	return result
 }
 
 func (s *DesktopService) buildTaskInput(input SubmitInput) (core.TaskInput, error) {
@@ -1207,7 +1311,9 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 				if !ok {
 					return
 				}
-				s.persistActivityEvent(event)
+				if s.persistActivityEvent(event) {
+					continue
+				}
 				s.emit("agent-event", toAgentEvent(event))
 				if pendingRequestChanged(event.Kind) {
 					s.emit("pending-changed", sessionID)
@@ -1217,12 +1323,16 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 	}()
 }
 
-func (s *DesktopService) persistActivityEvent(event core.Event) {
+func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 	s.mu.Lock()
+	if _, suppressed := s.suppressedActivity[event.ExecutionID]; suppressed {
+		s.mu.Unlock()
+		return true
+	}
 	store := s.activityStore
 	s.mu.Unlock()
 	if store == nil || event.SessionID == "" || event.ExecutionID == "" {
-		return
+		return false
 	}
 	ctx := context.Background()
 	switch event.Kind {
@@ -1262,6 +1372,21 @@ func (s *DesktopService) persistActivityEvent(event core.Event) {
 		tool := toolActivityView(event)
 		if err := store.UpsertTool(ctx, event.SessionID, event.ExecutionID, tool); err != nil {
 			slog.Warn("save desktop tool activity", "error", err)
+		}
+	}
+	return false
+}
+
+func (s *DesktopService) suppressExecutionActivityLocked(executionIDs []string) {
+	if len(executionIDs) == 0 {
+		return
+	}
+	if s.suppressedActivity == nil {
+		s.suppressedActivity = make(map[string]struct{}, len(executionIDs))
+	}
+	for _, executionID := range executionIDs {
+		if executionID != "" {
+			s.suppressedActivity[executionID] = struct{}{}
 		}
 	}
 }
@@ -1397,7 +1522,9 @@ func (s *DesktopService) watchTurnLocked(runtime *core.SessionRuntime, sessionID
 		defer cancel()
 		result, err := runtime.WaitTurn(ctx, executionID)
 		if err != nil {
-			s.emit("turn-result", TurnResultView{SessionID: sessionID, ExecutionID: executionID, Error: err.Error()})
+			if !s.isExecutionActivitySuppressed(executionID) {
+				s.emit("turn-result", TurnResultView{SessionID: sessionID, ExecutionID: executionID, Error: err.Error()})
+			}
 			return
 		}
 		plan := ""
@@ -1408,8 +1535,17 @@ func (s *DesktopService) watchTurnLocked(runtime *core.SessionRuntime, sessionID
 		if plan != "" {
 			text = stripProposedPlan(text)
 		}
-		s.emit("turn-result", TurnResultView{SessionID: sessionID, ExecutionID: executionID, Status: string(result.Status), Text: text, Plan: plan})
+		if !s.isExecutionActivitySuppressed(executionID) {
+			s.emit("turn-result", TurnResultView{SessionID: sessionID, ExecutionID: executionID, Status: string(result.Status), Text: text, Plan: plan})
+		}
 	}()
+}
+
+func (s *DesktopService) isExecutionActivitySuppressed(executionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, suppressed := s.suppressedActivity[executionID]
+	return suppressed
 }
 
 type TurnResultView struct {

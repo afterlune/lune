@@ -15,7 +15,7 @@ var (
 	reNumbered   = regexp.MustCompile(`^(\s*\d+\.)\s+`)
 )
 
-// RenderMarkdown renders markdown text using Codex terminal styles.
+// RenderMarkdown renders markdown text using terminal styles.
 func RenderMarkdown(text string, width int) string {
 	lines := strings.Split(text, "\n")
 	var result []string

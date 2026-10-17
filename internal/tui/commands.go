@@ -22,6 +22,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/status", Description: "show session, model and token status"},
 	{Command: "/resume", Description: "resume the paused task in this session"},
 	{Command: "/discard", Description: "discard the paused task in this session"},
+	{Command: "/shortcuts", Description: "display keyboard shortcuts help"},
 	{Command: "/help", Description: "list all available slash commands"},
 	{Command: "/exit", Description: "exit the chat session"},
 }
@@ -55,6 +56,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		for _, item := range builtinCommands {
 			lines = append(lines, fmt.Sprintf("- `%s`: %s", item.Command, item.Description))
 		}
+		lines = append(lines, "\nPress `?` when composer is empty to view the keyboard shortcut cheat sheet.")
 		m.addSystemEntry(strings.Join(lines, "\n"))
 		return m, nil
 
@@ -186,6 +188,11 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 				return taskDiscardedMsg{discarded: ok, err: err}
 			}
 		}
+
+	case "/shortcuts":
+		m.shortcutsOpen = true
+		m.updateLayout()
+		return m, nil
 	}
 
 	m.addSystemEntry(fmt.Sprintf("Unknown command: `%s`. Type `/help` for options.", raw))

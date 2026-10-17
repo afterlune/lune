@@ -5,23 +5,33 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestLogoEmptyState(t *testing.T) {
-	rendered := RenderLogoEmptyState(80, 24)
-	if !strings.Contains(rendered, "⣠⣴⣶⣿⣿⣷⣶⣤") {
-		t.Errorf("expected Braille logo in empty state, got:\n%s", rendered)
+func TestEmptyStateClean(t *testing.T) {
+	m := &tuiModel{}
+	m.viewport = viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
+	m.refreshViewportContent()
+	view := m.viewport.View()
+	if strings.Contains(view, "⣿") || strings.Contains(view, "⣠") {
+		t.Errorf("expected empty state to not contain dot-matrix/Braille characters, got: %s", view)
+	}
+	if strings.TrimSpace(view) != "" {
+		t.Errorf("expected empty state to be completely clean blank, got: %q", view)
 	}
 }
 
 func TestHeaderRendering(t *testing.T) {
 	header := renderHeader("D:\\Git\\test-repo")
 	stripped := ansi.Strip(header)
-	if !strings.Contains(stripped, "OpenAI Codex") {
-		t.Errorf("expected OpenAI Codex in header, got: %s", stripped)
+	if !strings.Contains(stripped, "LuneAgent") {
+		t.Errorf("expected LuneAgent in header, got: %s", stripped)
+	}
+	if !strings.Contains(stripped, "(v0.1.0)") {
+		t.Errorf("expected version (v0.1.0) in header, got: %s", stripped)
 	}
 	if !strings.Contains(stripped, "D:\\Git\\test-repo") {
 		t.Errorf("expected workspace in header, got: %s", stripped)
@@ -32,10 +42,10 @@ func TestEntryRendering(t *testing.T) {
 	// User entry
 	userEntry := TranscriptEntry{
 		Kind: KindUser,
-		Text: "Hello Codex",
+		Text: "Hello Lune",
 	}
 	uRendered := renderEntry(userEntry, 80)
-	if !strings.Contains(uRendered, "›") || !strings.Contains(uRendered, "Hello Codex") {
+	if !strings.Contains(uRendered, "›") || !strings.Contains(uRendered, "Hello Lune") {
 		t.Errorf("expected user entry with prompt prefix, got: %s", uRendered)
 	}
 
@@ -425,6 +435,195 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 	m = mod.(*tuiModel)
 	if m.selectedText != "" {
 		t.Fatalf("expected selectedText to be cleared on Esc, got %q", m.selectedText)
+	}
+}
+
+func TestShortcutsPanelRendering(t *testing.T) {
+	renderedWide := renderShortcutsPanel(100)
+	strippedWide := ansi.Strip(renderedWide)
+	if !strings.Contains(strippedWide, "Keyboard Shortcuts") {
+		t.Errorf("expected title 'Keyboard Shortcuts', got: %s", strippedWide)
+	}
+	if !strings.Contains(strippedWide, "Compose") || !strings.Contains(strippedWide, "Session") || !strings.Contains(strippedWide, "Transcript") {
+		t.Errorf("expected 3 column titles, got: %s", strippedWide)
+	}
+	if !strings.Contains(strippedWide, "Shift+Enter") || !strings.Contains(strippedWide, "Shift+Tab") || !strings.Contains(strippedWide, "Mouse Drag") {
+		t.Errorf("expected shortcut keys, got: %s", strippedWide)
+	}
+	if !strings.Contains(strippedWide, "esc or ? to close") {
+		t.Errorf("expected close hint, got: %s", strippedWide)
+	}
+
+	renderedNarrow := renderShortcutsPanel(60)
+	strippedNarrow := ansi.Strip(renderedNarrow)
+	if !strings.Contains(strippedNarrow, "Keyboard Shortcuts") || !strings.Contains(strippedNarrow, "Compose") {
+		t.Errorf("expected narrow rendering to include content, got: %s", strippedNarrow)
+	}
+}
+
+func TestShortcutsModalInteractions(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+
+	// 1. Press '?' when composer is empty opens shortcuts
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	m = mod.(*tuiModel)
+	if !m.shortcutsOpen {
+		t.Fatalf("expected shortcutsOpen to be true after typing '?'")
+	}
+
+	// 2. Press '?' again closes shortcuts
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	m = mod.(*tuiModel)
+	if m.shortcutsOpen {
+		t.Fatalf("expected shortcutsOpen to be false after typing '?' again")
+	}
+
+	// 3. /shortcuts slash command opens shortcuts
+	m.composer.SetValue("/shortcuts")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if !m.shortcutsOpen {
+		t.Fatalf("expected shortcutsOpen to be true after /shortcuts command")
+	}
+
+	// 4. Esc closes shortcuts
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.shortcutsOpen {
+		t.Fatalf("expected shortcutsOpen to be false after Esc")
+	}
+
+	// 5. Typing '?' when composer has text does NOT open shortcuts
+	m.composer.SetValue("Is this a test?")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
+	m = mod.(*tuiModel)
+	if m.shortcutsOpen {
+		t.Fatalf("expected shortcutsOpen to remain false when typing '?' with existing text")
+	}
+}
+
+func TestPromptHistoryNavigationAndEscSemantics(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.promptHistory = []string{"First prompt", "Second prompt", "Third prompt"}
+	m.historyIndex = len(m.promptHistory)
+
+	// User types an unsent draft
+	m.composer.SetValue("My draft")
+
+	// Up key saves draft and loads last history prompt ("Third prompt")
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Third prompt" {
+		t.Fatalf("expected 'Third prompt', got %q", m.composer.Value())
+	}
+	if m.historyDraft != "My draft" {
+		t.Fatalf("expected historyDraft to be 'My draft', got %q", m.historyDraft)
+	}
+
+	// Up key again loads "Second prompt"
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Second prompt" {
+		t.Fatalf("expected 'Second prompt', got %q", m.composer.Value())
+	}
+
+	// Up key again loads "First prompt"
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "First prompt" {
+		t.Fatalf("expected 'First prompt', got %q", m.composer.Value())
+	}
+
+	// Down key moves forward to "Second prompt"
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Second prompt" {
+		t.Fatalf("expected 'Second prompt', got %q", m.composer.Value())
+	}
+
+	// Down key moves forward to "Third prompt"
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Third prompt" {
+		t.Fatalf("expected 'Third prompt', got %q", m.composer.Value())
+	}
+
+	// Down key restores original draft "My draft"
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "My draft" {
+		t.Fatalf("expected restored draft 'My draft', got %q", m.composer.Value())
+	}
+
+	// Esc does NOT clear composer or restore history; draft remains intact
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "My draft" {
+		t.Fatalf("expected Esc to leave composer draft intact, got %q", m.composer.Value())
+	}
+}
+
+func TestToolExpandAndCollapseHint(t *testing.T) {
+	toolEntry := TranscriptEntry{
+		Kind:         KindTool,
+		ToolName:     "run_command",
+		ToolCommand:  "git status",
+		ToolOutput:   "line1\nline2\nline3\nline4\nline5\nline6",
+		ToolExpanded: false,
+	}
+
+	renderedCollapsed := renderEntry(toolEntry, 80)
+	if !strings.Contains(renderedCollapsed, "+ 3 lines (ctrl+t to expand)") {
+		t.Errorf("expected expand hint, got: %s", renderedCollapsed)
+	}
+
+	toolEntry.ToolExpanded = true
+	renderedExpanded := renderEntry(toolEntry, 80)
+	if !strings.Contains(renderedExpanded, "collapse 6 lines (ctrl+t)") {
+		t.Errorf("expected collapse hint, got: %s", renderedExpanded)
+	}
+}
+
+func TestViewportAutoStickToBottomOnMultiTurn(t *testing.T) {
+	m := &tuiModel{}
+	m.width = 80
+	m.height = 24
+	m.viewport = viewport.New(viewport.WithWidth(80), viewport.WithHeight(10))
+
+	// Turn 1: Add some entries
+	m.entries = append(m.entries, TranscriptEntry{
+		Kind: KindUser,
+		Text: "Question 1",
+	})
+	m.entries = append(m.entries, TranscriptEntry{
+		Kind: KindAssistant,
+		Text: "Answer 1 with multiple lines\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10",
+	})
+	m.refreshViewportContent()
+
+	if !m.viewport.AtBottom() {
+		t.Errorf("expected viewport to be at bottom after turn 1, atBottom=%v, yoffset=%d", m.viewport.AtBottom(), m.viewport.YOffset())
+	}
+
+	// Turn 2: User sends second message while running
+	m.entries = append(m.entries, TranscriptEntry{
+		Kind: KindUser,
+		Text: "Question 2",
+	})
+	m.running = true
+	m.taskStartedAt = time.Now().Add(-5 * time.Second)
+	m.refreshViewportContent()
+
+	if !m.viewport.AtBottom() {
+		t.Errorf("expected viewport to remain at bottom when running in turn 2, atBottom=%v, yoffset=%d", m.viewport.AtBottom(), m.viewport.YOffset())
+	}
+
+	// Verify working indicator is rendered in the viewport visible lines
+	viewText := m.viewport.View()
+	if !strings.Contains(viewText, "Working") {
+		t.Errorf("expected working indicator to be visible in viewport view, got:\n%s", viewText)
 	}
 }
 

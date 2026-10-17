@@ -75,17 +75,24 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		m.running = true
 		m.runningExecution = msg.submission.ExecutionID
-		cmds = append(cmds, waitForTurn(m.runtime, m.sessionID, msg.submission.ExecutionID))
+		m.refreshViewportContent()
+		cmds = append(cmds, tickClock(), waitForTurn(m.runtime, m.sessionID, msg.submission.ExecutionID))
 		return m, tea.Batch(cmds...)
 
 	case turnFinishedMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		m.running = false
-		m.thinking = false
-		m.streamActive = false
+		if m.runningExecution != "" && msg.result.ExecutionID != "" && msg.result.ExecutionID != m.runningExecution {
+			return m, nil
+		}
+		if msg.result.Status != core.TaskPaused {
+			m.running = false
+			m.thinking = false
+			m.streamActive = false
+		}
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
@@ -209,6 +216,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, vpCmd
 
 	case tea.MouseClickMsg:
+		if m.shortcutsOpen {
+			m.shortcutsOpen = false
+			m.updateLayout()
+			return m, nil
+		}
 		headerHeight := 3
 		vpEnd := headerHeight + m.viewport.Height()
 		if msg.Button == tea.MouseLeft {
@@ -286,6 +298,24 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
 
+	// 0. Shortcut Help Modal handling
+	if m.shortcutsOpen {
+		switch keyStr {
+		case "esc", "?", "q", "enter":
+			m.shortcutsOpen = false
+			m.updateLayout()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Trigger shortcut modal when typing '?' in an empty composer
+	if keyStr == "?" && m.composer.Value() == "" && !m.running {
+		m.shortcutsOpen = true
+		m.updateLayout()
+		return m, nil
+	}
+
 	// 1. Interrupt / Quit / Esc
 	switch keyStr {
 	case "ctrl+c":
@@ -309,6 +339,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.shortcutsOpen {
+			m.shortcutsOpen = false
+			m.updateLayout()
+			return m, nil
+		}
 		if m.selectedText != "" || m.hasSelection() {
 			m.isSelecting = false
 			m.selectedText = ""
@@ -349,6 +384,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refreshViewportContent()
 			return m, nil
 		}
+		return m, nil
 
 	case "shift+tab":
 		if !m.planMode {
@@ -474,6 +510,42 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// 2.5 Prompt History Navigation (Up / Down)
+	if !m.autocompleteOpen && m.activeApproval == nil && m.activeQuestion == nil && m.activePlanReview == nil {
+		switch keyStr {
+		case "up":
+			if m.composer.Line() == 0 && len(m.promptHistory) > 0 {
+				if m.historyIndex == len(m.promptHistory) {
+					m.historyDraft = m.composer.Value()
+				}
+				if m.historyIndex > 0 {
+					m.historyIndex--
+					m.composer.SetValue(m.promptHistory[m.historyIndex])
+					m.composer.CursorEnd()
+					m.updateLayout()
+					return m, nil
+				}
+			}
+		case "down":
+			if (m.composer.Line() >= m.composer.LineCount()-1 || m.composer.LineCount() <= 1) && len(m.promptHistory) > 0 {
+				if m.historyIndex < len(m.promptHistory)-1 {
+					m.historyIndex++
+					m.composer.SetValue(m.promptHistory[m.historyIndex])
+					m.composer.CursorEnd()
+					m.updateLayout()
+					return m, nil
+				} else if m.historyIndex == len(m.promptHistory)-1 {
+					m.historyIndex = len(m.promptHistory)
+					m.composer.SetValue(m.historyDraft)
+					m.historyDraft = ""
+					m.composer.CursorEnd()
+					m.updateLayout()
+					return m, nil
+				}
+			}
+		}
+	}
+
 	// 3. Viewport Scrolling
 	switch keyStr {
 	case "pgup":
@@ -576,14 +648,28 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 	}
 
 	m.activeQuestion = nil
+	m.running = true
+	m.thinking = false
+	m.taskStartedAt = time.Now()
+	m.scrolledUp = false
 	m.refreshViewportContent()
+	m.viewport.GotoBottom()
 	m.updateLayout()
 
 	runtime := m.runtime
-	return m, func() tea.Msg {
-		_ = runtime.ResolveUserQuestion(context.Background(), qAnswer)
-		return nil
+	sessionID := m.sessionID
+	executionID := q.Request.ExecutionID
+	if executionID != "" {
+		m.runningExecution = executionID
 	}
+	return m, tea.Batch(
+		tickClock(),
+		waitForTurn(runtime, sessionID, executionID),
+		func() tea.Msg {
+			_ = runtime.ResolveUserQuestion(context.Background(), qAnswer)
+			return nil
+		},
+	)
 }
 
 func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
@@ -626,6 +712,12 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	apprID := appr.Request.ID
 	toolName := appr.Request.Tool
 	m.activeApproval = nil
+	m.running = true
+	m.thinking = false
+	m.taskStartedAt = time.Now()
+	m.scrolledUp = false
+	m.refreshViewportContent()
+	m.viewport.GotoBottom()
 	m.updateLayout()
 
 	decision := "Denied"
@@ -635,8 +727,14 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decision, toolName))
 
 	runtime := m.runtime
-	return m, func() tea.Msg {
-		_ = runtime.ResolveApproval(apprID, allowed)
-		return nil
-	}
+	sessionID := m.sessionID
+	executionID := m.runningExecution
+	return m, tea.Batch(
+		tickClock(),
+		waitForTurn(runtime, sessionID, executionID),
+		func() tea.Msg {
+			_ = runtime.ResolveApproval(apprID, allowed)
+			return nil
+		},
+	)
 }

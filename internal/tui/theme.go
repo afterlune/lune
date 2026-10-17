@@ -4,8 +4,13 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// CodexTheme defines the color palette matching Codex TUI.
-type CodexTheme struct {
+const (
+	AppName    = "LuneAgent"
+	AppVersion = "v0.1.0"
+)
+
+// Theme defines the color palette for the LuneAgent TUI.
+type Theme struct {
 	// Canvas background
 	Canvas string
 	// Primary text (black / dark charcoal in light mode)
@@ -31,8 +36,11 @@ type CodexTheme struct {
 	ExploredGray string
 }
 
-// LightTheme returns the exact Codex Light theme (matches Screenshots 1-12).
-var LightTheme = CodexTheme{
+// CodexTheme is a type alias for Theme.
+type CodexTheme = Theme
+
+// LightTheme returns the light theme palette.
+var LightTheme = Theme{
 	Canvas:       "#FFFFFF",
 	CardBg:       "#F6F8FA",
 	TextPrimary:  "#1F2328",
@@ -49,7 +57,7 @@ var LightTheme = CodexTheme{
 }
 
 // DarkTheme returns the dark equivalent for terminals with dark backgrounds.
-var DarkTheme = CodexTheme{
+var DarkTheme = Theme{
 	Canvas:       "#0D1117",
 	CardBg:       "#161B22",
 	TextPrimary:  "#E6EDF3",
@@ -65,10 +73,10 @@ var DarkTheme = CodexTheme{
 	ExploredGray: "#8B949E",
 }
 
-// Active theme default (Codex light by default).
+// Active theme default (light theme by default).
 var currentTheme = LightTheme
 
-func activeTheme() CodexTheme {
+func activeTheme() Theme {
 	return currentTheme
 }
 

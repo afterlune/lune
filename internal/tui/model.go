@@ -55,6 +55,12 @@ type tuiModel struct {
 	selectedText          string
 	copyFeedback          string
 	copyFeedbackExpiresAt time.Time
+	shortcutsOpen         bool
+
+	// Prompt history navigation
+	promptHistory []string
+	historyIndex  int
+	historyDraft  string
 }
 
 func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID string) *tuiModel {
@@ -65,7 +71,7 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	comp.DynamicHeight = true
 	comp.MinHeight = 1
 	comp.MaxHeight = 5
-	comp.SetVirtualCursor(false)
+	comp.SetVirtualCursor(true)
 	comp.Focus()
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
@@ -110,6 +116,11 @@ func (m *tuiModel) applyThemeStyles() {
 	styles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Background(bg)
 	styles.Focused.EndOfBuffer = lipgloss.NewStyle().Background(bg)
 
+	// High-contrast, clearly visible block cursor
+	styles.Cursor.Color = lipgloss.Color(th.AccentBlue)
+	styles.Cursor.Shape = tea.CursorBlock
+	styles.Cursor.Blink = false
+
 	styles.Blurred.Base = lipgloss.NewStyle().Background(bg)
 	styles.Blurred.CursorLine = lipgloss.NewStyle().Background(bg)
 	styles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Background(bg)
@@ -148,7 +159,9 @@ func (m *tuiModel) updateLayout() {
 	footerHeight := 2
 
 	var modalHeight int
-	if m.activeQuestion != nil {
+	if m.shortcutsOpen {
+		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
+	} else if m.activeQuestion != nil {
 		modalHeight = lipgloss.Height(renderQuestionPanel(m.activeQuestion, contentWidth)) + 1
 	} else if m.activeApproval != nil {
 		modalHeight = lipgloss.Height(renderApprovalPanel(m.activeApproval, contentWidth)) + 1
@@ -170,10 +183,9 @@ func (m *tuiModel) updateLayout() {
 func (m *tuiModel) refreshViewportContent() {
 	contentWidth := max(20, m.width-4)
 
-	// If empty state (no entries, not running), render the centered Braille logo
+	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
 	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" {
-		logo := RenderLogoEmptyState(contentWidth, m.viewport.Height())
-		m.viewport.SetContent(logo)
+		m.viewport.SetContent("")
 		return
 	}
 
@@ -325,8 +337,10 @@ func (m *tuiModel) View() tea.View {
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
 
-	// 3. Modal (Question / Approval / Plan Review / Autocomplete)
-	if m.activeQuestion != nil {
+	// 3. Modal (Shortcuts / Question / Approval / Plan Review / Autocomplete)
+	if m.shortcutsOpen {
+		sections = append(sections, renderShortcutsPanel(contentWidth))
+	} else if m.activeQuestion != nil {
 		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
 	} else if m.activeApproval != nil {
 		sections = append(sections, renderApprovalPanel(m.activeApproval, contentWidth))

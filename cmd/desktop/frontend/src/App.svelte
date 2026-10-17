@@ -31,8 +31,8 @@
   type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
   type Modal = 'settings' | 'migration' | 'switch' | 'close' | 'edit' | null;
-  type EditDraft = { messageID: string; userMessageIndex: number; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
-  type EditConfirmation = { draft: EditDraft; request: SubmitInput; waitForQueue: boolean };
+  type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
+  type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
@@ -81,16 +81,16 @@
   let maxParallelAgents = $state(4);
   let settingsSaving = $state(false);
   let editDraft = $state<EditDraft | null>(null);
-  let deferredEdit = $state<EditConfirmation | null>(null);
   let editConfirmation = $state<EditConfirmation | null>(null);
   let applyingEdit = $state(false);
+  const cancelledPreviewExecutions = new Set<string>();
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const approvals = $derived(pending.filter((item) => item.kind === 'approval'));
   const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery'));
-  const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !deferredEdit);
+  const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
-  const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !deferredEdit && !applyingEdit);
+  const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const transcriptRows = $derived.by(() => {
@@ -242,6 +242,7 @@
       return {
         key: run.executionId,
         ...run,
+        messageImages: run.messageImages ?? undefined,
         status: previousStatusIsTerminal ? previous.status : run.status,
         statusLabel: previous?.statusLabel || activityRunStatusLabel(run.status),
         tools: mergeToolActivities(tools, previous?.tools ?? []),
@@ -561,7 +562,6 @@
       showError(error);
     } finally {
       refreshing = false;
-      void applyDeferredEditWhenIdle();
     }
   }
 
@@ -584,7 +584,7 @@
           { id: 'markdown-assistant', role: 'assistant', text: '检查完成，主要结论如下：\n\n## 发现的问题\n\n- 会话刷新会覆盖尚未持久化的用户消息。\n- 流式状态缺少明确阶段。\n\n| 状态 | 当前表现 |\n| --- | --- |\n| 消息 | 延迟出现 |\n| 模型 | 没有明确进度 |\n\n```go\nfunc ready() bool {\n    return true\n}\n```\n\n> 修复后，用户消息应立即显示。\n\n<scr' + 'ipt>window.__markdownXSS = true</scr' + 'ipt>\n[危险链接](javascript:alert(1))' },
         ];
       }
-      if (variant === 'running' || variant === 'interrupt' || variant === 'queue') {
+      if (variant === 'running' || variant === 'interrupt' || variant === 'queue' || variant === 'queue-edit') {
         running = true;
         executionID = 'exec-preview-running';
         executionState = 'running';
@@ -808,6 +808,7 @@
   }
 
   function onAgentEvent(event: AgentEvent) {
+    if (previewMode && cancelledPreviewExecutions.has(event.executionId)) return;
     if (event.sessionId !== session?.id) return;
     if (event.kind === 'task_queued') {
       queuedExecution(event);
@@ -876,6 +877,7 @@
   }
 
   function onTurnResult(result: TurnResultEvent) {
+    if (previewMode && cancelledPreviewExecutions.has(result.executionId)) return;
     if (result.sessionId !== session?.id) return;
     const currentRun = activityHistory.find((run) => run.executionId === result.executionId || run.key === result.executionId);
     const interrupted = interruptRequestedExecutionID === result.executionId || currentRun?.status === 'interrupted';
@@ -899,7 +901,6 @@
     presentDeferredPlanReview();
     scrollToLatest();
     void refreshSession();
-    void applyDeferredEditWhenIdle();
   }
 
   function presentDeferredPlanReview() {
@@ -1127,7 +1128,7 @@
       return;
     }
     const text = composerText.trim();
-    const interactivePreview = ['send', 'send-failure', 'interrupt', 'queue', 'edit'].includes(previewVariant);
+    const interactivePreview = ['send', 'send-failure', 'interrupt', 'queue', 'queue-edit', 'edit'].includes(previewVariant);
     if ((!text && attachments.length === 0) || !canSend || (previewMode && !interactivePreview)) return;
     const id = `user-${crypto.randomUUID()}`;
     const userMessageIndex = messages.filter((message) => message.role === 'user').length;
@@ -1189,7 +1190,7 @@
       throw new Error('模拟提交失败，请重试');
     }
 
-    if (previewVariant === 'queue') {
+    if (previewVariant === 'queue' || previewVariant === 'queue-edit') {
       const queuedExecutionID = 'exec-preview-queued';
       onAgentEvent({ kind: 'task_queued', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'queued' });
       window.setTimeout(() => {
@@ -1201,7 +1202,7 @@
           onAgentEvent({ kind: 'task_finished', sessionId: previewState.session.id, taskId: 'task-preview-queued', executionId: queuedExecutionID, status: 'completed' });
           onTurnResult({ sessionId: previewState.session.id, executionId: queuedExecutionID, status: 'completed', text: '队列消息已执行。' });
         }, 550);
-      }, 700);
+      }, previewVariant === 'queue-edit' ? 4500 : 700);
       return { Status: 'queued', QueueID: 'queue-preview', ExecutionID: queuedExecutionID, Position: 1 };
     }
 
@@ -1226,7 +1227,11 @@
 
   function startEditingMessage(message: LocalMessage, userMessageIndex: number) {
     if (!canEditMessages || message.role !== 'user' || userMessageIndex < 0 || message.deliveryState === 'sending') return;
-    editDraft = { messageID: message.id, userMessageIndex, previousText: composerText, previousAttachments: attachments };
+    editDraft = {
+      messageID: message.id, targetID: message.canonicalID || message.executionID || message.id,
+      userMessageIndex, wasQueued: message.deliveryState === 'queued',
+      previousText: composerText, previousAttachments: attachments,
+    };
     composerText = message.text;
     attachments = (message.images ?? []).flatMap((preview, index) => {
       const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/i.exec(preview);
@@ -1254,7 +1259,7 @@
     };
     editConfirmation = {
       draft: editDraft, request,
-      waitForQueue: running || queuedMessageCount > 0,
+      pendingAtConfirm: workOutstanding,
     };
     modal = 'edit';
   }
@@ -1267,29 +1272,7 @@
     composerText = '';
     attachments = [];
     editDraft = null;
-    if (edit.waitForQueue) {
-      deferredEdit = edit;
-      void applyDeferredEditWhenIdle();
-    } else {
-      void applyUserMessageEdit(edit);
-    }
-  }
-
-  function cancelDeferredEdit() {
-    deferredEdit = null;
-    editDraft = null;
-    currentStatus = running ? currentStatus : queuedMessageCount ? '任务排队中' : '';
-  }
-
-  async function applyDeferredEditWhenIdle() {
-    if (!deferredEdit || applyingEdit || busy || running || queuedMessageCount > 0 || pending.length > 0 || planReview || interrupting) return;
-    if (!previewMode) {
-      const target = messages.find((message) => message.id === deferredEdit?.draft.messageID);
-      if (target?.local && !target.canonicalID) return;
-    }
-    const edit = deferredEdit;
-    deferredEdit = null;
-    await applyUserMessageEdit(edit);
+    void applyUserMessageEdit(edit);
   }
 
   async function applyUserMessageEdit(edit: EditConfirmation) {
@@ -1303,21 +1286,42 @@
     busy = true;
     try {
       const request = { ...edit.request, userMessageIndex: edit.draft.userMessageIndex };
+      if (previewMode && edit.pendingAtConfirm && !edit.draft.wasQueued) {
+        for (const run of activityHistory) {
+          if (run.status === 'running' || run.status === 'queued') cancelledPreviewExecutions.add(run.executionId);
+        }
+      }
       const submission = previewMode
-        ? { Status: 'accepted', QueueID: '', ExecutionID: `exec-preview-edit-${Date.now()}`, Position: 0 }
-        : await Desktop.EditUserMessage(message.canonicalID || message.id, request);
-      const replacement: LocalMessage = {
-        id: `user-${crypto.randomUUID()}`, role: 'user', text: request.text,
-        images: attachmentsForRequest(request), local: true, deliveryState: submission.Status === 'queued' ? 'queued' : 'submitted',
-        request, userMessageIndex: edit.draft.userMessageIndex, executionID: submission.ExecutionID,
-        queuePosition: submission.Status === 'queued' ? submission.Position : undefined,
-      };
-      messages = [...messages.slice(0, targetIndex), replacement];
-      activityHistory = activityHistory.filter((run) => run.userMessageIndex < edit.draft.userMessageIndex || run.executionId === submission.ExecutionID);
-      planReview = null;
-      deferredPlanReviews = [];
-      streamText = '';
+        ? edit.draft.wasQueued
+          ? { Status: 'queued', QueueID: 'queue-preview-edit', ExecutionID: edit.draft.targetID, Position: message.queuePosition ?? 1 }
+          : { Status: 'accepted', QueueID: '', ExecutionID: `exec-preview-edit-${Date.now()}`, Position: 0 }
+        : await Desktop.EditUserMessage(edit.draft.targetID, request);
       const queued = submission.Status === 'queued';
+      const edited: LocalMessage = queued
+        ? {
+            ...message, text: request.text, images: attachmentsForRequest(request), local: true,
+            deliveryState: 'queued', deliveryError: undefined, request,
+            userMessageIndex: edit.draft.userMessageIndex, executionID: submission.ExecutionID,
+            queuePosition: submission.Position,
+          }
+        : {
+            id: `user-${crypto.randomUUID()}`, role: 'user', text: request.text,
+            images: attachmentsForRequest(request), local: true, deliveryState: 'submitted',
+            request, userMessageIndex: edit.draft.userMessageIndex, executionID: submission.ExecutionID,
+          };
+      messages = [...messages.slice(0, targetIndex), edited];
+      activityHistory = activityHistory.filter((run) => run.userMessageIndex < edit.draft.userMessageIndex || run.executionId === submission.ExecutionID);
+      if (!queued) {
+        planReview = null;
+        deferredPlanReviews = [];
+        streamText = '';
+        running = true;
+        executionID = submission.ExecutionID;
+        activeActivityRunKey = submission.ExecutionID;
+        executionState = 'running';
+        currentStatus = '正在等待模型响应';
+        startElapsedTimer(true);
+      }
       upsertActivityRun({
         key: submission.ExecutionID, executionId: submission.ExecutionID,
         userMessageIndex: edit.draft.userMessageIndex,
@@ -1325,11 +1329,7 @@
         statusLabel: queued ? `排队中 · 第 ${submission.Position} 位` : '正在等待模型响应',
         queuePosition: queued ? submission.Position : undefined,
       });
-      if (!previewMode && !running) {
-        executionID = submission.ExecutionID;
-        activeActivityRunKey = submission.ExecutionID;
-      }
-      if (previewMode) {
+      if (previewMode && !queued) {
         onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview-edit', executionId: submission.ExecutionID, status: 'running' });
         window.setTimeout(() => onTurnResult({ sessionId: previewState.session.id, executionId: submission.ExecutionID, status: 'completed', text: '修改后的回复。' }), 450);
       }
@@ -1337,10 +1337,10 @@
       void refreshSession();
     } catch (error) {
       showError(error);
+      if (!previewMode) void refreshSession();
     } finally {
       busy = false;
       applyingEdit = false;
-      void applyDeferredEditWhenIdle();
     }
   }
 
@@ -1484,7 +1484,6 @@
   function stayInPlan() {
     planReview = null;
     presentDeferredPlanReview();
-    void applyDeferredEditWhenIdle();
   }
 
   onMount(() => {
@@ -1669,7 +1668,6 @@
             <button class="setup-notice" onclick={setSettingsForm}><span>ⓘ</span> 配置一个模型后即可开始对话 <b>打开设置 →</b></button>
           {/if}
           {#if editDraft}<div class="edit-mode-banner">正在编辑第 {editDraft.userMessageIndex + 1} 条用户消息。保存后会移除该消息之后的对话并重新运行。</div>{/if}
-          {#if deferredEdit}<div class="edit-mode-banner" role="status">当前执行和队列完成后将应用编辑；后续对话会被移除，已发生的文件操作不会撤销。<button class="message-edit-button" onclick={cancelDeferredEdit}>取消编辑</button></div>{/if}
           {#if attachments.length}
             <div class="attachment-strip">{#each attachments as attachment, index}<div class="attachment-chip"><img src={attachment.preview} alt={attachment.name} /><span>{attachment.name}</span><button aria-label="移除图片" disabled={!canWrite} onclick={() => attachments = attachments.filter((_, i) => i !== index)}>×</button></div>{/each}</div>
           {/if}
@@ -1680,7 +1678,7 @@
                 <button class="composer-tool" title="添加图片" onclick={() => document.getElementById('image-picker')?.click()} disabled={!canWrite}><span>＋</span><span>添加图片</span></button>
                 <input id="image-picker" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onchange={(event) => event.currentTarget.files && void addFiles(event.currentTarget.files)} />
                 <span class="composer-separator"></span>
-                <button class:plan-active={planMode} class="plan-toggle" onclick={() => void setPlanMode(!planMode)} disabled={workOutstanding || !!editDraft || !!deferredEdit}><span>◈</span> Plan 模式</button>
+                <button class:plan-active={planMode} class="plan-toggle" onclick={() => void setPlanMode(!planMode)} disabled={workOutstanding || !!editDraft}><span>◈</span> Plan 模式</button>
               </div>
               <div class="composer-right">
                 {#if models.configured && models.profiles?.length && session}
@@ -1767,8 +1765,12 @@
     {:else if modal === 'edit' && editConfirmation}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="edit-confirm-title" tabindex="-1">
         <div class="modal-header"><div><span class="eyebrow">EDIT CONVERSATION</span><h2 id="edit-confirm-title">确认编辑这条消息？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; editConfirmation = null; }}>×</button></div>
-        <div class="modal-body"><p>{editConfirmation.waitForQueue ? '当前任务和已接受的排队消息会继续完成，之后再应用编辑。' : '系统会立即从这条消息开始回退并重新运行。'}这条消息之后的对话记录会被移除，已发生的文件操作不会撤销。</p></div>
-        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; editConfirmation = null; }}>继续当前对话</button><button class="danger-button" onclick={confirmMessageEdit}>{editConfirmation.waitForQueue ? '完成后应用编辑' : '回退并重跑'}</button></div>
+        <div class="modal-body"><p>{editConfirmation.draft.wasQueued
+          ? '如果这条消息仍在队列中，会保留当前任务和它之前的队列项，在原位置替换，并取消它之后的排队消息；如果它已开始，系统会中断当前任务并从此消息重跑。'
+          : editConfirmation.pendingAtConfirm
+            ? '确认后会立即中断当前任务并取消所有排队消息，再从这条消息开始回退并重跑。'
+            : '系统会从这条消息开始回退并重新运行。'}已发生的文件操作不会撤销。</p></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; editConfirmation = null; }}>继续当前对话</button><button class="danger-button" onclick={confirmMessageEdit}>{editConfirmation.draft.wasQueued ? '替换队列消息' : editConfirmation.pendingAtConfirm ? '中断并回退重跑' : '回退并重跑'}</button></div>
       </div>
     {/if}
   </div>
