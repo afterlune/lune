@@ -96,9 +96,74 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindDiff:
 		return renderDiffEntry(entry, width)
+
+	case KindReasoning:
+		return renderReasoningEntry(entry, width)
 	}
 
 	return ""
+}
+
+// renderReasoningEntry renders a model thinking / chain-of-thought block.
+func renderReasoningEntry(entry TranscriptEntry, width int) string {
+	th := activeTheme()
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("• ")
+
+	durStr := ""
+	if entry.ReasoningDuration > 0 {
+		durStr = formatDuration(entry.ReasoningDuration)
+		if durStr == "0s" {
+			durStr = fmt.Sprintf("%dms", entry.ReasoningDuration.Milliseconds())
+		}
+	}
+
+	var action string
+	if entry.ReasoningLive {
+		if durStr != "" {
+			action = fmt.Sprintf("Thinking... (%s)", durStr)
+		} else {
+			action = "Thinking..."
+		}
+	} else {
+		if durStr != "" {
+			action = fmt.Sprintf("Thought for %s", durStr)
+		} else {
+			action = "Thought"
+		}
+	}
+
+	hint := "(ctrl+r to expand)"
+	if entry.ReasoningExpanded {
+		hint = "(ctrl+r to collapse)"
+	}
+
+	titleText := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true).Render(action)
+	hintText := styleTextMuted().Render(" " + hint)
+	header := bullet + titleText + hintText
+
+	if !entry.ReasoningExpanded {
+		return header
+	}
+
+	bodyText := strings.TrimSpace(entry.Text)
+	if bodyText == "" {
+		return header
+	}
+
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
+	thoughtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true)
+
+	contentWidth := max(20, width-4)
+	wrapped := RenderMarkdown(bodyText, contentWidth)
+	lines := strings.Split(wrapped, "\n")
+
+	var outLines []string
+	outLines = append(outLines, header)
+	for _, l := range lines {
+		outLines = append(outLines, "  "+bar+thoughtStyle.Render(l))
+	}
+
+	return strings.Join(outLines, "\n")
 }
 
 // renderDiffEntry formats Git unified diff outputs with syntax highlighting.
@@ -959,6 +1024,7 @@ func renderShortcutsPanel(width int) string {
 		{"Scroll", "History scroll"},
 		{"Ctrl+T", "Tool output pager"},
 		{"Ctrl+D", "Workspace diff viewer"},
+		{"Ctrl+R", "Toggle reasoning"},
 		{"Ctrl+C", "Copy selection"},
 		{"Esc", "Clear selection"},
 	}

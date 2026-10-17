@@ -57,9 +57,12 @@ type tuiModel struct {
 	runningExecution  string
 	runtimeCancel     context.CancelFunc
 	statusMessage     string
-	streamActive      bool
-	currentStreamText string
-	thinking          bool
+	streamActive           bool
+	currentStreamText      string
+	currentReasoningText   string
+	reasoningStartTime     time.Time
+	reasoningLiveCollapsed bool
+	thinking               bool
 
 	// Viewport transcript cache
 	cachedBlocks     []string
@@ -300,7 +303,7 @@ func (m *tuiModel) refreshViewportContent() {
 	contentWidth := max(20, m.width-4)
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
-	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" {
+	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" && m.currentReasoningText == "" {
 		m.cachedBlocks = nil
 		m.cachedEntryCount = 0
 		m.cachedDirty = false
@@ -333,9 +336,20 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 
 	var blocks []string
-	if m.currentStreamText != "" || m.running {
-		blocks = make([]string, len(m.cachedBlocks), len(m.cachedBlocks)+2)
+	if m.currentReasoningText != "" || m.currentStreamText != "" || m.running {
+		blocks = make([]string, len(m.cachedBlocks), len(m.cachedBlocks)+3)
 		copy(blocks, m.cachedBlocks)
+		if m.currentReasoningText != "" {
+			elapsed := time.Since(m.reasoningStartTime)
+			liveReasoning := TranscriptEntry{
+				Kind:              KindReasoning,
+				Text:              m.currentReasoningText,
+				ReasoningDuration: elapsed,
+				ReasoningExpanded: !m.reasoningLiveCollapsed,
+				ReasoningLive:     true,
+			}
+			blocks = append(blocks, renderEntry(liveReasoning, contentWidth))
+		}
 		if m.currentStreamText != "" {
 			streamEntry := TranscriptEntry{
 				Kind: KindAssistant,

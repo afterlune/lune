@@ -195,9 +195,27 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		if event.Stream != nil {
 			switch event.Stream.Type {
 			case "reasoning_delta":
+				if m.reasoningStartTime.IsZero() {
+					m.reasoningStartTime = time.Now()
+				}
 				m.thinking = true
+				m.currentReasoningText += event.Stream.Delta
 				m.refreshViewportContent()
+
 			case "text_delta", "":
+				if m.currentReasoningText != "" {
+					dur := time.Since(m.reasoningStartTime)
+					m.entries = append(m.entries, TranscriptEntry{
+						Kind:              KindReasoning,
+						Text:              m.currentReasoningText,
+						ReasoningDuration: dur,
+						ReasoningExpanded: false,
+						Timestamp:         time.Now(),
+					})
+					m.currentReasoningText = ""
+					m.reasoningStartTime = time.Time{}
+					m.invalidateEntryCache()
+				}
 				if event.Stream.Delta != "" {
 					m.thinking = false
 					m.currentStreamText += event.Stream.Delta
@@ -209,6 +227,19 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	case core.EventToolStarted:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
+		}
+		if m.currentReasoningText != "" {
+			dur := time.Since(m.reasoningStartTime)
+			m.entries = append(m.entries, TranscriptEntry{
+				Kind:              KindReasoning,
+				Text:              m.currentReasoningText,
+				ReasoningDuration: dur,
+				ReasoningExpanded: false,
+				Timestamp:         time.Now(),
+			})
+			m.currentReasoningText = ""
+			m.reasoningStartTime = time.Time{}
+			m.invalidateEntryCache()
 		}
 		if m.currentStreamText != "" {
 			m.entries = append(m.entries, TranscriptEntry{

@@ -260,7 +260,7 @@ func TestWorkingIndicator(t *testing.T) {
 func TestStreamingFiltersReasoningDelta(t *testing.T) {
 	m := &tuiModel{}
 
-	// 1. Reasoning delta should set thinking=true and NOT add to currentStreamText
+	// 1. Reasoning delta should set thinking=true, accumulate currentReasoningText, and NOT add to currentStreamText
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventModelStream,
 		Stream: &core.ModelStreamEvent{
@@ -274,8 +274,11 @@ func TestStreamingFiltersReasoningDelta(t *testing.T) {
 	if m.currentStreamText != "" {
 		t.Errorf("expected currentStreamText to be empty, got: %q", m.currentStreamText)
 	}
+	if m.currentReasoningText != "Internal model thoughts..." {
+		t.Errorf("expected currentReasoningText to be 'Internal model thoughts...', got: %q", m.currentReasoningText)
+	}
 
-	// 2. Text delta should append to currentStreamText and reset thinking
+	// 2. Text delta should commit reasoning to entries as KindReasoning, append to currentStreamText, and reset thinking
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventModelStream,
 		Stream: &core.ModelStreamEvent{
@@ -289,16 +292,77 @@ func TestStreamingFiltersReasoningDelta(t *testing.T) {
 	if m.currentStreamText != "Hello user" {
 		t.Errorf("expected currentStreamText to be 'Hello user', got: %q", m.currentStreamText)
 	}
+	if len(m.entries) != 1 || m.entries[0].Kind != KindReasoning {
+		t.Fatalf("expected 1 KindReasoning entry committed, got %d", len(m.entries))
+	}
+	if m.entries[0].Text != "Internal model thoughts..." {
+		t.Errorf("expected reasoning text 'Internal model thoughts...', got: %q", m.entries[0].Text)
+	}
 
 	// 3. select_tool_category should be ignored and not add to entries
+	prevCount := len(m.entries)
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventToolStarted,
 		Tool: core.ToolCall{
 			Name: "select_tool_category",
 		},
 	})
-	if len(m.entries) != 0 {
+	if len(m.entries) != prevCount {
 		t.Errorf("expected select_tool_category to be ignored, got %d entries", len(m.entries))
+	}
+}
+
+func TestReasoningRenderingAndToggle(t *testing.T) {
+	m := &tuiModel{
+		width: 80,
+	}
+
+	entry := TranscriptEntry{
+		Kind:              KindReasoning,
+		Text:              "Step 1: check files\nStep 2: fix bug",
+		ReasoningDuration: 12 * time.Second,
+		ReasoningExpanded: false,
+	}
+	m.entries = append(m.entries, entry)
+
+	// 1. Collapsed rendering: contains Thought for 12s and (ctrl+r to expand)
+	collapsed := renderReasoningEntry(m.entries[0], 80)
+	if !strings.Contains(collapsed, "Thought for 12s") || !strings.Contains(collapsed, "(ctrl+r to expand)") {
+		t.Errorf("Unexpected collapsed rendering: %s", collapsed)
+	}
+	if strings.Contains(collapsed, "Step 1: check files") {
+		t.Errorf("Collapsed rendering should not contain body text: %s", collapsed)
+	}
+
+	// 2. Toggle via ctrl+r
+	_, _ = m.toggleReasoningExpansion()
+	if !m.entries[0].ReasoningExpanded {
+		t.Errorf("Expected ReasoningExpanded to be true after toggle")
+	}
+
+	// 3. Expanded rendering: contains body text and (ctrl+r to collapse)
+	expanded := renderReasoningEntry(m.entries[0], 80)
+	if !strings.Contains(expanded, "(ctrl+r to collapse)") {
+		t.Errorf("Unexpected expanded rendering header: %s", expanded)
+	}
+	if !strings.Contains(expanded, "Step 1: check files") {
+		t.Errorf("Expanded rendering should contain body text: %s", expanded)
+	}
+
+	// 4. Live streaming rendering (ReasoningLive = true)
+	live := TranscriptEntry{
+		Kind:              KindReasoning,
+		Text:              "Currently thinking about logic...",
+		ReasoningDuration: 3 * time.Second,
+		ReasoningExpanded: true,
+		ReasoningLive:     true,
+	}
+	renderedLive := renderReasoningEntry(live, 80)
+	if !strings.Contains(renderedLive, "Thinking... (3s)") {
+		t.Errorf("Expected live header to have Thinking... (3s), got: %s", renderedLive)
+	}
+	if !strings.Contains(renderedLive, "Currently thinking about logic...") {
+		t.Errorf("Expected live body to contain text, got: %s", renderedLive)
 	}
 }
 

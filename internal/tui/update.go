@@ -121,6 +121,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = false
 		m.thinking = false
 		m.streamActive = false
+		if m.currentReasoningText != "" {
+			dur := time.Since(m.reasoningStartTime)
+			m.entries = append(m.entries, TranscriptEntry{
+				Kind:              KindReasoning,
+				Text:              m.currentReasoningText,
+				ReasoningDuration: dur,
+				ReasoningExpanded: false,
+				Timestamp:         time.Now(),
+			})
+			m.currentReasoningText = ""
+			m.reasoningStartTime = time.Time{}
+			m.invalidateEntryCache()
+		}
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
@@ -715,6 +728,19 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
+			if m.currentReasoningText != "" {
+				dur := time.Since(m.reasoningStartTime)
+				m.entries = append(m.entries, TranscriptEntry{
+					Kind:              KindReasoning,
+					Text:              m.currentReasoningText,
+					ReasoningDuration: dur,
+					ReasoningExpanded: false,
+					Timestamp:         time.Now(),
+				})
+				m.currentReasoningText = ""
+				m.reasoningStartTime = time.Time{}
+				m.invalidateEntryCache()
+			}
 			m.runtime.Interrupt(m.runningExecution)
 			m.running = false
 			m.addSystemEntry("Interrupted.")
@@ -803,6 +829,19 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.cancelQueuedTurn()
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
+			if m.currentReasoningText != "" {
+				dur := time.Since(m.reasoningStartTime)
+				m.entries = append(m.entries, TranscriptEntry{
+					Kind:              KindReasoning,
+					Text:              m.currentReasoningText,
+					ReasoningDuration: dur,
+					ReasoningExpanded: false,
+					Timestamp:         time.Now(),
+				})
+				m.currentReasoningText = ""
+				m.reasoningStartTime = time.Time{}
+				m.invalidateEntryCache()
+			}
 			m.runtime.Interrupt(m.runningExecution)
 			m.running = false
 			m.addSystemEntry("Interrupted.")
@@ -843,6 +882,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openSessionsModal()
+
+	case "ctrl+r":
+		return m.toggleReasoningExpansion()
 	}
 
 	// 2. Navigation in Modal / Autocomplete
@@ -1389,3 +1431,24 @@ func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
 		return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
 	}
 }
+
+// toggleReasoningExpansion toggles the expanded/collapsed state of the latest reasoning block.
+func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
+	if m.currentReasoningText != "" {
+		m.reasoningLiveCollapsed = !m.reasoningLiveCollapsed
+		m.refreshViewportContent()
+		return m, nil
+	}
+
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindReasoning {
+			m.entries[i].ReasoningExpanded = !m.entries[i].ReasoningExpanded
+			m.invalidateEntryCache()
+			m.refreshViewportContent()
+			return m, nil
+		}
+	}
+	m.addSystemEntry("No thinking/reasoning blocks found in this session.")
+	return m, nil
+}
+

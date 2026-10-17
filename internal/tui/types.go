@@ -19,6 +19,7 @@ const (
 	KindSystem           EntryKind = "system"
 	KindQueued           EntryKind = "queued"
 	KindDiff             EntryKind = "diff"
+	KindReasoning        EntryKind = "reasoning"
 )
 
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.
@@ -49,6 +50,11 @@ type TranscriptEntry struct {
 	// Question answered specific fields
 	QuestionText string
 	AnswerText   string
+
+	// Reasoning specific fields
+	ReasoningDuration time.Duration
+	ReasoningExpanded bool
+	ReasoningLive     bool
 }
 
 // AutocompleteItem represents a slash command suggestion.

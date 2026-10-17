@@ -46,6 +46,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/resume", Description: "resume the paused task in this session"},
 	{Command: "/discard", Description: "discard the paused task in this session"},
 	{Command: "/shortcuts", Description: "display keyboard shortcuts help"},
+	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block (Ctrl+R)"},
 	{Command: "/help", Description: "list all available slash commands"},
 	{Command: "/exit", Description: "exit the chat session"},
 }
@@ -104,6 +105,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.invalidateEntryCache()
 		m.updateLayout()
 		return m, nil
+
+	case "/thought", "/reasoning":
+		return m.toggleReasoningExpansion()
 
 	case "/theme":
 		if len(parts) > 1 {
