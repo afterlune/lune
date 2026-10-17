@@ -209,7 +209,10 @@ func (s *DesktopService) OpenWorkspaceFile(relativePath string) error {
 
 func (s *DesktopService) workspaceRoot() (string, error) {
 	s.mu.Lock()
-	root := s.workspace
+	root := s.activeWorkspace
+	if root == "" {
+		root = s.workspace
+	}
 	s.mu.Unlock()
 	if root == "" {
 		return "", errors.New("请先打开工作区")

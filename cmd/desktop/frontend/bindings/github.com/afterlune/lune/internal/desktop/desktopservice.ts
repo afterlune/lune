@@ -37,8 +37,8 @@ export function CompleteModelMigration(path: string, choices: { [_ in string]?: 
     return $Call.ByID(3798999781, path, choices);
 }
 
-export function CreateSession(): $CancellablePromise<$models.WorkspaceState> {
-    return $Call.ByID(498841211);
+export function CreateSession(mode: string): $CancellablePromise<$models.WorkspaceState> {
+    return $Call.ByID(498841211, mode);
 }
 
 export function DeleteSession(sessionID: string): $CancellablePromise<void> {

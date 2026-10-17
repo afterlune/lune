@@ -79,6 +79,18 @@ type ActivityStore struct {
 	db *sql.DB
 }
 
+type DesktopSessionRecord struct {
+	ID             string
+	Mode           string
+	Workspace      string
+	StateDir       string
+	WorktreePath   string
+	RepositoryRoot string
+	Title          string
+	UpdatedAt      time.Time
+	Status         string
+}
+
 func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 	if strings.TrimSpace(stateDir) == "" {
 		return nil, errors.New("activity store directory is required")
@@ -126,6 +138,17 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 			queue_position INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(session_id, execution_id)
 		);
+		CREATE TABLE IF NOT EXISTS desktop_sessions (
+			session_id TEXT PRIMARY KEY,
+			mode TEXT NOT NULL,
+			workspace TEXT NOT NULL,
+			state_dir TEXT NOT NULL,
+			worktree_path TEXT NOT NULL,
+			repository_root TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'idle'
+		);
 		CREATE INDEX IF NOT EXISTS execution_activity_runs_session
 			ON execution_activity_runs(session_id, started_at, execution_id);
 		CREATE INDEX IF NOT EXISTS execution_activity_tools_session
@@ -135,6 +158,105 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 		return nil, fmt.Errorf("initialize desktop activity database: %w", err)
 	}
 	return &ActivityStore{db: db}, nil
+}
+
+func (s *ActivityStore) SaveDesktopSession(ctx context.Context, record DesktopSessionRecord) error {
+	if s == nil || s.db == nil || strings.TrimSpace(record.ID) == "" || record.Mode != "worktree" || record.Workspace == "" || record.StateDir == "" || record.WorktreePath == "" || record.RepositoryRoot == "" {
+		return errors.New("valid Worktree session metadata is required")
+	}
+	updatedAt := record.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO desktop_sessions(session_id, mode, workspace, state_dir, worktree_path, repository_root, title, updated_at, status)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			mode=excluded.mode, workspace=excluded.workspace, state_dir=excluded.state_dir,
+			worktree_path=excluded.worktree_path, repository_root=excluded.repository_root,
+			title=excluded.title, updated_at=excluded.updated_at, status=excluded.status
+	`, record.ID, record.Mode, record.Workspace, record.StateDir, record.WorktreePath, record.RepositoryRoot,
+		record.Title, updatedAt.UnixNano(), record.Status)
+	if err != nil {
+		return fmt.Errorf("save Worktree session metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) DesktopSessions(ctx context.Context) ([]DesktopSessionRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("activity store is not open")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id, mode, workspace, state_dir, worktree_path, repository_root, title, updated_at, status
+		FROM desktop_sessions ORDER BY updated_at DESC, session_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list Worktree sessions: %w", err)
+	}
+	defer rows.Close()
+	var records []DesktopSessionRecord
+	for rows.Next() {
+		var record DesktopSessionRecord
+		var updatedAt int64
+		if err := rows.Scan(&record.ID, &record.Mode, &record.Workspace, &record.StateDir, &record.WorktreePath,
+			&record.RepositoryRoot, &record.Title, &updatedAt, &record.Status); err != nil {
+			return nil, fmt.Errorf("read Worktree session: %w", err)
+		}
+		record.UpdatedAt = time.Unix(0, updatedAt)
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list Worktree sessions: %w", err)
+	}
+	return records, nil
+}
+
+func (s *ActivityStore) DesktopSession(ctx context.Context, sessionID string) (DesktopSessionRecord, bool, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return DesktopSessionRecord{}, false, errors.New("activity store and session ID are required")
+	}
+	var record DesktopSessionRecord
+	var updatedAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT session_id, mode, workspace, state_dir, worktree_path, repository_root, title, updated_at, status
+		FROM desktop_sessions WHERE session_id = ?
+	`, sessionID).Scan(&record.ID, &record.Mode, &record.Workspace, &record.StateDir, &record.WorktreePath,
+		&record.RepositoryRoot, &record.Title, &updatedAt, &record.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DesktopSessionRecord{}, false, nil
+	}
+	if err != nil {
+		return DesktopSessionRecord{}, false, fmt.Errorf("read Worktree session metadata: %w", err)
+	}
+	record.UpdatedAt = time.Unix(0, updatedAt)
+	return record, true, nil
+}
+
+func (s *ActivityStore) UpdateDesktopSession(ctx context.Context, sessionID, title, status string, updatedAt time.Time) error {
+	if s == nil || s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return errors.New("activity store and session ID are required")
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE desktop_sessions SET title = ?, status = ?, updated_at = ? WHERE session_id = ?
+	`, title, status, updatedAt.UnixNano(), sessionID)
+	if err != nil {
+		return fmt.Errorf("update Worktree session metadata: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) DeleteDesktopSession(ctx context.Context, sessionID string) error {
+	if s == nil || s.db == nil || strings.TrimSpace(sessionID) == "" {
+		return errors.New("activity store and session ID are required")
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM desktop_sessions WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("delete Worktree session metadata: %w", err)
+	}
+	return nil
 }
 
 func (s *ActivityStore) SaveExecutionMessage(ctx context.Context, sessionID, executionID, text string, images []string, status string, queuePosition int64) error {

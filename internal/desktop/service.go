@@ -33,11 +33,16 @@ type DesktopService struct {
 	app                *application.App
 	appContext         context.Context
 	core               *core.Core
+	localCore          *core.Core
 	runtime            *core.SessionRuntime
 	activityStore      *ActivityStore
 	workspace          string
+	activeWorkspace    string
 	sessionID          string
-	eventCancel        context.CancelFunc
+	activeContext      *desktopSessionContext
+	sessionContexts    map[string]*desktopSessionContext
+	stateRoot          string
+	modelConfig        *publicmodel.Config
 	planMode           bool
 	previousMode       core.PermissionMode
 	waiting            map[string]bool
@@ -45,12 +50,33 @@ type DesktopService struct {
 	projectModelView   *ModelSettingsView
 }
 
+type desktopSessionContext struct {
+	core           *core.Core
+	runtime        *core.SessionRuntime
+	sessionID      string
+	workspace      string
+	mode           string
+	stateDir       string
+	worktreePath   string
+	repositoryRoot string
+	eventCancel    context.CancelFunc
+	planMode       bool
+	previousMode   core.PermissionMode
+}
+
+const (
+	workspaceModeLocal    = "local"
+	workspaceModeWorktree = "worktree"
+)
+
 func NewDesktopService() (*DesktopService, error) {
 	store, err := settings.OpenUser()
 	if err != nil {
 		return nil, err
 	}
-	return &DesktopService{store: store, waiting: map[string]bool{}}, nil
+	return &DesktopService{
+		store: store, waiting: map[string]bool{}, sessionContexts: map[string]*desktopSessionContext{},
+	}, nil
 }
 
 func (s *DesktopService) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
@@ -196,15 +222,18 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 	}
 	s.mu.Lock()
 	workspace, sessionID := s.workspace, s.sessionID
-	if s.runtime != nil {
-		state, stateErr := s.runtime.State(context.Background())
+	for _, sessionContext := range s.sessionContexts {
+		if sessionContext == nil || sessionContext.runtime == nil {
+			continue
+		}
+		state, stateErr := sessionContext.runtime.State(context.Background())
 		if stateErr != nil {
 			s.mu.Unlock()
 			return ModelSettingsView{}, stateErr
 		}
 		if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
 			s.mu.Unlock()
-			return ModelSettingsView{}, errors.New("请等待当前任务结束后再修改模型设置")
+			return ModelSettingsView{}, errors.New("请等待所有会话任务结束后再修改模型设置")
 		}
 	}
 	if workspace != "" {
@@ -254,18 +283,23 @@ func (s *DesktopService) PickWorkspace() (string, error) {
 }
 
 type SessionSummary struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	UpdatedAt string `json:"updatedAt"`
+	ID               string `json:"id"`
+	Title            string `json:"title"`
+	UpdatedAt        string `json:"updatedAt"`
+	Mode             string `json:"mode"`
+	WorkingDirectory string `json:"workingDirectory"`
+	WorktreePath     string `json:"worktreePath,omitempty"`
+	Status           string `json:"status"`
 }
 
 type WorkspaceOpenResult struct {
-	Workspace      string             `json:"workspace"`
-	Sessions       []SessionSummary   `json:"sessions"`
-	Permission     string             `json:"permissionMode"`
-	Models         *ModelSettingsView `json:"models,omitempty"`
-	NeedsMigration bool               `json:"needsMigration"`
-	Migration      *MigrationPreview  `json:"migration,omitempty"`
+	Workspace         string             `json:"workspace"`
+	Sessions          []SessionSummary   `json:"sessions"`
+	Permission        string             `json:"permissionMode"`
+	Models            *ModelSettingsView `json:"models,omitempty"`
+	NeedsMigration    bool               `json:"needsMigration"`
+	Migration         *MigrationPreview  `json:"migration,omitempty"`
+	WorktreeAvailable bool               `json:"worktreeAvailable"`
 }
 
 func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error) {
@@ -288,7 +322,7 @@ func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error)
 			return WorkspaceOpenResult{}, err
 		}
 	}
-	if s.core != nil && samePath(s.workspace, absolute) {
+	if s.localCore != nil && samePath(s.workspace, absolute) {
 		result, resultErr := s.workspaceResultLocked(false, nil)
 		s.mu.Unlock()
 		return result, resultErr
@@ -396,16 +430,20 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 	if _, err := os.Stat(helperPath); err != nil {
 		helperPath = ""
 	}
-	stateDir := filepath.Join(path, ".luneagent")
-	config := core.Config{Workspace: path, StateDir: stateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ModelConfig: modelConfig}
+	stateRoot, err := desktopProjectStateDir(path)
+	if err != nil {
+		return err
+	}
+	localStateDir := filepath.Join(stateRoot, "local")
+	config := core.Config{Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ModelConfig: modelConfig}
 	created, err := core.New(config)
 	if err != nil {
 		if errors.Is(err, core.ErrStateDirInUse) {
-			return errors.New("这个工作区已由另一个 luneAgent 窗口或终端占用，请先关闭另一个实例")
+			return errors.New("这个 Desktop 工作区的本地会话状态已被另一个 Desktop 实例打开")
 		}
 		return fmt.Errorf("打开工作区失败: %w", err)
 	}
-	activityStore, err := OpenActivityStore(stateDir)
+	activityStore, err := OpenActivityStore(stateRoot)
 	if err != nil {
 		return errors.Join(fmt.Errorf("打开桌面执行记录: %w", err), created.Close())
 	}
@@ -413,11 +451,174 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 		return errors.Join(fmt.Errorf("保存最近工作区: %w", err), activityStore.Close(), created.Close())
 	}
 	s.mu.Lock()
-	s.core, s.workspace, s.runtime, s.sessionID = created, path, nil, ""
+	s.core, s.localCore, s.workspace, s.activeWorkspace, s.runtime, s.sessionID = created, created, path, path, nil, ""
 	s.activityStore = activityStore
 	s.projectModelView = projectView
+	s.stateRoot = stateRoot
+	s.modelConfig = modelConfig
+	if s.sessionContexts == nil {
+		s.sessionContexts = make(map[string]*desktopSessionContext)
+	}
+	s.activeContext = nil
+	s.planMode, s.previousMode = false, ""
 	s.mu.Unlock()
+	if err := s.restoreSessionContexts(); err != nil {
+		return errors.Join(err, s.CloseWorkspace(true))
+	}
 	return nil
+}
+
+func (s *DesktopService) restoreSessionContexts() error {
+	s.mu.Lock()
+	localCore, workspace, stateRoot := s.localCore, s.workspace, s.stateRoot
+	store := s.activityStore
+	s.mu.Unlock()
+	if localCore == nil {
+		return errors.New("没有打开工作区")
+	}
+	localSessions, err := localCore.ListSessions(context.Background(), 1000, true)
+	if err != nil {
+		return fmt.Errorf("读取 Desktop 本地会话: %w", err)
+	}
+	for _, saved := range localSessions {
+		if err := s.attachSessionRuntime(&desktopSessionContext{
+			core: localCore, sessionID: saved.ID, workspace: workspace,
+			mode: workspaceModeLocal, stateDir: filepath.Join(stateRoot, "local"),
+		}); err != nil {
+			return err
+		}
+	}
+	if store == nil {
+		return nil
+	}
+	worktreeSessions, err := store.DesktopSessions(context.Background())
+	if err != nil {
+		return err
+	}
+	worktreeCores := make(map[string]*core.Core)
+	worktreeCoreErrors := make(map[string]error)
+	for _, record := range worktreeSessions {
+		if _, err := os.Stat(record.Workspace); err != nil {
+			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, "missing", record.UpdatedAt)
+			continue
+		}
+		agent := worktreeCores[record.StateDir]
+		createdCore := false
+		if agent == nil {
+			if priorErr := worktreeCoreErrors[record.StateDir]; priorErr != nil {
+				status := "unavailable"
+				if errors.Is(priorErr, core.ErrStateDirInUse) {
+					status = "in use"
+				}
+				_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
+				continue
+			}
+			var err error
+			agent, err = s.newCore(record.Workspace, record.StateDir)
+			if err != nil {
+				worktreeCoreErrors[record.StateDir] = err
+				status := "unavailable"
+				if errors.Is(err, core.ErrStateDirInUse) {
+					status = "in use"
+				}
+				_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
+				continue
+			}
+			createdCore = true
+			worktreeCores[record.StateDir] = agent
+		}
+		if _, err := agent.GetSession(context.Background(), record.ID); err != nil {
+			if createdCore {
+				_ = agent.Close()
+				delete(worktreeCores, record.StateDir)
+			}
+			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, "unavailable", record.UpdatedAt)
+			continue
+		}
+		if err := s.attachSessionRuntime(&desktopSessionContext{
+			core: agent, sessionID: record.ID, workspace: record.Workspace,
+			mode: workspaceModeWorktree, stateDir: record.StateDir,
+			worktreePath: record.WorktreePath, repositoryRoot: record.RepositoryRoot,
+		}); err != nil {
+			if createdCore {
+				_ = agent.Close()
+				delete(worktreeCores, record.StateDir)
+			}
+			status := "unavailable"
+			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
+		}
+	}
+	return nil
+}
+
+func (s *DesktopService) newCore(workspace, stateDir string) (*core.Core, error) {
+	helper := "lune-sandbox.exe"
+	if runtime.GOOS != "windows" {
+		helper = "lune-sandbox"
+	}
+	helperPath := filepath.Join(filepath.Dir(os.Args[0]), helper)
+	if _, err := os.Stat(helperPath); err != nil {
+		helperPath = ""
+	}
+	s.mu.Lock()
+	modelConfig := s.modelConfig
+	s.mu.Unlock()
+	return core.New(core.Config{
+		Workspace: workspace, StateDir: stateDir, Logger: slog.Default(),
+		SandboxHelperPath: helperPath, ModelConfig: modelConfig,
+	})
+}
+
+func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionContext, replayFromStart ...bool) error {
+	if sessionContext == nil || sessionContext.core == nil || sessionContext.sessionID == "" {
+		return errors.New("会话运行时信息无效")
+	}
+	runtime, err := sessionContext.core.OpenSessionRuntime(context.Background(), sessionContext.sessionID)
+	if err != nil {
+		return fmt.Errorf("打开会话运行时: %w", err)
+	}
+	runtime.SetUserInteractionAvailable(true)
+	sessionContext.runtime = runtime
+	state, err := runtime.State(context.Background())
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.sessionContexts == nil {
+		s.sessionContexts = make(map[string]*desktopSessionContext)
+	}
+	s.sessionContexts[sessionContext.sessionID] = sessionContext
+	replay := len(replayFromStart) > 0 && replayFromStart[0]
+	s.subscribeEventsLocked(sessionContext, replay)
+	s.mu.Unlock()
+	s.watchTurnLocked(runtime, sessionContext.sessionID, state.Task.ExecutionID)
+	return nil
+}
+
+func sessionContextStatus(sessionContext *desktopSessionContext) string {
+	if sessionContext == nil || sessionContext.runtime == nil {
+		return "unavailable"
+	}
+	state, err := sessionContext.runtime.State(context.Background())
+	if err != nil {
+		return "unavailable"
+	}
+	switch state.Task.Status {
+	case core.TaskRunning:
+		return "running"
+	case core.TaskQueued:
+		return "queued"
+	case core.TaskPaused:
+		return "waiting"
+	case core.TaskFailed:
+		return "failed"
+	case core.TaskCancelled:
+		return "cancelled"
+	case core.TaskCompleted:
+		return "completed"
+	default:
+		return "idle"
+	}
 }
 
 func (s *DesktopService) workspaceResult(needsMigration bool, preview *MigrationPreview) (WorkspaceOpenResult, error) {
@@ -427,16 +628,55 @@ func (s *DesktopService) workspaceResult(needsMigration bool, preview *Migration
 }
 
 func (s *DesktopService) workspaceResultLocked(needsMigration bool, preview *MigrationPreview) (WorkspaceOpenResult, error) {
-	if s.core == nil {
+	localCore := s.localCore
+	if localCore == nil {
+		localCore = s.core
+	}
+	if localCore == nil {
 		return WorkspaceOpenResult{}, errors.New("没有打开工作区")
 	}
-	sessions, err := s.core.ListSessions(context.Background(), 100, false)
+	sessions, err := localCore.ListSessions(context.Background(), 100, false)
 	if err != nil {
 		return WorkspaceOpenResult{}, err
 	}
-	result := WorkspaceOpenResult{Workspace: s.workspace, Permission: string(s.core.PermissionMode()), Models: s.projectModelView, NeedsMigration: needsMigration, Migration: preview}
+	result := WorkspaceOpenResult{
+		Workspace: s.workspace, Permission: string(localCore.PermissionMode()), Models: s.projectModelView,
+		NeedsMigration: needsMigration, Migration: preview,
+	}
+	if _, err := inspectGitWorkspace(s.workspace); err == nil {
+		result.WorktreeAvailable = true
+	}
 	for _, session := range sessions {
-		result.Sessions = append(result.Sessions, SessionSummary{ID: session.ID, Title: session.Title, UpdatedAt: session.UpdatedAt.Format(time.RFC3339)})
+		mode, workingDirectory, status := workspaceModeLocal, s.workspace, "idle"
+		if context := s.sessionContexts[session.ID]; context != nil {
+			mode, workingDirectory = context.mode, context.workspace
+			status = sessionContextStatus(context)
+		}
+		result.Sessions = append(result.Sessions, SessionSummary{
+			ID: session.ID, Title: session.Title, UpdatedAt: session.UpdatedAt.Format(time.RFC3339),
+			Mode: mode, WorkingDirectory: workingDirectory, Status: status,
+		})
+	}
+	if s.activityStore != nil {
+		worktreeSessions, err := s.activityStore.DesktopSessions(context.Background())
+		if err != nil {
+			return WorkspaceOpenResult{}, err
+		}
+		for _, session := range worktreeSessions {
+			status, workingDirectory := session.Status, session.Workspace
+			if context := s.sessionContexts[session.ID]; context != nil {
+				status, workingDirectory = sessionContextStatus(context), context.workspace
+			}
+			result.Sessions = append(result.Sessions, SessionSummary{
+				ID: session.ID, Title: session.Title, UpdatedAt: session.UpdatedAt.Format(time.RFC3339),
+				Mode: workspaceModeWorktree, WorkingDirectory: workingDirectory, Status: status,
+				WorktreePath: session.WorktreePath,
+			})
+		}
+	}
+	sort.Slice(result.Sessions, func(i, j int) bool { return result.Sessions[i].UpdatedAt > result.Sessions[j].UpdatedAt })
+	if len(result.Sessions) > 100 {
+		result.Sessions = result.Sessions[:100]
 	}
 	return result, nil
 }
@@ -448,58 +688,86 @@ func (s *DesktopService) CloseWorkspace(interrupt bool) error {
 }
 
 func (s *DesktopService) closeWorkspaceLocked(interrupt bool) error {
-	if s.core == nil {
+	localCore := s.localCore
+	if localCore == nil {
+		localCore = s.core
+	}
+	if localCore == nil {
 		return nil
 	}
-	if s.runtime != nil {
-		state, err := s.runtime.State(context.Background())
+	uniqueContexts := make(map[*desktopSessionContext]struct{}, len(s.sessionContexts))
+	for _, sessionContext := range s.sessionContexts {
+		if sessionContext != nil {
+			uniqueContexts[sessionContext] = struct{}{}
+		}
+	}
+	for sessionContext := range uniqueContexts {
+		if sessionContext.runtime == nil {
+			continue
+		}
+		state, err := sessionContext.runtime.State(context.Background())
 		if err != nil {
 			return err
 		}
-		requests, err := s.runtime.PendingRequests(context.Background())
+		requests, err := sessionContext.runtime.PendingRequests(context.Background())
 		if err != nil {
 			return err
 		}
 		running := state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued
 		pausedForUser := state.Task.Status == core.TaskPaused && len(requests) > 0
-		if running || pausedForUser {
-			if !interrupt {
-				return errors.New("当前工作区仍有任务或待处理请求，请先确认中断并切换")
+		if !running && !pausedForUser {
+			continue
+		}
+		if !interrupt {
+			return errors.New("当前工作区仍有任务或待处理请求，请先确认中断并关闭工作区")
+		}
+		if pausedForUser {
+			if _, err := sessionContext.runtime.DiscardPaused(context.Background()); err != nil {
+				return fmt.Errorf("中断待处理任务: %w", err)
 			}
-			if pausedForUser {
-				if _, err := s.runtime.DiscardPaused(context.Background()); err != nil {
-					return fmt.Errorf("中断待处理任务: %w", err)
-				}
-			} else {
-				if state.Task.ExecutionID == "" {
-					return errors.New("无法确定当前任务，暂时不能关闭工作区")
-				}
-				s.runtime.Interrupt(state.Task.ExecutionID)
-				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-				_, waitErr := s.runtime.WaitTurn(ctx, state.Task.ExecutionID)
-				cancel()
-				if waitErr != nil && !errors.Is(waitErr, context.Canceled) {
-					return fmt.Errorf("等待任务停止: %w", waitErr)
-				}
-			}
+			continue
+		}
+		if state.Task.ExecutionID == "" {
+			return errors.New("无法确定当前任务，暂时不能关闭工作区")
+		}
+		sessionContext.runtime.Interrupt(state.Task.ExecutionID)
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		_, waitErr := sessionContext.runtime.WaitTurn(ctx, state.Task.ExecutionID)
+		cancel()
+		if waitErr != nil && !errors.Is(waitErr, context.Canceled) {
+			return fmt.Errorf("等待任务停止: %w", waitErr)
 		}
 	}
-	if s.eventCancel != nil {
-		s.eventCancel()
-		s.eventCancel = nil
+	cores := map[*core.Core]struct{}{localCore: {}}
+	for _, sessionContext := range s.sessionContexts {
+		if sessionContext != nil && sessionContext.core != nil {
+			cores[sessionContext.core] = struct{}{}
+		}
 	}
-	if err := s.core.Close(); err != nil {
-		return fmt.Errorf("关闭工作区: %w", err)
+	var closeErr error
+	for _, sessionContext := range s.sessionContexts {
+		if sessionContext != nil && sessionContext.eventCancel != nil {
+			sessionContext.eventCancel()
+			sessionContext.eventCancel = nil
+		}
+	}
+	for agent := range cores {
+		if agent != nil {
+			closeErr = errors.Join(closeErr, agent.Close())
+		}
 	}
 	var activityCloseErr error
 	if s.activityStore != nil {
 		activityCloseErr = s.activityStore.Close()
 	}
-	s.core, s.runtime, s.workspace, s.sessionID = nil, nil, "", ""
-	s.activityStore = nil
+	s.core, s.localCore, s.runtime = nil, nil, nil
+	s.workspace, s.activeWorkspace, s.sessionID = "", "", ""
+	s.activeContext = nil
+	s.sessionContexts = map[string]*desktopSessionContext{}
+	s.activityStore, s.stateRoot, s.modelConfig = nil, "", nil
 	s.projectModelView = nil
 	s.planMode, s.previousMode = false, ""
-	return activityCloseErr
+	return errors.Join(closeErr, activityCloseErr)
 }
 
 func samePath(left, right string) bool {
@@ -523,6 +791,10 @@ type SessionView struct {
 
 type WorkspaceState struct {
 	Workspace        string                  `json:"workspace"`
+	ProjectRoot      string                  `json:"projectRoot"`
+	WorkspaceMode    string                  `json:"workspaceMode"`
+	WorkingDirectory string                  `json:"workingDirectory"`
+	WorktreePath     string                  `json:"worktreePath,omitempty"`
 	Session          SessionView             `json:"session"`
 	Sessions         []SessionSummary        `json:"sessions"`
 	Permission       string                  `json:"permissionMode"`
@@ -547,40 +819,80 @@ type PendingRequestView struct {
 
 func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.core == nil {
+	localCore := s.localCore
+	if localCore == nil {
+		localCore = s.core
+	}
+	if localCore == nil {
+		s.mu.Unlock()
 		return WorkspaceState{}, errors.New("请先打开工作区")
 	}
-	if s.runtime != nil {
-		state, err := s.runtime.State(context.Background())
-		if err != nil {
-			return WorkspaceState{}, err
-		}
-		if (state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued) && s.runtime.SessionID() != sessionID {
-			return WorkspaceState{}, errors.New("当前会话仍在执行任务，请先中断并等待结束")
-		}
-		if s.runtime.SessionID() != sessionID {
-			requests, err := s.runtime.PendingRequests(context.Background())
-			if err != nil {
+	sessionContext := s.sessionContexts[sessionID]
+	projectRoot, store, stateRoot := s.workspace, s.activityStore, s.stateRoot
+	s.mu.Unlock()
+	if sessionContext == nil {
+		if _, err := localCore.GetSession(context.Background(), sessionID); err == nil {
+			sessionContext = &desktopSessionContext{
+				core: localCore, sessionID: sessionID, workspace: projectRoot,
+				mode: workspaceModeLocal, stateDir: filepath.Join(stateRoot, "local"),
+			}
+			if err := s.attachSessionRuntime(sessionContext); err != nil {
 				return WorkspaceState{}, err
 			}
-			if state.Task.Status == core.TaskPaused && len(requests) > 0 {
-				return WorkspaceState{}, errors.New("当前会话有待处理的问题或审批，请先完成后再切换")
+		} else {
+			if store == nil {
+				return WorkspaceState{}, err
+			}
+			record, found, recordErr := store.DesktopSession(context.Background(), sessionID)
+			if recordErr != nil {
+				return WorkspaceState{}, recordErr
+			}
+			if !found {
+				return WorkspaceState{}, err
+			}
+			if _, statErr := os.Stat(record.Workspace); statErr != nil {
+				return WorkspaceState{}, fmt.Errorf("Worktree 已不存在，保留目录信息供 Git 手动恢复: %s", record.WorktreePath)
+			}
+			s.mu.Lock()
+			var agent *core.Core
+			for _, existing := range s.sessionContexts {
+				if existing != nil && existing.mode == workspaceModeWorktree && existing.stateDir == record.StateDir {
+					agent = existing.core
+					break
+				}
+			}
+			s.mu.Unlock()
+			createdCore := agent == nil
+			if createdCore {
+				var openErr error
+				agent, openErr = s.newCore(record.Workspace, record.StateDir)
+				if openErr != nil {
+					if errors.Is(openErr, core.ErrStateDirInUse) {
+						return WorkspaceState{}, errors.New("这个会话已由另一个 Desktop 实例打开")
+					}
+					return WorkspaceState{}, openErr
+				}
+			}
+			sessionContext = &desktopSessionContext{
+				core: agent, sessionID: sessionID, workspace: record.Workspace, mode: workspaceModeWorktree,
+				stateDir: record.StateDir, worktreePath: record.WorktreePath, repositoryRoot: record.RepositoryRoot,
+			}
+			if err := s.attachSessionRuntime(sessionContext); err != nil {
+				if createdCore {
+					_ = agent.Close()
+				}
+				return WorkspaceState{}, err
 			}
 		}
 	}
-	s.stopEventSubscriptionLocked()
-	saved, err := s.core.GetSession(context.Background(), sessionID)
+	s.mu.Lock()
+	s.setActiveSessionContextLocked(sessionContext)
+	defer s.mu.Unlock()
+	saved, err := sessionContext.core.GetSession(context.Background(), sessionID)
 	if err != nil {
 		return WorkspaceState{}, err
 	}
-	runtime, err := s.core.OpenSessionRuntime(context.Background(), sessionID)
-	if err != nil {
-		return WorkspaceState{}, err
-	}
-	runtime.SetUserInteractionAvailable(true)
-	s.runtime, s.sessionID = runtime, sessionID
-	s.subscribeEventsLocked(runtime, sessionID)
+	runtime := sessionContext.runtime
 	state, err := runtime.State(context.Background())
 	if err != nil {
 		return WorkspaceState{}, err
@@ -598,24 +910,105 @@ func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
 		return WorkspaceState{}, err
 	}
 	view := SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)}
+	if sessionContext.mode == workspaceModeWorktree && s.activityStore != nil {
+		_ = s.activityStore.UpdateDesktopSession(context.Background(), saved.ID, saved.Title, sessionContextStatus(sessionContext), saved.UpdatedAt)
+	}
 	s.watchTurnLocked(runtime, sessionID, state.Task.ExecutionID)
 	return WorkspaceState{
-		Workspace: s.workspace, Session: view, Sessions: list.Sessions,
+		Workspace: sessionContext.workspace, ProjectRoot: s.workspace, WorkspaceMode: sessionContext.mode,
+		WorkingDirectory: sessionContext.workspace, WorktreePath: sessionContext.worktreePath, Session: view, Sessions: list.Sessions,
 		Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state, Pending: pendingRequestViews(pending),
 		ExecutionHistory: activityHistory,
 	}, nil
 }
 
-func (s *DesktopService) CreateSession() (WorkspaceState, error) {
+func (s *DesktopService) CreateSession(mode string) (WorkspaceState, error) {
 	s.mu.Lock()
-	if s.core == nil {
+	localCore := s.localCore
+	if localCore == nil {
+		localCore = s.core
+	}
+	if localCore == nil {
 		s.mu.Unlock()
 		return WorkspaceState{}, errors.New("请先打开工作区")
 	}
-	session, err := s.core.CreateSession(context.Background(), nil)
+	if mode == "" {
+		mode = workspaceModeLocal
+	}
+	if mode != workspaceModeLocal && mode != workspaceModeWorktree {
+		s.mu.Unlock()
+		return WorkspaceState{}, errors.New("会话工作区模式无效")
+	}
+	projectRoot, stateRoot, store := s.workspace, s.stateRoot, s.activityStore
 	s.mu.Unlock()
+	if mode == workspaceModeLocal {
+		session, err := localCore.CreateSession(context.Background(), nil)
+		if err != nil {
+			return WorkspaceState{}, err
+		}
+		sessionContext := &desktopSessionContext{
+			core: localCore, sessionID: session.ID, workspace: projectRoot,
+			mode: workspaceModeLocal, stateDir: filepath.Join(stateRoot, "local"),
+		}
+		if err := s.attachSessionRuntime(sessionContext); err != nil {
+			return WorkspaceState{}, err
+		}
+		return s.OpenSession(session.ID)
+	}
+	if store == nil {
+		return WorkspaceState{}, errors.New("Desktop 会话存储尚未就绪")
+	}
+	gitInfo, err := inspectGitWorkspace(projectRoot)
 	if err != nil {
 		return WorkspaceState{}, err
+	}
+	key, err := newWorktreeID()
+	if err != nil {
+		return WorkspaceState{}, err
+	}
+	worktreePath, err := desktopWorktreeDir(projectRoot, key)
+	if err != nil {
+		return WorkspaceState{}, err
+	}
+	gitInfo, workingDirectory, err := createGitWorktree(projectRoot, worktreePath)
+	if err != nil {
+		return WorkspaceState{}, err
+	}
+	stateDir := filepath.Join(stateRoot, "worktree-state", key)
+	agent, err := s.newCore(workingDirectory, stateDir)
+	if err != nil {
+		cleanupErr := removeGitWorktree(gitInfo.Root, worktreePath)
+		stateCleanupErr := removeDesktopWorktreeStateDir(stateRoot, stateDir)
+		return WorkspaceState{}, errors.Join(fmt.Errorf("打开 Worktree 会话失败: %w", err), cleanupErr, stateCleanupErr)
+	}
+	session, err := agent.CreateSession(context.Background(), nil)
+	if err != nil {
+		_ = agent.Close()
+		cleanupErr := removeGitWorktree(gitInfo.Root, worktreePath)
+		stateCleanupErr := removeDesktopWorktreeStateDir(stateRoot, stateDir)
+		return WorkspaceState{}, errors.Join(fmt.Errorf("创建 Worktree 会话失败: %w", err), cleanupErr, stateCleanupErr)
+	}
+	record := DesktopSessionRecord{
+		ID: session.ID, Mode: workspaceModeWorktree, Workspace: workingDirectory, StateDir: stateDir,
+		WorktreePath: worktreePath, RepositoryRoot: gitInfo.Root, Title: session.Title,
+		UpdatedAt: session.UpdatedAt, Status: "idle",
+	}
+	if err := store.SaveDesktopSession(context.Background(), record); err != nil {
+		_ = agent.Close()
+		cleanupErr := removeGitWorktree(gitInfo.Root, worktreePath)
+		stateCleanupErr := removeDesktopWorktreeStateDir(stateRoot, stateDir)
+		return WorkspaceState{}, errors.Join(fmt.Errorf("保存 Worktree 会话: %w", err), cleanupErr, stateCleanupErr)
+	}
+	sessionContext := &desktopSessionContext{
+		core: agent, sessionID: session.ID, workspace: workingDirectory, mode: workspaceModeWorktree,
+		stateDir: stateDir, worktreePath: worktreePath, repositoryRoot: gitInfo.Root,
+	}
+	if err := s.attachSessionRuntime(sessionContext); err != nil {
+		_ = store.DeleteDesktopSession(context.Background(), session.ID)
+		_ = agent.Close()
+		cleanupErr := removeGitWorktree(gitInfo.Root, worktreePath)
+		stateCleanupErr := removeDesktopWorktreeStateDir(stateRoot, stateDir)
+		return WorkspaceState{}, errors.Join(fmt.Errorf("打开 Worktree 会话: %w", err), cleanupErr, stateCleanupErr)
 	}
 	return s.OpenSession(session.ID)
 }
@@ -623,10 +1016,25 @@ func (s *DesktopService) CreateSession() (WorkspaceState, error) {
 func (s *DesktopService) SetSessionTitle(sessionID, title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.core == nil {
+	sessionContext := s.sessionContexts[sessionID]
+	if sessionContext == nil || sessionContext.core == nil {
 		return errors.New("没有打开工作区")
 	}
-	return s.core.SetSessionTitle(context.Background(), sessionID, title)
+	if err := sessionContext.core.SetSessionTitle(context.Background(), sessionID, title); err != nil {
+		return err
+	}
+	if sessionContext.mode == workspaceModeWorktree && s.activityStore != nil {
+		return s.activityStore.UpdateDesktopSession(context.Background(), sessionID, title, sessionContextStatus(sessionContext), time.Now())
+	}
+	return nil
+}
+
+func (s *DesktopService) setActiveSessionContextLocked(sessionContext *desktopSessionContext) {
+	s.activeContext = sessionContext
+	s.core, s.runtime = sessionContext.core, sessionContext.runtime
+	s.sessionID = sessionContext.sessionID
+	s.activeWorkspace = sessionContext.workspace
+	s.planMode, s.previousMode = sessionContext.planMode, sessionContext.previousMode
 }
 
 func (s *DesktopService) SetSessionModel(profile string) error {
@@ -675,6 +1083,10 @@ func (s *DesktopService) SetPlanMode(enabled bool) error {
 			return err
 		}
 		s.planMode = false
+	}
+	if s.activeContext != nil {
+		s.activeContext.planMode = s.planMode
+		s.activeContext.previousMode = s.previousMode
 	}
 	return nil
 }
@@ -1167,14 +1579,47 @@ func (s *DesktopService) ImplementPlan(executionID, mode string) (PlanResult, er
 			return PlanResult{}, err
 		}
 		s.planMode = false
+		if s.activeContext != nil {
+			s.activeContext.planMode = false
+		}
 	}
+	sourceContext := s.activeContext
 	s.mu.Unlock()
 	implementation, err := runtime.ImplementPlan(context.Background(), executionID, core.PlanImplementationMode(mode))
 	if err != nil {
 		return PlanResult{}, err
 	}
 	s.mu.Lock()
-	s.watchTurnLocked(runtime, implementation.SessionID, implementation.Submission.ExecutionID)
+	targetContext := s.sessionContexts[implementation.SessionID]
+	s.mu.Unlock()
+	if targetContext == nil {
+		if sourceContext == nil {
+			return PlanResult{}, errors.New("无法关联方案实施会话")
+		}
+		saved, err := sourceContext.core.GetSession(context.Background(), implementation.SessionID)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		targetContext = &desktopSessionContext{
+			core: sourceContext.core, sessionID: implementation.SessionID, workspace: sourceContext.workspace,
+			mode: sourceContext.mode, stateDir: sourceContext.stateDir, worktreePath: sourceContext.worktreePath,
+			repositoryRoot: sourceContext.repositoryRoot,
+		}
+		if targetContext.mode == workspaceModeWorktree && s.activityStore != nil {
+			if err := s.activityStore.SaveDesktopSession(context.Background(), DesktopSessionRecord{
+				ID: saved.ID, Mode: workspaceModeWorktree, Workspace: targetContext.workspace, StateDir: targetContext.stateDir,
+				WorktreePath: targetContext.worktreePath, RepositoryRoot: targetContext.repositoryRoot,
+				Title: saved.Title, UpdatedAt: saved.UpdatedAt, Status: "running",
+			}); err != nil {
+				return PlanResult{}, err
+			}
+		}
+		if err := s.attachSessionRuntime(targetContext, true); err != nil {
+			return PlanResult{}, err
+		}
+	}
+	s.mu.Lock()
+	s.watchTurnLocked(targetContext.runtime, implementation.SessionID, implementation.Submission.ExecutionID)
 	s.mu.Unlock()
 	return PlanResult{SessionID: implementation.SessionID, ExecutionID: implementation.Submission.ExecutionID}, nil
 }
@@ -1258,11 +1703,26 @@ func (s *DesktopService) RefreshSession() (WorkspaceState, error) {
 		return WorkspaceState{}, err
 	}
 	return WorkspaceState{
-		Workspace: s.workspace,
-		Session:   SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
-		Sessions:  list.Sessions, Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state,
+		Workspace: s.activeWorkspace, ProjectRoot: s.workspace, WorkspaceMode: s.activeContextModeLocked(),
+		WorkingDirectory: s.activeWorkspace, WorktreePath: s.activeWorktreePathLocked(),
+		Session:  SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
+		Sessions: list.Sessions, Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state,
 		Pending: pendingRequestViews(requests), ExecutionHistory: activityHistory,
 	}, nil
+}
+
+func (s *DesktopService) activeContextModeLocked() string {
+	if s.activeContext == nil {
+		return workspaceModeLocal
+	}
+	return s.activeContext.mode
+}
+
+func (s *DesktopService) activeWorktreePathLocked() string {
+	if s.activeContext == nil {
+		return ""
+	}
+	return s.activeContext.worktreePath
 }
 
 func (s *DesktopService) loadExecutionHistoryLocked(sessionID string) ([]ExecutionActivityView, error) {
@@ -1303,25 +1763,21 @@ type StreamEvent struct {
 	Delta string `json:"delta"`
 }
 
-func (s *DesktopService) stopEventSubscriptionLocked() {
-	if s.eventCancel != nil {
-		s.eventCancel()
-		s.eventCancel = nil
+func (s *DesktopService) subscribeEventsLocked(sessionContext *desktopSessionContext, replayFromStart bool) {
+	cursor := int64(0)
+	if !replayFromStart {
+		cursor = latestEventCursor(sessionContext.runtime)
 	}
-}
-
-func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, sessionID string) {
-	cursor := latestEventCursor(runtime)
 	base := s.appContext
 	if base == nil {
 		base = context.Background()
 	}
 	ctx, cancel := context.WithCancel(base)
-	s.eventCancel = cancel
-	events, err := runtime.SubscribeEvents(ctx, cursor)
+	sessionContext.eventCancel = cancel
+	events, err := sessionContext.runtime.SubscribeEvents(ctx, cursor)
 	if err != nil {
 		cancel()
-		s.emit("agent-error", map[string]string{"message": err.Error()})
+		s.emit("agent-error", map[string]string{"message": err.Error(), "sessionId": sessionContext.sessionID})
 		return
 	}
 	go func() {
@@ -1337,12 +1793,46 @@ func (s *DesktopService) subscribeEventsLocked(runtime *core.SessionRuntime, ses
 					continue
 				}
 				s.emit("agent-event", toAgentEvent(event))
+				if sessionSummaryEvent(event.Kind) {
+					s.updateSessionSummary(event.SessionID, string(event.Status))
+				}
 				if pendingRequestChanged(event.Kind) {
-					s.emit("pending-changed", sessionID)
+					s.emit("pending-changed", sessionContext.sessionID)
 				}
 			}
 		}
 	}()
+}
+
+func sessionSummaryEvent(kind core.EventKind) bool {
+	switch kind {
+	case core.EventTaskQueued, core.EventTaskStarted, core.EventTaskFinished, core.EventTaskDiscarded,
+		core.EventApprovalRequired, core.EventApprovalCancelled, core.EventUserQuestionRequired,
+		core.EventUserInteractionRequired, core.EventUserInteractionCancelled, core.EventModelRecoveryRequired,
+		core.EventModelRecoveryResumed, core.EventToolRecoveryRequired:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *DesktopService) updateSessionSummary(sessionID, status string) {
+	s.mu.Lock()
+	sessionContext, store := s.sessionContexts[sessionID], s.activityStore
+	s.mu.Unlock()
+	if sessionContext == nil || sessionContext.mode != workspaceModeWorktree || store == nil {
+		return
+	}
+	saved, err := sessionContext.core.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return
+	}
+	if status == "" {
+		status = sessionContextStatus(sessionContext)
+	}
+	if err := store.UpdateDesktopSession(context.Background(), sessionID, saved.Title, status, saved.UpdatedAt); err != nil {
+		slog.Warn("update Worktree session summary", "session_id", sessionID, "error", err)
+	}
 }
 
 func (s *DesktopService) persistActivityEvent(event core.Event) bool {

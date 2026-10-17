@@ -1,6 +1,6 @@
 # luneAgent 桌面端
 
-桌面端在 Windows 10/11 上运行，使用 Wails v3、Svelte 5 和 TypeScript。它与现有终端程序并行安装：`bin/lune.exe` 仍启动 TUI/CLI，`bin/lune-desktop.exe` 启动桌面窗口。两个入口在同一时间只能占用同一个工作区。
+桌面端在 Windows 10/11 上运行，使用 Wails v3、Svelte 5 和 TypeScript。它与现有终端程序并行安装：`bin/lune.exe` 仍启动 TUI/CLI，`bin/lune-desktop.exe` 启动桌面窗口。TUI 与 Desktop 可以同时打开同一项目；两者的会话、队列和检查点独立保存。
 
 ## 构建和运行
 
@@ -39,6 +39,10 @@ Beta 安装包尚未签名，Windows 可能显示 SmartScreen 提示。安装器
 
 提供方、模型档案、默认模型、主题和最近工作区是用户级设置，会被桌面端、TUI 和 CLI 共用。MCP、上下文和图片附件限制仍属于工作区 `config.json`。
 
+Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`，Worktree 的代码目录保存在用户缓存目录下 `luneAgent/worktrees/<project-hash>/<session-id>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。
+
+每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。会话完成或删除后，工作树都会保留；Desktop 显示工作目录，合并、检查和清理由用户使用 Git 完成。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
+
 打开包含旧模型配置的工作区时，桌面端会先显示迁移预览。对于同名提供方、模型档案或默认模型，可以分别保留全局设置或使用项目设置。迁移取消或失败时，项目配置保持原样；也可以直接用原有项目配置打开工作区。
 
 当前 Core 会在合并全局模型档案之前验证工作区 `config.json`。因此，配置里还含有 MCP、上下文或附件设置的项目暂时无法完成模型字段迁移：桌面端会回滚设置数据库和原文件，并允许继续使用项目内原有模型配置。要让这类工作区完成无损迁移，需要先调整 Core 的配置加载顺序。
@@ -59,7 +63,7 @@ Beta 安装包尚未签名，Windows 可能显示 SmartScreen 提示。安装器
 
 ## 会话与 MCP 管理
 
-侧栏可搜索、重命名和删除会话。删除当前会话时先切换到其他会话；如果没有其他会话，会先创建一个新会话。删除操作会同时清除桌面端执行记录。
+侧栏可搜索、重命名和删除会话，并显示 Local/Worktree 模式及运行状态。不同会话可以并行运行，切换会话不会中断后台任务。删除当前会话时先切换到其他会话；如果没有其他会话，会先创建一个 Local 会话。删除会同时清除 Desktop 执行记录与会话数据，但保留关联的 Git 工作树。
 
 MCP 面板读取当前工作区 `config.json` 中已配置的服务，可查看连接状态、启用或停用服务，并为远程 HTTP 服务启动授权。服务定义仍由工作区配置文件管理；任务执行或待处理请求期间不能更改 MCP 状态。
 

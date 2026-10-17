@@ -176,6 +176,10 @@ export interface SessionSummary {
     "id": string;
     "title": string;
     "updatedAt": string;
+    "mode": string;
+    "workingDirectory": string;
+    "worktreePath"?: string;
+    "status": string;
 }
 
 export interface SessionView {
@@ -237,10 +241,15 @@ export interface WorkspaceOpenResult {
     "models"?: ModelSettingsView | null;
     "needsMigration": boolean;
     "migration"?: MigrationPreview | null;
+    "worktreeAvailable": boolean;
 }
 
 export interface WorkspaceState {
     "workspace": string;
+    "projectRoot": string;
+    "workspaceMode": string;
+    "workingDirectory": string;
+    "worktreePath"?: string;
     "session": SessionView;
     "sessions": SessionSummary[] | null;
     "permissionMode": string;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,6 +71,37 @@ func desktopLatestUserInput(input *publicmodel.ResponseInput) string {
 type gatedDesktopProvider struct {
 	entered chan string
 	release chan struct{}
+}
+
+type planThenCompleteDesktopProvider struct{ calls atomic.Int32 }
+
+func (p *planThenCompleteDesktopProvider) Name() string { return "host" }
+
+func (p *planThenCompleteDesktopProvider) CreateResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	return p.respond(ctx, nil)
+}
+
+func (p *planThenCompleteDesktopProvider) StreamResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	return p.respond(ctx, emit)
+}
+
+func (p *planThenCompleteDesktopProvider) respond(ctx context.Context, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	text := "实现已完成。"
+	if p.calls.Add(1) == 1 {
+		text = "<proposed_plan>\n## 实施方案\n- 完成用户批准的改动。\n</proposed_plan>"
+	}
+	response := desktopTextResponse(text)
+	if emit != nil {
+		if err := emit(publicmodel.ModelStreamEvent{Type: publicmodel.ModelStreamCompleted, Response: response}); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
 }
 
 func (p *gatedDesktopProvider) Name() string { return "host" }
@@ -233,6 +265,133 @@ func TestSubmitQueuesMessageWhileAnotherExecutionRuns(t *testing.T) {
 	}
 	if first.ExecutionID == second.ExecutionID {
 		t.Fatal("queued execution reused the active execution ID")
+	}
+}
+
+func TestSeparateSessionRuntimesCanRunInParallelAndSwitchWhileRunning(t *testing.T) {
+	provider := &gatedDesktopProvider{entered: make(chan string, 2), release: make(chan struct{})}
+	service, _, localSessionID := newDesktopServiceForTest(t, provider)
+	worktreeWorkspace := t.TempDir()
+	worktreeStateDir := filepath.Join(t.TempDir(), "worktree-state")
+	worktreeCore, err := core.New(core.Config{
+		Workspace: worktreeWorkspace, StateDir: worktreeStateDir, Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &publicmodel.Config{
+			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Models:       map[string]publicmodel.ModelProfile{"primary": {Provider: "host", Model: "test-model"}},
+			DefaultModel: "primary",
+		},
+		ModelProviders: map[string]publicmodel.Provider{"host": provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreeSession, err := worktreeCore.CreateSession(context.Background(), nil)
+	if err != nil {
+		_ = worktreeCore.Close()
+		t.Fatal(err)
+	}
+	worktreeContext := &desktopSessionContext{
+		core: worktreeCore, sessionID: worktreeSession.ID, workspace: worktreeWorkspace,
+		mode: workspaceModeWorktree, stateDir: worktreeStateDir, worktreePath: worktreeWorkspace,
+	}
+	if err := service.attachSessionRuntime(worktreeContext); err != nil {
+		_ = worktreeCore.Close()
+		t.Fatal(err)
+	}
+
+	localIndex, worktreeIndex := 0, 0
+	if _, err := service.Submit(SubmitInput{Text: "local task", UserMessageIndex: &localIndex}); err != nil {
+		t.Fatalf("submit local task: %v", err)
+	}
+	if _, err := service.OpenSession(worktreeSession.ID); err != nil {
+		t.Fatalf("switch to running worktree session: %v", err)
+	}
+	if _, err := service.Submit(SubmitInput{Text: "worktree task", UserMessageIndex: &worktreeIndex}); err != nil {
+		t.Fatalf("submit worktree task: %v", err)
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case input := <-provider.entered:
+			seen[input] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("both session runtimes did not reach the provider concurrently")
+		}
+	}
+	if !seen["local task"] || !seen["worktree task"] {
+		t.Fatalf("provider requests = %#v", seen)
+	}
+	if _, err := service.OpenSession(localSessionID); err != nil {
+		t.Fatalf("switch back while tasks are running: %v", err)
+	}
+	localState, err := service.sessionContexts[localSessionID].runtime.State(context.Background())
+	if err != nil || localState.Task.Status != core.TaskRunning {
+		t.Fatalf("local task state after switching = %#v, error=%v", localState.Task, err)
+	}
+	worktreeState, err := service.sessionContexts[worktreeSession.ID].runtime.State(context.Background())
+	if err != nil || worktreeState.Task.Status != core.TaskRunning {
+		t.Fatalf("worktree task state after switching = %#v, error=%v", worktreeState.Task, err)
+	}
+
+	close(provider.release)
+	for _, sessionID := range []string{localSessionID, worktreeSession.ID} {
+		runtime := service.sessionContexts[sessionID].runtime
+		state, err := runtime.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runtime.WaitTurn(context.Background(), state.Task.ExecutionID); err != nil {
+			t.Fatalf("wait for session %q: %v", sessionID, err)
+		}
+	}
+}
+
+func TestWorktreePlanNewContextRegistersSiblingInSharedCore(t *testing.T) {
+	provider := &planThenCompleteDesktopProvider{}
+	service, agent, sessionID := newDesktopServiceForTest(t, provider)
+	source := service.sessionContexts[sessionID]
+	source.mode = workspaceModeWorktree
+	source.worktreePath = source.workspace
+	source.repositoryRoot = source.workspace
+	if err := service.activityStore.SaveDesktopSession(context.Background(), DesktopSessionRecord{
+		ID: sessionID, Mode: workspaceModeWorktree, Workspace: source.workspace, StateDir: source.stateDir,
+		WorktreePath: source.worktreePath, RepositoryRoot: source.repositoryRoot, Title: "plan source", Status: "idle",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.localCore = agent
+	if err := service.SetPlanMode(true); err != nil {
+		t.Fatal(err)
+	}
+	index := 0
+	submission, err := service.Submit(SubmitInput{Text: "plan the change", UserMessageIndex: &index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := source.runtime.WaitTurn(context.Background(), submission.ExecutionID)
+	if err != nil || result.Status != core.TaskCompleted || result.ProposedPlan == nil {
+		t.Fatalf("plan result = %#v, error=%v", result, err)
+	}
+	implementation, err := service.ImplementPlan(submission.ExecutionID, string(core.PlanImplementNewContext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if implementation.SessionID == sessionID {
+		t.Fatal("new-context plan implementation reused the source session")
+	}
+	child := service.sessionContexts[implementation.SessionID]
+	if child == nil || child.mode != workspaceModeWorktree || child.core != source.core || child.stateDir != source.stateDir {
+		t.Fatalf("plan child was not registered in its source Worktree Core: %#v", child)
+	}
+	registered, found, err := service.activityStore.DesktopSession(context.Background(), implementation.SessionID)
+	if err != nil || !found || registered.StateDir != source.stateDir || registered.WorktreePath != source.worktreePath {
+		t.Fatalf("Worktree child registry = %#v, found=%t, error=%v", registered, found, err)
+	}
+	if _, err := service.OpenSession(implementation.SessionID); err != nil {
+		t.Fatalf("open Worktree child: %v", err)
+	}
+	if _, err := child.runtime.WaitTurn(context.Background(), implementation.ExecutionID); err != nil {
+		t.Fatalf("wait for Worktree child implementation: %v", err)
 	}
 }
 

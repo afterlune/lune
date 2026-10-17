@@ -28,6 +28,15 @@ test('session sidebar supports renaming a conversation', async ({ page }) => {
   await expect(page.getByRole('button', { name: /重命名后的会话/ })).toBeVisible();
 });
 
+test('new sessions can choose an isolated Worktree and show its path', async ({ page }) => {
+  await page.goto('/?preview=1');
+  await page.getByRole('button', { name: /新建会话/ }).first().click();
+  await expect(page.getByRole('menu', { name: '选择会话工作区模式' })).toBeVisible();
+  await page.getByRole('menuitem', { name: /隔离工作树/ }).click();
+  await expect(page.locator('.crumb-mode')).toHaveText('WORKTREE');
+  await expect(page.locator('.crumb-working-path')).toContainText('.worktrees');
+});
+
 test('question panel preview matches its baseline', async ({ page }) => {
   await page.goto('/?preview=question');
   await expect(page.getByText('任务失败或取消后，Tab 标题怎么显示？')).toBeVisible();

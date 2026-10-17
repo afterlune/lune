@@ -41,6 +41,10 @@
   let recent = $state<Bootstrap['recentWorkspaces']>([]);
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
   let workspace = $state('');
+  let workingDirectory = $state('');
+  let workspaceMode = $state('local');
+  let worktreeAvailable = $state(false);
+  let createSessionMenu = $state(false);
   let sessions = $state<SessionSummary[]>([]);
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
@@ -77,7 +81,7 @@
   let migrationPath = $state('');
   let switchTarget = $state('');
   let planReview = $state<{ executionID: string; text: string } | null>(null);
-  let deferredPlanReviews = $state<{ executionID: string; text: string }[]>([]);
+  let deferredPlanReviews = $state<{ sessionId: string; executionID: string; text: string }[]>([]);
   let answerValues = $state<Record<string, string>>({});
   let noteValues = $state<Record<string, string>>({});
   let providerForms = $state<ProviderForm[]>([]);
@@ -102,6 +106,7 @@
   const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
+  const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
   const transcriptRows = $derived.by(() => {
     let userMessageIndex = -1;
@@ -456,7 +461,7 @@
   };
 
   const previewState: WorkspaceState = {
-    workspace: 'D:\\Git\\luneAgent', permissionMode: 'workspace',
+    workspace: 'D:\\Git\\luneAgent', projectRoot: 'D:\\Git\\luneAgent', workspaceMode: 'local', workingDirectory: 'D:\\Git\\luneAgent', permissionMode: 'workspace',
     session: {
       id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00',
       settings: { model_profile: '工作模型' },
@@ -465,16 +470,21 @@
         { id: 'm2', role: 'assistant', text: '我会先把窗口结构和消息流搭好，再补上浏览器预览与真实窗口启动检查。' },
       ],
     },
-    sessions: [{ id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00' }],
+    sessions: [{ id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', status: 'idle' }],
     runtimeState: { Task: { Status: TaskStatus.TaskIdle, SessionID: 'session-preview', TaskID: '', ExecutionID: '', QueueID: '', ContextWindow: 0, ReserveOutputTokens: 0, AutoCompact: false, AutoCompactThreshold: 0, Goal: '', MaxToolRounds: 0, ModelOverride: '', ModelProfile: '工作模型', Provider: 'deepseek', Model: 'deepseek-chat', ReasoningEffort: '', Execution: {} }, Queue: [] },
     pending: [],
     executionHistory: [],
   };
 
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
+    if (planReview && session && session.id !== state.session.id) {
+      deferredPlanReviews = [...deferredPlanReviews, { sessionId: session.id, ...planReview }];
+    }
     const currentPlanReview = preservePlanReview && session?.id === state.session.id ? planReview : null;
     clearElapsedTimer();
-    workspace = state.workspace;
+    workspace = state.projectRoot || state.workspace;
+    workingDirectory = state.workingDirectory || state.workspace;
+    workspaceMode = state.workspaceMode || 'local';
     session = state.session;
     sessions = state.sessions ?? [];
     permissionMode = state.permissionMode || 'workspace';
@@ -509,6 +519,7 @@
         } else startElapsedTimer(true);
       } else startElapsedTimer(true);
     }
+    presentDeferredPlanReview();
   }
 
   function applySessionRefresh(state: WorkspaceState) {
@@ -582,6 +593,7 @@
     if (previewMode) {
       await new Promise((resolve) => setTimeout(resolve, 80));
       theme = previewBootstrap.theme;
+      worktreeAvailable = true;
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       installWorkspaceState(previewState);
@@ -676,6 +688,7 @@
       recent = data.recentWorkspaces ?? [];
       models = data.models;
       workspace = data.workspace;
+      workingDirectory = data.workspace;
       permissionMode = data.permissionMode || 'workspace';
       applyTheme(theme);
       Events.On('agent-event', (event: { data: AgentEvent }) => onAgentEvent(event.data));
@@ -822,6 +835,7 @@
 
   function onAgentEvent(event: AgentEvent) {
     if (previewMode && cancelledPreviewExecutions.has(event.executionId)) return;
+    updateSessionStatusFromEvent(event);
     if (event.sessionId !== session?.id) return;
     if (event.kind === 'task_queued') {
       queuedExecution(event);
@@ -891,7 +905,11 @@
 
   function onTurnResult(result: TurnResultEvent) {
     if (previewMode && cancelledPreviewExecutions.has(result.executionId)) return;
-    if (result.sessionId !== session?.id) return;
+    updateSessionStatus(result.sessionId, result.status === 'paused' ? 'waiting' : result.status || (result.error ? 'failed' : 'completed'));
+    if (result.sessionId !== session?.id) {
+      if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { sessionId: result.sessionId, executionID: result.executionId, text: result.plan }];
+      return;
+    }
     const currentRun = activityHistory.find((run) => run.executionId === result.executionId || run.key === result.executionId);
     const interrupted = interruptRequestedExecutionID === result.executionId || currentRun?.status === 'interrupted';
     const isCurrentExecution = result.executionId === executionID;
@@ -910,16 +928,33 @@
         local: true, deliveryState: 'submitted', executionID: result.executionId, interrupted: !!partialText,
       });
     }
-    if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { executionID: result.executionId, text: result.plan }];
+    if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { sessionId: result.sessionId, executionID: result.executionId, text: result.plan }];
     presentDeferredPlanReview();
     scrollToLatest();
     void refreshSession();
   }
 
+  function updateSessionStatus(sessionId: string, status: string) {
+    if (!sessionId || !status) return;
+    sessions = sessions.map((item) => item.id === sessionId ? { ...item, status } : item);
+  }
+
+  function updateSessionStatusFromEvent(event: AgentEvent) {
+    if (event.kind === 'task_queued') updateSessionStatus(event.sessionId, 'queued');
+    else if (event.kind === 'task_started' || event.kind === 'model_recovery_resumed') updateSessionStatus(event.sessionId, 'running');
+    else if (event.kind === 'task_finished') updateSessionStatus(event.sessionId, event.status === 'paused' ? 'waiting' : event.status);
+    else if (event.kind === 'task_discarded') updateSessionStatus(event.sessionId, 'interrupted');
+    else if (['approval_required', 'user_question_required', 'user_interaction_required', 'model_recovery_required', 'tool_recovery_required'].includes(event.kind)) {
+      updateSessionStatus(event.sessionId, 'waiting');
+    }
+  }
+
   function presentDeferredPlanReview() {
-    if (planReview || running || queuedMessageCount > 0 || pending.length > 0 || deferredPlanReviews.length === 0) return;
-    planReview = deferredPlanReviews[0];
-    deferredPlanReviews = deferredPlanReviews.slice(1);
+    if (!session || planReview || running || queuedMessageCount > 0 || pending.length > 0) return;
+    const index = deferredPlanReviews.findIndex((item) => item.sessionId === session?.id);
+    if (index < 0) return;
+    planReview = deferredPlanReviews[index];
+    deferredPlanReviews = deferredPlanReviews.filter((_, itemIndex) => itemIndex !== index);
   }
 
   function compactArguments(value: unknown) {
@@ -1001,19 +1036,23 @@
   }
 
   async function openWorkspace(path: string) {
-    if (workspace && workOutstanding) {
+    if (workspace && workspaceHasOutstanding) {
       switchTarget = path;
       modal = 'switch';
       return;
     }
     try {
-      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace', needsMigration: false } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
+      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace', needsMigration: false, worktreeAvailable: true } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
       await completeWorkspaceOpen(result);
     } catch (error) { showError(error); }
   }
 
   async function completeWorkspaceOpen(result: WorkspaceOpenResult) {
     workspace = result.workspace;
+    workingDirectory = result.workspace;
+    workspaceMode = 'local';
+    worktreeAvailable = result.worktreeAvailable ?? false;
+    createSessionMenu = false;
     if (result.models) models = result.models;
     if (result.needsMigration && result.migration) {
       migration = result.migration;
@@ -1025,7 +1064,7 @@
     sessions = result.sessions ?? [];
     permissionMode = result.permissionMode || 'workspace';
     if (sessions.length > 0) await openSession(sessions[0].id);
-    else if (!previewMode) installWorkspaceState(await Desktop.CreateSession());
+    else if (!previewMode) installWorkspaceState(await Desktop.CreateSession('local'));
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
   }
 
@@ -1058,6 +1097,8 @@
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
+      workingDirectory = '';
+      workspaceMode = 'local';
       session = null;
       messages = [];
       running = false;
@@ -1069,12 +1110,14 @@
   }
 
   async function closeWorkspace() {
-    if (workOutstanding) { modal = 'close'; return; }
+    if (workspaceHasOutstanding) { modal = 'close'; return; }
     if (!previewMode) {
       try { await Desktop.CloseWorkspace(false); }
       catch (error) { showError(error); return; }
     }
     workspace = '';
+    workingDirectory = '';
+    workspaceMode = 'local';
     session = null;
     messages = [];
     pending = [];
@@ -1086,6 +1129,8 @@
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
+      workingDirectory = '';
+      workspaceMode = 'local';
       session = null;
       messages = [];
       pending = [];
@@ -1104,10 +1149,29 @@
     catch (error) { showError(error); }
   }
 
-  async function createSession() {
-    if (previewMode) return;
-    try { installWorkspaceState(await Desktop.CreateSession()); }
+  async function createSession(mode: 'local' | 'worktree' = 'local') {
+    createSessionMenu = false;
+    if (previewMode) {
+      const path = 'D:\\Git\\sample-project';
+      installWorkspaceState({
+        ...previewState,
+        projectRoot: previewState.workspace,
+        workspaceMode: mode,
+        workingDirectory: mode === 'worktree' ? `${path}\\.worktrees\\preview` : previewState.workspace,
+        worktreePath: mode === 'worktree' ? `${path}\\.worktrees\\preview` : undefined,
+      });
+      return;
+    }
+    try { installWorkspaceState(await Desktop.CreateSession(mode)); }
     catch (error) { showError(error); }
+  }
+
+  function toggleCreateSessionMenu() {
+    if (!workspace) {
+      void openFolderPicker();
+      return;
+    }
+    createSessionMenu = !createSessionMenu;
   }
 
   function beginRenameSession(item: SessionSummary) {
@@ -1146,7 +1210,7 @@
       } else {
         if (session?.id === target.id) {
           const fallback = sessions.find((item) => item.id !== target.id);
-          installWorkspaceState(fallback ? await Desktop.OpenSession(fallback.id) : await Desktop.CreateSession());
+          installWorkspaceState(fallback ? await Desktop.OpenSession(fallback.id) : await Desktop.CreateSession('local'));
         }
         await Desktop.DeleteSession(target.id);
         sessions = sessions.filter((item) => item.id !== target.id);
@@ -1611,7 +1675,7 @@
       planReview = null;
       planMode = false;
       if (result.sessionId !== session?.id) {
-        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString() }, ...sessions];
+        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString(), mode: workspaceMode, workingDirectory, status: 'running' }, ...sessions];
         await openSession(result.sessionId);
       }
       running = true;
@@ -1646,9 +1710,19 @@
         <button class="icon-button sidebar-more" aria-label="设置" onclick={setSettingsForm}>···</button>
       </div>
 
-      <button class="new-chat" onclick={workspace ? createSession : openFolderPicker}>
+      <button class="new-chat" onclick={toggleCreateSessionMenu} aria-haspopup="menu" aria-expanded={createSessionMenu}>
         <span class="plus">＋</span>{workspace ? '新建会话' : '打开工作区'}<kbd>⌘ K</kbd>
       </button>
+      {#if workspace && createSessionMenu}
+        <div class="session-mode-menu" role="menu" aria-label="选择会话工作区模式">
+          <button role="menuitem" onclick={() => void createSession('local')}>
+            <strong>当前工作区</strong><span>Local · 直接使用当前目录</span>
+          </button>
+          <button role="menuitem" disabled={!worktreeAvailable} title={worktreeAvailable ? '从当前已提交 HEAD 创建独立工作树' : 'Worktree 模式需要 Git 仓库和 Git 命令'} onclick={() => void createSession('worktree')}>
+            <strong>隔离工作树</strong><span>{worktreeAvailable ? 'Worktree · 从当前 HEAD 创建' : '需要 Git 仓库'}</span>
+          </button>
+        </div>
+      {/if}
       <div class="sidebar-section"><span>工作区</span><button class="tiny-add" aria-label="打开工作区" onclick={openFolderPicker}>＋</button></div>
       {#if workspace}
         <button class="workspace-row active" title={workspace} onclick={() => void closeWorkspace()}>
@@ -1657,26 +1731,28 @@
         <div class="sidebar-view-tabs">
           <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
           <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
-          {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={createSession}>＋</button>{/if}
+          {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
         </div>
         {#if sidebarView === 'sessions'}
           <input class="session-search" bind:value={sessionFilter} placeholder="搜索会话" aria-label="搜索会话" />
           <div class="session-list">
             {#each visibleSessions as item (item.id)}
               <div class:chosen={session?.id === item.id} class="session-entry">
-                <button class="session-row" title={item.title || '新会话'} onclick={() => void openSession(item.id)}>
-                  <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span><span>{item.title || '新会话'}</span>
+                <button class="session-row" title={`${item.title || '新会话'}${item.mode === 'worktree' ? ` · ${item.workingDirectory || item.worktreePath || ''}` : ''}`} onclick={() => void openSession(item.id)}>
+                  <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span><span class="session-name">{item.title || '新会话'}</span>
+                  <span class={`session-mode-badge ${item.mode === 'worktree' ? 'worktree' : ''}`}>{item.mode === 'worktree' ? 'WT' : 'LOCAL'}</span>
+                  {#if ['running', 'queued', 'waiting'].includes(item.status ?? '')}<span class={`session-activity ${item.status}`} title={item.status === 'waiting' ? '等待处理' : item.status === 'queued' ? '排队中' : '正在运行'}></span>{/if}
                 </button>
                 <div class="session-row-actions">
-                  <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={busy || workOutstanding} onclick={(event) => { event.stopPropagation(); beginRenameSession(item); }}>✎</button>
-                  <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={busy || workOutstanding} onclick={(event) => { event.stopPropagation(); beginDeleteSession(item); }}>×</button>
+                  <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={busy} onclick={(event) => { event.stopPropagation(); beginRenameSession(item); }}>✎</button>
+                  <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={busy || ['running', 'queued', 'waiting'].includes(item.status ?? '')} onclick={(event) => { event.stopPropagation(); beginDeleteSession(item); }}>×</button>
                 </div>
               </div>
             {/each}
             {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
           </div>
         {:else}
-          {#key workspace}<WorkspaceExplorer previewMode={previewMode} onPreviewFile={openWorkspaceFile} onError={showError} />{/key}
+          {#key workingDirectory}<WorkspaceExplorer previewMode={previewMode} onPreviewFile={openWorkspaceFile} onError={showError} />{/key}
         {/if}
       {:else}
         <div class="sidebar-empty">打开一个本地文件夹开始工作。</div>
@@ -1700,7 +1776,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{session?.title || '新会话'}</span>{:else}<span class="crumb-current">桌面工作区</span>{/if}
+          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{session?.title || '新会话'}</span><span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
         </div>
         <div class="top-actions">
           {#if workspace}
@@ -1909,7 +1985,7 @@
     {:else if modal === 'delete-session' && sessionActionTarget}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" tabindex="-1">
         <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="delete-session-title">删除会话？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; sessionActionTarget = null; }}>×</button></div>
-        <div class="modal-body"><p>“{sessionActionTarget.title || '新会话'}”的对话、执行记录和待运行消息将被删除。此操作无法撤销。删除当前会话时会自动切换到其他会话；若这是最后一个会话，会先创建一个新会话。</p></div>
+        <div class="modal-body"><p>“{sessionActionTarget.title || '新会话'}”的对话、执行记录和待运行消息将被删除。此操作无法撤销。Worktree 会话的 Git 工作目录会保留，需自行用 Git 检查和清理。删除当前会话时会自动切换到其他会话；若这是最后一个会话，会先创建一个新会话。</p></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; sessionActionTarget = null; }}>取消</button><button class="danger-button" disabled={busy} onclick={() => void confirmDeleteSession()}>{busy ? '正在删除…' : '删除会话'}</button></div>
       </div>
     {:else if modal === 'file-preview' && filePreview}
