@@ -65,6 +65,10 @@ export function Interrupt(): $CancellablePromise<boolean> {
     return $Call.ByID(2941886036);
 }
 
+export function ListDesktopWorktrees(): $CancellablePromise<$models.DesktopWorktreeView[] | null> {
+    return $Call.ByID(3399958499);
+}
+
 export function ListMCPServers(): $CancellablePromise<$models.MCPServerView[] | null> {
     return $Call.ByID(2843607385);
 }
@@ -119,6 +123,10 @@ export function RecoverModel(): $CancellablePromise<void> {
 
 export function RefreshSession(): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(3230290916);
+}
+
+export function RemoveDesktopWorktree(path: string): $CancellablePromise<void> {
+    return $Call.ByID(2061114838, path);
 }
 
 export function ResolveApproval(id: string, allowed: boolean): $CancellablePromise<void> {

@@ -13,6 +13,8 @@ export type {
     ApplyWorktreeChangesResult,
     Bootstrap,
     ConversationMessage,
+    DesktopWorktreeSessionView,
+    DesktopWorktreeView,
     ExecutionActivityView,
     ImageInput,
     MCPEnvironmentInput,

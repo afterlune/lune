@@ -557,6 +557,43 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
 .workspace-diff-state .small-button { margin-top: 3px; }
 .workspace-changes-footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; color: var(--muted); font-size: 9px; }
 .workspace-changes-footer span { color: var(--muted); }
+.desktop-worktree-sidebar { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.desktop-worktree-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 6px; color: var(--muted); font-size: 9px; }
+.desktop-worktree-sidebar-heading button { width: 22px; height: 20px; display: grid; place-items: center; font-size: 13px; }
+.desktop-worktree-sidebar-heading .spinner { width: 9px; height: 9px; }
+.desktop-worktree-sidebar-list { min-height: 0; display: flex; flex-direction: column; gap: 3px; overflow: auto; padding: 0 3px 6px; }
+.desktop-worktree-sidebar-row { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; border: 0; border-radius: 6px; padding: 7px 6px; color: var(--muted-strong); background: transparent; text-align: left; }
+.desktop-worktree-sidebar-row:hover, .desktop-worktree-sidebar-row.chosen { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.desktop-worktree-sidebar-name { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 3px; overflow: hidden; font: 9px Consolas, 'Cascadia Code', monospace; white-space: nowrap; text-overflow: ellipsis; }
+.desktop-worktree-sidebar-name small { overflow: hidden; color: var(--muted); font: 8px 'Segoe UI', 'Microsoft YaHei UI', sans-serif; text-overflow: ellipsis; }
+.desktop-worktree-status { max-width: 106px; flex: 0 0 auto; overflow: hidden; border-radius: 5px; padding: 3px 5px; color: #176b36; background: #edf8ef; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.desktop-worktree-status.dirty { color: #9c332c; background: #fff0ef; }
+.desktop-worktree-status.unavailable { color: var(--muted); background: var(--surface-soft); }
+.desktop-worktrees-page { gap: 17px; }
+.desktop-worktree-card-list { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; overflow: auto; padding: 1px 3px 8px 1px; }
+.desktop-worktree-card { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 9px; padding: 13px 14px 12px; background: var(--surface); }
+.desktop-worktree-card.chosen { border-color: var(--blue-line); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 8%, transparent); }
+.desktop-worktree-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.desktop-worktree-card-title { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 5px; }
+.desktop-worktree-card-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.desktop-worktree-kind { border-radius: 5px; padding: 3px 6px; color: var(--blue); background: var(--blue-soft); font-size: 8px; font-weight: 700; }
+.desktop-worktree-kind.orphan { color: #8a5a13; background: #fff2d9; }
+.desktop-worktree-kind.unavailable { color: var(--muted-strong); background: var(--surface-soft); }
+.desktop-worktree-card-title h2 { margin: 1px 0 0; color: var(--text); font-size: 12px; font-weight: 650; }
+.desktop-worktree-card-title code { overflow: hidden; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; font: 9px Consolas, 'Cascadia Code', monospace; }
+.desktop-worktree-remove { min-height: 30px; height: auto; flex: 0 0 auto; padding: 6px 10px; font-size: 9px; }
+.desktop-worktree-remove:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+.desktop-worktree-sessions { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 9px; }
+.desktop-worktree-sessions > strong { margin-bottom: 2px; color: var(--muted); font-size: 9px; font-weight: 600; }
+.desktop-worktree-sessions > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted-strong); font-size: 10px; }
+.desktop-worktree-sessions > div span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.desktop-worktree-sessions > div small { flex: 0 0 auto; color: var(--muted); font-size: 9px; }
+.desktop-worktree-empty-association { margin-top: 11px; border-top: 1px solid var(--line); padding-top: 9px; color: var(--muted); font-size: 9px; }
+.desktop-worktree-block-reason { margin: 9px 0 0; color: var(--muted-strong); font-size: 9px; line-height: 1.5; }
+.desktop-worktree-confirm-body code { display: block; margin: 7px 0; overflow-wrap: anywhere; color: var(--muted-strong); font: 10px/1.55 Consolas, 'Cascadia Code', monospace; }
+.desktop-worktree-confirm-body ul { margin: 8px 0 11px; padding-left: 18px; color: var(--text); font-size: 10px; line-height: 1.7; }
+.desktop-worktree-confirm-body li small { color: var(--muted); }
+.desktop-worktree-confirm-body .worktree-apply-error { margin-top: 9px; }
 .sidebar-view-tabs > button .pending-count-badge { min-width: 14px; height: 14px; display: inline-grid; place-items: center; margin-left: 4px; border-radius: 7px; padding: 0 4px; color: #fff; background: #c18424; font: 700 8px/14px 'DM Sans', sans-serif; vertical-align: 1px; }
 .pending-session-list { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; overflow: auto; }
 .pending-list-summary { padding: 8px 8px 6px; color: var(--muted); font-size: 9px; }
@@ -591,6 +628,9 @@ kbd { margin-left: auto; color: var(--muted); font: 10px 'DM Sans', sans-serif; 
   .workspace-diff-stats small { display: none; }
   .pending-session-row { padding-inline: 4px; }
   .mcp-interaction-url { align-items: flex-start; flex-direction: column; }
+  .desktop-worktree-card { padding: 10px; }
+  .desktop-worktree-card-heading { flex-direction: column; }
+  .desktop-worktree-remove { align-self: flex-end; }
 }
 @media (max-width: 760px) {
   .activity-review { margin-left: 20px; }

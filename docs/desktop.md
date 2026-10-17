@@ -41,9 +41,9 @@ Desktop 的提供方、模型档案、默认模型、主题和最近工作区保
 
 Desktop 完全忽略项目中的 `config.json`，不会导入、迁移或改写它。需要配置 Desktop 时，在工作区侧栏打开“项目设置”；需要配置 TUI/CLI 时，编辑工作区的 `config.json`。两套配置各自独立。
 
-Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`，Worktree 的代码目录保存在用户缓存目录下 `luneAgent/worktrees/<project-hash>/<session-id>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。
+Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`，Worktree 的代码目录保存在用户缓存目录下 `luneAgent/worktrees/<project-hash>/<worktree-id>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。
 
-每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。变更视图可选择 Worktree 文件并应用到原项目；Desktop 会先检查整批差异，存在冲突时不应用任何文件。应用后的改动保持未提交状态，不会自动暂存或提交。会话完成、结果应用或会话删除后，工作树都会保留，由用户自行检查和清理。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
+每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。变更视图可选择 Worktree 文件并应用到原项目；Desktop 会先检查整批差异，存在冲突时不应用任何文件。应用后的改动保持未提交状态，不会自动暂存或提交。会话完成和结果应用后，工作树都会保留。侧栏“工作树”只列出当前项目 Desktop 缓存目录中的工作树及遗留目录；关联的 Plan 新上下文会话会按同一工作树合并显示。只有 Git 状态干净且所有关联会话都已停止、没有待处理请求的工作树才能清理；暂存、未暂存、未跟踪和忽略文件都会阻止清理。孤儿工作树只清理 Git 工作树；有关联会话的工作树需确认删除该组的会话、执行记录和 Core 状态。清理不使用 Git 强制选项。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
 
 ## 运行中发送与编辑
 
@@ -63,7 +63,7 @@ Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-h
 
 ## 会话与 MCP 管理
 
-侧栏可搜索、重命名和删除会话，并显示 Local/Worktree 模式及运行状态。不同会话可以并行运行，切换会话不会中断后台任务。删除当前会话时先切换到其他会话；如果没有其他会话，会先创建一个 Local 会话。删除会同时清除 Desktop 执行记录与会话数据，但保留关联的 Git 工作树。
+侧栏可搜索、重命名和删除会话，并显示 Local/Worktree 模式及运行状态。不同会话可以并行运行，切换会话不会中断后台任务。删除当前会话时先切换到其他会话；如果没有其他会话，会先创建一个 Local 会话。删除会同时清除 Desktop 执行记录与会话数据，但保留关联的 Git 工作树；之后可从“工作树”查看并清理这个孤儿工作树。工作树管理只操作当前项目的 Desktop 缓存路径，不会列出或删除用户自己的外部 Git Worktree。已从 Git 登记中消失、缺失或不可读取的工作树会标记为不可用，不会自动 prune。
 
 项目设置面板可编辑上下文、自动压缩、输出预留、图片限制和 MCP 服务（本地进程参数、远程 HTTP 地址及环境变量），也可查看连接状态、启用或停用服务，并为远程 HTTP 服务启动授权。环境变量值使用当前 Windows 用户的 DPAPI 加密保存在数据库中，前端只会收到变量名称和是否已配置的标记。更改项目运行设置会在所有会话空闲后重建该项目的 Local 与 Worktree Core，并恢复当前选中的会话。
 

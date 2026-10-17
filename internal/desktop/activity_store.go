@@ -259,6 +259,33 @@ func (s *ActivityStore) DeleteDesktopSession(ctx context.Context, sessionID stri
 	return nil
 }
 
+func (s *ActivityStore) DeleteDesktopSessions(ctx context.Context, sessionIDs []string) error {
+	if s == nil || s.db == nil || len(sessionIDs) == 0 {
+		return errors.New("activity store and session IDs are required")
+	}
+	for _, sessionID := range sessionIDs {
+		if strings.TrimSpace(sessionID) == "" {
+			return errors.New("session ID cannot be empty")
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Worktree session cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	for _, sessionID := range sessionIDs {
+		for _, table := range []string{"execution_activity_tools", "execution_activity_messages", "execution_activity_runs", "desktop_sessions"} {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE session_id = ?", sessionID); err != nil {
+				return fmt.Errorf("delete %s for Worktree session: %w", table, err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Worktree session cleanup: %w", err)
+	}
+	return nil
+}
+
 func (s *ActivityStore) SaveExecutionMessage(ctx context.Context, sessionID, executionID, text string, images []string, status string, queuePosition int64) error {
 	if s == nil || s.db == nil || sessionID == "" || executionID == "" || status == "" {
 		return errors.New("activity store, session, execution, and status are required")

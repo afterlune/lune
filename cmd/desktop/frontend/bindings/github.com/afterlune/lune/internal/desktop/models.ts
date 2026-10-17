@@ -60,6 +60,25 @@ export interface ConversationMessage {
     "images"?: string[] | null;
 }
 
+export interface DesktopWorktreeSessionView {
+    "id": string;
+    "title": string;
+    "status": string;
+}
+
+export interface DesktopWorktreeView {
+    "path": string;
+    "gitRegistered": boolean;
+    "available": boolean;
+    "orphaned": boolean;
+    "gitStatus": string;
+    "changedFiles": number;
+    "sessions": DesktopWorktreeSessionView[] | null;
+    "requiresLocalSwitch": boolean;
+    "canRemove": boolean;
+    "blockReason"?: string;
+}
+
 /**
  * ExecutionActivityView is the desktop-owned transcript of one Core execution.
  * Tool arguments and details are deliberately kept out of Core's runtime log.

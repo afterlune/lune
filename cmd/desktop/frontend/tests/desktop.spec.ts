@@ -43,6 +43,47 @@ test('workspace changes page explains clean and unavailable Git states', async (
   await expect(page.locator('.workspace-changes-page').getByText('当前会话目录不在可用的 Git 仓库中。')).toBeVisible();
 });
 
+test('Desktop Worktree manager shows managed paths, Git status, and confirms grouped cleanup', async ({ page }) => {
+  await page.goto('/?preview=worktrees');
+  await page.getByRole('button', { name: '工作树' }).click();
+
+  const manager = page.getByRole('region', { name: 'Desktop 工作树管理' });
+  await expect(page.getByRole('heading', { name: '工作树管理' })).toBeVisible();
+  await expect(manager).toContainText('thread-a');
+  await expect(manager).toContainText('thread-b');
+  await expect(manager).toContainText('thread-c');
+  await expect(manager).toContainText('2 项变更');
+  await expect(manager.locator('.desktop-worktree-card').filter({ hasText: 'thread-c' }).locator('.desktop-worktree-remove')).toBeDisabled();
+  await expect(page).toHaveScreenshot('desktop-worktrees.png', { fullPage: true });
+
+  await manager.getByRole('button', { name: /删除 1 个会话并清理/ }).first().click();
+  const sessionDialog = page.getByRole('dialog', { name: '删除关联会话并清理工作树？' });
+  await expect(sessionDialog).toContainText('修复任务队列');
+  await expect(sessionDialog).toContainText('执行历史');
+  await sessionDialog.getByRole('button', { name: /删除 1 个会话并清理工作树/ }).click();
+  await expect(manager).not.toContainText('修复任务队列');
+
+  await manager.getByRole('button', { name: '清理孤儿工作树' }).click();
+  const orphanDialog = page.getByRole('dialog', { name: '清理孤儿工作树？' });
+  await expect(orphanDialog).toContainText('只会调用 Git 清理此工作树目录');
+  await orphanDialog.getByRole('button', { name: '清理孤儿工作树' }).click();
+  await expect(manager).not.toContainText('thread-b');
+});
+
+test('cleaning the active Worktree switches to Local before removal', async ({ page }) => {
+  await page.goto('/?preview=worktrees-active');
+  await page.getByRole('button', { name: '工作树' }).click();
+  const manager = page.getByRole('region', { name: 'Desktop 工作树管理' });
+  const activeCard = manager.locator('.desktop-worktree-card').filter({ hasText: 'thread-a' });
+  await expect(activeCard).toContainText('确认后会先切换到 Local');
+  await activeCard.getByRole('button', { name: /删除 1 个会话并清理/ }).click();
+  const dialog = page.getByRole('dialog', { name: '删除关联会话并清理工作树？' });
+  await expect(dialog).toContainText('会先切换到已有 Local 会话，没有时会创建一个');
+  await dialog.getByRole('button', { name: /删除 1 个会话并清理工作树/ }).click();
+  await page.getByRole('button', { name: '会话', exact: true }).click();
+  await expect(page.locator('.crumb-mode')).toHaveText('LOCAL');
+});
+
 test('Worktree changes can be selected and applied to the original project', async ({ page }) => {
   await page.goto('/?preview=changes');
   await page.getByRole('button', { name: '变更' }).click();

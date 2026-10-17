@@ -8,7 +8,7 @@
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
-    Bootstrap, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
+    Bootstrap, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
     SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
     WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
@@ -36,10 +36,11 @@
   type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
   type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
   type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers'> & { mcpServers: MCPServerForm[] };
-  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | 'apply-worktree' | null;
+  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'delete-worktree' | 'mcp' | 'file-preview' | 'apply-worktree' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
   type WorkspaceChanges = Omit<WorkspaceChangesView, 'files'> & { files: NonNullable<WorkspaceChangesView['files']> };
+  type DesktopWorktree = Omit<DesktopWorktreeView, 'sessions'> & { sessions: NonNullable<DesktopWorktreeView['sessions']> };
   type WorktreeApplyConfirmation = { sessionID: string; paths: string[]; files: NonNullable<WorkspaceChangesView['files']>; destination: string };
   type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
   type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
@@ -58,7 +59,7 @@
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
-  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'pending'>('sessions');
+  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'worktrees' | 'pending'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let planMode = $state(false);
@@ -126,6 +127,13 @@
   let workspaceDiffRequest = 0;
   let workspaceChangesForSession = '';
   let workspaceChangesForDirectory = '';
+  let desktopWorktrees = $state<DesktopWorktree[]>([]);
+  let desktopWorktreesLoading = $state(false);
+  let desktopWorktreesError = $state('');
+  let desktopWorktreesRequest = 0;
+  let selectedDesktopWorktreePath = $state('');
+  let worktreeRemovalTarget = $state<DesktopWorktree | null>(null);
+  let worktreeRemovalError = $state('');
   let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
 
@@ -605,6 +613,16 @@
     return previewWorkspaceChanges;
   }
 
+  function previewDesktopWorktrees(): DesktopWorktree[] {
+    const root = 'C:\\Users\\Code\\AppData\\Local\\luneAgent\\worktrees\\4b86f2c7';
+    return [
+      { path: `${root}\\thread-a`, gitRegistered: true, available: true, orphaned: false, gitStatus: 'clean', changedFiles: 0, sessions: [{ id: 'wt-session-a', title: '修复任务队列', status: 'completed' }], requiresLocalSwitch: previewVariant === 'worktrees-active', canRemove: true },
+      { path: `${root}\\thread-b`, gitRegistered: true, available: true, orphaned: true, gitStatus: 'clean', changedFiles: 0, sessions: [], requiresLocalSwitch: false, canRemove: true },
+      { path: `${root}\\thread-c`, gitRegistered: true, available: true, orphaned: false, gitStatus: 'dirty', changedFiles: 2, sessions: [{ id: 'wt-session-c', title: '保留中的本地改动', status: 'idle' }], requiresLocalSwitch: false, canRemove: false, blockReason: '包含 2 项暂存、未暂存、未跟踪或忽略文件' },
+      { path: `${root}\\thread-d`, gitRegistered: false, available: false, orphaned: false, gitStatus: 'unavailable', changedFiles: 0, sessions: [], requiresLocalSwitch: false, canRemove: false, blockReason: 'Git 中未登记此缓存目录，请先手动检查' },
+    ];
+  }
+
   function previewChangesWorkspaceState(): WorkspaceState {
     const workingDirectory = `${previewState.workspace}\\.worktrees\\preview`;
     const waiting = previewVariant === 'changes-waiting';
@@ -685,6 +703,102 @@
       }
     } finally {
       if (request === workspaceChangesRequest) workspaceChangesLoading = false;
+    }
+  }
+
+  async function refreshDesktopWorktrees() {
+    const request = ++desktopWorktreesRequest;
+    const requestProject = workspace;
+    desktopWorktreesLoading = true;
+    desktopWorktreesError = '';
+    try {
+      const result = previewMode ? previewDesktopWorktrees() : await Desktop.ListDesktopWorktrees();
+      if (request !== desktopWorktreesRequest || workspace !== requestProject || sidebarView !== 'worktrees') return;
+      desktopWorktrees = (result ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
+      if (!desktopWorktrees.some((item) => item.path === selectedDesktopWorktreePath)) {
+        selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
+      }
+    } catch (error) {
+      if (request === desktopWorktreesRequest && workspace === requestProject) {
+        desktopWorktreesError = String(error);
+        desktopWorktrees = [];
+      }
+    } finally {
+      if (request === desktopWorktreesRequest) desktopWorktreesLoading = false;
+    }
+  }
+
+  function beginDesktopWorktreeRemoval(worktree: DesktopWorktree) {
+    if (!worktree.canRemove || busy) return;
+    worktreeRemovalTarget = worktree;
+    worktreeRemovalError = '';
+    modal = 'delete-worktree';
+  }
+
+  function desktopWorktreeName(worktree: DesktopWorktreeView) {
+    return worktree.path.split(/[\\/]/).at(-1) || worktree.path;
+  }
+
+  function desktopWorktreeStatusLabel(worktree: DesktopWorktreeView) {
+    if (!worktree.gitRegistered || !worktree.available || worktree.gitStatus === 'unavailable') return '不可用';
+    return worktree.gitStatus === 'dirty' ? `${worktree.changedFiles} 项变更` : 'Git 干净';
+  }
+
+  function desktopWorktreeSessionStatusLabel(status: string) {
+    return ({ idle: '空闲', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', running: '运行中', queued: '排队中', waiting: '等待处理', unavailable: '不可用', 'in use': '被其他实例占用', missing: '目录缺失' } as Record<string, string>)[status] ?? status;
+  }
+
+  async function confirmDesktopWorktreeRemoval() {
+    const target = worktreeRemovalTarget;
+    if (!target || busy) return;
+    busy = true;
+    worktreeRemovalError = '';
+    try {
+      if (target.sessions.some((item) => item.id === session?.id)) {
+        const localSession = sessions.find((item) => item.mode === 'local');
+        if (previewMode) {
+          await createSession('local');
+        } else if (localSession) {
+          installWorkspaceState(await Desktop.OpenSession(localSession.id));
+        } else {
+          installWorkspaceState(await Desktop.CreateSession('local'));
+        }
+      }
+      if (previewMode) {
+        desktopWorktrees = desktopWorktrees.filter((item) => item.path !== target.path);
+        selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
+      } else {
+        await Desktop.RemoveDesktopWorktree(target.path);
+        modal = null;
+        worktreeRemovalTarget = null;
+        try {
+          if (session) installWorkspaceState(await Desktop.RefreshSession());
+        } catch (error) {
+          showError(error);
+        }
+        try {
+          const refreshed = await Desktop.ListDesktopWorktrees();
+          desktopWorktrees = (refreshed ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
+          selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
+        } catch (error) {
+          desktopWorktreesError = String(error);
+        }
+        return;
+      }
+      modal = null;
+      worktreeRemovalTarget = null;
+    } catch (error) {
+      worktreeRemovalError = error instanceof Error ? error.message : String(error);
+      if (!previewMode) {
+        try {
+          const refreshed = await Desktop.ListDesktopWorktrees();
+          desktopWorktrees = (refreshed ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
+          const updatedTarget = desktopWorktrees.find((item) => sameWorkspacePath(item.path, target.path));
+          if (updatedTarget) worktreeRemovalTarget = updatedTarget;
+        } catch { /* Keep the original removal error visible in the confirmation. */ }
+      }
+    } finally {
+      busy = false;
     }
   }
 
@@ -961,7 +1075,14 @@
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       const variant = previewVariant;
-      installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : previewState);
+      const activeWorktreePreview: WorkspaceState = {
+        ...previewState,
+        workspaceMode: 'worktree', workingDirectory: `${previewState.workspace}\\.worktrees\\thread-a`,
+        worktreePath: `${previewState.workspace}\\.worktrees\\thread-a`,
+        session: { ...previewState.session, id: 'wt-session-a', title: '修复任务队列' },
+        sessions: [{ id: 'wt-session-a', title: '修复任务队列', updatedAt: previewState.session.updatedAt, mode: 'worktree', workingDirectory: `${previewState.workspace}\\.worktrees\\thread-a`, worktreePath: `${previewState.workspace}\\.worktrees\\thread-a`, status: 'completed' }],
+      };
+      installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : variant === 'worktrees-active' ? activeWorktreePreview : previewState);
       if (variant === 'pending-center') pendingSessions = previewPendingSessions;
       activities = [];
       if (variant === 'empty') {
@@ -1491,6 +1612,9 @@
     workingDirectory = result.workspace;
     workspaceMode = 'local';
     worktreeAvailable = result.worktreeAvailable ?? false;
+    desktopWorktrees = [];
+    desktopWorktreesError = '';
+    selectedDesktopWorktreePath = '';
     createSessionMenu = false;
     if (result.models) models = result.models;
     sessions = result.sessions ?? [];
@@ -2177,6 +2301,7 @@
           <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
           <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
           <button class:active={sidebarView === 'changes'} onclick={() => { sidebarView = 'changes'; void refreshWorkspaceChanges(); }}>变更</button>
+          <button class:active={sidebarView === 'worktrees'} onclick={() => { sidebarView = 'worktrees'; void refreshDesktopWorktrees(); }}>工作树</button>
           <button class:active={sidebarView === 'pending'} aria-label={`待处理${pendingRequestCount ? `，${pendingRequestCount} 项` : ''}`} onclick={() => { sidebarView = 'pending'; void refreshPendingSessions(); }}>待处理{#if pendingRequestCount}<span class="pending-count-badge">{pendingRequestCount}</span>{/if}</button>
           {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
         </div>
@@ -2216,6 +2341,23 @@
                   <span class="pending-session-arrow">›</span>
                 </button>
               {/each}
+            {/if}
+          </section>
+        {:else if sidebarView === 'worktrees'}
+          <section class="desktop-worktree-sidebar" aria-label="Desktop Worktree 管理">
+            <div class="desktop-worktree-sidebar-heading"><span>当前项目的 Desktop 工作树</span><button class="workspace-select-all" aria-label="刷新工作树列表" disabled={desktopWorktreesLoading} onclick={() => void refreshDesktopWorktrees()}>{#if desktopWorktreesLoading}<span class="spinner"></span>{:else}↻{/if}</button></div>
+            {#if desktopWorktreesLoading && !desktopWorktrees.length}<div class="workspace-change-empty"><span class="spinner"></span>正在读取 Worktree…</div>
+            {:else if desktopWorktreesError}<div class="workspace-change-empty error">{desktopWorktreesError}<button class="small-button" onclick={() => void refreshDesktopWorktrees()}>重试</button></div>
+            {:else if !desktopWorktrees.length}<div class="workspace-change-empty">当前项目没有 Desktop 管理的 Git Worktree。</div>
+            {:else}
+              <div class="desktop-worktree-sidebar-list">
+                {#each desktopWorktrees as worktree (worktree.path)}
+                  <button class:chosen={selectedDesktopWorktreePath === worktree.path} class="desktop-worktree-sidebar-row" title={worktree.path} onclick={() => selectedDesktopWorktreePath = worktree.path}>
+                    <span class="desktop-worktree-sidebar-name">{desktopWorktreeName(worktree)}<small>{worktree.orphaned ? '孤儿' : worktree.sessions.length ? `${worktree.sessions.length} 个会话` : worktree.gitRegistered ? 'Git 工作树' : '未登记目录'}</small></span>
+                    <span class:dirty={worktree.gitStatus === 'dirty'} class:unavailable={!worktree.available || !worktree.gitRegistered} class="desktop-worktree-status">{desktopWorktreeStatusLabel(worktree)}</span>
+                  </button>
+                {/each}
+              </div>
             {/if}
           </section>
         {:else if sidebarView === 'changes'}
@@ -2268,7 +2410,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'pending'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
+          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'worktrees' && sidebarView !== 'pending'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
         </div>
         <div class="top-actions">
           {#if workspace}
@@ -2294,6 +2436,54 @@
             <div class="welcome-recent"><span>最近打开</span>{#each recent.slice(0, 4) as item (item.path)}<button onclick={() => void openWorkspace(item.path)}><span>▰</span><span>{item.path}</span><b>›</b></button>{/each}</div>
           {/if}
           {#if !models.configured}<button class="inline-link welcome-config" onclick={setSettingsForm}>先配置模型以开始对话</button>{/if}
+        </section>
+      {:else if sidebarView === 'worktrees'}
+        <section class="workspace-changes-page desktop-worktrees-page" aria-label="Desktop 工作树管理">
+          <header class="workspace-changes-heading">
+            <div>
+              <p class="eyebrow">DESKTOP · GIT WORKTREES</p>
+              <h1>工作树管理</h1>
+              <p>只显示当前项目由 Desktop 管理的工作树。清理前会再次检查 Git 状态，忽略文件也会阻止清理。</p>
+            </div>
+            <div class="workspace-changes-actions">
+              <button class="subtle-button workspace-change-refresh" aria-label="刷新工作树列表" disabled={desktopWorktreesLoading} onclick={() => void refreshDesktopWorktrees()}>
+                {#if desktopWorktreesLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}刷新
+              </button>
+            </div>
+          </header>
+
+          {#if desktopWorktreesError}
+            <div class="workspace-changes-state error"><strong>读取工作树失败</strong><span>{desktopWorktreesError}</span><button class="small-button" onclick={() => void refreshDesktopWorktrees()}>重试</button></div>
+          {:else if desktopWorktreesLoading && !desktopWorktrees.length}
+            <div class="workspace-changes-state"><span class="spinner"></span><span>正在读取 Git Worktree 列表…</span></div>
+          {:else if !desktopWorktrees.length}
+            <div class="workspace-changes-state"><strong>没有 Desktop 工作树</strong><span>此项目当前没有由 Desktop 创建的 Git Worktree。</span></div>
+          {:else}
+            <div class="desktop-worktree-card-list">
+              {#each desktopWorktrees as worktree (worktree.path)}
+                <article class:chosen={selectedDesktopWorktreePath === worktree.path} class="desktop-worktree-card">
+                  <header class="desktop-worktree-card-heading">
+                    <div class="desktop-worktree-card-title">
+                      <div class="desktop-worktree-card-badges"><span class:orphan={worktree.orphaned} class:unavailable={!worktree.gitRegistered || !worktree.available} class="desktop-worktree-kind">{worktree.orphaned ? '孤儿' : worktree.gitRegistered ? '关联会话' : '未登记目录'}</span><span class:dirty={worktree.gitStatus === 'dirty'} class:unavailable={worktree.gitStatus === 'unavailable'} class="desktop-worktree-status">{desktopWorktreeStatusLabel(worktree)}</span></div>
+                      <h2>{desktopWorktreeName(worktree)}</h2>
+                      <code title={worktree.path}>{worktree.path}</code>
+                    </div>
+                    <button class="danger-button desktop-worktree-remove" disabled={!worktree.canRemove || busy} title={worktree.blockReason || ''} onclick={() => beginDesktopWorktreeRemoval(worktree)}>{worktree.orphaned ? '清理孤儿工作树' : worktree.sessions.length ? `删除 ${worktree.sessions.length} 个会话并清理` : '清理工作树'}</button>
+                  </header>
+                  {#if worktree.sessions.length}
+                    <div class="desktop-worktree-sessions">
+                      <strong>关联会话 · {worktree.sessions.length}</strong>
+                      {#each worktree.sessions as associated (associated.id)}<div><span>{associated.title || '新会话'}</span><small>{desktopWorktreeSessionStatusLabel(associated.status)}</small></div>{/each}
+                    </div>
+                  {:else if worktree.orphaned}
+                    <div class="desktop-worktree-empty-association">没有关联的 Desktop 会话；删除会话时保留的 Git 工作树会显示在这里。</div>
+                  {/if}
+                  {#if worktree.requiresLocalSwitch}<p class="desktop-worktree-block-reason">当前会话位于此工作树；确认后会先切换到 Local。</p>{/if}
+                  {#if worktree.blockReason}<p class="desktop-worktree-block-reason">{worktree.blockReason}</p>{/if}
+                </article>
+              {/each}
+            </div>
+          {/if}
         </section>
       {:else if !session}
         <section class="workspace-loading"><div class="spinner"></div><span>正在载入会话…</span></section>
@@ -2488,7 +2678,7 @@
 {#if errorMessage}<div class="toast-error" role="status">{errorMessage}<button onclick={() => errorMessage = ''}>×</button></div>{/if}
 
 {#if modal}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; } }}>
+  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; worktreeRemovalTarget = null; worktreeRemovalError = ''; } }}>
           {#if modal === 'settings'}
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
         <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><div class="modal-header-actions">{#if workspace}<button class="small-button" onclick={() => void openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div></div>
@@ -2549,6 +2739,23 @@
         <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="delete-session-title">删除会话？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; sessionActionTarget = null; }}>×</button></div>
         <div class="modal-body"><p>“{sessionActionTarget.title || '新会话'}”的对话、执行记录和待运行消息将被删除。此操作无法撤销。Worktree 会话的 Git 工作目录会保留，需自行用 Git 检查和清理。删除当前会话时会自动切换到其他会话；若这是最后一个会话，会先创建一个新会话。</p></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; sessionActionTarget = null; }}>取消</button><button class="danger-button" disabled={busy} onclick={() => void confirmDeleteSession()}>{busy ? '正在删除…' : '删除会话'}</button></div>
+      </div>
+    {:else if modal === 'delete-worktree' && worktreeRemovalTarget}
+      <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-worktree-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">DESKTOP WORKTREE</span><h2 id="delete-worktree-title">{worktreeRemovalTarget.sessions.length ? '删除关联会话并清理工作树？' : '清理孤儿工作树？'}</h2></div><button class="icon-button" aria-label="关闭" disabled={busy} onclick={() => { modal = null; worktreeRemovalTarget = null; worktreeRemovalError = ''; }}>×</button></div>
+        <div class="modal-body desktop-worktree-confirm-body">
+          <p>目标路径：<code>{worktreeRemovalTarget.path}</code></p>
+          {#if worktreeRemovalTarget.requiresLocalSwitch}<p>当前会话位于此工作树；确认后会先切换到已有 Local 会话，没有时会创建一个。</p>{/if}
+          {#if worktreeRemovalTarget.sessions.length}
+            <p>此操作会删除该工作树下所有关联会话的对话、执行历史、待运行消息和 Core 状态，再调用 Git 清理工作树：</p>
+            <ul>{#each worktreeRemovalTarget.sessions as associated (associated.id)}<li>{associated.title || '新会话'} <small>({desktopWorktreeSessionStatusLabel(associated.status)})</small></li>{/each}</ul>
+          {:else}
+            <p>此工作树没有关联的 Desktop 会话。只会调用 Git 清理此工作树目录。</p>
+          {/if}
+          <p>仅干净且已停止的工作树可清理。暂存、未暂存、未跟踪或忽略文件都会阻止操作并保留原文件。</p>
+          {#if worktreeRemovalError}<div class="worktree-apply-error" role="alert">{worktreeRemovalError}</div>{/if}
+        </div>
+        <div class="modal-footer"><button class="quiet-button" disabled={busy} onclick={() => { modal = null; worktreeRemovalTarget = null; worktreeRemovalError = ''; }}>取消</button><button class="danger-button" disabled={busy || !worktreeRemovalTarget.canRemove} onclick={() => void confirmDesktopWorktreeRemoval()}>{busy ? '正在清理…' : worktreeRemovalTarget.sessions.length ? `删除 ${worktreeRemovalTarget.sessions.length} 个会话并清理工作树` : '清理孤儿工作树'}</button></div>
       </div>
     {:else if modal === 'file-preview' && filePreview}
       <div class="modal file-preview-modal" role="dialog" aria-modal="true" aria-labelledby="file-preview-title" tabindex="-1">
