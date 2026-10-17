@@ -650,6 +650,34 @@ func truncateString(s string, maxLen int) string {
 	return string(runes[:maxLen-3]) + "..."
 }
 
+// formatRelativeTime converts a timestamp into a human-friendly relative string (e.g. "just now", "5m ago", "2h ago", "yesterday", "3d ago").
+func formatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	d := time.Since(t)
+	if d < 0 {
+		return "just now"
+	}
+	if d < time.Minute {
+		return "just now"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	days := int(d.Hours() / 24)
+	if days == 1 {
+		return "yesterday"
+	}
+	if days < 30 {
+		return fmt.Sprintf("%dd ago", days)
+	}
+	return t.Format("Jan 02")
+}
+
 // renderSessionsModal renders the interactive floating session switcher modal.
 func renderSessionsModal(m *tuiModel, width int) string {
 	th := activeTheme()
@@ -694,6 +722,9 @@ func renderSessionsModal(m *tuiModel, width int) string {
 		}
 		endIdx := min(filteredCount, startIdx+maxVisible)
 
+		availWidth := max(20, width-4)
+		titleWidth := max(10, availWidth-38)
+
 		for i := startIdx; i < endIdx; i++ {
 			s := m.sessionsFiltered[i]
 			marker := "  "
@@ -706,33 +737,27 @@ func renderSessionsModal(m *tuiModel, width int) string {
 			}
 			currentBadge := ""
 			if s.ID == m.sessionID {
-				currentBadge = " [active]"
+				currentBadge = " • active"
 			}
 			title := s.Title
 			if title == "" {
 				title = "<untitled>"
 			}
-			timeStr := s.UpdatedAt.Format("Jan 02 15:04")
-
-			availWidth := max(20, width-4)
-			idColWidth := 14
-			timeColWidth := 14
-			badgeWidth := len(currentBadge)
-			titleWidth := max(10, availWidth-idColWidth-timeColWidth-badgeWidth-len(marker)-2)
+			timeStr := formatRelativeTime(s.UpdatedAt)
 
 			truncTitle := truncateString(title, titleWidth)
 
 			if i == m.sessionsIndex {
-				raw := fmt.Sprintf("%s%-12s  %-*s  %s%s", marker, shortID, titleWidth, truncTitle, timeStr, currentBadge)
+				raw := fmt.Sprintf("%s%-12s  %-*s  %-10s%s", marker, shortID, titleWidth, truncTitle, timeStr, currentBadge)
 				pad := max(0, availWidth-lipgloss.Width(raw))
 				lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
 			} else {
 				idStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%-12s", shortID))
 				titleStyled := styleTextPrimary().Render(fmt.Sprintf("%-*s", titleWidth, truncTitle))
-				timeStyled := styleTextMuted().Render(timeStr)
+				timeStyled := styleTextMuted().Render(fmt.Sprintf("%-10s", timeStr))
 				badgeStyled := ""
 				if currentBadge != "" {
-					badgeStyled = " " + lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("[active]")
+					badgeStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(currentBadge)
 				}
 				lines = append(lines, fmt.Sprintf("%s%s  %s  %s%s", marker, idStyled, titleStyled, timeStyled, badgeStyled))
 			}

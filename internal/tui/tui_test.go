@@ -1698,7 +1698,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 	}
 	// Verify view rendering
 	viewStr := ansi.Strip(m.View().Content)
-	if !strings.Contains(viewStr, "Switch Session") || !strings.Contains(viewStr, "Frontend UI feature") || !strings.Contains(viewStr, "[active]") {
+	if !strings.Contains(viewStr, "Switch Session") || !strings.Contains(viewStr, "Frontend UI feature") || !strings.Contains(viewStr, "• active") {
 		t.Fatalf("expected modal view with session details, got:\n%s", viewStr)
 	}
 
@@ -2339,6 +2339,131 @@ func BenchmarkFuzzyMatchFiles_5000(b *testing.B) {
 		_ = FuzzyMatchFiles(files, "service_12", 10)
 	}
 }
+
+func TestFormatRelativeTime(t *testing.T) {
+	if got := formatRelativeTime(time.Time{}); got != "-" {
+		t.Errorf("expected '-', got %q", got)
+	}
+	now := time.Now()
+	if got := formatRelativeTime(now.Add(-10 * time.Second)); got != "just now" {
+		t.Errorf("expected 'just now', got %q", got)
+	}
+	if got := formatRelativeTime(now.Add(-5 * time.Minute)); got != "5m ago" {
+		t.Errorf("expected '5m ago', got %q", got)
+	}
+	if got := formatRelativeTime(now.Add(-2 * time.Hour)); got != "2h ago" {
+		t.Errorf("expected '2h ago', got %q", got)
+	}
+	if got := formatRelativeTime(now.Add(-26 * time.Hour)); got != "yesterday" {
+		t.Errorf("expected 'yesterday', got %q", got)
+	}
+	if got := formatRelativeTime(now.Add(-4 * 24 * time.Hour)); got != "4d ago" {
+		t.Errorf("expected '4d ago', got %q", got)
+	}
+	// Older than 30 days
+	oldTime := time.Date(2025, time.January, 15, 10, 0, 0, 0, time.UTC)
+	if got := formatRelativeTime(oldTime); got != "Jan 15" {
+		t.Errorf("expected 'Jan 15', got %q", got)
+	}
+}
+
+func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	s1, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s1.ID, "Alpha Task")
+
+	s2, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s2.ID, "Beta Bugfix")
+
+	m := newTUIModel(client, nil, s1.ID)
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// 1. /sessions without arguments opens the modal
+	mod, _ := m.handleSlashCommand("/sessions")
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected /sessions without args to open sessions modal")
+	}
+	if m.sessionsFilter != "" {
+		t.Fatalf("expected filter to be empty, got %q", m.sessionsFilter)
+	}
+
+	// Close modal with Esc
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected modal to close on Esc")
+	}
+
+	// 2. /sessions with query that matches ambiguous/non-unique string opens modal pre-filtered
+	mod, _ = m.handleSlashCommand("/sessions Beta")
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected /sessions Beta to open pre-filtered modal")
+	}
+	if m.sessionsFilter != "Beta" {
+		t.Fatalf("expected sessionsFilter to be 'Beta', got %q", m.sessionsFilter)
+	}
+	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s2.ID {
+		t.Fatalf("expected filtered to match s2, got %d items", len(m.sessionsFiltered))
+	}
+
+	// Close modal
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+
+	// 3. /sessions with exact session ID or unique prefix switches directly
+	s2Prefix := s2.ID
+	if len(s2Prefix) > 8 {
+		s2Prefix = s2Prefix[:8]
+	}
+	mod, _ = m.handleSlashCommand("/sessions " + s2Prefix)
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected direct switch instead of opening modal for unique prefix")
+	}
+	if m.sessionID != s2.ID {
+		t.Fatalf("expected session to switch to s2 (%s), got %s", s2.ID, m.sessionID)
+	}
+
+	// 4. /resume with session prefix switches to session
+	s1Prefix := s1.ID
+	if len(s1Prefix) > 8 {
+		s1Prefix = s1Prefix[:8]
+	}
+	mod, _ = m.handleSlashCommand("/resume " + s1Prefix)
+	m = mod.(*tuiModel)
+	if m.sessionID != s1.ID {
+		t.Fatalf("expected /resume with prefix to switch to s1 (%s), got %s", s1.ID, m.sessionID)
+	}
+
+	// 5. /resume without arguments when no paused task opens sessions modal
+	mod, _ = m.handleSlashCommand("/resume")
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected /resume without args to open sessions modal when idle")
+	}
+}
+
 
 
 

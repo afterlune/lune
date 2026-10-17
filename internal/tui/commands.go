@@ -27,7 +27,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/ps", Description: "list background processes and daemon commands in session"},
 	{Command: "/stop", Description: "stop running background process: /stop <id|all>"},
 	{Command: "/logs", Description: "view output logs of a background process: /logs <id>"},
-	{Command: "/sessions", Description: "list or search recent sessions in this workspace"},
+	{Command: "/sessions", Description: "open session switcher modal or search: /sessions [query]"},
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
 	{Command: "/drop", Description: "delete a saved session: /drop <id|prefix>"},
 	{Command: "/delete", Description: "alias for /drop"},
@@ -43,7 +43,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind the conversation to a previous turn"},
 	{Command: "/status", Description: "show session, model and token status"},
-	{Command: "/resume", Description: "resume the paused task in this session"},
+	{Command: "/resume", Description: "resume paused task or switch session: /resume [id]"},
 	{Command: "/discard", Description: "discard the paused task in this session"},
 	{Command: "/shortcuts", Description: "display keyboard shortcuts help"},
 	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block (Ctrl+R)"},
@@ -128,116 +128,47 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/sessions":
-		if m.client == nil {
-			m.addSystemEntry("Session management unavailable.")
-			return m, nil
-		}
-		query := ""
-		if len(parts) > 1 {
-			query = strings.ToLower(strings.TrimSpace(strings.Join(parts[1:], " ")))
-		}
-		limit := 20
-		if query != "" {
-			limit = 100
-		}
-		sessions, err := m.client.ListSessions(context.Background(), limit, false)
-		if err != nil {
-			m.addSystemEntry("Failed to list sessions: " + err.Error())
-			return m, nil
-		}
-		if len(sessions) == 0 {
-			m.addSystemEntry("No saved sessions in this workspace.")
-			return m, nil
-		}
-		var filtered []core.Session
-		for _, s := range sessions {
-			if query == "" {
-				filtered = append(filtered, s)
-			} else {
-				if strings.Contains(strings.ToLower(s.ID), query) || strings.Contains(strings.ToLower(s.Title), query) {
-					filtered = append(filtered, s)
-				}
-			}
-		}
-		if len(filtered) == 0 {
-			m.addSystemEntry(fmt.Sprintf("No sessions matching %q.", query))
-			return m, nil
-		}
-		var lines []string
-		if query != "" {
-			lines = append(lines, fmt.Sprintf("**Matching Sessions (%d found for %q):**", len(filtered), query))
-		} else {
-			lines = append(lines, "**Recent Sessions:**")
-		}
-		for _, s := range filtered {
-			marker := "  "
-			if s.ID == m.sessionID {
-				marker = "› "
-			}
-			title := s.Title
-			if title == "" {
-				title = "<untitled>"
-			}
-			shortID := s.ID
-			if len(shortID) > 12 {
-				shortID = shortID[:12]
-			}
-			timeStr := s.UpdatedAt.Format("Jan 02 15:04")
-			lines = append(lines, fmt.Sprintf("%s`%s`  %-24s  %s", marker, shortID, title, timeStr))
-		}
-		lines = append(lines, "\nSwitch with Ctrl+O, or `/open <id>` (supports unique prefix).")
-		m.addSystemEntry(strings.Join(lines, "\n"))
-		return m, nil
-
-	case "/open":
 		if m.running {
 			m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
+			return m, nil
+		}
+		if m.client == nil {
+			m.addSystemEntry("Session management unavailable.")
 			return m, nil
 		}
 		if len(parts) < 2 {
 			return m.openSessionsModal()
 		}
-		targetPrefix := parts[1]
+		query := strings.TrimSpace(strings.Join(parts[1:], " "))
 		ctx := context.Background()
 		targetID := ""
-		if _, err := m.client.GetSession(ctx, targetPrefix); err == nil {
-			targetID = targetPrefix
+		if _, err := m.client.GetSession(ctx, query); err == nil {
+			targetID = query
 		} else {
 			sessions, err := m.client.ListSessions(ctx, 100, false)
-			if err != nil {
-				m.addSystemEntry("Failed to query sessions: " + err.Error())
-				return m, nil
-			}
-			var matches []core.Session
-			for _, s := range sessions {
-				if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
-					matches = append(matches, s)
-				}
-			}
-			if len(matches) == 0 {
-				m.addSystemEntry(fmt.Sprintf("No session found matching prefix `%s`.", targetPrefix))
-				return m, nil
-			} else if len(matches) > 1 {
-				var ids []string
-				for _, match := range matches {
-					short := match.ID
-					if len(short) > 12 {
-						short = short[:12]
+			if err == nil {
+				var prefixMatches []core.Session
+				for _, s := range sessions {
+					if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(query)) {
+						prefixMatches = append(prefixMatches, s)
 					}
-					ids = append(ids, short)
 				}
-				m.addSystemEntry(fmt.Sprintf("Prefix `%s` is ambiguous. Matches: %s", targetPrefix, strings.Join(ids, ", ")))
+				if len(prefixMatches) == 1 {
+					targetID = prefixMatches[0].ID
+				}
+			}
+		}
+		if targetID != "" {
+			if targetID == m.sessionID {
+				m.addSystemEntry("Already in session: " + targetID)
 				return m, nil
 			}
-			targetID = matches[0].ID
+			return m.switchToSession(targetID)
 		}
+		return m.openSessionsModalWithFilter(query)
 
-		if targetID == m.sessionID {
-			m.addSystemEntry("Already in session: " + targetID)
-			return m, nil
-		}
-
-		return m.switchToSession(targetID)
+	case "/open":
+		return m.handleOpenCommand(parts)
 
 	case "/drop", "/delete":
 		return m.handleDropCommand(parts)
@@ -595,16 +526,27 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/resume":
+		if len(parts) > 1 {
+			return m.handleOpenCommand(parts)
+		}
+		if m.running {
+			m.addSystemEntry("A task is already running.")
+			return m, nil
+		}
 		if m.runtime != nil {
-			m.running = true
-			m.taskStartedAt = time.Now()
-			m.updateLayout()
-			sessionID := m.sessionID
-			return m, func() tea.Msg {
-				sub, err := m.runtime.Recover(context.Background())
-				return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+			state, err := m.runtime.State(context.Background())
+			if err == nil && state.Task.Status == core.TaskPaused {
+				m.running = true
+				m.taskStartedAt = time.Now()
+				m.updateLayout()
+				sessionID := m.sessionID
+				return m, func() tea.Msg {
+					sub, err := m.runtime.Recover(context.Background())
+					return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+				}
 			}
 		}
+		return m.openSessionsModal()
 
 	case "/discard":
 		if m.runtime != nil {
@@ -1433,8 +1375,64 @@ func (m *tuiModel) handleLogsCommand(parts []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// openSessionsModal queries workspace sessions and displays the interactive session switcher modal.
-func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
+// handleOpenCommand handles switching to a session by ID/prefix or opening the modal.
+func (m *tuiModel) handleOpenCommand(parts []string) (tea.Model, tea.Cmd) {
+	if m.running {
+		m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
+		return m, nil
+	}
+	if m.client == nil {
+		m.addSystemEntry("Session management unavailable.")
+		return m, nil
+	}
+	if len(parts) < 2 {
+		return m.openSessionsModal()
+	}
+	targetPrefix := parts[1]
+	ctx := context.Background()
+	targetID := ""
+	if _, err := m.client.GetSession(ctx, targetPrefix); err == nil {
+		targetID = targetPrefix
+	} else {
+		sessions, err := m.client.ListSessions(ctx, 100, false)
+		if err != nil {
+			m.addSystemEntry("Failed to query sessions: " + err.Error())
+			return m, nil
+		}
+		var matches []core.Session
+		for _, s := range sessions {
+			if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
+				matches = append(matches, s)
+			}
+		}
+		if len(matches) == 0 {
+			m.addSystemEntry(fmt.Sprintf("No session found matching prefix `%s`.", targetPrefix))
+			return m, nil
+		} else if len(matches) > 1 {
+			var ids []string
+			for _, match := range matches {
+				short := match.ID
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				ids = append(ids, short)
+			}
+			m.addSystemEntry(fmt.Sprintf("Prefix `%s` is ambiguous. Matches: %s", targetPrefix, strings.Join(ids, ", ")))
+			return m, nil
+		}
+		targetID = matches[0].ID
+	}
+
+	if targetID == m.sessionID {
+		m.addSystemEntry("Already in session: " + targetID)
+		return m, nil
+	}
+
+	return m.switchToSession(targetID)
+}
+
+// openSessionsModalWithFilter queries workspace sessions and opens the modal with an optional pre-set filter.
+func (m *tuiModel) openSessionsModalWithFilter(filter string) (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		m.addSystemEntry("Session management unavailable.")
 		return m, nil
@@ -1450,8 +1448,8 @@ func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
 	m.sessionsConfirmDelete = false
 	m.sessionsDeletingID = ""
 	m.sessionsItems = sessions
-	m.sessionsFilter = ""
-	m.sessionsFiltered = sessions
+	m.sessionsFilter = strings.TrimSpace(filter)
+	m.filterSessions()
 	m.sessionsIndex = 0
 	for i, s := range m.sessionsFiltered {
 		if s.ID == m.sessionID {
@@ -1461,6 +1459,11 @@ func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
 	}
 	m.updateLayout()
 	return m, nil
+}
+
+// openSessionsModal queries workspace sessions and displays the interactive session switcher modal.
+func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
+	return m.openSessionsModalWithFilter("")
 }
 
 // handleDropCommand deletes a saved session matching the target prefix or ID.
