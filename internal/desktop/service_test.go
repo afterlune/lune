@@ -14,6 +14,7 @@ func TestPendingRequestChangedOnlyForInteractionEvents(t *testing.T) {
 		core.EventUserQuestionRequired,
 		core.EventUserInteractionRequired,
 		core.EventUserInteractionCancelled,
+		core.EventExecutionBlocked,
 		core.EventModelRecoveryRequired,
 		core.EventModelRecoveryResumed,
 		core.EventToolRecoveryRequired,

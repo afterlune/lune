@@ -1778,7 +1778,7 @@ func sessionSummaryEvent(kind core.EventKind) bool {
 	switch kind {
 	case core.EventTaskQueued, core.EventTaskStarted, core.EventTaskFinished, core.EventTaskDiscarded,
 		core.EventApprovalRequired, core.EventApprovalCancelled, core.EventUserQuestionRequired,
-		core.EventUserInteractionRequired, core.EventUserInteractionCancelled, core.EventModelRecoveryRequired,
+		core.EventUserInteractionRequired, core.EventUserInteractionCancelled, core.EventExecutionBlocked, core.EventModelRecoveryRequired,
 		core.EventModelRecoveryResumed, core.EventToolRecoveryRequired:
 		return true
 	default:
@@ -1934,6 +1934,7 @@ func pendingRequestChanged(kind core.EventKind) bool {
 		core.EventUserQuestionRequired,
 		core.EventUserInteractionRequired,
 		core.EventUserInteractionCancelled,
+		core.EventExecutionBlocked,
 		core.EventModelRecoveryRequired,
 		core.EventModelRecoveryResumed,
 		core.EventToolRecoveryRequired:

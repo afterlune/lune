@@ -3,12 +3,13 @@
   import { Events } from '@wailsio/runtime';
   import Markdown from './lib/Markdown.svelte';
   import ExecutionActivity from './lib/ExecutionActivity.svelte';
+  import MCPInteractionCard from './lib/MCPInteractionCard.svelte';
   import WorkspaceExplorer from './lib/WorkspaceExplorer.svelte';
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
     Bootstrap, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
-    SubmitInput, PendingRequestView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
+    SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
     WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
@@ -39,6 +40,8 @@
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
   type WorkspaceChanges = Omit<WorkspaceChangesView, 'files'> & { files: NonNullable<WorkspaceChangesView['files']> };
+  type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
+  type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
@@ -54,11 +57,15 @@
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
-  let sidebarView = $state<'sessions' | 'files' | 'changes'>('sessions');
+  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'pending'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let planMode = $state(false);
   let pending = $state<PendingRequestView[]>([]);
+  let pendingSessions = $state<PendingSessionSummary[]>([]);
+  let pendingSessionsLoading = $state(false);
+  let pendingSessionsError = $state('');
+  let pendingSessionsRequest = 0;
   let messages = $state<LocalMessage[]>([]);
   let activities = $state<Activity[]>([]);
   let activityHistory = $state<ActivityRun[]>([]);
@@ -118,7 +125,8 @@
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const approvals = $derived(pending.filter((item) => item.kind === 'approval'));
-  const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery'));
+  const recoveries = $derived(pending.filter((item) => item.kind === 'tool_recovery' || item.kind === 'model_recovery' || item.kind === 'execution_blocker'));
+  const userInteractions = $derived(pending.filter((item) => item.kind === 'user_interaction'));
   const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
   const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
@@ -126,6 +134,7 @@
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
+  const pendingRequestCount = $derived(pendingSessions.reduce((count, item) => count + item.requests.length, 0));
   const activeWorkspaceChange = $derived(workspaceChanges?.files.find((file) => file.path === selectedWorkspaceChange) ?? null);
   const workspaceDiffLines = $derived(workspaceDiff?.content ? workspaceDiff.content.replace(/\r\n/g, '\n').split('\n') : []);
   const transcriptRows = $derived.by(() => {
@@ -517,6 +526,61 @@
       path: 'testdata/sample.bin', status: '??', binary: true, truncated: false, content: '',
     },
   };
+  function previewPendingRequest(kind: string, id: string, fields: Partial<PendingRequestView> = {}): PendingRequestView {
+    return { kind, id, executionId: `exec-${id}`, runId: `run-${id}`, invocationId: `invoke-${id}`, callId: `call-${id}`, tool: '', ...fields };
+  }
+  const previewPendingSessions: PendingSessionSummary[] = [
+    {
+      id: 'session-background', title: '后台会话需要你处理', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', updatedAt: '2026-10-17T08:15:00+08:00',
+      requests: [
+        { kind: 'approval', tool: 'exec_command' }, { kind: 'user_question', tool: '' },
+        { kind: 'model_recovery', tool: '' }, { kind: 'tool_recovery', tool: 'write_file' },
+        { kind: 'user_interaction', tool: 'docs' }, { kind: 'execution_blocker', tool: 'command' },
+      ],
+    },
+    {
+      id: 'session-worktree', title: 'Worktree 文档登录', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\docs', updatedAt: '2026-10-17T08:12:00+08:00',
+      requests: [{ kind: 'approval', tool: 'apply_patch' }, { kind: 'user_interaction', tool: 'private-docs' }],
+    },
+  ];
+  const previewPendingRequests: Record<string, PendingRequestView[]> = {
+    'session-background': [
+      previewPendingRequest('approval', 'approval-preview', { tool: 'exec_command', arguments: { command: 'git status --short' } }),
+      previewPendingRequest('user_question', 'question-background', { questions: [{ id: 'next-step', question: '接下来优先检查哪一部分？', options: [{ label: '测试', description: '先确认当前改动的行为。' }, { label: '实现', description: '继续完成主要功能。' }] }] }),
+      previewPendingRequest('model_recovery', 'model-background', { reason: 'rate_limit' }),
+      previewPendingRequest('tool_recovery', 'tool-background', { tool: 'write_file', arguments: { path: 'docs/desktop.md' } }),
+      previewPendingRequest('user_interaction', 'interaction-form', {
+        tool: 'docs', arguments: { method: 'elicitation/create', params: { mode: 'form', message: '请输入文档服务的一次性验证码。', requestedSchema: { type: 'object', properties: { code: { type: 'string', title: '验证码', minLength: 4 }, remember: { type: 'boolean', title: '记住此设备' }, retries: { type: 'integer', title: '重试次数', minimum: 1, maximum: 5 }, account: { type: 'string', title: '账户类型', enum: ['个人', '工作'] } }, required: ['code'] } } },
+      }),
+      previewPendingRequest('execution_blocker', 'blocker-background', { tool: 'command', reason: '前一条命令仍在执行，任务暂停以等待检查。' }),
+    ],
+    'session-worktree': [
+      previewPendingRequest('approval', 'approval-worktree', { tool: 'apply_patch' }),
+      previewPendingRequest('user_interaction', 'interaction-url', {
+        tool: 'private-docs', arguments: { method: 'elicitation/create', params: { mode: 'url', message: '请在文档服务中完成登录。', url: 'https://docs.example.test/sign-in?token=hidden' } },
+      }),
+    ],
+  };
+
+  function previewPendingWorkspaceState(id: string): WorkspaceState {
+    const target = previewPendingSessions.find((item) => item.id === id) ?? previewPendingSessions[0];
+    return {
+      ...previewState,
+      workspaceMode: target.mode,
+      workingDirectory: target.workingDirectory,
+      session: { ...previewState.session, id: target.id, title: target.title, updatedAt: target.updatedAt },
+      sessions: previewPendingSessions.map((item) => ({
+        id: item.id, title: item.title, updatedAt: item.updatedAt, mode: item.mode,
+        workingDirectory: item.workingDirectory, status: 'waiting',
+        ...(item.mode === 'worktree' ? { worktreePath: item.workingDirectory } : {}),
+      })),
+      runtimeState: {
+        ...previewState.runtimeState,
+        Task: { ...previewState.runtimeState.Task, SessionID: target.id, Status: TaskStatus.TaskPaused },
+      },
+      pending: previewPendingRequests[target.id] ?? [],
+    };
+  }
 
   function previewChangesForVariant(): WorkspaceChanges {
     if (previewVariant === 'changes-empty') return { ...previewWorkspaceChanges, files: [], added: 0, removed: 0 };
@@ -625,6 +689,62 @@
     return staged && unstaged ? '暂存及未暂存修改' : staged ? '已暂存修改' : '未暂存修改';
   }
 
+  async function refreshPendingSessions() {
+    const request = ++pendingSessionsRequest;
+    const requestWorkspace = workspace;
+    if (!requestWorkspace) {
+      pendingSessions = [];
+      pendingSessionsError = '';
+      pendingSessionsLoading = false;
+      return;
+    }
+    pendingSessionsLoading = true;
+    pendingSessionsError = '';
+    try {
+      const raw = previewMode
+        ? previewVariant === 'pending-center' ? pendingSessions : []
+        : await Desktop.ListPendingSessions();
+      const result: PendingSessionSummary[] = (raw ?? []).map((item) => ({ ...item, requests: item.requests ?? [] })).filter((item) => item.requests.length > 0);
+      if (request !== pendingSessionsRequest || workspace !== requestWorkspace) return;
+      pendingSessions = result;
+    } catch (cause) {
+      if (request === pendingSessionsRequest && workspace === requestWorkspace) {
+        pendingSessions = [];
+        pendingSessionsError = String(cause);
+      }
+    } finally {
+      if (request === pendingSessionsRequest) pendingSessionsLoading = false;
+    }
+  }
+
+  function pendingKindLabel(kind: string) {
+    switch (kind) {
+      case 'approval': return '授权';
+      case 'user_question': return '提问';
+      case 'model_recovery': return '模型恢复';
+      case 'tool_recovery': return '工具恢复';
+      case 'user_interaction': return 'MCP 交互';
+      case 'execution_blocker': return '执行阻塞';
+      default: return '待处理';
+    }
+  }
+
+  function removePreviewPendingSummary(request: PendingRequestView) {
+    if (!previewMode || !session) return;
+    let removed = false;
+    pendingSessions = pendingSessions.map((item) => {
+      if (item.id !== session?.id) return item;
+      const requests = item.requests.filter((summary) => {
+        if (!removed && summary.kind === request.kind && summary.tool === request.tool) {
+          removed = true;
+          return false;
+        }
+        return true;
+      });
+      return { ...item, requests };
+    }).filter((item) => item.requests.length > 0);
+  }
+
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
     if (planReview && session && session.id !== state.session.id) {
       deferredPlanReviews = [...deferredPlanReviews, { sessionId: session.id, ...planReview }];
@@ -669,6 +789,7 @@
       } else startElapsedTimer(true);
     }
     presentDeferredPlanReview();
+    if (!previewMode) void refreshPendingSessions();
     if (sidebarView === 'changes' && !previewMode) void refreshWorkspaceChanges();
   }
 
@@ -748,6 +869,7 @@
       models = previewBootstrap.models;
       installWorkspaceState(previewState);
       const variant = previewVariant;
+      if (variant === 'pending-center') pendingSessions = previewPendingSessions;
       activities = [];
       if (variant === 'empty') {
         messages = [];
@@ -844,9 +966,11 @@
       Events.On('agent-event', (event: { data: AgentEvent }) => onAgentEvent(event.data));
       Events.On('turn-result', (event: { data: TurnResultEvent }) => onTurnResult(event.data));
       Events.On('pending-changed', (event: { data: string }) => {
+        void refreshPendingSessions();
         if (event.data === session?.id) void refreshSession();
       });
       Events.On('agent-error', (event: { data: { message: string } }) => showError(event.data.message));
+      void refreshPendingSessions();
     } catch (error) {
       showError(error);
     } finally {
@@ -1022,7 +1146,7 @@
       running = true;
       setExecutionStatus('running', '模型请求暂时失败，正在重试', { expand: true });
     }
-    if (event.kind === 'approval_required' || event.kind === 'user_question_required' ||
+    if (event.kind === 'approval_required' || event.kind === 'user_question_required' || event.kind === 'execution_blocked' ||
       event.kind === 'user_interaction_required' || event.kind === 'model_recovery_required' ||
       event.kind === 'tool_recovery_required') {
       running = true;
@@ -1030,6 +1154,7 @@
       const label = event.kind === 'approval_required' ? '等待你的授权'
         : event.kind === 'user_question_required' ? '等待你的回答'
           : event.kind === 'user_interaction_required' ? '等待外部服务响应'
+            : event.kind === 'execution_blocked' ? '执行受阻，等待你处理'
             : '等待你处理恢复请求';
       setExecutionStatus('waiting', label, { expand: true });
     }
@@ -1056,6 +1181,7 @@
   function onTurnResult(result: TurnResultEvent) {
     if (previewMode && cancelledPreviewExecutions.has(result.executionId)) return;
     updateSessionStatus(result.sessionId, result.status === 'paused' ? 'waiting' : result.status || (result.error ? 'failed' : 'completed'));
+    if (!previewMode) void refreshPendingSessions();
     if (sidebarView === 'changes' && sessionSharesActiveDirectory(result.sessionId)) void refreshWorkspaceChanges();
     if (result.sessionId !== session?.id) {
       if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { sessionId: result.sessionId, executionID: result.executionId, text: result.plan }];
@@ -1095,7 +1221,7 @@
     else if (event.kind === 'task_started' || event.kind === 'model_recovery_resumed') updateSessionStatus(event.sessionId, 'running');
     else if (event.kind === 'task_finished') updateSessionStatus(event.sessionId, event.status === 'paused' ? 'waiting' : event.status);
     else if (event.kind === 'task_discarded') updateSessionStatus(event.sessionId, 'interrupted');
-    else if (['approval_required', 'user_question_required', 'user_interaction_required', 'model_recovery_required', 'tool_recovery_required'].includes(event.kind)) {
+    else if (['approval_required', 'user_question_required', 'user_interaction_required', 'model_recovery_required', 'tool_recovery_required', 'execution_blocked'].includes(event.kind)) {
       updateSessionStatus(event.sessionId, 'waiting');
     }
   }
@@ -1288,6 +1414,8 @@
       workspace = '';
       workingDirectory = '';
       workspaceMode = 'local';
+      pendingSessions = [];
+      pendingSessionsError = '';
       session = null;
       messages = [];
       running = false;
@@ -1307,6 +1435,8 @@
     workspace = '';
     workingDirectory = '';
     workspaceMode = 'local';
+    pendingSessions = [];
+    pendingSessionsError = '';
     session = null;
     messages = [];
     pending = [];
@@ -1320,6 +1450,8 @@
       workspace = '';
       workingDirectory = '';
       workspaceMode = 'local';
+      pendingSessions = [];
+      pendingSessionsError = '';
       session = null;
       messages = [];
       pending = [];
@@ -1331,11 +1463,16 @@
 
   async function openSession(id: string) {
     if (previewMode) {
-      installWorkspaceState(previewState);
+      installWorkspaceState(previewVariant === 'pending-center' ? previewPendingWorkspaceState(id) : previewState);
       return;
     }
     try { installWorkspaceState(await Desktop.OpenSession(id)); }
     catch (error) { showError(error); }
+  }
+
+  async function openPendingSession(id: string) {
+    sidebarView = 'sessions';
+    await openSession(id);
   }
 
   async function createSession(mode: 'local' | 'worktree' = 'local') {
@@ -1820,6 +1957,7 @@
       await Desktop.ResolveApproval(request.id, allowed);
       if (allowed) resumeExecution('授权已完成，正在继续处理');
       await refreshSession();
+      void refreshPendingSessions();
     } catch (error) { showError(error); }
   }
 
@@ -1841,23 +1979,43 @@
       await Desktop.AnswerQuestion({ executionId: request.executionId, runId: request.runId, invocationId: request.invocationId, callId: request.callId, answers });
       pending = pending.filter((item) => item.id !== request.id);
       resumeExecution('回答已提交，正在继续处理');
+      void refreshPendingSessions();
     } catch (error) { showError(error); }
+  }
+
+  async function resolveUserInteraction(request: PendingRequestView, response: ElicitationResponse) {
+    try {
+      if (!previewMode) await Desktop.ResolveUserInteraction(request.id, JSON.stringify(response));
+      pending = pending.filter((item) => item.id !== request.id);
+      removePreviewPendingSummary(request);
+      resumeExecution('MCP 响应已提交，正在继续处理');
+      void refreshPendingSessions();
+    } catch (error) { showError(error); }
+  }
+
+  async function openMCPInteractionURL(request: PendingRequestView, target: string) {
+    if (previewMode) return;
+    await Desktop.OpenMCPURL(request.tool, target);
   }
 
   async function recover(request: PendingRequestView) {
     try {
-      if (request.kind === 'model_recovery') await Desktop.RecoverModel();
+      if (request.kind === 'model_recovery' || request.kind === 'execution_blocker') await Desktop.RecoverModel();
       else await Desktop.ResolveToolRecovery(request.invocationId, 'retry');
       pending = pending.filter((item) => item.id !== request.id);
       resumeExecution('正在恢复任务');
+      void refreshPendingSessions();
     } catch (error) { showError(error); }
   }
 
   async function dismissRecovery(request: PendingRequestView) {
     try {
-      await Desktop.ResolveToolRecovery(request.invocationId, 'skip');
+      if (request.kind === 'tool_recovery') await Desktop.ResolveToolRecovery(request.invocationId, 'skip');
+      else if (!previewMode && !await Desktop.Interrupt()) throw new Error('无法丢弃当前暂停的任务');
       pending = pending.filter((item) => item.id !== request.id);
-      resumeExecution('正在跳过失败步骤');
+      if (request.kind === 'tool_recovery') resumeExecution('正在跳过失败步骤');
+      else finishExecution('interrupted');
+      void refreshPendingSessions();
     } catch (error) { showError(error); }
   }
 
@@ -1926,6 +2084,7 @@
           <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
           <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
           <button class:active={sidebarView === 'changes'} onclick={() => { sidebarView = 'changes'; void refreshWorkspaceChanges(); }}>变更</button>
+          <button class:active={sidebarView === 'pending'} aria-label={`待处理${pendingRequestCount ? `，${pendingRequestCount} 项` : ''}`} onclick={() => { sidebarView = 'pending'; void refreshPendingSessions(); }}>待处理{#if pendingRequestCount}<span class="pending-count-badge">{pendingRequestCount}</span>{/if}</button>
           {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
         </div>
         {#if sidebarView === 'sessions'}
@@ -1946,6 +2105,26 @@
             {/each}
             {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
           </div>
+        {:else if sidebarView === 'pending'}
+          <section class="pending-session-list" aria-label="待处理会话">
+            <div class="pending-list-summary">{pendingRequestCount} 项待处理</div>
+            {#if pendingSessionsLoading && !pendingSessions.length}<div class="pending-list-state"><span class="spinner"></span>正在读取其他会话…</div>
+            {:else if pendingSessionsError}<div class="pending-list-state error">{pendingSessionsError}<button class="small-button" onclick={() => void refreshPendingSessions()}>重试</button></div>
+            {:else if !pendingSessions.length}<div class="pending-list-state">当前工作区没有需要处理的会话。</div>
+            {:else}
+              {#each pendingSessions as item (item.id)}
+                <button class:chosen={session?.id === item.id} class="pending-session-row" aria-label={`${item.title || '新会话'}，${item.requests.length} 项待处理`} title={`${item.title || '新会话'} · ${item.workingDirectory}`} onclick={() => void openPendingSession(item.id)}>
+                  <span class="pending-session-count">{item.requests.length}</span>
+                  <span class="pending-session-main">
+                    <strong>{item.title || '新会话'}</strong>
+                    <small>{item.mode === 'worktree' ? 'Worktree' : 'Local'} · {item.workingDirectory.split(/[\\/]/).at(-1) || item.workingDirectory}</small>
+                    <span class="pending-session-kinds">{#each item.requests as request, index (index)}<i>{pendingKindLabel(request.kind)}{request.tool ? ` · ${request.tool}` : ''}</i>{/each}</span>
+                  </span>
+                  <span class="pending-session-arrow">›</span>
+                </button>
+              {/each}
+            {/if}
+          </section>
         {:else if sidebarView === 'changes'}
           <section class="workspace-changes-sidebar" aria-label="工作区变更文件">
             {#if workspaceChangesLoading && !workspaceChanges}<div class="workspace-change-empty"><span class="spinner"></span>正在读取 Git 状态…</div>
@@ -1990,7 +2169,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
+          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'pending'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
         </div>
         <div class="top-actions">
           {#if workspace}
@@ -2139,9 +2318,13 @@
 
             {#if recoveries.length}
               {#each recoveries as request (request.id)}
-                <section class="request-card recovery-card"><strong>{request.kind === 'model_recovery' ? '模型请求未完成' : '工具执行暂停'}</strong><p>{request.reason || request.tool || '此操作需要恢复。'}</p><div class="request-actions"><button class="quiet-button" onclick={() => void dismissRecovery(request)}>跳过</button><button class="primary-button" onclick={() => void recover(request)}>重试</button></div></section>
+                <section class="request-card recovery-card"><strong>{request.kind === 'model_recovery' ? '模型请求未完成' : request.kind === 'execution_blocker' ? '执行受阻' : '工具执行暂停'}</strong><p>{request.reason || request.tool || '此操作需要恢复。'}</p><div class="request-actions"><button class="quiet-button" onclick={() => void dismissRecovery(request)}>{request.kind === 'tool_recovery' ? '跳过失败步骤' : '丢弃本轮'}</button><button class="primary-button" onclick={() => void recover(request)}>{request.kind === 'execution_blocker' ? '恢复执行' : '重试'}</button></div></section>
               {/each}
             {/if}
+
+            {#each userInteractions as request (request.id)}
+              <MCPInteractionCard {request} onResolve={(response) => resolveUserInteraction(request, response)} onOpenURL={(target) => openMCPInteractionURL(request, target)} />
+            {/each}
 
             {#if planReview}
               <section class="plan-review">

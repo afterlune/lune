@@ -61,12 +61,24 @@ export function ListMCPServers(): $CancellablePromise<$models.MCPServerView[] | 
     return $Call.ByID(2843607385);
 }
 
+/**
+ * ListPendingSessions returns a transient, content-free index for every session
+ * runtime attached to the active Desktop workspace.
+ */
+export function ListPendingSessions(): $CancellablePromise<$models.PendingSessionSummary[] | null> {
+    return $Call.ByID(2139294369);
+}
+
 export function ListWorkspaceChanges(): $CancellablePromise<$models.WorkspaceChangesView> {
     return $Call.ByID(1980103603);
 }
 
 export function ListWorkspaceFiles(relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
     return $Call.ByID(2892581193, relativePath);
+}
+
+export function OpenMCPURL(serverName: string, target: string): $CancellablePromise<void> {
+    return $Call.ByID(1687039940, serverName, target);
 }
 
 export function OpenSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
@@ -107,6 +119,10 @@ export function ResolveApproval(id: string, allowed: boolean): $CancellablePromi
 
 export function ResolveToolRecovery(invocationID: string, decision: string): $CancellablePromise<void> {
     return $Call.ByID(3985961298, invocationID, decision);
+}
+
+export function ResolveUserInteraction(id: string, responseJSON: string): $CancellablePromise<void> {
+    return $Call.ByID(505186132, id, responseJSON);
 }
 
 export function RestorePlanMode(): $CancellablePromise<void> {

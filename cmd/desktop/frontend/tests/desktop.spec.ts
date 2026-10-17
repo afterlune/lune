@@ -42,6 +42,37 @@ test('workspace changes page explains clean and unavailable Git states', async (
   await expect(page.locator('.workspace-changes-page').getByText('当前会话目录不在可用的 Git 仓库中。')).toBeVisible();
 });
 
+test('pending center counts background requests and opens the owning session', async ({ page }) => {
+  await page.goto('/?preview=pending-center');
+  const pendingTab = page.locator('.sidebar-view-tabs').getByRole('button', { name: /待处理/ });
+  await expect(pendingTab).toContainText('8');
+  await pendingTab.click();
+
+  await expect(page.locator('.pending-session-list')).toContainText('后台会话需要你处理');
+  await expect(page.locator('.pending-session-list')).toContainText('Worktree 文档登录');
+  await expect(page.locator('.pending-session-list')).toContainText('8 项待处理');
+  await expect(page).toHaveScreenshot('desktop-pending-center.png', { fullPage: true });
+
+  await page.getByRole('button', { name: /后台会话需要你处理，6 项待处理/ }).click();
+  await expect(page.getByRole('button', { name: '会话', exact: true })).toHaveClass(/active/);
+  await expect(page.getByText('需要授权')).toBeVisible();
+  await expect(page.getByText('接下来优先检查哪一部分？')).toBeVisible();
+  await expect(page.getByText('执行受阻')).toBeVisible();
+  await expect(page.locator('.mcp-interaction-card')).toContainText('请输入文档服务的一次性验证码。');
+  await expect(page.locator('.recovery-card')).toHaveCount(3);
+
+  await page.getByLabel('验证码').fill('1234');
+  await page.getByRole('button', { name: '提交响应' }).click();
+  await expect(page.locator('.mcp-interaction-card')).toHaveCount(0);
+
+  await pendingTab.click();
+  await page.getByRole('button', { name: /Worktree 文档登录，2 项待处理/ }).click();
+  await page.getByRole('button', { name: '打开验证链接' }).click();
+  await expect(page.getByRole('button', { name: '验证完成，继续' })).toBeEnabled();
+  await page.getByRole('button', { name: '验证完成，继续' }).click();
+  await expect(page.locator('.mcp-interaction-card')).toHaveCount(0);
+});
+
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {
   await page.goto('/?preview=1');
   await page.getByRole('button', { name: '项目设置' }).click();

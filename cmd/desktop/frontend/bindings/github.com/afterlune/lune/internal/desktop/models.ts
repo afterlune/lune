@@ -146,6 +146,11 @@ export interface ModelSettingsView {
     "configured": boolean;
 }
 
+export interface PendingRequestSummary {
+    "kind": string;
+    "tool"?: string;
+}
+
 export interface PendingRequestView {
     "kind": string;
     "id": string;
@@ -157,6 +162,15 @@ export interface PendingRequestView {
     "arguments"?: json$0.RawMessage;
     "questions"?: model$0.UserQuestionItem[] | null;
     "reason"?: string;
+}
+
+export interface PendingSessionSummary {
+    "id": string;
+    "title": string;
+    "mode": string;
+    "workingDirectory": string;
+    "updatedAt": string;
+    "requests": PendingRequestSummary[] | null;
 }
 
 export interface PlanResult {
