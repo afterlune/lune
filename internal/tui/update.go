@@ -358,11 +358,64 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// 0.1 Session Switcher Modal handling
 	if m.sessionsModalOpen {
+		if m.sessionsConfirmDelete {
+			switch keyStr {
+			case "y", "Y":
+				targetID := m.sessionsDeletingID
+				m.sessionsConfirmDelete = false
+				m.sessionsDeletingID = ""
+				if targetID == m.sessionID {
+					m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
+					m.updateLayout()
+					return m, nil
+				}
+				if err := m.client.DeleteSession(context.Background(), targetID); err != nil {
+					m.addSystemEntry("Failed to delete session: " + err.Error())
+					m.updateLayout()
+					return m, nil
+				}
+				var updated []core.Session
+				for _, s := range m.sessionsItems {
+					if s.ID != targetID {
+						updated = append(updated, s)
+					}
+				}
+				m.sessionsItems = updated
+				m.filterSessions()
+				m.addSystemEntry("Deleted session: " + targetID)
+				m.updateLayout()
+				return m, nil
+			case "n", "N", "esc":
+				m.sessionsConfirmDelete = false
+				m.sessionsDeletingID = ""
+				m.updateLayout()
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
+
 		switch keyStr {
 		case "esc", "ctrl+o":
 			m.sessionsModalOpen = false
 			m.sessionsFilter = ""
+			m.sessionsConfirmDelete = false
+			m.sessionsDeletingID = ""
 			m.updateLayout()
+			return m, nil
+		case "ctrl+d", "delete":
+			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
+				target := m.sessionsFiltered[m.sessionsIndex]
+				if target.ID == m.sessionID {
+					m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
+					m.updateLayout()
+					return m, nil
+				}
+				m.sessionsConfirmDelete = true
+				m.sessionsDeletingID = target.ID
+				m.updateLayout()
+				return m, nil
+			}
 			return m, nil
 		case "up", "ctrl+p":
 			if len(m.sessionsFiltered) > 0 {
@@ -471,6 +524,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.sessionsModalOpen {
 			m.sessionsModalOpen = false
 			m.sessionsFilter = ""
+			m.sessionsConfirmDelete = false
+			m.sessionsDeletingID = ""
 			m.updateLayout()
 			return m, nil
 		}

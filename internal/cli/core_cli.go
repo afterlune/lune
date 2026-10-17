@@ -44,6 +44,7 @@ type cliCore interface {
 	GetSession(context.Context, string) (core.Session, error)
 	ListSessions(context.Context, int, bool) ([]core.Session, error)
 	ForkSession(context.Context, string) (core.Session, error)
+	DeleteSession(context.Context, string) error
 	RewindSession(context.Context, string, int) (int, error)
 	SetSessionTitle(context.Context, string, string) error
 	OpenSessionRuntime(context.Context, string) (cliRuntime, error)
@@ -76,6 +77,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/context", usage: "/context", description: "Show context window budget, system rules, and capabilities."},
 	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
+	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session (alias: /delete)."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
 	{name: "/export", usage: "/export [path]", description: "Export session conversation transcript to a markdown file."},
 	{name: "/fork", usage: "/fork", description: "Fork the current session."},
@@ -267,6 +269,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 					workspace = s.Workspace
 				}
 			}
+		case line == "/drop" || strings.HasPrefix(line, "/drop ") || line == "/delete" || strings.HasPrefix(line, "/delete "):
+			handleCoreCLIDrop(client, sessionID, line, stdout, stderr)
 		case line == "/title" || strings.HasPrefix(line, "/title "):
 			sessionTitle = handleCoreCLITitle(client, sessionID, line, stdout, stderr)
 		case line == "/rewind" || strings.HasPrefix(line, "/rewind "):
@@ -1166,6 +1170,57 @@ func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, st
 	}
 	fmt.Fprintf(stdout, "Switched to session %s.\n", targetID)
 	return targetID, rt, nil
+}
+
+func handleCoreCLIDrop(client cliCore, currentSessionID string, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	if len(fields) != 2 {
+		fmt.Fprintln(stderr, "usage: /drop [id|prefix]")
+		return
+	}
+	targetPrefix := fields[1]
+	ctx := context.Background()
+	targetID := ""
+	if _, err := client.GetSession(ctx, targetPrefix); err == nil {
+		targetID = targetPrefix
+	} else {
+		sessions, err := client.ListSessions(ctx, 100, false)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: query sessions: %v\n", err)
+			return
+		}
+		var matches []core.Session
+		for _, s := range sessions {
+			if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
+				matches = append(matches, s)
+			}
+		}
+		if len(matches) == 0 {
+			fmt.Fprintf(stderr, "No session found matching prefix %q.\n", targetPrefix)
+			return
+		} else if len(matches) > 1 {
+			var ids []string
+			for _, match := range matches {
+				short := match.ID
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				ids = append(ids, short)
+			}
+			fmt.Fprintf(stderr, "Prefix %q is ambiguous. Matches: %s\n", targetPrefix, strings.Join(ids, ", "))
+			return
+		}
+		targetID = matches[0].ID
+	}
+	if targetID == currentSessionID {
+		fmt.Fprintln(stderr, "Cannot delete currently active session. Switch to another session first with /open.")
+		return
+	}
+	if err := client.DeleteSession(ctx, targetID); err != nil {
+		fmt.Fprintf(stderr, "error: delete session: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stdout, "Deleted session %s.\n", targetID)
 }
 
 func handleCoreCLITitle(client cliCore, sessionID, line string, stdout, stderr io.Writer) string {

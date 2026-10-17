@@ -645,8 +645,15 @@ func renderSessionsModal(m *tuiModel, width int) string {
 		}
 	}
 
+	if m.sessionsConfirmDelete {
+		lines = append(lines, "")
+		warn := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).
+			Render(fmt.Sprintf("Delete session %s? (y to confirm · n/esc to cancel)", truncateString(m.sessionsDeletingID, 16)))
+		lines = append(lines, "  "+warn)
+	}
+
 	lines = append(lines, "")
-	lines = append(lines, styleTextMuted().Render("↑/↓ navigate · enter select · esc close"))
+	lines = append(lines, styleTextMuted().Render("↑/↓ navigate · enter select · ctrl+d/del delete · esc close"))
 
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }

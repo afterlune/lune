@@ -29,6 +29,8 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/logs", Description: "view output logs of a background process: /logs <id>"},
 	{Command: "/sessions", Description: "list or search recent sessions in this workspace"},
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
+	{Command: "/drop", Description: "delete a saved session: /drop <id|prefix>"},
+	{Command: "/delete", Description: "alias for /drop"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session conversation transcript to a markdown file"},
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
@@ -230,6 +232,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 
 		return m.switchToSession(targetID)
+
+	case "/drop", "/delete":
+		return m.handleDropCommand(parts)
 
 	case "/rewind":
 		if m.running {
@@ -1459,6 +1464,8 @@ func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
 	m.sessionsModalOpen = true
 	m.shortcutsOpen = false
 	m.autocompleteOpen = false
+	m.sessionsConfirmDelete = false
+	m.sessionsDeletingID = ""
 	m.sessionsItems = sessions
 	m.sessionsFilter = ""
 	m.sessionsFiltered = sessions
@@ -1470,6 +1477,64 @@ func (m *tuiModel) openSessionsModal() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.updateLayout()
+	return m, nil
+}
+
+// handleDropCommand deletes a saved session matching the target prefix or ID.
+func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
+	if m.running {
+		m.addSystemEntry("Cannot delete sessions while a task is running.")
+		return m, nil
+	}
+	if len(parts) < 2 {
+		m.addSystemEntry("Usage: `/drop <session-id|prefix>` (or `/delete`).")
+		return m, nil
+	}
+	targetPrefix := parts[1]
+	ctx := context.Background()
+	targetID := ""
+	if _, err := m.client.GetSession(ctx, targetPrefix); err == nil {
+		targetID = targetPrefix
+	} else {
+		sessions, err := m.client.ListSessions(ctx, 100, false)
+		if err != nil {
+			m.addSystemEntry("Failed to query sessions: " + err.Error())
+			return m, nil
+		}
+		var matches []core.Session
+		for _, s := range sessions {
+			if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
+				matches = append(matches, s)
+			}
+		}
+		if len(matches) == 0 {
+			m.addSystemEntry(fmt.Sprintf("No session found matching prefix `%s`.", targetPrefix))
+			return m, nil
+		} else if len(matches) > 1 {
+			var ids []string
+			for _, match := range matches {
+				short := match.ID
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				ids = append(ids, short)
+			}
+			m.addSystemEntry(fmt.Sprintf("Prefix `%s` is ambiguous. Matches: %s", targetPrefix, strings.Join(ids, ", ")))
+			return m, nil
+		}
+		targetID = matches[0].ID
+	}
+
+	if targetID == m.sessionID {
+		m.addSystemEntry("Cannot delete currently active session. Switch to another session first with `/open`.")
+		return m, nil
+	}
+
+	if err := m.client.DeleteSession(ctx, targetID); err != nil {
+		m.addSystemEntry("Failed to delete session: " + err.Error())
+		return m, nil
+	}
+	m.addSystemEntry("Deleted session: " + targetID)
 	return m, nil
 }
 

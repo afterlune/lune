@@ -120,6 +120,14 @@ func (f *fakeCLICore) GetSession(_ context.Context, id string) (core.Session, er
 	if id == "non-existent" {
 		return core.Session{}, errors.New("not found")
 	}
+	if len(f.sessions) > 0 {
+		for _, s := range f.sessions {
+			if s.ID == id {
+				return s, nil
+			}
+		}
+		return core.Session{}, errors.New("not found")
+	}
 	return core.Session{ID: id, Title: "Session " + id}, nil
 }
 
@@ -137,6 +145,20 @@ func (f *fakeCLICore) ForkSession(_ context.Context, sessionID string) (core.Ses
 	f.sequence++
 	f.latest = core.Session{ID: fmt.Sprintf("session-%d", f.sequence), Title: "Fork of " + sessionID}
 	return f.latest, nil
+}
+
+func (f *fakeCLICore) DeleteSession(_ context.Context, sessionID string) error {
+	var updated []core.Session
+	for _, s := range f.sessions {
+		if s.ID != sessionID {
+			updated = append(updated, s)
+		}
+	}
+	f.sessions = updated
+	if f.latest.ID == sessionID {
+		f.latest = core.Session{}
+	}
+	return nil
 }
 
 func (f *fakeCLICore) RewindSession(_ context.Context, sessionID string, turns int) (int, error) {
@@ -1093,6 +1115,51 @@ func TestCLIPsAndStopCommands(t *testing.T) {
 	stdout, _ = runCLI(t, client, "/stop all\n/exit\n", nil)
 	if !strings.Contains(stdout, "No active background processes to stop.") {
 		t.Fatalf("stdout = %q, want no active processes message", stdout)
+	}
+}
+
+func TestCLIDropCommand(t *testing.T) {
+	client := &fakeCLICore{
+		sessions: []core.Session{
+			{ID: "sess-101-frontend", Title: "Frontend Feature"},
+			{ID: "sess-102-backend", Title: "Backend Bugfix"},
+			{ID: "sess-103-database", Title: "Database Migration"},
+		},
+	}
+
+	// 1. Usage error when no ID provided
+	_, stderr := runCLI(t, client, "/drop\n/exit\n", nil)
+	if !strings.Contains(stderr, "usage: /drop [id|prefix]") {
+		t.Fatalf("stderr = %q, want usage error", stderr)
+	}
+
+	// 2. Prevent deleting active session
+	_, stderr = runCLI(t, client, "/open sess-101\n/drop sess-101\n/exit\n", nil)
+	if !strings.Contains(stderr, "Cannot delete currently active session") {
+		t.Fatalf("stderr = %q, want active session guard error", stderr)
+	}
+
+	// 3. Delete other session via unique prefix
+	stdout, stderr := runCLI(t, client, "/open sess-101\n/drop sess-102\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if !strings.Contains(stdout, "Deleted session sess-102-backend.") {
+		t.Fatalf("stdout = %q, want deleted confirmation", stdout)
+	}
+	for _, s := range client.sessions {
+		if s.ID == "sess-102-backend" {
+			t.Fatalf("expected sess-102-backend to be removed from sessions")
+		}
+	}
+
+	// 4. Also verify /delete alias
+	stdout, stderr = runCLI(t, client, "/delete sess-103\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if !strings.Contains(stdout, "Deleted session sess-103-database.") {
+		t.Fatalf("stdout = %q, want deleted confirmation for /delete", stdout)
 	}
 }
 

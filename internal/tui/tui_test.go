@@ -1678,6 +1678,150 @@ func TestSessionsModalInteractions(t *testing.T) {
 	}
 }
 
+func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	s1, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s1.ID, "Session 1 Active")
+
+	s2, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s2.ID, "Session 2 Disposable")
+
+	s3, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetSessionTitle(ctx, s3.ID, "Session 3 Extra")
+
+	rt1, err := client.OpenSessionRuntime(ctx, s1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := newTUIModel(client, rt1, s1.ID)
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// 1. Open sessions modal
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatalf("expected modal to open on Ctrl+O")
+	}
+
+	// 2. Select active session (s1) and try Ctrl+D -> blocked
+	for i, s := range m.sessionsFiltered {
+		if s.ID == s1.ID {
+			m.sessionsIndex = i
+			break
+		}
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.sessionsConfirmDelete {
+		t.Fatalf("expected deletion confirmation NOT to trigger for active session")
+	}
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Cannot delete currently active session") {
+		t.Fatalf("expected active session guard warning, got: %s", lastSys)
+	}
+
+	// 3. Select disposable session (s2) and press Ctrl+D -> enter confirmation
+	for i, s := range m.sessionsFiltered {
+		if s.ID == s2.ID {
+			m.sessionsIndex = i
+			break
+		}
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.sessionsConfirmDelete || m.sessionsDeletingID != s2.ID {
+		t.Fatalf("expected sessionsConfirmDelete for s2, got %v (id: %s)", m.sessionsConfirmDelete, m.sessionsDeletingID)
+	}
+	// Verify view rendering contains confirmation warning
+	viewStr := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewStr, "Delete session") || !strings.Contains(viewStr, "y to confirm") {
+		t.Fatalf("expected confirmation banner in view, got:\n%s", viewStr)
+	}
+
+	// 4. Press 'n' to cancel
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	m = mod.(*tuiModel)
+	if m.sessionsConfirmDelete {
+		t.Fatalf("expected sessionsConfirmDelete to cancel on 'n'")
+	}
+
+	// 5. Press Delete key (tea.KeyDelete) on s2 and press 'y' to confirm
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDelete}))
+	m = mod.(*tuiModel)
+	if !m.sessionsConfirmDelete {
+		t.Fatalf("expected sessionsConfirmDelete on Delete key")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
+	m = mod.(*tuiModel)
+	if m.sessionsConfirmDelete {
+		t.Fatalf("expected confirmation to clear after 'y'")
+	}
+	// Verify s2 is gone from sessionsItems
+	for _, s := range m.sessionsItems {
+		if s.ID == s2.ID {
+			t.Fatalf("expected s2 to be deleted from sessionsItems")
+		}
+	}
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Deleted session: "+s2.ID) {
+		t.Fatalf("expected deletion notice, got: %s", lastSys2)
+	}
+
+	// Close modal with Esc
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+
+	// 6. Test /drop command
+	// Usage error
+	m.handleSlashCommand("/drop")
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Usage: `/drop") {
+		t.Fatalf("expected usage error for /drop")
+	}
+
+	// Cannot delete active session
+	m.handleSlashCommand("/drop " + s1.ID)
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Cannot delete currently active session") {
+		t.Fatalf("expected active session guard for /drop")
+	}
+
+	// Delete s3 via prefix
+	s3Prefix := s3.ID[:8]
+	m.handleSlashCommand("/drop " + s3Prefix)
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Deleted session: "+s3.ID) {
+		t.Fatalf("expected deleted session notice for s3, got: %s", m.entries[len(m.entries)-1].Text)
+	}
+
+	// 7. Test running guard for /drop
+	m.running = true
+	m.handleSlashCommand("/drop non-existent")
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Cannot delete sessions while a task is running") {
+		t.Fatalf("expected running guard warning for /drop")
+	}
+}
+
 
 
 

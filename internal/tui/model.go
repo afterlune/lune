@@ -84,6 +84,8 @@ type tuiModel struct {
 	sessionsFiltered      []core.Session
 	sessionsFilter        string
 	sessionsIndex         int
+	sessionsConfirmDelete bool
+	sessionsDeletingID    string
 
 	// Prompt history navigation
 	promptHistory []string
