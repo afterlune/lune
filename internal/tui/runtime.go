@@ -177,6 +177,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
 					m.entries[i].Kind = KindUser
 					m.entries[i].ToolCallID = execID
+					m.invalidateEntryCache()
 					break
 				}
 			}
@@ -253,6 +254,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 					m.entries[i].ToolCommand = cmdText
 					m.entries[i].ToolOutput = outText
 					m.entries[i].ToolExitCode = event.CommandExitCode
+					m.invalidateEntryCache()
 					found = true
 					break
 				}
@@ -278,6 +280,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == event.Tool.ID {
 				m.entries[i].ToolStatus = event.CommandStatus
 				m.entries[i].ToolExitCode = event.CommandExitCode
+				m.invalidateEntryCache()
 				break
 			}
 		}

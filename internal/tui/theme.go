@@ -83,7 +83,37 @@ var (
 	currentThemeMode = ThemeModeAuto
 	isTerminalDark   = true
 	currentTheme     = DarkTheme
+
+	cachedStylePrimary  lipgloss.Style
+	cachedStyleMuted    lipgloss.Style
+	cachedStyleAccent   lipgloss.Style
+	cachedStylePlan     lipgloss.Style
+	cachedStyleSuccess  lipgloss.Style
+	cachedStyleFailure  lipgloss.Style
+	cachedStyleSelected lipgloss.Style
+	cachedStyleCard     lipgloss.Style
 )
+
+func init() {
+	recalculateThemeStyles()
+}
+
+func recalculateThemeStyles() {
+	th := currentTheme
+	cachedStylePrimary = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
+	cachedStyleMuted = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
+	cachedStyleAccent = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
+	cachedStylePlan = lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple))
+	cachedStyleSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen))
+	cachedStyleFailure = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed))
+	cachedStyleSelected = lipgloss.NewStyle().
+		Background(lipgloss.Color(th.SelectBg)).
+		Foreground(lipgloss.Color(th.SelectFg)).
+		Bold(true)
+	cachedStyleCard = lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary))
+}
 
 func activeTheme() Theme {
 	return currentTheme
@@ -104,6 +134,7 @@ func SetThemeMode(mode ThemeMode) {
 			currentTheme = LightTheme
 		}
 	}
+	recalculateThemeStyles()
 }
 
 // UpdateTerminalBackground informs the theme system of the terminal's detected background.
@@ -115,6 +146,7 @@ func UpdateTerminalBackground(dark bool) {
 		} else {
 			currentTheme = LightTheme
 		}
+		recalculateThemeStyles()
 	}
 }
 
@@ -124,38 +156,33 @@ func CurrentThemeMode() ThemeMode {
 }
 
 func styleTextPrimary() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary))
+	return cachedStylePrimary
 }
 
 func styleTextMuted() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted))
+	return cachedStyleMuted
 }
 
 func styleAccentBlue() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue))
+	return cachedStyleAccent
 }
 
 func stylePlanPurple() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().PlanPurple))
+	return cachedStylePlan
 }
 
 func styleSuccess() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().SuccessGreen))
+	return cachedStyleSuccess
 }
 
 func styleFailure() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed))
+	return cachedStyleFailure
 }
 
 func styleSelectedRow() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().SelectBg)).
-		Foreground(lipgloss.Color(activeTheme().SelectFg)).
-		Bold(true)
+	return cachedStyleSelected
 }
 
 func styleCard() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary))
+	return cachedStyleCard
 }

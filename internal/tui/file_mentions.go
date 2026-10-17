@@ -14,10 +14,12 @@ import (
 
 // WorkspaceFile represents a project file available for @ mentions.
 type WorkspaceFile struct {
-	Path    string // Relative slash-separated path, e.g. "internal/tui/tui.go"
-	Name    string // Base file name, e.g. "tui.go"
-	Size    int64  // File size in bytes
-	ModTime time.Time
+	Path      string // Relative slash-separated path, e.g. "internal/tui/tui.go"
+	PathLower string // Pre-lowercased path for zero-allocation fuzzy matching
+	Name      string // Base file name, e.g. "tui.go"
+	NameLower string // Pre-lowercased name for zero-allocation fuzzy matching
+	Size      int64  // File size in bytes
+	ModTime   time.Time
 }
 
 // WorkspaceFileScanner scans and caches workspace files for fuzzy matching.
@@ -136,10 +138,12 @@ func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
 
 		slashPath := filepath.ToSlash(relPath)
 		results = append(results, WorkspaceFile{
-			Path:    slashPath,
-			Name:    d.Name(),
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
+			Path:      slashPath,
+			PathLower: strings.ToLower(slashPath),
+			Name:      d.Name(),
+			NameLower: strings.ToLower(d.Name()),
+			Size:      info.Size(),
+			ModTime:   info.ModTime(),
 		})
 
 		if s.maxFiles > 0 && len(results) >= s.maxFiles {
@@ -205,8 +209,14 @@ func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []Workspace
 }
 
 func calculateMatchScore(f WorkspaceFile, q string) int {
-	nameLower := strings.ToLower(f.Name)
-	pathLower := strings.ToLower(f.Path)
+	nameLower := f.NameLower
+	if nameLower == "" {
+		nameLower = strings.ToLower(f.Name)
+	}
+	pathLower := f.PathLower
+	if pathLower == "" {
+		pathLower = strings.ToLower(f.Path)
+	}
 
 	// 1. Exact file name match
 	if nameLower == q {

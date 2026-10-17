@@ -2007,6 +2007,96 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	}
 }
 
+func BenchmarkRefreshViewportContent_Cached(b *testing.B) {
+	m := newTUIModel(nil, nil, "bench-sess")
+	m.width = 120
+	m.height = 40
+
+	// 50 realistic entries
+	for i := 0; i < 25; i++ {
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind: KindUser,
+			Text: fmt.Sprintf("Turn %d: Analyze the performance of our database query layer", i),
+		})
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind: KindAssistant,
+			Text: fmt.Sprintf("Here is the analysis for turn %d:\n- Check **indexes** on columns\n- Use `EXPLAIN ANALYZE`\n- Review connection pool settings\n\n```sql\nSELECT * FROM users WHERE active = true;\n```", i),
+		})
+	}
+	m.refreshViewportContent()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		m.currentStreamText = "Streaming token delta..."
+		m.refreshViewportContent()
+	}
+}
+
+func BenchmarkRefreshViewportContent_Uncached(b *testing.B) {
+	m := newTUIModel(nil, nil, "bench-sess")
+	m.width = 120
+	m.height = 40
+
+	for i := 0; i < 25; i++ {
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind: KindUser,
+			Text: fmt.Sprintf("Turn %d: Analyze the performance of our database query layer", i),
+		})
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind: KindAssistant,
+			Text: fmt.Sprintf("Here is the analysis for turn %d:\n- Check **indexes** on columns\n- Use `EXPLAIN ANALYZE`\n- Review connection pool settings\n\n```sql\nSELECT * FROM users WHERE active = true;\n```", i),
+		})
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		m.invalidateEntryCache()
+		m.refreshViewportContent()
+	}
+}
+
+func BenchmarkRenderMarkdown(b *testing.B) {
+	sample := `# System Architecture
+This document outlines the **core design** of the system.
+Here are the primary components:
+- Storage engine with SQLite and WAL mode
+- Transport layer with WebSocket and JSON-RPC
+- Terminal user interface with Lipgloss styling
+
+` + "```go\nfunc Process(ctx context.Context) error {\n\treturn nil\n}\n```\n" + `
+Please refer to ` + "`internal/tui/model.go`" + ` for details.`
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = RenderMarkdown(sample, 80)
+	}
+}
+
+func BenchmarkFuzzyMatchFiles_5000(b *testing.B) {
+	files := make([]WorkspaceFile, 5000)
+	for i := 0; i < 5000; i++ {
+		p := fmt.Sprintf("internal/pkg%d/submodule/service_%d_handler.go", i%20, i)
+		name := fmt.Sprintf("service_%d_handler.go", i)
+		files[i] = WorkspaceFile{
+			Path:      p,
+			PathLower: strings.ToLower(p),
+			Name:      name,
+			NameLower: strings.ToLower(name),
+			Size:      int64(1024 + i),
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = FuzzyMatchFiles(files, "service_12", 10)
+	}
+}
+
+
 
 
 

@@ -29,6 +29,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		UpdateTerminalBackground(msg.IsDark())
 		m.applyThemeStyles()
+		m.invalidateEntryCache()
 		m.refreshViewportContent()
 		m.updateLayout()
 		return m, nil
@@ -168,6 +169,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionTitle = msg.session.Title
 		m.entries = nil
+		m.invalidateEntryCache()
 		m.activeQuestion = nil
 		m.activeApproval = nil
 		m.activePlanReview = nil
@@ -189,6 +191,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionTitle = msg.session.Title
 		m.entries = nil
+		m.invalidateEntryCache()
 		m.activeQuestion = nil
 		m.activeApproval = nil
 		m.activePlanReview = nil
@@ -211,6 +214,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.entries = nil
+			m.invalidateEntryCache()
 			m.refreshViewportContent()
 			m.updateLayout()
 			planCmds = append(planCmds, m.subscribeRuntimeEvents())
@@ -316,6 +320,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						for i := len(m.entries) - 1; i >= 0; i-- {
 							if m.entries[i].Kind == KindTool {
 								m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
+								m.invalidateEntryCache()
 								m.refreshViewportContent()
 								break
 							}

@@ -101,6 +101,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.selectEndX = 0
 		m.selectStartY = 0
 		m.selectEndY = 0
+		m.invalidateEntryCache()
 		m.updateLayout()
 		return m, nil
 
@@ -282,6 +283,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 		m.currentStreamText = ""
 		m.scrolledUp = false
+		m.invalidateEntryCache()
 		m.refreshViewportContent()
 		m.updateLayout()
 		m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s).", removed))
@@ -741,6 +743,7 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == target.ExecutionID || m.entries[i].ToolCallID == "") {
 			m.entries[i].Text += " (cancelled)"
+			m.invalidateEntryCache()
 			break
 		}
 	}

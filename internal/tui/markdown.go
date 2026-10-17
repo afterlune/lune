@@ -18,12 +18,22 @@ var (
 // RenderMarkdown renders markdown text using terminal styles.
 func RenderMarkdown(text string, width int) string {
 	lines := strings.Split(text, "\n")
-	var result []string
+	result := make([]string, 0, len(lines))
 	inCodeBlock := false
 
+	th := activeTheme()
 	codeBlockStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary))
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary))
+	h1Style := lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(th.TextPrimary))
+	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	h3Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextMuted))
+
+	inlineCodeStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary))
+	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -40,25 +50,22 @@ func RenderMarkdown(text string, width int) string {
 
 		if strings.HasPrefix(trimmed, "# ") {
 			title := strings.TrimPrefix(trimmed, "# ")
-			style := lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(activeTheme().TextPrimary))
-			result = append(result, style.Render(title))
+			result = append(result, h1Style.Render(title))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			title := strings.TrimPrefix(trimmed, "## ")
-			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(activeTheme().TextPrimary))
-			result = append(result, style.Render(title))
+			result = append(result, h2Style.Render(title))
 			continue
 		}
 		if strings.HasPrefix(trimmed, "### ") {
 			title := strings.TrimPrefix(trimmed, "### ")
-			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(activeTheme().TextMuted))
-			result = append(result, style.Render(title))
+			result = append(result, h3Style.Render(title))
 			continue
 		}
 
-		// Inline formatting
-		formatted := formatInline(line)
+		// Inline formatting with fast-path checks
+		formatted := formatInlineWithStyles(line, inlineCodeStyle, boldStyle, fileRefStyle)
 		result = append(result, formatted)
 	}
 
@@ -66,27 +73,43 @@ func RenderMarkdown(text string, width int) string {
 }
 
 func formatInline(line string) string {
-	// Inline code `...`
-	line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
-		content := strings.Trim(m, "`")
-		style := lipgloss.NewStyle().
-			Background(lipgloss.Color(activeTheme().CardBg)).
-			Foreground(lipgloss.Color(activeTheme().TextPrimary))
-		return style.Render(" " + content + " ")
-	})
+	th := activeTheme()
+	inlineCodeStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary))
+	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
+	return formatInlineWithStyles(line, inlineCodeStyle, boldStyle, fileRefStyle)
+}
 
-	// Bold **...**
-	line = reBold.ReplaceAllStringFunc(line, func(m string) string {
-		content := strings.Trim(m, "*")
-		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(activeTheme().TextPrimary))
-		return style.Render(content)
-	})
+func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipgloss.Style) string {
+	hasBacktick := strings.ContainsRune(line, '`')
+	hasAsterisk := strings.Contains(line, "**")
+	hasDot := strings.ContainsRune(line, '.')
 
-	// File references e.g. server.py:672
-	line = reFileRef.ReplaceAllStringFunc(line, func(m string) string {
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Underline(true)
-		return style.Render(m)
-	})
+	if !hasBacktick && !hasAsterisk && !hasDot {
+		return line
+	}
+
+	if hasBacktick {
+		line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
+			content := strings.Trim(m, "`")
+			return codeStyle.Render(" " + content + " ")
+		})
+	}
+
+	if hasAsterisk {
+		line = reBold.ReplaceAllStringFunc(line, func(m string) string {
+			content := strings.Trim(m, "*")
+			return boldStyle.Render(content)
+		})
+	}
+
+	if hasDot {
+		line = reFileRef.ReplaceAllStringFunc(line, func(m string) string {
+			return fileStyle.Render(m)
+		})
+	}
 
 	return line
 }

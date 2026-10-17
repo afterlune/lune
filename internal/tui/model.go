@@ -61,6 +61,14 @@ type tuiModel struct {
 	currentStreamText string
 	thinking          bool
 
+	// Viewport transcript cache
+	cachedBlocks     []string
+	cachedEntryCount int
+	cachedWidth      int
+	cachedThemeBg    string
+	cachedDirty      bool
+	transcriptDirty  bool
+
 	// Token usage and context window statistics
 	totalInputTokens     int64
 	totalOutputTokens    int64
@@ -155,11 +163,17 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		viewport:          vp,
 		entries:           entries,
 		fileScanner:       NewWorkspaceFileScanner(workspace),
+		transcriptDirty:   true,
 	}
 
 	m.applyThemeStyles()
 	m.checkPendingState(context.Background())
 	return m
+}
+
+func (m *tuiModel) invalidateEntryCache() {
+	m.cachedDirty = true
+	m.transcriptDirty = true
 }
 
 func (m *tuiModel) getFileScanner() *WorkspaceFileScanner {
@@ -252,9 +266,24 @@ func (m *tuiModel) updateLayout() {
 	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
 	vpHeight := max(3, m.height-occupied)
 
-	m.viewport.SetWidth(contentWidth)
-	m.viewport.SetHeight(vpHeight)
-	m.refreshViewportContent()
+	widthChanged := (contentWidth != m.viewport.Width())
+	heightChanged := (vpHeight != m.viewport.Height())
+
+	if widthChanged {
+		m.viewport.SetWidth(contentWidth)
+	}
+	if heightChanged {
+		m.viewport.SetHeight(vpHeight)
+		if !m.scrolledUp {
+			m.viewport.GotoBottom()
+		}
+	}
+
+	entriesChanged := (len(m.entries) != m.cachedEntryCount)
+	needRefresh := widthChanged || entriesChanged || m.cachedDirty || m.transcriptDirty
+	if needRefresh {
+		m.refreshViewportContent()
+	}
 }
 
 // refreshViewportContent builds the entire transcript text and updates the viewport.
@@ -263,31 +292,54 @@ func (m *tuiModel) refreshViewportContent() {
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
 	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" {
+		m.cachedBlocks = nil
+		m.cachedEntryCount = 0
+		m.cachedDirty = false
+		m.transcriptDirty = false
 		m.viewport.SetContent("")
 		return
 	}
 
+	curThemeBg := activeTheme().CardBg
+	if m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount {
+		m.cachedBlocks = make([]string, 0, len(m.entries))
+		for _, entry := range m.entries {
+			block := renderEntry(entry, contentWidth)
+			if block != "" {
+				m.cachedBlocks = append(m.cachedBlocks, block)
+			}
+		}
+		m.cachedEntryCount = len(m.entries)
+		m.cachedWidth = contentWidth
+		m.cachedThemeBg = curThemeBg
+		m.cachedDirty = false
+	} else if len(m.entries) > m.cachedEntryCount {
+		for i := m.cachedEntryCount; i < len(m.entries); i++ {
+			block := renderEntry(m.entries[i], contentWidth)
+			if block != "" {
+				m.cachedBlocks = append(m.cachedBlocks, block)
+			}
+		}
+		m.cachedEntryCount = len(m.entries)
+	}
+
 	var blocks []string
-	for _, entry := range m.entries {
-		block := renderEntry(entry, contentWidth)
-		if block != "" {
-			blocks = append(blocks, block)
+	if m.currentStreamText != "" || m.running {
+		blocks = make([]string, len(m.cachedBlocks), len(m.cachedBlocks)+2)
+		copy(blocks, m.cachedBlocks)
+		if m.currentStreamText != "" {
+			streamEntry := TranscriptEntry{
+				Kind: KindAssistant,
+				Text: m.currentStreamText,
+			}
+			blocks = append(blocks, renderEntry(streamEntry, contentWidth))
 		}
-	}
-
-	// Active stream delta if any
-	if m.currentStreamText != "" {
-		streamEntry := TranscriptEntry{
-			Kind: KindAssistant,
-			Text: m.currentStreamText,
+		if m.running {
+			elapsed := time.Since(m.taskStartedAt)
+			blocks = append(blocks, renderWorking(elapsed, m.thinking))
 		}
-		blocks = append(blocks, renderEntry(streamEntry, contentWidth))
-	}
-
-	// Active working indicator
-	if m.running {
-		elapsed := time.Since(m.taskStartedAt)
-		blocks = append(blocks, renderWorking(elapsed, m.thinking))
+	} else {
+		blocks = m.cachedBlocks
 	}
 
 	fullText := strings.Join(blocks, "\n\n")
@@ -295,6 +347,7 @@ func (m *tuiModel) refreshViewportContent() {
 	if !m.scrolledUp {
 		m.viewport.GotoBottom()
 	}
+	m.transcriptDirty = false
 }
 
 func (m *tuiModel) hasSelection() bool {
@@ -492,6 +545,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 			if m.entries == nil {
 				m.entries = []TranscriptEntry{}
 			}
+			m.invalidateEntryCache()
 			m.refreshViewportContent()
 		}
 	}
