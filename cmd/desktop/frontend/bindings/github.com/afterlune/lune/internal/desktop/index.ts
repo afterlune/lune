@@ -39,6 +39,7 @@ export type {
     ProviderInput,
     ProviderView,
     QuestionAnswerInput,
+    SessionSearchResult,
     SessionSummary,
     SessionView,
     SubmitInput,

@@ -186,6 +186,10 @@ export function SaveWorkspaceConfig(input: $models.WorkspaceConfigInput): $Cance
     return $Call.ByID(26185835, input);
 }
 
+export function SearchWorkspaceConversation(query: string): $CancellablePromise<$models.SessionSearchResult[] | null> {
+    return $Call.ByID(3053592493, query);
+}
+
 export function SearchWorkspaceFiles(query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(178478345, query);
 }

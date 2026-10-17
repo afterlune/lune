@@ -287,6 +287,22 @@ export interface QuestionAnswerInput {
     "answers": model$0.UserQuestionResponse[] | null;
 }
 
+export interface SessionSearchResult {
+    "sessionId": string;
+    "sessionTitle": string;
+    "mode": string;
+    "workingDirectory": string;
+    "updatedAt": string;
+    "matchKind": string;
+    "messageId"?: string;
+    "messageIndex": number;
+    "role"?: string;
+    "snippetBefore": string;
+    "snippetMatch": string;
+    "snippetAfter": string;
+    "titleMatched"?: boolean;
+}
+
 export interface SessionSummary {
     "id": string;
     "title": string;

@@ -9,7 +9,7 @@
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
     AppearanceView, Bootstrap, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
-    SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
+    SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSearchResult, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
     WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
@@ -84,6 +84,14 @@
   let sidebarCollapsed = $state(window.matchMedia('(max-width: 760px)').matches);
   let sessions = $state<SessionSummary[]>([]);
   let sessionFilter = $state('');
+  let sessionSearchResults = $state<SessionSearchResult[]>([]);
+  let sessionSearchLoading = $state(false);
+  let sessionSearchError = $state('');
+  let sessionSearchRequest = 0;
+  let sessionSearchTimer: number | undefined;
+  let sessionSearchHighlightSession = $state('');
+  let sessionSearchHighlightMessage = $state('');
+  let sessionSearchHighlightTimer: number | undefined;
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
   let sidebarView = $state<'sessions' | 'files' | 'changes' | 'worktrees' | 'pending' | 'processes'>('sessions');
@@ -1273,7 +1281,9 @@
     }
     const currentPlanReview = preservePlanReview && session?.id === state.session.id ? planReview : null;
     clearElapsedTimer();
-    workspace = state.projectRoot || state.workspace;
+    const nextWorkspace = state.projectRoot || state.workspace;
+    if (workspace && nextWorkspace && workspace.toLowerCase() !== nextWorkspace.toLowerCase()) clearSessionSearch();
+    workspace = nextWorkspace;
     workingDirectory = state.workingDirectory || state.workspace;
     workspaceMode = state.workspaceMode || 'local';
     session = state.session;
@@ -2098,6 +2108,7 @@
     busy = true;
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
+      clearSessionSearch();
       workspace = '';
       clearDesktopProcesses();
       workingDirectory = '';
@@ -2120,6 +2131,76 @@
     }
     try { installWorkspaceState(await Desktop.OpenSession(id)); }
     catch (error) { showError(error); }
+  }
+
+  function clearSessionSearch() {
+    sessionSearchRequest++;
+    if (sessionSearchTimer !== undefined) window.clearTimeout(sessionSearchTimer);
+    sessionSearchTimer = undefined;
+    sessionFilter = '';
+    sessionSearchResults = [];
+    sessionSearchLoading = false;
+    sessionSearchError = '';
+  }
+
+  function updateSessionSearch(value: string) {
+    sessionFilter = value;
+    const query = value.trim();
+    const request = ++sessionSearchRequest;
+    if (sessionSearchTimer !== undefined) window.clearTimeout(sessionSearchTimer);
+    sessionSearchTimer = undefined;
+    sessionSearchError = '';
+    sessionSearchResults = [];
+    if (!query) {
+      sessionSearchLoading = false;
+      return;
+    }
+    sessionSearchLoading = true;
+    sessionSearchTimer = window.setTimeout(async () => {
+      try {
+        let results: SessionSearchResult[];
+        if (previewMode) {
+          results = sessions
+            .filter((item) => item.title.toLowerCase().includes(query.toLowerCase()))
+            .map((item) => ({
+              sessionId: item.id, sessionTitle: item.title, mode: item.mode, workingDirectory: item.workingDirectory,
+              updatedAt: item.updatedAt, matchKind: 'title', messageIndex: -1,
+              snippetBefore: '', snippetMatch: item.title, snippetAfter: '',
+            }));
+        } else {
+          results = (await Desktop.SearchWorkspaceConversation(query)) ?? [];
+        }
+        if (request === sessionSearchRequest) sessionSearchResults = results;
+      } catch (error) {
+        if (request === sessionSearchRequest) sessionSearchError = String(error);
+      } finally {
+        if (request === sessionSearchRequest) sessionSearchLoading = false;
+      }
+    }, 250);
+  }
+
+  async function openSessionSearchResult(result: SessionSearchResult) {
+    if (result.matchKind !== 'message' || !result.messageId) {
+      await openSession(result.sessionId);
+      return;
+    }
+    if (sessionSearchHighlightTimer !== undefined) window.clearTimeout(sessionSearchHighlightTimer);
+    sessionSearchHighlightSession = result.sessionId;
+    sessionSearchHighlightMessage = result.messageId;
+    await openSession(result.sessionId);
+    if (session?.id !== result.sessionId) {
+      sessionSearchHighlightMessage = '';
+      return;
+    }
+    await tick();
+    const target = Array.from(document.querySelectorAll<HTMLElement>('.message-row[data-message-id]'))
+      .find((element) => element.dataset.messageId === result.messageId);
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    sessionSearchHighlightTimer = window.setTimeout(() => {
+      sessionSearchHighlightMessage = '';
+      sessionSearchHighlightSession = '';
+      sessionSearchHighlightTimer = undefined;
+    }, 1800);
   }
 
   async function openPendingSession(id: string) {
@@ -2770,6 +2851,8 @@
     void initialize();
     return () => {
       clearElapsedTimer();
+      if (sessionSearchTimer !== undefined) window.clearTimeout(sessionSearchTimer);
+      if (sessionSearchHighlightTimer !== undefined) window.clearTimeout(sessionSearchHighlightTimer);
       if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer);
       colorScheme.removeEventListener('change', syncColorScheme);
       motionPreference.removeEventListener('change', syncMotionPreference);
@@ -2857,23 +2940,43 @@
           <span class="folder-icon">▰</span><span class="workspace-name">{workspace.split(/[\\/]/).at(-1) || workspace}</span><span class="workspace-menu">⌄</span>
         </button>
         {#if sidebarView === 'sessions'}
-          <input class="session-search" bind:value={sessionFilter} placeholder="搜索会话" aria-label="搜索会话" />
-          <div class="session-list">
-            {#each visibleSessions as item (item.id)}
-              <div class:chosen={session?.id === item.id} class="session-entry">
-                <button class="session-row" title={`${item.title || '新会话'}${item.mode === 'worktree' ? ` · ${item.workingDirectory || item.worktreePath || ''}` : ''}`} onclick={() => void openSession(item.id)}>
-                  <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span><span class="session-name">{item.title || '新会话'}</span>
-                  <span class={`session-mode-badge ${item.mode === 'worktree' ? 'worktree' : ''}`}>{item.mode === 'worktree' ? 'WT' : 'LOCAL'}</span>
-                  {#if ['running', 'queued', 'waiting'].includes(item.status ?? '')}<span class={`session-activity ${item.status}`} title={item.status === 'waiting' ? '等待处理' : item.status === 'queued' ? '排队中' : '正在运行'}></span>{/if}
-                </button>
-                <div class="session-row-actions">
-                  <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={busy} onclick={(event) => { event.stopPropagation(); beginRenameSession(item); }}>✎</button>
-                  <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={busy || ['running', 'queued', 'waiting'].includes(item.status ?? '')} onclick={(event) => { event.stopPropagation(); beginDeleteSession(item); }}>×</button>
+          <input class="session-search" value={sessionFilter} oninput={(event) => updateSessionSearch(event.currentTarget.value)} onkeydown={(event) => { if (event.key === 'Escape') updateSessionSearch(''); }} placeholder="搜索会话和消息" aria-label="搜索会话和消息" />
+          {#if sessionFilter.trim()}
+            <div class="session-search-results" aria-label="会话搜索结果" aria-live="polite">
+              {#if sessionSearchLoading}<div class="session-search-state"><span class="spinner"></span>正在搜索历史…</div>
+              {:else if sessionSearchError}<div class="session-search-state error">搜索失败<button class="small-button" onclick={() => updateSessionSearch(sessionFilter)}>重试</button></div>
+              {:else if !sessionSearchResults.length}<div class="session-search-state">没有匹配的会话或消息。</div>
+              {:else}
+                {#if sessionSearchResults.length >= 100}<div class="session-search-summary">显示最新 100 条结果，可缩小搜索词。</div>{/if}
+                {#each sessionSearchResults as result, index (`${result.sessionId}:${result.messageId || result.matchKind}:${index}`)}
+                  <button class="session-search-result" title={`${result.sessionTitle || '新会话'} · ${result.workingDirectory}`} onclick={() => void openSessionSearchResult(result)}>
+                    <span class="session-search-result-heading">
+                      <strong>{result.sessionTitle || '新会话'}</strong>
+                      <small>{result.mode === 'worktree' ? 'Worktree' : 'Local'} · {result.matchKind === 'title' ? '标题' : result.role === 'user' ? '用户消息' : '助手消息'}</small>
+                    </span>
+                    <span class="session-search-snippet"><span>{result.snippetBefore}</span><mark>{result.snippetMatch}</mark><span>{result.snippetAfter}</span></span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          {:else}
+            <div class="session-list">
+              {#each visibleSessions as item (item.id)}
+                <div class:chosen={session?.id === item.id} class="session-entry">
+                  <button class="session-row" title={`${item.title || '新会话'}${item.mode === 'worktree' ? ` · ${item.workingDirectory || item.worktreePath || ''}` : ''}`} onclick={() => void openSession(item.id)}>
+                    <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span><span class="session-name">{item.title || '新会话'}</span>
+                    <span class={`session-mode-badge ${item.mode === 'worktree' ? 'worktree' : ''}`}>{item.mode === 'worktree' ? 'WT' : 'LOCAL'}</span>
+                    {#if ['running', 'queued', 'waiting'].includes(item.status ?? '')}<span class={`session-activity ${item.status}`} title={item.status === 'waiting' ? '等待处理' : item.status === 'queued' ? '排队中' : '正在运行'}></span>{/if}
+                  </button>
+                  <div class="session-row-actions">
+                    <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={busy} onclick={(event) => { event.stopPropagation(); beginRenameSession(item); }}>✎</button>
+                    <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={busy || ['running', 'queued', 'waiting'].includes(item.status ?? '')} onclick={(event) => { event.stopPropagation(); beginDeleteSession(item); }}>×</button>
+                  </div>
                 </div>
-              </div>
-            {/each}
-            {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
-          </div>
+              {/each}
+              {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
+            </div>
+          {/if}
         {:else if sidebarView === 'pending'}
           <section class="pending-session-list" aria-label="待处理会话">
             <div class="pending-list-summary">{pendingRequestCount} 项待处理</div>
@@ -3206,7 +3309,7 @@
               <div class="conversation-intro"><p>可以在 <b>{workspace.split(/[\\/]/).at(-1)}</b> 中阅读、修改和运行代码。</p></div>
             {/if}
             {#each transcriptRows as row (row.message.id)}
-              <article class:from-user={row.message.role === 'user'} class="message-row">
+              <article data-message-id={row.message.id} class:search-match={sessionSearchHighlightSession === session?.id && sessionSearchHighlightMessage === row.message.id} class:from-user={row.message.role === 'user'} class="message-row">
                 <div class="message-body">
                   <div class="message-text">
                     {#if row.message.role === 'assistant'}<Markdown source={row.message.text} />{:else}<div class="plain-text">{row.message.text}</div>{/if}
