@@ -1703,15 +1703,18 @@ func (s *DesktopService) loadExecutionHistoryLocked(sessionID string) ([]Executi
 }
 
 type AgentEvent struct {
-	Kind        string       `json:"kind"`
-	SessionID   string       `json:"sessionId"`
-	TaskID      string       `json:"taskId"`
-	ExecutionID string       `json:"executionId"`
-	Status      string       `json:"status"`
-	Err         string       `json:"error,omitempty"`
-	Tool        ToolEvent    `json:"tool"`
-	Stream      *StreamEvent `json:"stream,omitempty"`
-	ApprovalID  string       `json:"approvalId,omitempty"`
+	Kind            string       `json:"kind"`
+	SessionID       string       `json:"sessionId"`
+	TaskID          string       `json:"taskId"`
+	ExecutionID     string       `json:"executionId"`
+	Status          string       `json:"status"`
+	Err             string       `json:"error,omitempty"`
+	CommandID       string       `json:"commandId,omitempty"`
+	CommandStatus   string       `json:"commandStatus,omitempty"`
+	CommandExitCode *int         `json:"commandExitCode,omitempty"`
+	Tool            ToolEvent    `json:"tool"`
+	Stream          *StreamEvent `json:"stream,omitempty"`
+	ApprovalID      string       `json:"approvalId,omitempty"`
 }
 
 type ToolEvent struct {
@@ -1983,6 +1986,7 @@ func toAgentEvent(event core.Event) AgentEvent {
 	result := AgentEvent{
 		Kind: string(event.Kind), SessionID: event.SessionID, TaskID: event.TaskID, ExecutionID: event.ExecutionID,
 		Status: string(event.Status), Err: event.Err, ApprovalID: event.ApprovalID,
+		CommandID: event.CommandID, CommandStatus: string(event.CommandStatus), CommandExitCode: event.CommandExitCode,
 		Tool: ToolEvent{ID: event.Tool.ID, InvocationID: event.Tool.InvocationID, AgentID: event.Tool.AgentID,
 			Name: event.Tool.Name, Arguments: tool.Arguments, Details: tool.Details,
 			Started: event.Tool.Started, Failed: event.Tool.Failed, Canceled: event.Tool.Canceled,

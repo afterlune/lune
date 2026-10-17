@@ -60,6 +60,48 @@ export interface ConversationMessage {
     "images"?: string[] | null;
 }
 
+export interface DesktopProcessListView {
+    "processes": DesktopProcessView[] | null;
+    "unavailableSessions": DesktopProcessSessionView[] | null;
+}
+
+export interface DesktopProcessOutputView {
+    "sessionId": string;
+    "commandId": string;
+    "command": string;
+    "status": string;
+    "output": string;
+    "cursor": number;
+    "nextCursor": number;
+    "endCursor": number;
+    "truncated": boolean;
+    "error"?: string;
+    "exitCode"?: number | null;
+}
+
+export interface DesktopProcessSessionView {
+    "id": string;
+    "title": string;
+    "mode": string;
+    "workingDirectory": string;
+    "status": string;
+    "reason": string;
+}
+
+export interface DesktopProcessView {
+    "id": string;
+    "sessionId": string;
+    "sessionTitle": string;
+    "mode": string;
+    "workingDirectory": string;
+    "executionId": string;
+    "command": string;
+    "status": string;
+    "startedAt": string;
+    "finishedAt"?: string | null;
+    "exitCode"?: number | null;
+}
+
 export interface DesktopWorktreeSessionView {
     "id": string;
     "title": string;

@@ -65,6 +65,15 @@ export function Interrupt(): $CancellablePromise<boolean> {
     return $Call.ByID(2941886036);
 }
 
+/**
+ * ListDesktopProcesses returns commands owned by every runtime attached to the
+ * active Desktop workspace. Session metadata whose runtime could not be opened
+ * is returned separately so it remains visible without exposing any actions.
+ */
+export function ListDesktopProcesses(): $CancellablePromise<$models.DesktopProcessListView> {
+    return $Call.ByID(4175244156);
+}
+
 export function ListDesktopWorktrees(): $CancellablePromise<$models.DesktopWorktreeView[] | null> {
     return $Call.ByID(3399958499);
 }
@@ -107,6 +116,14 @@ export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<voi
 
 export function PickWorkspace(): $CancellablePromise<string> {
     return $Call.ByID(1262469545);
+}
+
+/**
+ * ReadDesktopProcessOutput reads one cursor-bounded chunk. Wait requests can
+ * block for at most Core's five-second follow interval.
+ */
+export function ReadDesktopProcessOutput(sessionID: string, commandID: string, cursor: number, wait: boolean): $CancellablePromise<$models.DesktopProcessOutputView> {
+    return $Call.ByID(3868549089, sessionID, commandID, cursor, wait);
 }
 
 export function ReadWorkspaceDiff(relativePath: string): $CancellablePromise<$models.WorkspaceDiffView> {
@@ -183,6 +200,13 @@ export function SetSessionTitle(sessionID: string, title: string): $CancellableP
 
 export function SetTheme(theme: string): $CancellablePromise<void> {
     return $Call.ByID(2367496880, theme);
+}
+
+/**
+ * StopDesktopProcess stops only the command addressed by its owning session runtime.
+ */
+export function StopDesktopProcess(sessionID: string, commandID: string): $CancellablePromise<void> {
+    return $Call.ByID(2531413948, sessionID, commandID);
 }
 
 export function Submit(input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {

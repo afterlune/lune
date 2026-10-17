@@ -164,6 +164,32 @@ test('pending center counts background requests and opens the owning session', a
   await expect(page.locator('.mcp-interaction-card')).toHaveCount(0);
 });
 
+test('process center groups commands across sessions and shows selected output', async ({ page }) => {
+  await page.goto('/?preview=processes');
+
+  await expect(page.getByRole('heading', { name: '后台进程' })).toBeVisible();
+  await expect(page.locator('.desktop-process-sidebar-list')).toContainText('跨会话进程中心');
+  await expect(page.locator('.desktop-process-sidebar-list')).toContainText('文档更新');
+  await expect(page.getByRole('button', { name: /go test \.\/internal\/desktop/ })).toBeVisible();
+  await expect(page.locator('.desktop-process-detail-title')).toContainText('go test ./internal/desktop -run TestListDesktopProcesses');
+  await expect(page.locator('.desktop-process-output')).toContainText('ok  github.com/afterlune/lune/internal/desktop');
+  await expect(page.locator('.desktop-process-unavailable')).toContainText('工作树目录已不存在。');
+  await expect(page).toHaveScreenshot('desktop-process-center.png', { fullPage: true });
+
+  await page.getByRole('button', { name: /npm run check，失败/ }).click();
+  await expect(page.locator('.desktop-process-output')).toContainText('svelte-check --tsconfig');
+  await expect(page.locator('.desktop-process-status-label')).toHaveText('失败');
+});
+
+test('process center stops one active command without a confirmation dialog', async ({ page }) => {
+  await page.goto('/?preview=processes');
+  await expect(page.getByRole('button', { name: '停止进程' })).toBeVisible();
+  await page.getByRole('button', { name: '停止进程' }).click();
+  await expect(page.getByRole('button', { name: '停止进程' })).toHaveCount(0);
+  await expect(page.locator('.desktop-process-status-label')).toHaveText('已取消');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {
   await page.goto('/?preview=1');
   await page.getByRole('button', { name: '项目设置' }).click();

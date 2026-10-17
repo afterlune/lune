@@ -43,6 +43,16 @@
   type DesktopWorktree = Omit<DesktopWorktreeView, 'sessions'> & { sessions: NonNullable<DesktopWorktreeView['sessions']> };
   type WorktreeApplyConfirmation = { sessionID: string; paths: string[]; files: NonNullable<WorkspaceChangesView['files']>; destination: string };
   type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
+  type DesktopProcess = {
+    id: string; sessionId: string; sessionTitle: string; mode: string; workingDirectory: string;
+    executionId: string; command: string; status: string; startedAt: string; finishedAt?: string | null; exitCode?: number | null;
+  };
+  type DesktopProcessSession = { id: string; title: string; mode: string; workingDirectory: string; status: string; reason: string };
+  type DesktopProcessOutput = {
+    sessionId: string; commandId: string; command: string; status: string; output: string;
+    cursor: number; nextCursor: number; endCursor: number; truncated: boolean; error?: string; exitCode?: number | null;
+  };
+  type DesktopProcessList = { processes: DesktopProcess[]; unavailableSessions: DesktopProcessSession[] };
   type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
@@ -59,7 +69,7 @@
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
-  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'worktrees' | 'pending'>('sessions');
+  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'worktrees' | 'pending' | 'processes'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let planMode = $state(false);
@@ -68,6 +78,23 @@
   let pendingSessionsLoading = $state(false);
   let pendingSessionsError = $state('');
   let pendingSessionsRequest = 0;
+  let desktopProcesses = $state<DesktopProcess[]>([]);
+  let unavailableProcessSessions = $state<DesktopProcessSession[]>([]);
+  let desktopProcessesLoading = $state(false);
+  let desktopProcessesError = $state('');
+  let desktopProcessesRequest = 0;
+  let selectedDesktopProcessKey = $state('');
+  let processOutput = $state('');
+  let processOutputError = $state('');
+  let processOutputLoading = $state(false);
+  let processOutputTruncated = $state(false);
+  let processOutputStatus = $state('');
+  let processOutputRequest = 0;
+  let processOutputCursor = $state(0);
+  let processOutputEndCursor = $state(0);
+  let processLogView = $state<HTMLElement>();
+  let processLogPinned = true;
+  let stoppingDesktopProcessKey = $state('');
   let messages = $state<LocalMessage[]>([]);
   let activities = $state<Activity[]>([]);
   let activityHistory = $state<ActivityRun[]>([]);
@@ -149,6 +176,20 @@
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
   const pendingRequestCount = $derived(pendingSessions.reduce((count, item) => count + item.requests.length, 0));
+  const activeDesktopProcessCount = $derived(desktopProcesses.filter((item) => processStatusActive(item.status)).length);
+  const selectedDesktopProcess = $derived(desktopProcesses.find((item) => desktopProcessKey(item) === selectedDesktopProcessKey) ?? null);
+  const desktopProcessGroups = $derived.by(() => {
+    const groups = new Map<string, { id: string; title: string; mode: string; processes: DesktopProcess[] }>();
+    for (const item of desktopProcesses) {
+      let group = groups.get(item.sessionId);
+      if (!group) {
+        group = { id: item.sessionId, title: item.sessionTitle || '新会话', mode: item.mode, processes: [] };
+        groups.set(item.sessionId, group);
+      }
+      group.processes.push(item);
+    }
+    return [...groups.values()];
+  });
   const activeWorkspaceChange = $derived(workspaceChanges?.files.find((file) => file.path === selectedWorkspaceChange) ?? null);
   const selectedWorkspaceChanges = $derived(workspaceChanges?.files.filter((file) => selectedApplyPaths.includes(file.path)) ?? []);
   const currentSessionSummary = $derived(sessions.find((item) => item.id === session?.id));
@@ -924,6 +965,208 @@
     }
   }
 
+  function desktopProcessKey(process: Pick<DesktopProcess, 'sessionId' | 'id'>) {
+    return `${process.sessionId}::${process.id}`;
+  }
+
+  function processStatusActive(status: string) {
+    return status === 'running' || status === 'stopping';
+  }
+
+  function processStatusLabel(status: string) {
+    switch (status) {
+      case 'running': return '运行中';
+      case 'stopping': return '正在停止';
+      case 'succeeded': return '已完成';
+      case 'failed': return '失败';
+      case 'cancelled': return '已取消';
+      case 'timed_out': return '超时';
+      case 'interrupted': return '已中断';
+      default: return status || '未知';
+    }
+  }
+
+  function unavailableProcessStatusLabel(status: string) {
+    switch (status) {
+      case 'missing': return '目录缺失';
+      case 'in use': return '被其他实例占用';
+      default: return '不可用';
+    }
+  }
+
+  function clearDesktopProcesses() {
+    desktopProcessesRequest++;
+    processOutputRequest++;
+    desktopProcesses = [];
+    unavailableProcessSessions = [];
+    desktopProcessesLoading = false;
+    desktopProcessesError = '';
+    selectedDesktopProcessKey = '';
+    processOutput = '';
+    processOutputError = '';
+    processOutputStatus = '';
+    processOutputCursor = 0;
+    processOutputEndCursor = 0;
+    processOutputLoading = false;
+  }
+
+  function previewDesktopProcessList(): DesktopProcessList {
+    const now = new Date().toISOString();
+    return {
+      processes: desktopProcesses.length ? desktopProcesses : [
+        { id: 'process-active', sessionId: 'session-main', sessionTitle: '跨会话进程中心', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-active', command: 'go test ./internal/desktop -run TestListDesktopProcesses', status: 'running', startedAt: now },
+        { id: 'process-failed', sessionId: 'session-main', sessionTitle: '跨会话进程中心', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-failed', command: 'npm run check', status: 'failed', startedAt: '2026-10-17T10:26:00+08:00', exitCode: 1 },
+        { id: 'process-done', sessionId: 'session-worktree', sessionTitle: '文档更新', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\docs', executionId: 'exec-done', command: 'git status --short', status: 'succeeded', startedAt: '2026-10-17T10:21:00+08:00', exitCode: 0 },
+        { id: 'process-cancelled', sessionId: 'session-worktree', sessionTitle: '文档更新', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\docs', executionId: 'exec-cancelled', command: 'npm run build', status: 'cancelled', startedAt: '2026-10-17T10:18:00+08:00' },
+      ],
+      unavailableSessions: [{ id: 'session-unavailable', title: '无法打开的工作树会话', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\offline', status: 'missing', reason: '工作树目录已不存在。' }],
+    };
+  }
+
+  async function refreshDesktopProcesses() {
+    const request = ++desktopProcessesRequest;
+    const requestWorkspace = workspace;
+    if (!requestWorkspace) {
+      desktopProcesses = [];
+      unavailableProcessSessions = [];
+      desktopProcessesError = '';
+      desktopProcessesLoading = false;
+      selectedDesktopProcessKey = '';
+      processOutputRequest++;
+      processOutput = '';
+      return;
+    }
+    desktopProcessesLoading = true;
+    desktopProcessesError = '';
+    try {
+      const raw = previewMode ? previewDesktopProcessList() : await Desktop.ListDesktopProcesses();
+      if (request !== desktopProcessesRequest || workspace !== requestWorkspace) return;
+      desktopProcesses = raw.processes ?? [];
+      unavailableProcessSessions = raw.unavailableSessions ?? [];
+      const selected = desktopProcesses.find((item) => desktopProcessKey(item) === selectedDesktopProcessKey);
+      if (selected) {
+        if (!selectedDesktopProcessKey) void selectDesktopProcess(selected);
+      } else if (desktopProcesses.length) {
+        void selectDesktopProcess(desktopProcesses[0]);
+      } else {
+        selectedDesktopProcessKey = '';
+        processOutputRequest++;
+        processOutput = '';
+        processOutputStatus = '';
+      }
+    } catch (cause) {
+      if (request === desktopProcessesRequest && workspace === requestWorkspace) {
+        desktopProcesses = [];
+        unavailableProcessSessions = [];
+        desktopProcessesError = String(cause);
+      }
+    } finally {
+      if (request === desktopProcessesRequest) desktopProcessesLoading = false;
+    }
+  }
+
+  async function openProcessesPage() {
+    sidebarView = 'processes';
+    await refreshDesktopProcesses();
+    if (selectedDesktopProcess) void selectDesktopProcess(selectedDesktopProcess, true);
+  }
+
+  async function selectDesktopProcess(process: DesktopProcess, force = false) {
+    const key = desktopProcessKey(process);
+    if (!force && key === selectedDesktopProcessKey) return;
+    selectedDesktopProcessKey = key;
+    processOutputRequest++;
+    const request = processOutputRequest;
+    processOutput = '';
+    processOutputError = '';
+    processOutputTruncated = false;
+    processOutputCursor = 0;
+    processOutputEndCursor = 0;
+    processOutputStatus = process.status;
+    processLogPinned = true;
+    processOutputLoading = true;
+    if (previewMode) {
+      processOutput = previewProcessOutput(process);
+      processOutputCursor = new TextEncoder().encode(processOutput).length;
+      processOutputEndCursor = processOutputCursor;
+      processOutputLoading = false;
+      await tick();
+      scrollProcessOutputToEnd();
+      return;
+    }
+
+    let cursor = 0;
+    try {
+      while (request === processOutputRequest && selectedDesktopProcessKey === key && sidebarView === 'processes') {
+        const shouldWait = processStatusActive(processOutputStatus) && cursor >= processOutputEndCursor;
+        const result = await Desktop.ReadDesktopProcessOutput(process.sessionId, process.id, cursor, shouldWait);
+        if (request !== processOutputRequest || selectedDesktopProcessKey !== key) return;
+        if (result.output) processOutput += result.output;
+        processOutputTruncated ||= result.truncated;
+        processOutputCursor = result.nextCursor;
+        processOutputEndCursor = result.endCursor;
+        processOutputStatus = result.status;
+        cursor = result.nextCursor;
+        if (result.error) processOutputError = result.error;
+        updateDesktopProcessStatus(process.sessionId, process.id, result.status, result.exitCode);
+        if (result.output && processLogPinned) {
+          await tick();
+          scrollProcessOutputToEnd();
+        }
+        if (result.error || (cursor >= result.endCursor && !processStatusActive(result.status))) break;
+        if (cursor >= result.endCursor && !result.output && !processStatusActive(result.status)) break;
+        if (processStatusActive(result.status)) continue;
+        if (cursor >= result.endCursor || cursor === result.cursor && !result.output) break;
+      }
+    } catch (cause) {
+      if (request === processOutputRequest) processOutputError = String(cause);
+    } finally {
+      if (request === processOutputRequest) processOutputLoading = false;
+    }
+  }
+
+  function previewProcessOutput(process: DesktopProcess) {
+    if (process.id === 'process-failed') return '$ npm run check\n\n> frontend@0.0.0 check\n> svelte-check --tsconfig ./tsconfig.json\n\nsrc/App.svelte: error: Type \'string\' is not assignable to type \'number\'.\n\nProcess exited with code 1.\n';
+    if (process.id === 'process-done') return '$ git status --short\n M internal/desktop/process_center.go\n M cmd/desktop/frontend/src/App.svelte\n';
+    if (process.id === 'process-cancelled') return '$ npm run build\n\n> frontend@0.0.0 build\n> vite build --mode production\n\n^C\nProcess cancelled.\n';
+    return '$ go test ./internal/desktop -run TestListDesktopProcesses\n\nok  github.com/afterlune/lune/internal/desktop\n';
+  }
+
+  function updateDesktopProcessStatus(sessionID: string, processID: string, status: string, exitCode?: number | null) {
+    desktopProcesses = desktopProcesses.map((item) => item.sessionId === sessionID && item.id === processID
+      ? { ...item, status, exitCode }
+      : item);
+  }
+
+  function handleProcessLogScroll() {
+    if (!processLogView) return;
+    processLogPinned = processLogView.scrollHeight - processLogView.scrollTop - processLogView.clientHeight < 28;
+  }
+
+  function scrollProcessOutputToEnd() {
+    if (processLogView && processLogPinned) processLogView.scrollTop = processLogView.scrollHeight;
+  }
+
+  async function stopDesktopProcess(process: DesktopProcess) {
+    const key = desktopProcessKey(process);
+    stoppingDesktopProcessKey = key;
+    processOutputError = '';
+    try {
+      if (previewMode) {
+        updateDesktopProcessStatus(process.sessionId, process.id, 'cancelled');
+        processOutputStatus = 'cancelled';
+        await refreshDesktopProcesses();
+        return;
+      }
+      await Desktop.StopDesktopProcess(process.sessionId, process.id);
+      await refreshDesktopProcesses();
+    } catch (cause) {
+      processOutputError = String(cause);
+    } finally {
+      stoppingDesktopProcessKey = '';
+    }
+  }
+
   function pendingKindLabel(kind: string) {
     switch (kind) {
       case 'approval': return '授权';
@@ -1164,6 +1407,10 @@
           : previewState;
         installWorkspaceState(refreshedState, true);
       }
+      if (variant.startsWith('processes')) {
+        sidebarView = 'processes';
+        void refreshDesktopProcesses();
+      }
       loading = false;
       applyTheme(theme);
       return;
@@ -1185,6 +1432,7 @@
       });
       Events.On('agent-error', (event: { data: { message: string } }) => showError(event.data.message));
       void refreshPendingSessions();
+      void refreshDesktopProcesses();
     } catch (error) {
       showError(error);
     } finally {
@@ -1194,6 +1442,7 @@
 
   type AgentEvent = {
     kind: string; sessionId: string; taskId: string; executionId: string; status: string; error?: string;
+    commandId?: string; commandStatus?: string; commandExitCode?: number;
     approvalId?: string; tool?: {
       id: string; invocationId?: string; agentId?: string; name: string; arguments?: unknown;
       details?: Activity['details']; started?: boolean; failed: boolean; canceled: boolean; durationMs: number;
@@ -1323,6 +1572,10 @@
 
   function onAgentEvent(event: AgentEvent) {
     if (previewMode && cancelledPreviewExecutions.has(event.executionId)) return;
+    if (event.kind === 'command_started' || event.kind === 'command_finished') {
+      if (!previewMode) void refreshDesktopProcesses();
+      return;
+    }
     updateSessionStatusFromEvent(event);
     if (event.sessionId !== session?.id) return;
     if (event.kind === 'task_queued') {
@@ -1622,6 +1875,7 @@
     if (sessions.length > 0) await openSession(sessions[0].id);
     else if (!previewMode) installWorkspaceState(await Desktop.CreateSession('local'));
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
+    void refreshDesktopProcesses();
   }
 
   async function confirmWorkspaceSwitch() {
@@ -1629,6 +1883,7 @@
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
+      clearDesktopProcesses();
       workingDirectory = '';
       workspaceMode = 'local';
       pendingSessions = [];
@@ -1650,6 +1905,7 @@
       catch (error) { showError(error); return; }
     }
     workspace = '';
+    clearDesktopProcesses();
     workingDirectory = '';
     workspaceMode = 'local';
     pendingSessions = [];
@@ -1665,6 +1921,7 @@
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
+      clearDesktopProcesses();
       workingDirectory = '';
       workspaceMode = 'local';
       pendingSessions = [];
@@ -2303,6 +2560,7 @@
           <button class:active={sidebarView === 'changes'} onclick={() => { sidebarView = 'changes'; void refreshWorkspaceChanges(); }}>变更</button>
           <button class:active={sidebarView === 'worktrees'} onclick={() => { sidebarView = 'worktrees'; void refreshDesktopWorktrees(); }}>工作树</button>
           <button class:active={sidebarView === 'pending'} aria-label={`待处理${pendingRequestCount ? `，${pendingRequestCount} 项` : ''}`} onclick={() => { sidebarView = 'pending'; void refreshPendingSessions(); }}>待处理{#if pendingRequestCount}<span class="pending-count-badge">{pendingRequestCount}</span>{/if}</button>
+          <button class:active={sidebarView === 'processes'} aria-label={`进程${activeDesktopProcessCount ? `，${activeDesktopProcessCount} 项运行中` : ''}`} onclick={() => void openProcessesPage()}>进程{#if activeDesktopProcessCount}<span class="process-active-count">{activeDesktopProcessCount}</span>{/if}</button>
           {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
         </div>
         {#if sidebarView === 'sessions'}
@@ -2341,6 +2599,29 @@
                   <span class="pending-session-arrow">›</span>
                 </button>
               {/each}
+            {/if}
+          </section>
+        {:else if sidebarView === 'processes'}
+          <section class="desktop-process-sidebar" aria-label="后台进程列表">
+            <div class="desktop-process-sidebar-heading"><span>当前工作区 · {desktopProcesses.length} 个进程</span><button class="workspace-select-all" aria-label="刷新进程列表" disabled={desktopProcessesLoading} onclick={() => void refreshDesktopProcesses()}>{#if desktopProcessesLoading}<span class="spinner"></span>{:else}↻{/if}</button></div>
+            {#if desktopProcessesLoading && !desktopProcesses.length}<div class="workspace-change-empty"><span class="spinner"></span>正在读取进程…</div>
+            {:else if desktopProcessesError}<div class="workspace-change-empty error">{desktopProcessesError}<button class="small-button" onclick={() => void refreshDesktopProcesses()}>重试</button></div>
+            {:else if !desktopProcesses.length && !unavailableProcessSessions.length}<div class="workspace-change-empty">当前工作区没有后台进程。</div>
+            {:else}
+              <div class="desktop-process-sidebar-list">
+                {#each desktopProcessGroups as group (group.id)}
+                  <div class="desktop-process-session-group">
+                    <div class="desktop-process-session-heading"><strong>{group.title}</strong><small>{group.mode === 'worktree' ? 'Worktree' : 'Local'}</small></div>
+                    {#each group.processes as process (process.id)}
+                      <button class:chosen={selectedDesktopProcessKey === desktopProcessKey(process)} class="desktop-process-sidebar-row" title={process.command} aria-label={`${process.command}，${processStatusLabel(process.status)}，${group.title}`} onclick={() => void selectDesktopProcess(process)}>
+                        <span class:active={processStatusActive(process.status)} class:failed={process.status === 'failed'} class="desktop-process-status-dot"></span>
+                        <span class="desktop-process-sidebar-main"><strong>{process.command}</strong><small>{processStatusLabel(process.status)} · {new Date(process.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></span>
+                      </button>
+                    {/each}
+                  </div>
+                {/each}
+                {#if unavailableProcessSessions.length}<div class="desktop-process-unavailable-sidebar"><strong>不可用会话 · {unavailableProcessSessions.length}</strong>{#each unavailableProcessSessions as item (item.id)}<small title={item.reason}>{item.title || item.id} · 不可用</small>{/each}</div>{/if}
+              </div>
             {/if}
           </section>
         {:else if sidebarView === 'worktrees'}
@@ -2410,7 +2691,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'worktrees' && sidebarView !== 'pending'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
+          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'pending' ? '待处理' : sidebarView === 'processes' ? '后台进程' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'worktrees' && sidebarView !== 'pending' && sidebarView !== 'processes'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
         </div>
         <div class="top-actions">
           {#if workspace}
@@ -2484,6 +2765,67 @@
               {/each}
             </div>
           {/if}
+        </section>
+      {:else if sidebarView === 'processes'}
+        <section class="desktop-processes-page" aria-label="跨会话后台进程">
+          <header class="workspace-changes-heading">
+            <div>
+              <p class="eyebrow">DESKTOP · PROCESS CENTER</p>
+              <h1>后台进程</h1>
+              <p>查看当前工作区所有会话启动的后台命令，选择进程查看实时输出。</p>
+            </div>
+            <div class="workspace-changes-actions">
+              <button class="subtle-button workspace-change-refresh" aria-label="刷新进程列表" disabled={desktopProcessesLoading} onclick={() => void refreshDesktopProcesses()}>
+                {#if desktopProcessesLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}刷新
+              </button>
+            </div>
+          </header>
+
+          {#if desktopProcessesError}
+            <div class="workspace-changes-state error"><strong>读取进程失败</strong><span>{desktopProcessesError}</span><button class="small-button" onclick={() => void refreshDesktopProcesses()}>重试</button></div>
+          {:else if desktopProcessesLoading && !desktopProcesses.length}
+            <div class="workspace-changes-state"><span class="spinner"></span><span>正在汇总各会话的进程…</span></div>
+          {:else if !desktopProcesses.length && !unavailableProcessSessions.length}
+            <div class="workspace-changes-state"><strong>没有后台进程</strong><span>当前工作区的会话尚未启动后台命令。</span></div>
+          {:else}
+            <div class="desktop-process-detail-layout">
+              <div class="desktop-process-detail-main">
+                {#if selectedDesktopProcess}
+                  <article class="desktop-process-detail-card">
+                    <header class="desktop-process-detail-heading">
+                      <div class="desktop-process-detail-title">
+                        <div class="desktop-process-detail-badges"><span class:active={processStatusActive(selectedDesktopProcess.status)} class:failed={selectedDesktopProcess.status === 'failed'} class="desktop-process-status-label">{processStatusLabel(selectedDesktopProcess.status)}</span><span class="desktop-process-mode">{selectedDesktopProcess.mode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span><span class="desktop-process-session-title">{selectedDesktopProcess.sessionTitle}</span></div>
+                        <h2 title={selectedDesktopProcess.command}>{selectedDesktopProcess.command}</h2>
+                        <code title={selectedDesktopProcess.workingDirectory}>{selectedDesktopProcess.workingDirectory}</code>
+                      </div>
+                      <div class="desktop-process-detail-actions">
+                        <button class="subtle-button workspace-change-refresh" aria-label="刷新输出" onclick={() => void selectDesktopProcess(selectedDesktopProcess, true)}>{#if processOutputLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}</button>
+                        {#if processStatusActive(selectedDesktopProcess.status)}<button class="danger-button desktop-process-stop" disabled={stoppingDesktopProcessKey === desktopProcessKey(selectedDesktopProcess)} onclick={() => void stopDesktopProcess(selectedDesktopProcess)}>{stoppingDesktopProcessKey === desktopProcessKey(selectedDesktopProcess) ? '正在停止…' : '停止进程'}</button>{/if}
+                      </div>
+                    </header>
+                    <section class="desktop-process-output-panel" aria-label="进程输出">
+                      <header><strong>输出</strong><span>{processStatusActive(processOutputStatus) ? '实时跟随' : '进程已结束'} · {processOutputEndCursor.toLocaleString()} 字节</span></header>
+                      {#if processOutputTruncated}<div class="desktop-process-output-notice">较早的输出已超出保留范围，以下显示当前可读取部分。</div>{/if}
+                      {#if processOutputError}<div class="desktop-process-output-error" role="alert">{processOutputError}<button class="small-button" onclick={() => void selectDesktopProcess(selectedDesktopProcess, true)}>重试读取</button></div>{/if}
+                      <pre bind:this={processLogView} onscroll={handleProcessLogScroll} class="desktop-process-output">{processOutput || (processOutputLoading ? '等待进程输出…' : '此进程没有输出。')}</pre>
+                    </section>
+                  </article>
+                {:else}
+                  <div class="workspace-changes-state"><strong>选择一个进程</strong><span>从左侧列表选择命令以查看详情和输出。</span></div>
+                {/if}
+              </div>
+              {#if unavailableProcessSessions.length}
+                <aside class="desktop-process-unavailable" aria-label="不可用的会话">
+                  <h2>不可用会话 · {unavailableProcessSessions.length}</h2>
+                  <p>这些会话的运行时当前无法访问，因此无法读取或停止其进程。</p>
+                  {#each unavailableProcessSessions as item (item.id)}
+                    <article><div><strong>{item.title || '未命名会话'}</strong><span>{item.mode === 'worktree' ? 'Worktree' : 'Local'} · {unavailableProcessStatusLabel(item.status)}</span></div><code title={item.workingDirectory}>{item.workingDirectory}</code><small>{item.reason}</small></article>
+                  {/each}
+                </aside>
+              {/if}
+            </div>
+          {/if}
+          {#if desktopProcesses.length > 0}<footer class="workspace-changes-footer">{desktopProcesses.length} 个进程 · {activeDesktopProcessCount} 个运行中</footer>{/if}
         </section>
       {:else if !session}
         <section class="workspace-loading"><div class="spinner"></div><span>正在载入会话…</span></section>
