@@ -7,6 +7,27 @@ test('desktop workspace preview matches the approved baseline', async ({ page })
   await expect(page).toHaveScreenshot('desktop-workspace.png', { fullPage: true });
 });
 
+test('workspace file sidebar browses folders and opens a read-only preview', async ({ page }) => {
+  await page.goto('/?preview=1');
+  await page.getByRole('button', { name: '文件' }).click();
+  await expect(page.getByRole('button', { name: 'README.md' })).toBeVisible();
+  await page.getByRole('button', { name: 'cmd' }).click();
+  await page.getByRole('button', { name: 'desktop' }).click();
+  await page.getByRole('button', { name: 'main.go' }).click();
+  await expect(page.getByRole('dialog', { name: 'cmd/desktop/main.go' })).toBeVisible();
+  await expect(page.locator('.workspace-file-preview')).toContainText('cmd/desktop/main.go');
+});
+
+test('session sidebar supports renaming a conversation', async ({ page }) => {
+  await page.goto('/?preview=1');
+  const session = page.locator('.session-entry').first();
+  await session.hover();
+  await session.getByRole('button', { name: /重命名会话/ }).click();
+  await page.getByLabel('会话名称').fill('重命名后的会话');
+  await page.getByRole('button', { name: '保存' }).click();
+  await expect(page.getByRole('button', { name: /重命名后的会话/ })).toBeVisible();
+});
+
 test('question panel preview matches its baseline', async ({ page }) => {
   await page.goto('/?preview=question');
   await expect(page.getByText('任务失败或取消后，Tab 标题怎么显示？')).toBeVisible();
@@ -93,6 +114,18 @@ test('running composer queues the next message without replacing the active exec
   await expect(page.getByText('第一条消息已完成。')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText('队列消息已执行。')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText('排队中的后续消息', { exact: true })).toHaveCount(1);
+});
+
+test('queued message can be withdrawn without interrupting the active task', async ({ page }) => {
+  await page.goto('/?preview=queue-edit');
+  const composer = page.getByRole('textbox', { name: '消息输入' });
+  await composer.fill('撤回这条排队消息');
+  await page.getByRole('button', { name: '发送' }).click();
+  const queuedRow = page.locator('.message-row.from-user').filter({ hasText: '撤回这条排队消息' });
+  await expect(queuedRow.locator('.message-delivery-pending')).toContainText('排队中');
+  await queuedRow.getByRole('button', { name: '撤回排队消息' }).click();
+  await expect(queuedRow.locator('.message-delivery-cancelled')).toContainText('已撤回');
+  await expect(page.getByText('模型正在分析请求')).toBeVisible();
 });
 
 test('editing a user message confirms branch rewind and resubmits the replacement', async ({ page }) => {

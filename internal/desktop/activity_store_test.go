@@ -109,6 +109,34 @@ func TestActivityStoreKeepsQueuedMessageUntilCompletion(t *testing.T) {
 	}
 }
 
+func TestActivityStoreRetainsCancelledQueuedMessage(t *testing.T) {
+	store, err := OpenActivityStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenActivityStore: %v", err)
+	}
+	defer store.Close()
+	index := 0
+	if err := store.AssociateExecution(context.Background(), "session", "exec-cancelled", index, "queued"); err != nil {
+		t.Fatalf("AssociateExecution: %v", err)
+	}
+	if err := store.SaveExecutionMessage(context.Background(), "session", "exec-cancelled", "cancel this queued message", nil, "queued", 1); err != nil {
+		t.Fatalf("SaveExecutionMessage: %v", err)
+	}
+	if err := store.UpsertExecution(context.Background(), "session", "exec-cancelled", nil, "cancelled"); err != nil {
+		t.Fatalf("UpsertExecution: %v", err)
+	}
+	if err := store.UpdateExecutionMessageStatus(context.Background(), "session", "exec-cancelled", "cancelled", 0); err != nil {
+		t.Fatalf("UpdateExecutionMessageStatus: %v", err)
+	}
+	got, err := store.ListSession(context.Background(), "session")
+	if err != nil {
+		t.Fatalf("ListSession: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != "cancelled" || got[0].MessageText != "cancel this queued message" {
+		t.Fatalf("cancelled queued execution = %#v, want retained message and cancelled status", got)
+	}
+}
+
 func TestActivityStoreDeletesEditedBranchAndKeepsReplacement(t *testing.T) {
 	store, err := OpenActivityStore(t.TempDir())
 	if err != nil {

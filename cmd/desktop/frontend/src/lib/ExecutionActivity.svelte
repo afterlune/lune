@@ -28,15 +28,35 @@
     expanded: boolean;
     elapsedSeconds?: number;
   };
+  type FileChange = NonNullable<NonNullable<ActivityTool['details']>['changes']>[number];
+  type ChangeGroup = { path: string; changes: { label: string; change: FileChange }[]; added: number; removed: number };
 
-  let { run, active = false, elapsedSeconds = 0, onToggle }: {
+  let { run, active = false, elapsedSeconds = 0, onToggle, onOpenFile }: {
     run: ActivityRun;
     active?: boolean;
     elapsedSeconds?: number;
     onToggle: () => void;
+    onOpenFile?: (path: string) => void;
   } = $props();
 
   const latestTool = $derived(run.tools.at(-1));
+  const changedFiles = $derived.by(() => {
+    const groups = new Map<string, ChangeGroup>();
+    for (const tool of run.tools) {
+      for (const change of tool.details?.changes ?? []) {
+        let group = groups.get(change.path);
+        if (!group) {
+          group = { path: change.path, changes: [], added: 0, removed: 0 };
+          groups.set(change.path, group);
+        }
+        group.changes.push({ label: tool.label, change });
+        group.added += change.added;
+        group.removed += change.removed;
+      }
+    }
+    return [...groups.values()];
+  });
+  let changesExpanded = $state(false);
 
   function formatElapsed(seconds: number) {
     if (seconds < 60) return `用时 ${seconds} 秒`;
@@ -74,6 +94,26 @@ function toolStatus(status: ActivityTool['status']) {
       <strong>{latestTool.label}</strong>
       {#if latestTool.detail}<code>{latestTool.detail}</code>{/if}
     </div>
+  {/if}
+  {#if changedFiles.length}
+    <section class="activity-review" aria-label="本轮文件改动">
+      <div class="activity-review-heading"><strong>本轮改动</strong><span>{changedFiles.length} 个文件</span><button class="activity-review-toggle" aria-expanded={changesExpanded} onclick={() => changesExpanded = !changesExpanded}>{changesExpanded ? '收起差异' : '查看差异'}</button></div>
+      {#if changesExpanded}
+        <div class="activity-review-list">
+          {#each changedFiles as file (file.path)}
+            <details class="activity-review-file" open>
+              <summary><code>{file.path}</code><span>+{file.added} / −{file.removed}</span>{#if onOpenFile}<button class="activity-open-file" onclick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenFile?.(file.path); }}>打开文件</button>{/if}</summary>
+              {#each file.changes as item, index (`${file.path}:${index}`)}
+                <div class="activity-review-source">{item.label}</div>
+                {#if item.change.lines?.length}
+                  <pre>{item.change.lines.map((line) => `${line.kind === 'add' ? '+' : line.kind === 'remove' ? '−' : ' '} ${line.text}`).join('\n')}</pre>
+                {:else}<div class="activity-review-unavailable">此步骤未返回行级差异</div>{/if}
+              {/each}
+            </details>
+          {/each}
+        </div>
+      {/if}
+    </section>
   {/if}
   {#if run.expanded && run.tools.length}
     <ol class="activity-list" aria-label="本轮执行详情">

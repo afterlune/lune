@@ -17,8 +17,16 @@ export function AnswerQuestion(input: $models.QuestionAnswerInput): $Cancellable
     return $Call.ByID(3818133423, input);
 }
 
+export function AuthenticateMCPServer(name: string): $CancellablePromise<void> {
+    return $Call.ByID(385717039, name);
+}
+
 export function Bootstrap(): $CancellablePromise<$models.Bootstrap> {
     return $Call.ByID(1891993685);
+}
+
+export function CancelQueuedTurn(executionID: string): $CancellablePromise<void> {
+    return $Call.ByID(1029971349, executionID);
 }
 
 export function CloseWorkspace(interrupt: boolean): $CancellablePromise<void> {
@@ -33,6 +41,10 @@ export function CreateSession(): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(498841211);
 }
 
+export function DeleteSession(sessionID: string): $CancellablePromise<void> {
+    return $Call.ByID(87151138, sessionID);
+}
+
 export function EditUserMessage(messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
     return $Call.ByID(376143777, messageID, input);
 }
@@ -45,6 +57,14 @@ export function Interrupt(): $CancellablePromise<boolean> {
     return $Call.ByID(2941886036);
 }
 
+export function ListMCPServers(): $CancellablePromise<$models.MCPServerView[] | null> {
+    return $Call.ByID(2843607385);
+}
+
+export function ListWorkspaceFiles(relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
+    return $Call.ByID(2892581193, relativePath);
+}
+
 export function OpenSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(1370065127, sessionID);
 }
@@ -53,12 +73,20 @@ export function OpenWorkspace(path: string): $CancellablePromise<$models.Workspa
     return $Call.ByID(3069324422, path);
 }
 
+export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<void> {
+    return $Call.ByID(2369930560, relativePath);
+}
+
 export function OpenWorkspaceWithProjectModels(path: string): $CancellablePromise<$models.WorkspaceOpenResult> {
     return $Call.ByID(118759913, path);
 }
 
 export function PickWorkspace(): $CancellablePromise<string> {
     return $Call.ByID(1262469545);
+}
+
+export function ReadWorkspaceFile(relativePath: string): $CancellablePromise<$models.WorkspaceFilePreview> {
+    return $Call.ByID(1571039100, relativePath);
 }
 
 export function RecoverModel(): $CancellablePromise<void> {
@@ -83,6 +111,14 @@ export function RestorePlanMode(): $CancellablePromise<void> {
 
 export function SaveModelSettings(input: $models.ModelSettingsInput): $CancellablePromise<$models.ModelSettingsView> {
     return $Call.ByID(3658786612, input);
+}
+
+export function SearchWorkspaceFiles(query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {
+    return $Call.ByID(178478345, query);
+}
+
+export function SetMCPServerEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3226871735, name, enabled);
 }
 
 export function SetPermissionMode(mode: string): $CancellablePromise<void> {

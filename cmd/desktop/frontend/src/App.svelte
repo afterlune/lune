@@ -3,15 +3,16 @@
   import { Events } from '@wailsio/runtime';
   import Markdown from './lib/Markdown.svelte';
   import ExecutionActivity from './lib/ExecutionActivity.svelte';
+  import WorkspaceExplorer from './lib/WorkspaceExplorer.svelte';
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
     Bootstrap, ConversationMessage, MigrationPreview, ModelProfileInput, ModelSettingsView, SubmitInput,
-    PendingRequestView, ProviderInput, SessionSummary, WorkspaceOpenResult, WorkspaceState,
+    MCPServerView, PendingRequestView, ProviderInput, SessionSummary, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
   type LocalMessage = ConversationMessage & {
-    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'queued' | 'submitted' | 'failed';
+    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'queued' | 'submitted' | 'failed' | 'cancelled';
     deliveryError?: string; request?: SubmitInput; executionID?: string; userMessageIndex?: number; queuePosition?: number; interrupted?: boolean;
   };
   type Activity = {
@@ -30,7 +31,7 @@
   type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
   type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
-  type Modal = 'settings' | 'migration' | 'switch' | 'close' | 'edit' | null;
+  type Modal = 'settings' | 'migration' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
 
@@ -41,6 +42,10 @@
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
   let workspace = $state('');
   let sessions = $state<SessionSummary[]>([]);
+  let sessionFilter = $state('');
+  let sessionActionTarget = $state<SessionSummary | null>(null);
+  let sessionTitleDraft = $state('');
+  let sidebarView = $state<'sessions' | 'files'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let planMode = $state(false);
@@ -83,6 +88,10 @@
   let editDraft = $state<EditDraft | null>(null);
   let editConfirmation = $state<EditConfirmation | null>(null);
   let applyingEdit = $state(false);
+  let mcpServers = $state<MCPServerView[]>([]);
+  let mcpUpdatingServer = $state('');
+  let filePreview = $state<WorkspaceFilePreview | null>(null);
+  let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
@@ -93,6 +102,7 @@
   const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
+  const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
   const transcriptRows = $derived.by(() => {
     let userMessageIndex = -1;
     return messages.map((message) => {
@@ -158,7 +168,7 @@
       const request: SubmitInput = {
         text: run.messageText ?? '', images: requestImagesFromURLs(images), userMessageIndex: run.userMessageIndex,
       };
-      const deliveryState = run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : 'submitted';
+      const deliveryState = run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : run.status === 'cancelled' ? 'cancelled' : 'submitted';
       const existingByExecution = messages.find((message) => message.executionID === run.executionId);
       if (existingByExecution) {
         updateMessage(existingByExecution.id, {
@@ -200,20 +210,22 @@
   function attachQueuedState(state: WorkspaceState) {
     const queued = state.runtimeState?.Queue ?? [];
     if (!queued.length) return;
+    const queuedPositions = new Map(queued.filter((turn) => turn.Status === 'queued').map((turn, index) => [turn.ExecutionID, index + 1]));
     activityHistory = activityHistory.map((run) => {
       const item = queued.find((turn) => turn.ExecutionID === run.executionId);
       if (!item) return run;
       const isQueued = item.Status === 'queued';
       const isActive = item.Status === 'active';
+      const position = isQueued ? queuedPositions.get(item.ExecutionID) : undefined;
       return {
         ...run,
         status: isQueued ? 'queued' : isActive ? 'running' : run.status,
-        statusLabel: isQueued ? `排队中 · 第 ${item.Position} 位` : isActive ? '正在处理请求' : run.statusLabel,
-        queuePosition: item.Position,
+        statusLabel: isQueued ? `排队中 · 第 ${position} 位` : isActive ? '正在处理请求' : run.statusLabel,
+        queuePosition: position,
       };
     });
     for (const turn of queued) {
-      if (turn.Status === 'queued') updateMessageForExecution(turn.ExecutionID, { deliveryState: 'queued', queuePosition: turn.Position });
+      if (turn.Status === 'queued') updateMessageForExecution(turn.ExecutionID, { deliveryState: 'queued', queuePosition: queuedPositions.get(turn.ExecutionID) });
       else if (turn.Status === 'active') updateMessageForExecution(turn.ExecutionID, { deliveryState: 'submitted' });
     }
   }
@@ -289,7 +301,8 @@
     if (status === 'queued') return '任务排队中';
     if (status === 'completed') return '任务已完成';
     if (status === 'failed') return '任务执行失败';
-    if (status === 'interrupted' || status === 'discarded' || status === 'cancelled') return '任务已中断';
+    if (status === 'cancelled') return '排队消息已撤回';
+    if (status === 'interrupted' || status === 'discarded') return '任务已中断';
     if (status === 'paused') return '任务已暂停';
     return '正在处理请求';
   }
@@ -796,7 +809,7 @@
     if (!event.executionId) return;
     const message = messages.find((item) => item.executionID === event.executionId);
     const existing = activityHistory.find((run) => run.executionId === event.executionId);
-    const position = message?.queuePosition ?? existing?.queuePosition ?? Math.max(0, queuedMessageCount - 1);
+    const position = message?.queuePosition ?? existing?.queuePosition ?? Math.max(1, queuedMessageCount);
     updateMessageForExecution(event.executionId, { deliveryState: 'queued', queuePosition: position });
     upsertActivityRun({
       key: event.executionId, executionId: event.executionId,
@@ -1097,6 +1110,111 @@
     catch (error) { showError(error); }
   }
 
+  function beginRenameSession(item: SessionSummary) {
+    sessionActionTarget = item;
+    sessionTitleDraft = item.title;
+    modal = 'rename-session';
+  }
+
+  function beginDeleteSession(item: SessionSummary) {
+    sessionActionTarget = item;
+    modal = 'delete-session';
+  }
+
+  async function saveSessionTitle() {
+    const target = sessionActionTarget;
+    if (!target || busy) return;
+    const title = sessionTitleDraft.trim();
+    busy = true;
+    try {
+      if (!previewMode) await Desktop.SetSessionTitle(target.id, title);
+      sessions = sessions.map((item) => item.id === target.id ? { ...item, title } : item);
+      if (session?.id === target.id) session = { ...session, title };
+      modal = null;
+      sessionActionTarget = null;
+    } catch (error) { showError(error); }
+    finally { busy = false; }
+  }
+
+  async function confirmDeleteSession() {
+    const target = sessionActionTarget;
+    if (!target || busy) return;
+    busy = true;
+    try {
+      if (previewMode) {
+        sessions = sessions.filter((item) => item.id !== target.id);
+      } else {
+        if (session?.id === target.id) {
+          const fallback = sessions.find((item) => item.id !== target.id);
+          installWorkspaceState(fallback ? await Desktop.OpenSession(fallback.id) : await Desktop.CreateSession());
+        }
+        await Desktop.DeleteSession(target.id);
+        sessions = sessions.filter((item) => item.id !== target.id);
+        await refreshSession();
+      }
+      modal = null;
+      sessionActionTarget = null;
+    } catch (error) { showError(error); }
+    finally { busy = false; }
+  }
+
+  async function openMCPManager() {
+    if (!workspace) return;
+    if (previewMode) {
+      mcpServers = [];
+      modal = 'mcp';
+      return;
+    }
+    try {
+      mcpServers = await Desktop.ListMCPServers() ?? [];
+      modal = 'mcp';
+    } catch (error) { showError(error); }
+  }
+
+  async function setMCPServerEnabled(server: MCPServerView, enabled: boolean) {
+    if (workOutstanding || pending.length || mcpUpdatingServer) return;
+    mcpUpdatingServer = server.name;
+    try {
+      if (!previewMode) {
+        await Desktop.SetMCPServerEnabled(server.name, enabled);
+        mcpServers = await Desktop.ListMCPServers() ?? [];
+      } else {
+        mcpServers = mcpServers.map((item) => item.name === server.name ? { ...item, enabled, connected: enabled } : item);
+      }
+    } catch (error) { showError(error); }
+    finally { mcpUpdatingServer = ''; }
+  }
+
+  async function authenticateMCPServer(server: MCPServerView) {
+    if (workOutstanding || pending.length || mcpUpdatingServer) return;
+    mcpUpdatingServer = server.name;
+    try {
+      if (!previewMode) {
+        await Desktop.AuthenticateMCPServer(server.name);
+        mcpServers = await Desktop.ListMCPServers() ?? [];
+      }
+    } catch (error) { showError(error); }
+    finally { mcpUpdatingServer = ''; }
+  }
+
+  async function openWorkspaceFile(path: string) {
+    if (previewMode) {
+      filePreview = { path, content: `// ${path}\n// 文件预览示例`, truncated: false };
+      modal = 'file-preview';
+      return;
+    }
+    try {
+      filePreview = await Desktop.ReadWorkspaceFile(path);
+      modal = 'file-preview';
+    } catch (error) { showError(error); }
+  }
+
+  async function openFileInDefaultApp() {
+    if (!filePreview || previewMode) return;
+    try { await Desktop.OpenWorkspaceFile(filePreview.path); }
+    catch (error) { showError(error); }
+  }
+
   async function setPermission(value: string) {
     permissionMode = value;
     if (!previewMode) {
@@ -1154,17 +1272,18 @@
     try {
       const submission = previewMode ? await submitPreviewRequest(request) : await Desktop.Submit(request);
       const queued = submission.Status === 'queued';
+      const queuedPosition = queued ? messages.filter((message) => message.deliveryState === 'queued').length + 1 : undefined;
       updateMessage(messageID, {
         deliveryState: queued ? 'queued' : 'submitted', deliveryError: undefined,
-        executionID: submission.ExecutionID, queuePosition: queued ? submission.Position : undefined,
+        executionID: submission.ExecutionID, queuePosition: queuedPosition,
       });
       const localMessage = messages.find((message) => message.id === messageID);
       upsertActivityRun({
         key: submission.ExecutionID, executionId: submission.ExecutionID,
         userMessageIndex: localMessage?.userMessageIndex ?? request.userMessageIndex ?? -1,
         status: queued ? 'queued' : 'running',
-        statusLabel: queued ? `排队中 · 第 ${submission.Position} 位` : '正在等待模型响应',
-        queuePosition: queued ? submission.Position : undefined,
+        statusLabel: queued ? `排队中 · 第 ${queuedPosition} 位` : '正在等待模型响应',
+        queuePosition: queuedPosition,
       });
       if (!queued && !running && !executionID) {
         executionID = submission.ExecutionID;
@@ -1297,12 +1416,13 @@
           : { Status: 'accepted', QueueID: '', ExecutionID: `exec-preview-edit-${Date.now()}`, Position: 0 }
         : await Desktop.EditUserMessage(edit.draft.targetID, request);
       const queued = submission.Status === 'queued';
+      const queuedPosition = queued ? messages.slice(0, targetIndex).filter((item) => item.deliveryState === 'queued').length + 1 : undefined;
       const edited: LocalMessage = queued
         ? {
             ...message, text: request.text, images: attachmentsForRequest(request), local: true,
             deliveryState: 'queued', deliveryError: undefined, request,
             userMessageIndex: edit.draft.userMessageIndex, executionID: submission.ExecutionID,
-            queuePosition: submission.Position,
+            queuePosition: queuedPosition,
           }
         : {
             id: `user-${crypto.randomUUID()}`, role: 'user', text: request.text,
@@ -1326,8 +1446,8 @@
         key: submission.ExecutionID, executionId: submission.ExecutionID,
         userMessageIndex: edit.draft.userMessageIndex,
         status: queued ? 'queued' : 'running',
-        statusLabel: queued ? `排队中 · 第 ${submission.Position} 位` : '正在等待模型响应',
-        queuePosition: queued ? submission.Position : undefined,
+        statusLabel: queued ? `排队中 · 第 ${queuedPosition} 位` : '正在等待模型响应',
+        queuePosition: queuedPosition,
       });
       if (previewMode && !queued) {
         onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview-edit', executionId: submission.ExecutionID, status: 'running' });
@@ -1352,6 +1472,25 @@
     if (!message.request || message.deliveryState !== 'failed' || busy || pending.length > 0 || planReview) return;
     updateMessage(message.id, { deliveryState: 'sending', deliveryError: undefined });
     await submitUserMessage(message.id, message.request);
+  }
+
+  async function cancelQueuedMessage(message: LocalMessage) {
+    const targetID = message.executionID;
+    if (!targetID || message.deliveryState !== 'queued' || cancellingQueuedExecution) return;
+    cancellingQueuedExecution = targetID;
+    try {
+      if (previewMode) cancelledPreviewExecutions.add(targetID);
+      else await Desktop.CancelQueuedTurn(targetID);
+      updateMessage(message.id, { deliveryState: 'cancelled', queuePosition: undefined, request: undefined });
+      upsertActivityRun({
+        key: targetID, executionId: targetID, status: 'cancelled', statusLabel: '排队消息已撤回',
+        userMessageIndex: message.userMessageIndex ?? -1, queuePosition: undefined, finishedAt: new Date().toISOString(),
+      });
+      await refreshSession();
+    } catch (error) {
+      showError(error);
+      await refreshSession();
+    } finally { cancellingQueuedExecution = ''; }
   }
 
   async function interruptTask() {
@@ -1515,15 +1654,30 @@
         <button class="workspace-row active" title={workspace} onclick={() => void closeWorkspace()}>
           <span class="folder-icon">▰</span><span class="workspace-name">{workspace.split(/[\\/]/).at(-1) || workspace}</span><span class="workspace-menu">⌄</span>
         </button>
-        <div class="sidebar-section session-label"><span>最近会话</span><button class="tiny-add" aria-label="新建会话" onclick={createSession}>＋</button></div>
-        <div class="session-list">
-          {#each sessions as item (item.id)}
-            <button class:chosen={session?.id === item.id} class="session-row" onclick={() => void openSession(item.id)}>
-              <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span>
-              <span>{item.title || '新会话'}</span>
-            </button>
-          {/each}
+        <div class="sidebar-view-tabs">
+          <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
+          <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
+          {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={createSession}>＋</button>{/if}
         </div>
+        {#if sidebarView === 'sessions'}
+          <input class="session-search" bind:value={sessionFilter} placeholder="搜索会话" aria-label="搜索会话" />
+          <div class="session-list">
+            {#each visibleSessions as item (item.id)}
+              <div class:chosen={session?.id === item.id} class="session-entry">
+                <button class="session-row" title={item.title || '新会话'} onclick={() => void openSession(item.id)}>
+                  <span class="session-dot">{session?.id === item.id ? '●' : '○'}</span><span>{item.title || '新会话'}</span>
+                </button>
+                <div class="session-row-actions">
+                  <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={busy || workOutstanding} onclick={(event) => { event.stopPropagation(); beginRenameSession(item); }}>✎</button>
+                  <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={busy || workOutstanding} onclick={(event) => { event.stopPropagation(); beginDeleteSession(item); }}>×</button>
+                </div>
+              </div>
+            {/each}
+            {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
+          </div>
+        {:else}
+          {#key workspace}<WorkspaceExplorer previewMode={previewMode} onPreviewFile={openWorkspaceFile} onError={showError} />{/key}
+        {/if}
       {:else}
         <div class="sidebar-empty">打开一个本地文件夹开始工作。</div>
         {#if recent?.length}
@@ -1538,6 +1692,7 @@
 
       <div class="sidebar-bottom">
         <div class="sidebar-profile"><div class="avatar">L</div><div><strong>本地工作区</strong><span>{models.configured ? `默认模型 · ${models.defaultModel}` : '尚未配置模型'}</span></div></div>
+        {#if workspace}<button class="settings-entry" onclick={() => void openMCPManager()}><span>⎇</span> MCP 工具</button>{/if}
         <button class="settings-entry" onclick={setSettingsForm}><span>⚙</span> 模型与偏好设置 <span class="settings-shortcut">⌘ ,</span></button>
       </div>
     </aside>
@@ -1594,18 +1749,23 @@
                     <div class="message-delivery-pending">排队中{row.message.queuePosition !== undefined ? ` · 第 ${row.message.queuePosition} 位` : ''}</div>
                   {:else if row.message.deliveryState === 'sending'}
                     <div class="message-delivery-pending">正在发送…</div>
+                  {:else if row.message.deliveryState === 'cancelled'}
+                    <div class="message-delivery-cancelled">排队消息已撤回</div>
                   {/if}
-                  {#if row.message.role === 'user' && canEditMessages && row.message.deliveryState !== 'sending' && row.message.deliveryState !== 'failed'}
-                    <div class="message-actions"><button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(row.message, row.userMessageIndex)}>编辑</button></div>
+                  {#if row.message.role === 'user'}
+                    <div class="message-actions">
+                      {#if row.message.deliveryState === 'queued'}<button class="message-cancel-button" aria-label="撤回排队消息" disabled={cancellingQueuedExecution === row.message.executionID} onclick={() => void cancelQueuedMessage(row.message)}>{cancellingQueuedExecution === row.message.executionID ? '正在撤回…' : '撤回'}</button>{/if}
+                      {#if canEditMessages && (row.message.deliveryState === 'queued' || row.message.deliveryState === 'submitted' || row.message.deliveryState === undefined)}<button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(row.message, row.userMessageIndex)}>编辑</button>{/if}
+                    </div>
                   {/if}
                 </div>
               </article>
               {#each row.activityRuns as run (run.key)}
-                <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} />
+                <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} onOpenFile={openWorkspaceFile} />
               {/each}
             {/each}
             {#each orphanActivityRuns as run (run.key)}
-              <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} />
+              <ExecutionActivity {run} active={run.executionId === executionID && running} elapsedSeconds={run.executionId === executionID ? elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => toggleActivityRun(run.key)} onOpenFile={openWorkspaceFile} />
             {/each}
 
             {#if streamText}
@@ -1739,6 +1899,45 @@
           </section>
         </div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>取消</button><button class="primary-button" disabled={settingsSaving} onclick={() => void saveSettings()}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
+      </div>
+    {:else if modal === 'rename-session' && sessionActionTarget}
+      <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="rename-session-title">重命名会话</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; sessionActionTarget = null; }}>×</button></div>
+        <div class="modal-body"><label class="session-title-field">会话名称<input bind:value={sessionTitleDraft} maxlength="120" onkeydown={(event) => { if (event.key === 'Enter') void saveSessionTitle(); }} /></label></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; sessionActionTarget = null; }}>取消</button><button class="primary-button" disabled={busy} onclick={() => void saveSessionTitle()}>{busy ? '正在保存…' : '保存'}</button></div>
+      </div>
+    {:else if modal === 'delete-session' && sessionActionTarget}
+      <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="delete-session-title">删除会话？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; sessionActionTarget = null; }}>×</button></div>
+        <div class="modal-body"><p>“{sessionActionTarget.title || '新会话'}”的对话、执行记录和待运行消息将被删除。此操作无法撤销。删除当前会话时会自动切换到其他会话；若这是最后一个会话，会先创建一个新会话。</p></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; sessionActionTarget = null; }}>取消</button><button class="danger-button" disabled={busy} onclick={() => void confirmDeleteSession()}>{busy ? '正在删除…' : '删除会话'}</button></div>
+      </div>
+    {:else if modal === 'file-preview' && filePreview}
+      <div class="modal file-preview-modal" role="dialog" aria-modal="true" aria-labelledby="file-preview-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">WORKSPACE FILE</span><h2 id="file-preview-title">{filePreview.path}</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
+        <div class="modal-body"><pre class="workspace-file-preview">{filePreview.content}</pre>{#if filePreview.truncated}<div class="workspace-preview-truncated">文件较大，仅显示前 1 MiB。</div>{/if}</div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>关闭</button><button class="primary-button" disabled={previewMode} onclick={() => void openFileInDefaultApp()}>在默认应用中打开</button></div>
+      </div>
+    {:else if modal === 'mcp'}
+      <div class="modal mcp-modal" role="dialog" aria-modal="true" aria-labelledby="mcp-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">PROJECT TOOLS</span><h2 id="mcp-title">MCP 工具</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
+        <div class="modal-body mcp-body">
+          <p class="mcp-description">服务定义来自当前工作区的 config.json。这里可以启用、停用和授权已配置的服务；运行任务期间不可更改。</p>
+          {#if mcpServers.length}
+            <div class="mcp-server-list">
+              {#each mcpServers as server (server.name)}
+                <article class="mcp-server-card">
+                  <div class="mcp-server-main"><div><strong>{server.name}</strong><span>{server.transport === 'stdio' ? '本地进程' : '远程 HTTP'} · {server.enabled ? server.connected ? `已连接 · ${server.toolCount} 个工具` : '已启用 · 未连接' : '已停用'}</span></div><label class="mcp-switch"><input type="checkbox" checked={server.enabled} disabled={workOutstanding || pending.length > 0 || !!mcpUpdatingServer} onchange={(event) => void setMCPServerEnabled(server, event.currentTarget.checked)} /><span>{server.enabled ? '已启用' : '已停用'}</span></label></div>
+                  {#if server.transport === 'streamable-http' && server.enabled}<div class="mcp-server-actions"><button class="small-button" disabled={workOutstanding || pending.length > 0 || !!mcpUpdatingServer} onclick={() => void authenticateMCPServer(server)}>{mcpUpdatingServer === server.name ? '正在连接…' : '授权 / 重新连接'}</button></div>{/if}
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <div class="mcp-empty">当前工作区没有配置 MCP 服务。请先在 config.json 的 mcpServers 中添加服务。</div>
+          {/if}
+          {#if mcpUpdatingServer}<div class="mcp-progress">正在处理 {mcpUpdatingServer}…</div>{/if}
+        </div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>关闭</button></div>
       </div>
     {:else if modal === 'migration' && migration}
       <div class="modal migration-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title" tabindex="-1">

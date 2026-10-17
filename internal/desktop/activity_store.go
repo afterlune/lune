@@ -172,7 +172,7 @@ func (s *ActivityStore) UpdateExecutionMessageStatus(ctx context.Context, sessio
 	if s == nil || s.db == nil || sessionID == "" || executionID == "" || status == "" {
 		return errors.New("activity store, session, execution, and status are required")
 	}
-	if status == "completed" || status == "interrupted" || status == "cancelled" {
+	if status == "completed" || status == "interrupted" {
 		_, err := s.db.ExecContext(ctx, `DELETE FROM execution_activity_messages WHERE session_id = ? AND execution_id = ?`, sessionID, executionID)
 		if err != nil {
 			return fmt.Errorf("delete completed queued message: %w", err)
@@ -412,6 +412,26 @@ func (s *ActivityStore) ListSession(ctx context.Context, sessionID string) ([]Ex
 		runs = []ExecutionActivityView{}
 	}
 	return runs, nil
+}
+
+func (s *ActivityStore) DeleteSession(ctx context.Context, sessionID string) error {
+	if s == nil || s.db == nil || sessionID == "" {
+		return errors.New("activity store and session id are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin desktop activity cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	for _, table := range []string{"execution_activity_tools", "execution_activity_messages", "execution_activity_runs"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE session_id = ?", sessionID); err != nil {
+			return fmt.Errorf("delete %s for session: %w", table, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit desktop activity cleanup: %w", err)
+	}
+	return nil
 }
 
 func isTerminalActivityStatus(status string) bool {

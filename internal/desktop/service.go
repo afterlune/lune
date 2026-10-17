@@ -819,6 +819,15 @@ func (s *DesktopService) EditUserMessage(messageID string, input SubmitInput) (c
 	return s.editConversationFromIndexLocked("", *activityIndex, input, taskInput)
 }
 
+func (s *DesktopService) CancelQueuedTurn(executionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runtime == nil || s.core == nil {
+		return errors.New("请先打开会话")
+	}
+	return s.runtime.CancelQueuedTurn(context.Background(), strings.TrimSpace(executionID))
+}
+
 func findTranscriptUserMessageIndex(messages []ConversationMessage, messageID string) int {
 	userIndex := 0
 	for _, message := range messages {

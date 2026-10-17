@@ -76,6 +76,14 @@ export interface ImageInput {
     "data": string;
 }
 
+export interface MCPServerView {
+    "name": string;
+    "transport": string;
+    "enabled": boolean;
+    "connected": boolean;
+    "toolCount": number;
+}
+
 export interface MigrationItem {
     "kind": string;
     "name": string;
@@ -202,6 +210,24 @@ export interface ToolExecutionDetailsView {
     "command"?: ActivityCommandOutput | null;
     "changes"?: ActivityFileChange[] | null;
     "truncated"?: boolean;
+}
+
+export interface WorkspaceFileEntry {
+    "name": string;
+    "path": string;
+    "directory": boolean;
+    "size": number;
+}
+
+export interface WorkspaceFilePreview {
+    "path": string;
+    "content": string;
+    "truncated": boolean;
+}
+
+export interface WorkspaceFileSearchResult {
+    "files": WorkspaceFileEntry[] | null;
+    "truncated": boolean;
 }
 
 export interface WorkspaceOpenResult {

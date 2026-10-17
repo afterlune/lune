@@ -14,6 +14,7 @@ export type {
     ConversationMessage,
     ExecutionActivityView,
     ImageInput,
+    MCPServerView,
     MigrationItem,
     MigrationPreview,
     ModelProfileInput,
@@ -30,6 +31,9 @@ export type {
     SubmitInput,
     ToolActivityView,
     ToolExecutionDetailsView,
+    WorkspaceFileEntry,
+    WorkspaceFilePreview,
+    WorkspaceFileSearchResult,
     WorkspaceOpenResult,
     WorkspaceState
 } from "./models.js";
