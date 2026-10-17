@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS desktop_project_configs (
   workspace_key TEXT PRIMARY KEY,
   encrypted_config BLOB NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desktop_command_toolchains (
+  workspace_key TEXT PRIMARY KEY,
+  paths_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );`
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		_ = db.Close()
@@ -465,8 +470,19 @@ func (s *Store) DeleteWorkspaceConfig(workspace string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`DELETE FROM desktop_project_configs WHERE workspace_key = ?`, key); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin Desktop workspace settings delete: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM desktop_project_configs WHERE workspace_key = ?`, key); err != nil {
 		return fmt.Errorf("delete Desktop project configuration: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM desktop_command_toolchains WHERE workspace_key = ?`, key); err != nil {
+		return fmt.Errorf("delete Desktop command toolchain paths: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Desktop workspace settings delete: %w", err)
 	}
 	return nil
 }

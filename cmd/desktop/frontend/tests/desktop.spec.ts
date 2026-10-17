@@ -282,6 +282,9 @@ test('project settings edits runtime limits and MCP definitions', async ({ page 
   await page.goto('/?preview=1');
   await page.getByRole('button', { name: '项目设置' }).click();
   await expect(page.getByRole('dialog', { name: '项目设置与 MCP' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '命令工具链' })).toBeVisible();
+  await expect(page.locator('.command-toolchain-candidates .mcp-server-card')).toHaveCount(0);
+  await expect(page.getByText(/检测只查询当前 PATH，不会运行程序或自动授权/)).toBeVisible();
   await page.getByLabel('上下文窗口 Token').fill('48000');
   await page.getByRole('button', { name: '添加服务' }).click();
   await page.getByLabel('名称').fill('docs');

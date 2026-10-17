@@ -44,7 +44,7 @@ func TestMergeWorkspaceConfigPreservesUnchangedMCPSecretsAndOmitsRemovedVariable
 		t.Fatalf("runtime settings were not applied: %#v", merged)
 	}
 
-	encoded, err := json.Marshal(workspaceConfigView(merged))
+	encoded, err := json.Marshal(workspaceConfigView(merged, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

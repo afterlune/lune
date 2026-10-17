@@ -14,6 +14,7 @@ export type {
     AppearanceView,
     ApplyWorktreeChangesResult,
     Bootstrap,
+    CommandToolchainCandidate,
     ConversationMessage,
     DesktopProcessListView,
     DesktopProcessOutputView,

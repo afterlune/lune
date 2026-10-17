@@ -30,27 +30,28 @@ import (
 )
 
 type DesktopService struct {
-	mu                 sync.Mutex
-	store              *settings.Store
-	app                *application.App
-	appContext         context.Context
-	core               *core.Core
-	localCore          *core.Core
-	runtime            *core.SessionRuntime
-	activityStore      *ActivityStore
-	workspace          string
-	activeWorkspace    string
-	sessionID          string
-	activeContext      *desktopSessionContext
-	sessionContexts    map[string]*desktopSessionContext
-	stateRoot          string
-	projectConfig      core.ProjectConfig
-	reconfiguring      bool
-	mcpOperations      int
-	planMode           bool
-	previousMode       core.PermissionMode
-	waiting            map[string]bool
-	suppressedActivity map[string]struct{}
+	mu                    sync.Mutex
+	store                 *settings.Store
+	app                   *application.App
+	appContext            context.Context
+	core                  *core.Core
+	localCore             *core.Core
+	runtime               *core.SessionRuntime
+	activityStore         *ActivityStore
+	workspace             string
+	activeWorkspace       string
+	sessionID             string
+	activeContext         *desktopSessionContext
+	sessionContexts       map[string]*desktopSessionContext
+	stateRoot             string
+	projectConfig         core.ProjectConfig
+	commandToolchainPaths []string
+	reconfiguring         bool
+	mcpOperations         int
+	planMode              bool
+	previousMode          core.PermissionMode
+	waiting               map[string]bool
+	suppressedActivity    map[string]struct{}
 }
 
 type desktopSessionContext struct {
@@ -564,6 +565,19 @@ func (s *DesktopService) PickWorkspace() (string, error) {
 	}).PromptForSingleSelection()
 }
 
+func (s *DesktopService) PickCommandToolchainFolder() (string, error) {
+	s.mu.Lock()
+	app := s.app
+	s.mu.Unlock()
+	if app == nil {
+		return "", errors.New("桌面文件选择器尚未就绪")
+	}
+	return app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+		CanChooseDirectories: true, CanChooseFiles: false, CanCreateDirectories: false,
+		Title: "选择命令工具链目录", ButtonText: "选择目录",
+	}).PromptForSingleSelection()
+}
+
 type SessionSummary struct {
 	ID               string `json:"id"`
 	Title            string `json:"title"`
@@ -648,14 +662,18 @@ func (s *DesktopService) startWorkspace(path string) error {
 	if err != nil {
 		return err
 	}
+	commandToolchainPaths, _, err := s.store.LoadWorkspaceCommandToolchainPaths(path)
+	if err != nil {
+		return err
+	}
 	projectConfig.ModelConfig = modelConfig
 	if err := projectConfig.Validate(); err != nil {
 		return fmt.Errorf("Desktop 项目配置无效: %w", err)
 	}
-	return s.startWorkspaceWithConfig(path, projectConfig)
+	return s.startWorkspaceWithConfig(path, projectConfig, commandToolchainPaths)
 }
 
-func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig core.ProjectConfig) error {
+func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig core.ProjectConfig, commandToolchainPaths []string) error {
 	helper := "lune-sandbox.exe"
 	if runtime.GOOS != "windows" {
 		helper = "lune-sandbox"
@@ -669,7 +687,10 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 		return err
 	}
 	localStateDir := filepath.Join(stateRoot, "local")
-	config := core.Config{Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ProjectConfig: &projectConfig}
+	config := core.Config{
+		Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath,
+		ProjectConfig: &projectConfig, CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
+	}
 	created, err := core.New(config)
 	if err != nil {
 		if errors.Is(err, core.ErrStateDirInUse) {
@@ -689,6 +710,7 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 	s.activityStore = activityStore
 	s.stateRoot = stateRoot
 	s.projectConfig = projectConfig
+	s.commandToolchainPaths = append([]string(nil), commandToolchainPaths...)
 	if s.sessionContexts == nil {
 		s.sessionContexts = make(map[string]*desktopSessionContext)
 	}
@@ -798,10 +820,12 @@ func (s *DesktopService) newCore(workspace, stateDir string) (*core.Core, error)
 	}
 	s.mu.Lock()
 	projectConfig := s.projectConfig
+	commandToolchainPaths := append([]string(nil), s.commandToolchainPaths...)
 	s.mu.Unlock()
 	return core.New(core.Config{
 		Workspace: workspace, StateDir: stateDir, Logger: slog.Default(),
 		SandboxHelperPath: helperPath, ProjectConfig: &projectConfig,
+		CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
 	})
 }
 
@@ -1169,6 +1193,7 @@ func (s *DesktopService) closeWorkspaceLocked(interrupt bool) error {
 	s.sessionContexts = map[string]*desktopSessionContext{}
 	s.activityStore, s.stateRoot = nil, ""
 	s.projectConfig = core.ProjectConfig{}
+	s.commandToolchainPaths = nil
 	s.planMode, s.previousMode = false, ""
 	return errors.Join(closeErr, activityCloseErr)
 }

@@ -71,6 +71,17 @@ export interface Bootstrap {
     "permissionMode": string;
 }
 
+/**
+ * CommandToolchainCandidate is a host PATH lookup result. Detection never
+ * launches the executable and never adds its root to workspace permissions.
+ */
+export interface CommandToolchainCandidate {
+    "name": string;
+    "executable": string;
+    "root": string;
+    "note"?: string;
+}
+
 export interface ConversationMessage {
     "id": string;
     "role": string;
@@ -380,6 +391,7 @@ export interface WorkspaceConfigInput {
     "maxAttachmentFiles": number;
     "maxAttachmentBytes": number;
     "maxTotalBytes": number;
+    "commandToolchainPaths": string[] | null;
     "mcpServers": MCPServerConfigInput[] | null;
 }
 
@@ -391,6 +403,7 @@ export interface WorkspaceConfigView {
     "maxAttachmentFiles": number;
     "maxAttachmentBytes": number;
     "maxTotalBytes": number;
+    "commandToolchainPaths": string[] | null;
     "mcpServers": MCPServerConfigView[] | null;
 }
 

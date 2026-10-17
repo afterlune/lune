@@ -8,7 +8,7 @@
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
-    AppearanceView, Bootstrap, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
+    AppearanceView, Bootstrap, CommandToolchainCandidate, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
     SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSearchResult, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
     WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
@@ -40,7 +40,7 @@
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
   type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
   type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
-  type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers'> & { mcpServers: MCPServerForm[] };
+  type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers' | 'commandToolchainPaths'> & { mcpServers: MCPServerForm[]; commandToolchainPaths: string[] };
   type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'delete-worktree' | 'mcp' | 'file-preview' | 'apply-worktree' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
@@ -165,9 +165,11 @@
   let mcpUpdatingServer = $state('');
   let workspaceSettingsForm = $state<WorkspaceSettingsForm>({
     contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
-    maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, mcpServers: [],
+    maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, commandToolchainPaths: [], mcpServers: [],
   });
   let workspaceSettingsSaving = $state(false);
+  let toolchainCandidates = $state<CommandToolchainCandidate[]>([]);
+  let toolchainDetectionLoading = $state(false);
   let filePreview = $state<WorkspaceFilePreview | null>(null);
   let workspaceChanges = $state<WorkspaceChanges | null>(null);
   let workspaceChangesLoading = $state(false);
@@ -2030,6 +2032,7 @@
       maxAttachmentFiles: config.maxAttachmentFiles,
       maxAttachmentBytes: config.maxAttachmentBytes,
       maxTotalBytes: config.maxTotalBytes,
+      commandToolchainPaths: [...(config.commandToolchainPaths ?? [])],
       mcpServers: (config.mcpServers ?? []).map((server) => ({
         name: server.name, originalName: server.name, transport: server.transport, command: server.command,
         args: server.args ?? [], argsText: (server.args ?? []).join('\n'),
@@ -2050,6 +2053,36 @@
     server.env = [...server.env, { name: '', value: '', hasValue: false }];
   }
 
+  function toolchainPathAuthorized(path: string) {
+    return workspaceSettingsForm.commandToolchainPaths.some((item) => item.toLowerCase() === path.toLowerCase());
+  }
+
+  function addToolchainPath(path: string) {
+    const normalized = path.trim();
+    if (!normalized || toolchainPathAuthorized(normalized)) return;
+    workspaceSettingsForm.commandToolchainPaths = [...workspaceSettingsForm.commandToolchainPaths, normalized];
+  }
+
+  function removeToolchainPath(path: string) {
+    workspaceSettingsForm.commandToolchainPaths = workspaceSettingsForm.commandToolchainPaths.filter((item) => item.toLowerCase() !== path.toLowerCase());
+  }
+
+  async function detectCommandToolchains() {
+    if (previewMode || toolchainDetectionLoading) return;
+    toolchainDetectionLoading = true;
+    try { toolchainCandidates = await Desktop.DetectCommandToolchains() ?? []; }
+    catch (error) { showError(error); }
+    finally { toolchainDetectionLoading = false; }
+  }
+
+  async function pickCommandToolchainFolder() {
+    if (previewMode) return;
+    try {
+      const path = await Desktop.PickCommandToolchainFolder();
+      if (path) addToolchainPath(path);
+    } catch (error) { showError(error); }
+  }
+
   function mcpStatus(name: string) {
     return mcpServers.find((server) => server.name === name);
   }
@@ -2066,6 +2099,7 @@
         maxAttachmentFiles: workspaceSettingsForm.maxAttachmentFiles,
         maxAttachmentBytes: workspaceSettingsForm.maxAttachmentBytes,
         maxTotalBytes: workspaceSettingsForm.maxTotalBytes,
+        commandToolchainPaths: [...workspaceSettingsForm.commandToolchainPaths],
         mcpServers: workspaceSettingsForm.mcpServers.map((server) => {
           const stdio = server.transport === 'stdio';
           return {
@@ -2398,14 +2432,16 @@
       mcpServers = [];
       workspaceSettingsForm = {
         contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
-        maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, mcpServers: [],
+        maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, commandToolchainPaths: [], mcpServers: [],
       };
+      toolchainCandidates = [];
       modal = 'mcp';
       return;
     }
     try {
       workspaceSettingsForm = workspaceSettingsFromView(await Desktop.GetWorkspaceConfig());
       mcpServers = await Desktop.ListMCPServers() ?? [];
+      toolchainCandidates = await Desktop.DetectCommandToolchains() ?? [];
       modal = 'mcp';
     } catch (error) { showError(error); }
   }
@@ -3746,6 +3782,41 @@
               <label>单张图片上限（字节）<input type="number" min="0" step="1048576" bind:value={workspaceSettingsForm.maxAttachmentBytes} /></label>
               <label class="wide-field">图片总大小上限（字节）<input type="number" min="0" step="1048576" bind:value={workspaceSettingsForm.maxTotalBytes} /></label>
             </div>
+          </section>
+          <section class="settings-section command-toolchains-section">
+            <div class="settings-section-heading">
+              <div><h3>命令工具链</h3><p>检测只查询当前 PATH，不会运行程序或自动授权。获准目录只提供读取与执行权限，命令仍受项目沙箱和网络策略约束。</p></div>
+              <div class="mcp-server-actions">
+                <button class="small-button" disabled={previewMode || toolchainDetectionLoading || workspaceSettingsSaving} onclick={() => void detectCommandToolchains()}>{toolchainDetectionLoading ? '正在检测…' : '重新检测 PATH'}</button>
+                <button class="small-button" disabled={previewMode || workspaceSettingsSaving} onclick={() => void pickCommandToolchainFolder()}>＋ 选择目录</button>
+              </div>
+            </div>
+            {#if workspaceSettingsForm.commandToolchainPaths.length}
+              <div class="mcp-server-list">
+                {#each workspaceSettingsForm.commandToolchainPaths as path (path)}
+                  <article class="mcp-server-card">
+                    <div class="mcp-server-main"><div><strong>已授权目录</strong><code>{path}</code></div><button class="remove-server" disabled={workspaceSettingsSaving} onclick={() => removeToolchainPath(path)}>移除</button></div>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <div class="mcp-empty">尚未授权命令工具链目录。未授权时，项目沙箱无法访问工作区以外的工具安装目录。</div>
+            {/if}
+            {#if toolchainCandidates.length}
+              <div class="mcp-server-list command-toolchain-candidates">
+                {#each toolchainCandidates as candidate (`${candidate.name}:${candidate.executable}`)}
+                  {@const authorized = candidate.root ? toolchainPathAuthorized(candidate.root) : false}
+                  <article class="mcp-server-card">
+                    <div class="mcp-server-main">
+                      <div><strong>{candidate.name}</strong><code>{candidate.executable}</code><span>{candidate.root ? `授权根目录：${candidate.root}` : candidate.note}</span></div>
+                      <button class="small-button" disabled={previewMode || workspaceSettingsSaving || !candidate.root || authorized} onclick={() => addToolchainPath(candidate.root)}>{authorized ? '已在列表中' : '加入待授权列表'}</button>
+                    </div>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <div class="mcp-empty">未检测到常见工具，或尚未进行 PATH 检测。也可以手动选择安装目录。</div>
+            {/if}
           </section>
           <section class="settings-section">
             <div class="settings-section-heading"><div><h3>MCP 服务</h3><p>本地环境变量仅显示名称，留空保留已保存的值；移除变量行即可清除。</p></div><button class="small-button" onclick={addMCPServer}>＋ 添加服务</button></div>

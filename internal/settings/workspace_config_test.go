@@ -21,6 +21,7 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	firstWorkspace, secondWorkspace := t.TempDir(), t.TempDir()
+	toolchainPath := t.TempDir()
 	config := core.DefaultProjectConfig()
 	config.ContextWindow = 48000
 	config.MCPServers = map[string]core.MCPServerConfig{
@@ -34,7 +35,7 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "example"}},
 		DefaultModel: "main",
 	}
-	if err := store.SaveWorkspaceConfig(firstWorkspace, config); err != nil {
+	if err := store.SaveWorkspaceSettings(firstWorkspace, config, []string{toolchainPath}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,6 +51,13 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	}
 	if _, found, err := store.LoadWorkspaceConfig(secondWorkspace); err != nil || found {
 		t.Fatalf("second project config found=%v, error=%v", found, err)
+	}
+	paths, found, err := store.LoadWorkspaceCommandToolchainPaths(firstWorkspace)
+	if err != nil || !found || len(paths) != 1 || paths[0] != toolchainPath {
+		t.Fatalf("loaded command toolchains = %#v, found=%v, error=%v", paths, found, err)
+	}
+	if _, found, err := store.LoadWorkspaceCommandToolchainPaths(secondWorkspace); err != nil || found {
+		t.Fatalf("second project toolchain paths found=%v, error=%v", found, err)
 	}
 
 	key, err := workspaceConfigKey(firstWorkspace)
@@ -70,6 +78,9 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	if _, found, err := store.LoadWorkspaceConfig(firstWorkspace); err != nil || found {
 		t.Fatalf("deleted project config found=%v, error=%v", found, err)
 	}
+	if _, found, err := store.LoadWorkspaceCommandToolchainPaths(firstWorkspace); err != nil || found {
+		t.Fatalf("deleted project toolchain paths found=%v, error=%v", found, err)
+	}
 }
 
 func TestWorkspaceConfigStoreRejectsNilStore(t *testing.T) {
@@ -81,5 +92,11 @@ func TestWorkspaceConfigStoreRejectsNilStore(t *testing.T) {
 	}
 	if err := (*Store)(nil).DeleteWorkspaceConfig(t.TempDir()); err == nil {
 		t.Fatal("DeleteWorkspaceConfig succeeded on a nil store")
+	}
+	if _, _, err := (*Store)(nil).LoadWorkspaceCommandToolchainPaths(t.TempDir()); err == nil {
+		t.Fatal("LoadWorkspaceCommandToolchainPaths succeeded on a nil store")
+	}
+	if err := (*Store)(nil).SaveWorkspaceSettings(t.TempDir(), core.DefaultProjectConfig(), nil); err == nil {
+		t.Fatal("SaveWorkspaceSettings succeeded on a nil store")
 	}
 }

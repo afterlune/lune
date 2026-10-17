@@ -49,6 +49,10 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
     return $Call.ByID(87151138, sessionID);
 }
 
+export function DetectCommandToolchains(): $CancellablePromise<$models.CommandToolchainCandidate[] | null> {
+    return $Call.ByID(2924811259);
+}
+
 export function DiscardWallpaper(file: string): $CancellablePromise<void> {
     return $Call.ByID(3553992017, file);
 }
@@ -116,6 +120,10 @@ export function OpenWorkspace(path: string): $CancellablePromise<$models.Workspa
 
 export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<void> {
     return $Call.ByID(2369930560, relativePath);
+}
+
+export function PickCommandToolchainFolder(): $CancellablePromise<string> {
+    return $Call.ByID(3108310760);
 }
 
 export function PickWallpaper(wallpaperType: string): $CancellablePromise<$models.WallpaperSelection> {

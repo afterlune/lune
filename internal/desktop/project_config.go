@@ -11,14 +11,15 @@ import (
 )
 
 type WorkspaceConfigView struct {
-	ContextWindow        int64                 `json:"contextWindow"`
-	AutoCompact          bool                  `json:"autoCompact"`
-	AutoCompactThreshold float64               `json:"autoCompactThreshold"`
-	ReserveOutputTokens  int64                 `json:"reserveOutputTokens"`
-	MaxAttachmentFiles   int                   `json:"maxAttachmentFiles"`
-	MaxAttachmentBytes   int64                 `json:"maxAttachmentBytes"`
-	MaxTotalBytes        int64                 `json:"maxTotalBytes"`
-	MCPServers           []MCPServerConfigView `json:"mcpServers"`
+	ContextWindow         int64                 `json:"contextWindow"`
+	AutoCompact           bool                  `json:"autoCompact"`
+	AutoCompactThreshold  float64               `json:"autoCompactThreshold"`
+	ReserveOutputTokens   int64                 `json:"reserveOutputTokens"`
+	MaxAttachmentFiles    int                   `json:"maxAttachmentFiles"`
+	MaxAttachmentBytes    int64                 `json:"maxAttachmentBytes"`
+	MaxTotalBytes         int64                 `json:"maxTotalBytes"`
+	CommandToolchainPaths []string              `json:"commandToolchainPaths"`
+	MCPServers            []MCPServerConfigView `json:"mcpServers"`
 }
 
 type MCPServerConfigView struct {
@@ -37,14 +38,15 @@ type MCPEnvironmentView struct {
 }
 
 type WorkspaceConfigInput struct {
-	ContextWindow        int64                  `json:"contextWindow"`
-	AutoCompact          bool                   `json:"autoCompact"`
-	AutoCompactThreshold float64                `json:"autoCompactThreshold"`
-	ReserveOutputTokens  int64                  `json:"reserveOutputTokens"`
-	MaxAttachmentFiles   int                    `json:"maxAttachmentFiles"`
-	MaxAttachmentBytes   int64                  `json:"maxAttachmentBytes"`
-	MaxTotalBytes        int64                  `json:"maxTotalBytes"`
-	MCPServers           []MCPServerConfigInput `json:"mcpServers"`
+	ContextWindow         int64                  `json:"contextWindow"`
+	AutoCompact           bool                   `json:"autoCompact"`
+	AutoCompactThreshold  float64                `json:"autoCompactThreshold"`
+	ReserveOutputTokens   int64                  `json:"reserveOutputTokens"`
+	MaxAttachmentFiles    int                    `json:"maxAttachmentFiles"`
+	MaxAttachmentBytes    int64                  `json:"maxAttachmentBytes"`
+	MaxTotalBytes         int64                  `json:"maxTotalBytes"`
+	CommandToolchainPaths []string               `json:"commandToolchainPaths"`
+	MCPServers            []MCPServerConfigInput `json:"mcpServers"`
 }
 
 type MCPServerConfigInput struct {
@@ -63,12 +65,12 @@ type MCPEnvironmentInput struct {
 	Value string `json:"value"`
 }
 
-func workspaceConfigView(config core.ProjectConfig) WorkspaceConfigView {
+func workspaceConfigView(config core.ProjectConfig, commandToolchainPaths []string) WorkspaceConfigView {
 	view := WorkspaceConfigView{
 		ContextWindow: config.ContextWindow, AutoCompact: config.AutoCompact,
 		AutoCompactThreshold: config.AutoCompactThreshold, ReserveOutputTokens: config.ReserveOutputTokens,
 		MaxAttachmentFiles: config.Attachments.MaxFiles, MaxAttachmentBytes: config.Attachments.MaxFileBytes,
-		MaxTotalBytes: config.Attachments.MaxTotalBytes,
+		MaxTotalBytes: config.Attachments.MaxTotalBytes, CommandToolchainPaths: append([]string(nil), commandToolchainPaths...),
 	}
 	serverNames := make([]string, 0, len(config.MCPServers))
 	for name := range config.MCPServers {
@@ -159,7 +161,7 @@ func (s *DesktopService) GetWorkspaceConfig() (WorkspaceConfigView, error) {
 	if s.localCore == nil {
 		return WorkspaceConfigView{}, errors.New("请先打开工作区")
 	}
-	return workspaceConfigView(s.projectConfig), nil
+	return workspaceConfigView(s.projectConfig, s.commandToolchainPaths), nil
 }
 
 // SaveWorkspaceConfig persists Desktop-owned project settings and restarts all
@@ -184,6 +186,11 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		s.mu.Unlock()
 		return WorkspaceConfigView{}, err
 	}
+	commandToolchainPaths, err := normalizeCommandToolchainPaths(input.CommandToolchainPaths)
+	if err != nil {
+		s.mu.Unlock()
+		return WorkspaceConfigView{}, err
+	}
 	workspace, activeSession := s.workspace, s.sessionID
 	oldStoredConfig, found, err := s.store.LoadWorkspaceConfig(workspace)
 	if err != nil {
@@ -191,6 +198,11 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		return WorkspaceConfigView{}, err
 	}
 	oldStoredConfig.ModelConfig = current.ModelConfig
+	oldStoredPaths, pathsFound, err := s.store.LoadWorkspaceCommandToolchainPaths(workspace)
+	if err != nil {
+		s.mu.Unlock()
+		return WorkspaceConfigView{}, err
+	}
 	for _, sessionContext := range s.sessionContexts {
 		if sessionContext == nil || sessionContext.runtime == nil {
 			continue
@@ -221,14 +233,8 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 	s.reconfiguring = true
 	s.mu.Unlock()
 
-	reopen := func(configFound bool, previous core.ProjectConfig) error {
-		var rollbackErr error
-		if configFound {
-			rollbackErr = s.store.SaveWorkspaceConfig(workspace, previous)
-		} else {
-			rollbackErr = s.store.DeleteWorkspaceConfig(workspace)
-		}
-		if rollbackErr != nil {
+	reopen := func(configFound bool, previous core.ProjectConfig, previousPaths []string, previousPathsFound bool) error {
+		if rollbackErr := s.store.RestoreWorkspaceSettings(workspace, previous, configFound, previousPaths, previousPathsFound); rollbackErr != nil {
 			return rollbackErr
 		}
 		if startErr := s.startWorkspace(workspace); startErr != nil {
@@ -247,13 +253,13 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		s.mu.Unlock()
 	}
 
-	if err := s.store.SaveWorkspaceConfig(workspace, config); err != nil {
-		rollbackErr := reopen(found, oldStoredConfig)
+	if err := s.store.SaveWorkspaceSettings(workspace, config, commandToolchainPaths); err != nil {
+		rollbackErr := reopen(found, oldStoredConfig, oldStoredPaths, pathsFound)
 		finish()
 		return WorkspaceConfigView{}, errors.Join(err, rollbackErr)
 	}
 	if err := s.startWorkspace(workspace); err != nil {
-		rollbackErr := reopen(found, oldStoredConfig)
+		rollbackErr := reopen(found, oldStoredConfig, oldStoredPaths, pathsFound)
 		finish()
 		return WorkspaceConfigView{}, errors.Join(err, rollbackErr)
 	}
@@ -262,11 +268,11 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 			s.mu.Lock()
 			closeErr := s.closeWorkspaceLocked(false)
 			s.mu.Unlock()
-			rollbackErr := errors.Join(closeErr, reopen(found, oldStoredConfig))
+			rollbackErr := errors.Join(closeErr, reopen(found, oldStoredConfig, oldStoredPaths, pathsFound))
 			finish()
 			return WorkspaceConfigView{}, errors.Join(err, rollbackErr)
 		}
 	}
 	finish()
-	return workspaceConfigView(config), nil
+	return workspaceConfigView(config, commandToolchainPaths), nil
 }
