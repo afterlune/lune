@@ -929,7 +929,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					end = len(val)
 				}
 				if start <= end {
-					replacement := selected + " "
+					replacement := selected
+					if !strings.HasPrefix(val[end:], " ") {
+						replacement += " "
+					}
 					newVal := val[:start] + replacement + val[end:]
 					m.composer.SetValue(newVal)
 					m.setCursorTo(start + len(replacement))
@@ -1168,7 +1171,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.autocompleteOpen = false
 		}
 	} else if query, start, end, ok := DetectAtQuery(val, m.cursorOffset()); ok {
-		matches := m.getFileScanner().Search(query, 8)
+		matches := m.getFileScanner().Search(query, 50)
 		if len(matches) > 0 {
 			m.autocompleteOpen = true
 			m.autocompleteMode = AutocompleteModeFile

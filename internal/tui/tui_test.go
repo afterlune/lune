@@ -1420,13 +1420,42 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	if !m.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for @cm")
 	}
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	// 5. Trigger @ alone in empty composer
+	m.composer.SetValue("")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '@', Text: "@"}))
+	m = mod.(*tuiModel)
+	if !m.autocompleteOpen {
+		t.Fatalf("expected autocomplete to open for single '@'")
+	}
+	if len(m.autocompleteItems) != 2 {
+		t.Fatalf("expected 2 files in autocomplete items, got: %d", len(m.autocompleteItems))
+	}
+
+	// 6. Select with Tab
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	m = mod.(*tuiModel)
 	if m.autocompleteOpen {
-		t.Errorf("expected autocomplete to close on Esc")
+		t.Errorf("expected autocomplete to close after Tab")
 	}
-	if m.composer.Value() != "review @cm" {
-		t.Errorf("expected composer to retain draft 'review @cm', got: %q", m.composer.Value())
+	if !strings.HasPrefix(m.composer.Value(), "@") || !strings.HasSuffix(m.composer.Value(), " ") {
+		t.Errorf("expected completed file mention with space, got: %q", m.composer.Value())
+	}
+
+	// 7. Completion with trailing text avoids double spaces
+	m.composer.SetValue("inspect @t for issues")
+	// Position cursor after @t (offset 10)
+	m.setCursorTo(10)
+	// Trigger re-detect
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
+	m = mod.(*tuiModel)
+	if !m.autocompleteOpen {
+		t.Fatalf("expected autocomplete to open for 'inspect @tu for issues'")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = mod.(*tuiModel)
+	expectedVal := "inspect @internal/tui/tui.go for issues"
+	if m.composer.Value() != expectedVal {
+		t.Errorf("expected %q, got %q", expectedVal, m.composer.Value())
 	}
 }
 

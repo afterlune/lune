@@ -78,9 +78,9 @@ func (s *WorkspaceFileScanner) Search(query string, limit int) []WorkspaceFile {
 // isIgnoredDirectory checks if a directory should be skipped during scanning.
 func isIgnoredDirectory(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", "node_modules", "bin", "dist", "build", ".luneagent",
-		".cache", ".vite", ".next", ".turbo", ".nuxt", ".output",
-		"coverage", "tmp", ".idea", ".vscode", "target", "vendor", "__pycache__":
+	case ".git", ".hg", ".svn", "node_modules", "bin", "dist", "build", ".luneagent",
+		".cache", ".vite", ".next", ".turbo", ".nuxt", ".output", "out",
+		"coverage", "tmp", ".idea", ".vscode", "target", "vendor", "__pycache__", ".gradle", ".terraform":
 		return true
 	default:
 		return false
@@ -216,6 +216,23 @@ func calculateMatchScore(f WorkspaceFile, q string) int {
 	pathLower := f.PathLower
 	if pathLower == "" {
 		pathLower = strings.ToLower(f.Path)
+	}
+
+	// If query contains a slash, prioritize matching against full path
+	if strings.Contains(q, "/") {
+		if pathLower == q {
+			return 1000
+		}
+		if strings.HasPrefix(pathLower, q) {
+			return 800 - len(pathLower)
+		}
+		if strings.Contains(pathLower, q) {
+			return 600 - len(pathLower)
+		}
+		if isSubsequence(q, pathLower) {
+			return 200 - len(pathLower)
+		}
+		return 0
 	}
 
 	// 1. Exact file name match

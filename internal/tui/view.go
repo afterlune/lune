@@ -335,12 +335,11 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 	endIdx := startIdx + visible
 
 	var rows []string
+	maxLeft := max(24, width*3/5)
 	leftCol := 16
 	for _, item := range items {
-		leftCol = max(leftCol, lipgloss.Width(item.Command)+2)
+		leftCol = max(leftCol, min(maxLeft, lipgloss.Width(item.Command)+2))
 	}
-	maxLeft := max(24, width*3/5)
-	leftCol = min(leftCol, maxLeft)
 
 	for i := startIdx; i < endIdx; i++ {
 		item := items[i]
@@ -348,15 +347,24 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 		if i == selected {
 			marker = "› "
 		}
-		cmdText := item.Command + strings.Repeat(" ", max(1, leftCol-lipgloss.Width(item.Command)))
+		displayCmd := fitTerminalText(item.Command, maxLeft-2)
+		cmdText := displayCmd + strings.Repeat(" ", max(1, leftCol-lipgloss.Width(displayCmd)))
 		descText := item.Description
 		line := marker + cmdText + descText
+		if lipgloss.Width(line) > width {
+			line = ansi.Truncate(line, width, "…")
+		}
 
 		if i == selected {
 			pad := max(0, width-lipgloss.Width(line))
 			rows = append(rows, styleSelectedRow().Render(line+strings.Repeat(" ", pad)))
 		} else {
-			cmdStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Render(cmdText)
+			var cmdStyled string
+			if strings.HasPrefix(item.Command, "@") {
+				cmdStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(cmdText)
+			} else {
+				cmdStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Render(cmdText)
+			}
 			descStyled := styleTextMuted().Render(descText)
 			rows = append(rows, marker+cmdStyled+descStyled)
 		}

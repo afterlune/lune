@@ -198,6 +198,18 @@ func TestWorkspaceFileScanner(t *testing.T) {
 		t.Errorf("expected index.ts in search results, got: %#v", results)
 	}
 
+	// Test Search with path slash
+	slashResults := scanner.Search("src/", 5)
+	if len(slashResults) != 2 {
+		t.Errorf("expected 2 files when searching 'src/', got: %d", len(slashResults))
+	}
+
+	// Test subsequence search
+	subseqResults := scanner.Search("atx", 5) // matches src/app.tsx
+	if len(subseqResults) != 1 || subseqResults[0].Name != "app.tsx" {
+		t.Errorf("expected app.tsx when searching 'atx', got: %#v", subseqResults)
+	}
+
 	// Test caching within TTL
 	cached := scanner.Files()
 	if len(cached) != 2 {
