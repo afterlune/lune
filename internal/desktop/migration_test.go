@@ -64,6 +64,7 @@ func TestMigrationRemovesModelFieldsAndPreservesProjectSettings(t *testing.T) {
 		if err := config.Validate(); err != nil {
 			t.Fatal(err)
 		}
+		merged = config
 		return apply()
 	})
 	if err != nil {
@@ -86,6 +87,20 @@ func TestMigrationRemovesModelFieldsAndPreservesProjectSettings(t *testing.T) {
 		if _, ok := fields[name]; !ok {
 			t.Fatalf("project setting %q was lost", name)
 		}
+	}
+
+	runtime, err := core.New(core.Config{
+		Workspace: workspace, StateDir: filepath.Join(t.TempDir(), "state"), ModelConfig: &merged,
+	})
+	if err != nil {
+		t.Fatalf("open migrated workspace with host model settings: %v", err)
+	}
+	defer runtime.Close()
+	if got := runtime.ProjectAttachmentLimits().MaxFiles; got != 3 {
+		t.Fatalf("attachment limit after migration = %d, want 3", got)
+	}
+	if servers := runtime.MCPServers(); len(servers) != 1 || servers[0].Name != "docs" {
+		t.Fatalf("MCP servers after migration = %#v, want docs server", servers)
 	}
 }
 
@@ -141,5 +156,37 @@ func TestModelOnlyMigrationOpensWithHostModelConfig(t *testing.T) {
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCompleteModelMigrationRestoresBothStoresWhenCoreOpenFails(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("global model secrets require Windows DPAPI")
+	}
+	original := `{"providers":{"vendor":{"protocol":"responses","baseURL":"https://project.example.test/v1","apiKey":"project-secret"}},"models":{"main":{"provider":"vendor","model":"project-model"}},"defaultModel":"main","contextWindow":-1}`
+	workspace := writeMigrationConfig(t, original)
+	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := &DesktopService{store: store}
+
+	if _, err := service.CompleteModelMigration(workspace, nil); err == nil {
+		t.Fatal("migration succeeded despite invalid project runtime settings")
+	}
+	current, err := os.ReadFile(filepath.Join(workspace, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != original {
+		t.Fatal("project config was not restored after Core startup failed")
+	}
+	modelConfig, err := store.LoadModelConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modelConfig.Providers) != 0 || len(modelConfig.Models) != 0 || modelConfig.DefaultModel != "" {
+		t.Fatalf("user model settings were not rolled back: %#v", modelConfig)
 	}
 }

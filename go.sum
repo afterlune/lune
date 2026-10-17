@@ -8,6 +8,8 @@ github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/adrg/xdg v0.5.3 h1:xRnxJXne7+oWDatRhR1JLnvuccuIeCoBu2rtuLqQB78=
 github.com/adrg/xdg v0.5.3/go.mod h1:nlTsY+NNiCBGCK2tpm09vRqfVzrc2fLmXGpBLF0zlTQ=
+github.com/afterlune/luneCore v0.1.1-0.20261017055336-af25ec645081 h1:KEczlQUmPLRJw358bPJapzwWf9JRHU2pMkFfOxQd54A=
+github.com/afterlune/luneCore v0.1.1-0.20261017055336-af25ec645081/go.mod h1:32Dhhbi2Lr/9WrjLopDTqu9NqoD8Z1BIpwPAlxatjxo=
 github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151 h1:lJdv9bzaD17SY37mLpsM0w+4RENTo8m4TVNKBDym9TY=
 github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151/go.mod h1:QFVD7BPU/kIij20si8dhEIVjQYUpwhdBYmOtLG9vLT4=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
