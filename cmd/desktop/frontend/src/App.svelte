@@ -80,6 +80,8 @@
   let workspaceMode = $state('local');
   let worktreeAvailable = $state(false);
   let createSessionMenu = $state(false);
+  let workspaceMenuOpen = $state(false);
+  let sidebarCollapsed = $state(window.matchMedia('(max-width: 760px)').matches);
   let sessions = $state<SessionSummary[]>([]);
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
@@ -190,6 +192,7 @@
   const appearanceDirty = $derived(appearanceKey(appearanceDraft) !== appearanceKey(appearance));
   const modelSettingsDirty = $derived(serializeModelSettings() !== modelSettingsSnapshot);
   const effectiveDarkTheme = $derived(theme === 'dark' || (theme === 'system' && systemPrefersDark));
+  const pageTitle = $derived(!workspace ? '桌面工作区' : sidebarView === 'changes' ? '工作区变更' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'processes' ? '后台进程' : session?.title || '新会话');
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
@@ -1128,6 +1131,18 @@
     if (selectedDesktopProcess) void selectDesktopProcess(selectedDesktopProcess, true);
   }
 
+  function selectSidebarView(view: typeof sidebarView) {
+    if (!workspace && view !== 'sessions') return;
+    sidebarView = view;
+    createSessionMenu = false;
+    workspaceMenuOpen = false;
+    if (window.matchMedia('(max-width: 760px)').matches) sidebarCollapsed = false;
+    if (view === 'changes') void refreshWorkspaceChanges();
+    else if (view === 'worktrees') void refreshDesktopWorktrees();
+    else if (view === 'pending') void refreshPendingSessions();
+    else if (view === 'processes') void openProcessesPage();
+  }
+
   async function selectDesktopProcess(process: DesktopProcess, force = false) {
     const key = desktopProcessKey(process);
     if (!force && key === selectedDesktopProcessKey) return;
@@ -1384,7 +1399,20 @@
         session: { ...previewState.session, id: 'wt-session-a', title: '修复任务队列' },
         sessions: [{ id: 'wt-session-a', title: '修复任务队列', updatedAt: previewState.session.updatedAt, mode: 'worktree', workingDirectory: `${previewState.workspace}\\.worktrees\\thread-a`, worktreePath: `${previewState.workspace}\\.worktrees\\thread-a`, status: 'completed' }],
       };
-      installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : variant === 'worktrees-active' ? activeWorktreePreview : previewState);
+      if (variant === 'welcome') {
+        workspace = '';
+        workingDirectory = '';
+        workspaceMode = 'local';
+        session = null;
+        sessions = [];
+        messages = [];
+        recent = [
+          { path: 'D:\\Git\\luneAgent', lastUsed: '2026-10-18T00:00:00Z' },
+          { path: 'D:\\Git\\agent-dashboard', lastUsed: '2026-10-17T23:30:00Z' },
+        ];
+      } else {
+        installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : variant === 'worktrees-active' ? activeWorktreePreview : previewState);
+      }
       if (variant === 'pending-center') pendingSessions = previewPendingSessions;
       activities = [];
       if (variant === 'empty') {
@@ -2726,14 +2754,18 @@
   onMount(() => {
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
     const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const compactViewport = window.matchMedia('(max-width: 760px)');
     const syncColorScheme = () => systemPrefersDark = colorScheme.matches;
     const syncMotionPreference = () => reducedMotion = motionPreference.matches;
     const syncVisibility = () => appVisible = !document.hidden;
+    const syncCompactViewport = () => sidebarCollapsed = compactViewport.matches;
     syncColorScheme();
     syncMotionPreference();
     syncVisibility();
+    syncCompactViewport();
     colorScheme.addEventListener('change', syncColorScheme);
     motionPreference.addEventListener('change', syncMotionPreference);
+    compactViewport.addEventListener('change', syncCompactViewport);
     document.addEventListener('visibilitychange', syncVisibility);
     void initialize();
     return () => {
@@ -2741,6 +2773,7 @@
       if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer);
       colorScheme.removeEventListener('change', syncColorScheme);
       motionPreference.removeEventListener('change', syncMotionPreference);
+      compactViewport.removeEventListener('change', syncCompactViewport);
       document.removeEventListener('visibilitychange', syncVisibility);
       if (wallpaperObjectURL) URL.revokeObjectURL(wallpaperObjectURL);
     };
@@ -2766,11 +2799,44 @@
         {/if}
       </div>
     {/if}
-    <aside class="sidebar">
+    <nav class="navigation-rail" aria-label="主导航">
+      <div class="rail-brand" aria-hidden="true">l</div>
+      <div class="rail-items">
+        <button class:active={sidebarView === 'sessions'} class="rail-link" aria-current={sidebarView === 'sessions' ? 'page' : undefined} aria-label="会话" title="会话" onclick={() => selectSidebarView('sessions')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-7l-5 3v-3H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z"/><path d="M8 10h8M8 14h5"/></svg><span>会话</span>
+        </button>
+        <button class="rail-link" aria-label="文件" title="文件" disabled={!workspace} aria-disabled={!workspace} class:active={sidebarView === 'files'} aria-current={sidebarView === 'files' ? 'page' : undefined} onclick={() => selectSidebarView('files')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4v13H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M14 3.5v5h5M8 13h8M8 16.5h8"/></svg><span>文件</span>
+        </button>
+        <button class="rail-link" aria-label="变更" title="变更" disabled={!workspace} aria-disabled={!workspace} class:active={sidebarView === 'changes'} aria-current={sidebarView === 'changes' ? 'page' : undefined} onclick={() => selectSidebarView('changes')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.2"/><circle cx="18" cy="19" r="2.2"/><circle cx="18" cy="5" r="2.2"/><path d="M8.2 5h5.6A4.2 4.2 0 0 1 18 9.2v7.6M6 7.2v9.6A2.2 2.2 0 0 0 8.2 19h7.6"/></svg><span>变更</span>
+        </button>
+        <button class="rail-link" aria-label="工作树" title="工作树" disabled={!workspace} aria-disabled={!workspace} class:active={sidebarView === 'worktrees'} aria-current={sidebarView === 'worktrees' ? 'page' : undefined} onclick={() => selectSidebarView('worktrees')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/><path d="M3.5 10h17"/></svg><span>工作树</span>
+        </button>
+        <button class="rail-link" aria-label={`待处理${pendingRequestCount ? `，${pendingRequestCount} 项` : ''}`} title="待处理" disabled={!workspace} aria-disabled={!workspace} class:active={sidebarView === 'pending'} aria-current={sidebarView === 'pending' ? 'page' : undefined} onclick={() => selectSidebarView('pending')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8 12 2.4 2.4L16 9"/></svg><span>待处理</span>
+          {#if pendingRequestCount}<span class="rail-badge">{pendingRequestCount > 9 ? '9+' : pendingRequestCount}</span>{/if}
+        </button>
+        <button class="rail-link" aria-label={`进程${activeDesktopProcessCount ? `，${activeDesktopProcessCount} 项运行中` : ''}`} title="进程" disabled={!workspace} aria-disabled={!workspace} class:active={sidebarView === 'processes'} aria-current={sidebarView === 'processes' ? 'page' : undefined} onclick={() => selectSidebarView('processes')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="13" rx="2"/><path d="M8 21h8M12 17v4M7.5 9.5h4M7.5 12.5h7"/></svg><span>进程</span>
+          {#if activeDesktopProcessCount}<span class="rail-activity-dot"></span>{/if}
+        </button>
+      </div>
+      <div class="rail-bottom">
+        <button class="rail-link rail-settings nav-settings" aria-label="设置" title="模型与偏好设置" onclick={setSettingsForm}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.7 3.8.5-1.3h3.6l.5 1.3a2 2 0 0 0 2.5 1l1.3-.5 2.5 2.5-.5 1.3a2 2 0 0 0 1 2.5l1.3.5v3.6l-1.3.5a2 2 0 0 0-1 2.5l.5 1.3-2.5 2.5-1.3-.5a2 2 0 0 0-2.5 1l-.5 1.3h-3.6l-.5-1.3a2 2 0 0 0-2.5-1l-1.3.5-2.5-2.5.5-1.3a2 2 0 0 0-1-2.5l-1.3-.5v-3.6l1.3-.5a2 2 0 0 0 1-2.5l-.5-1.3 2.5-2.5 1.3.5a2 2 0 0 0 2.5-1Z" transform="translate(0 1) scale(.9)"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span>
+        </button>
+        <div class="rail-local-profile" role="img" aria-label="本地工作区" title={models.configured ? `本地工作区 · 默认模型 ${models.defaultModel}` : '本地工作区 · 尚未配置模型'}>L</div>
+      </div>
+    </nav>
+    {#if !sidebarCollapsed}<button class="sidebar-scrim" aria-label="关闭侧栏" onclick={() => sidebarCollapsed = true}></button>{/if}
+    <aside class="sidebar" class:sidebar-collapsed={sidebarCollapsed} aria-label="工作区内容侧栏">
       <div class="brand-row">
-        <div class="brand-mark">l</div>
         <div class="brand-copy"><strong>luneAgent</strong><span>本地 Agent 工作台</span></div>
-        <button class="icon-button sidebar-more" aria-label="设置" onclick={setSettingsForm}>···</button>
+        <button class="icon-button sidebar-collapse-button" aria-label="收起侧栏" title="收起侧栏" onclick={() => sidebarCollapsed = true}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/><path d="m15 9-3 3 3 3"/></svg>
+        </button>
       </div>
 
       <button class="new-chat" onclick={toggleCreateSessionMenu} aria-haspopup="menu" aria-expanded={createSessionMenu}>
@@ -2786,20 +2852,10 @@
           </button>
         </div>
       {/if}
-      <div class="sidebar-section"><span>工作区</span><button class="tiny-add" aria-label="打开工作区" onclick={openFolderPicker}>＋</button></div>
       {#if workspace}
-        <button class="workspace-row active" title={workspace} onclick={() => void closeWorkspace()}>
+        <button class="workspace-row active" title={`切换工作区 · ${workspace}`} aria-label={`切换工作区 ${workspace}`} onclick={openFolderPicker}>
           <span class="folder-icon">▰</span><span class="workspace-name">{workspace.split(/[\\/]/).at(-1) || workspace}</span><span class="workspace-menu">⌄</span>
         </button>
-        <div class="sidebar-view-tabs">
-          <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
-          <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
-          <button class:active={sidebarView === 'changes'} onclick={() => { sidebarView = 'changes'; void refreshWorkspaceChanges(); }}>变更</button>
-          <button class:active={sidebarView === 'worktrees'} onclick={() => { sidebarView = 'worktrees'; void refreshDesktopWorktrees(); }}>工作树</button>
-          <button class:active={sidebarView === 'pending'} aria-label={`待处理${pendingRequestCount ? `，${pendingRequestCount} 项` : ''}`} onclick={() => { sidebarView = 'pending'; void refreshPendingSessions(); }}>待处理{#if pendingRequestCount}<span class="pending-count-badge">{pendingRequestCount}</span>{/if}</button>
-          <button class:active={sidebarView === 'processes'} aria-label={`进程${activeDesktopProcessCount ? `，${activeDesktopProcessCount} 项运行中` : ''}`} onclick={() => void openProcessesPage()}>进程{#if activeDesktopProcessCount}<span class="process-active-count">{activeDesktopProcessCount}</span>{/if}</button>
-          {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
-        </div>
         {#if sidebarView === 'sessions'}
           <input class="session-search" bind:value={sessionFilter} placeholder="搜索会话" aria-label="搜索会话" />
           <div class="session-list">
@@ -2919,27 +2975,57 @@
       {/if}
 
       <div class="sidebar-bottom">
-        <div class="sidebar-profile"><div class="avatar">L</div><div><strong>本地工作区</strong><span>{models.configured ? `默认模型 · ${models.defaultModel}` : '尚未配置模型'}</span></div></div>
         {#if workspace}<button class="settings-entry" onclick={() => void openMCPManager()}><span>⎇</span> 项目设置</button>{/if}
-        <button class="settings-entry" onclick={setSettingsForm}><span>⚙</span> 模型与偏好设置 <span class="settings-shortcut">⌘ ,</span></button>
       </div>
     </aside>
 
     <main class="main-panel">
       <header class="topbar">
-        <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'pending' ? '待处理' : sidebarView === 'processes' ? '后台进程' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes' && sidebarView !== 'worktrees' && sidebarView !== 'pending' && sidebarView !== 'processes'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
+        <div class="topbar-leading">
+          {#if sidebarCollapsed}
+            <button class="icon-button sidebar-expand-button" aria-label="展开侧栏" title="展开侧栏" onclick={() => sidebarCollapsed = false}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/><path d="m13 9 3 3-3 3"/></svg>
+            </button>
+          {/if}
+          <div class="topbar-heading">
+            <div class="topbar-title-line">
+              <strong class="topbar-title">{pageTitle}</strong>
+              {#if workspace && !['changes', 'worktrees', 'processes'].includes(sidebarView)}
+                <span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>
+              {/if}
+            </div>
+            {#if workspace}
+              <div class="topbar-subtitle" title={workspaceMode === 'worktree' ? workingDirectory : workspace}>
+                {#if workspaceMode === 'worktree'}<span class="crumb-working-path">{workingDirectory}</span>{:else}{workspace.split(/[\\/]/).at(-1) || workspace}{/if}
+              </div>
+            {/if}
+            {#if running || pending.length > 0 || queuedMessageCount > 0}
+              <div class="workspace-run-status" class:waiting={!running}>
+                <span class:active={running} class:waiting={!running} class="topbar-state-dot"></span>
+                <span>{running ? '执行中' : pending.length > 0 ? '等待用户操作' : '任务排队中'}</span>
+                {#if running && activities.length}<span class="run-tool-count">· 已使用 {activities.length} 个工具</span>{/if}
+              </div>
+            {/if}
+          </div>
         </div>
         <div class="top-actions">
-          {#if workspace}
-            <button class="subtle-button" onclick={() => void closeWorkspace()} title="关闭工作区">关闭工作区</button>
-            <span class="top-divider"></span>
-          {/if}
           <div class="theme-switch" role="group" aria-label="主题快捷切换">
             <button class:active={!effectiveDarkTheme} aria-label="切换到浅色主题" aria-pressed={!effectiveDarkTheme} onclick={() => void changeTheme('light')} title="切换到浅色主题">☼ 浅色</button>
             <button class:active={effectiveDarkTheme} aria-label="切换到深色主题" aria-pressed={effectiveDarkTheme} onclick={() => void changeTheme('dark')} title="切换到深色主题">☾ 深色</button>
           </div>
-          <button class="icon-button top-settings" aria-label="设置" onclick={setSettingsForm}>⚙</button>
+          <div class="workspace-menu-anchor">
+            <button class="icon-button top-overflow" aria-label="更多工作区操作" aria-expanded={workspaceMenuOpen} title="更多操作" onclick={() => workspaceMenuOpen = !workspaceMenuOpen}>⋮</button>
+            {#if workspaceMenuOpen}
+              <div class="topbar-menu" role="menu">
+                {#if workspace}
+                  <button role="menuitem" onclick={() => { workspaceMenuOpen = false; void openFolderPicker(); }}>切换工作区</button>
+                  <button role="menuitem" onclick={() => { workspaceMenuOpen = false; void closeWorkspace(); }}>关闭工作区</button>
+                {:else}
+                  <button role="menuitem" onclick={() => { workspaceMenuOpen = false; void openFolderPicker(); }}>打开工作区</button>
+                {/if}
+              </div>
+            {/if}
+          </div>
         </div>
       </header>
 
@@ -2950,9 +3036,6 @@
           <h1>把想法带进你的工作区</h1>
           <p class="welcome-copy">选择一个本地项目文件夹，与 Agent 一起阅读代码、讨论方案并完成修改。</p>
           <button class="primary-button open-workspace" onclick={openFolderPicker}><span>▰</span> 打开工作区</button>
-          {#if recent?.length}
-            <div class="welcome-recent"><span>最近打开</span>{#each recent.slice(0, 4) as item (item.path)}<button onclick={() => void openWorkspace(item.path)}><span>▰</span><span>{item.path}</span><b>›</b></button>{/each}</div>
-          {/if}
           {#if !models.configured}<button class="inline-link welcome-config" onclick={setSettingsForm}>先配置模型以开始对话</button>{/if}
         </section>
       {:else if sidebarView === 'worktrees'}

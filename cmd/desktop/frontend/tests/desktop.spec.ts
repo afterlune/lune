@@ -1,11 +1,55 @@
 import { expect, test } from '@playwright/test';
 
 test('desktop workspace preview matches the approved baseline', async ({ page }) => {
+  await page.setViewportSize({ width: 1584, height: 1000 });
   await page.goto('/?preview=1');
   await expect(page.getByRole('main').getByText('重构桌面端提问流程')).toBeVisible();
   await expect(page.getByText('帮我检查 Question 面板的交互，并把截图测试流程接入桌面端。')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '会话' })).toHaveClass(/active/);
+  await expect(page.locator('.sidebar')).toBeVisible();
+  const railBounds = await page.locator('.navigation-rail').boundingBox();
+  const sidebarBounds = await page.locator('.sidebar').boundingBox();
+  expect(railBounds?.width).toBe(104);
+  expect(sidebarBounds?.width).toBe(328);
   await expect(page.locator('.wallpaper-layer')).toHaveCount(0);
   await expect(page).toHaveScreenshot('desktop-workspace.png', { fullPage: true });
+});
+
+test('welcome state shares the three-column shell and lists recent workspaces', async ({ page }) => {
+  await page.setViewportSize({ width: 1584, height: 1000 });
+  await page.goto('/?preview=welcome');
+
+  await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: '把想法带进你的工作区' })).toBeVisible();
+  await expect(page.locator('.sidebar')).toContainText('打开工作区');
+  await expect(page.locator('.sidebar .recent-row')).toHaveCount(2);
+  await expect(page).toHaveScreenshot('desktop-welcome.png', { fullPage: true });
+
+  await page.locator('.sidebar .recent-row').nth(1).click();
+  await expect(page.getByRole('main').getByText('重构桌面端提问流程')).toBeVisible();
+});
+
+test('navigation rail changes work surfaces and the context sidebar can collapse', async ({ page }) => {
+  await page.goto('/?preview=1');
+  const rail = page.getByRole('navigation', { name: '主导航' });
+
+  await rail.getByRole('button', { name: '文件' }).click();
+  await expect(page.locator('.workspace-explorer')).toBeVisible();
+  await page.getByRole('button', { name: '收起侧栏' }).click();
+  await expect(page.locator('.sidebar')).toHaveClass(/sidebar-collapsed/);
+  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await expect(page.locator('.sidebar')).not.toHaveClass(/sidebar-collapsed/);
+});
+
+test('narrow windows open the context sidebar as an overlay from the rail', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.goto('/?preview=1');
+  await expect(page.locator('.sidebar')).toBeHidden();
+
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '会话' }).click();
+  await expect(page.locator('.sidebar')).toBeVisible();
+  await page.getByRole('button', { name: '关闭侧栏' }).click();
+  await expect(page.locator('.sidebar')).toBeHidden();
 });
 
 test('theme and tool controls are available in the intended locations', async ({ page }) => {
@@ -24,7 +68,7 @@ test('theme and tool controls are available in the intended locations', async ({
 
 test('anime appearance preview is editable only in settings and Cancel restores it', async ({ page }) => {
   await page.goto('/?preview=1');
-  await page.locator('.top-settings').click();
+  await page.locator('.nav-settings').click();
   await page.getByRole('tab', { name: '外观与主题' }).click();
   await page.getByRole('button', { name: '二次元' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'anime');
@@ -179,7 +223,7 @@ test('ask permission uses the apply confirmation as one-time authorization', asy
 
 test('pending center counts background requests and opens the owning session', async ({ page }) => {
   await page.goto('/?preview=pending-center');
-  const pendingTab = page.locator('.sidebar-view-tabs').getByRole('button', { name: /待处理/ });
+  const pendingTab = page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: /待处理/ });
   await expect(pendingTab).toContainText('8');
   await pendingTab.click();
 
