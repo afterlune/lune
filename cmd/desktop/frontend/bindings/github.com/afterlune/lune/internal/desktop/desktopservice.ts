@@ -61,6 +61,10 @@ export function ListMCPServers(): $CancellablePromise<$models.MCPServerView[] | 
     return $Call.ByID(2843607385);
 }
 
+export function ListWorkspaceChanges(): $CancellablePromise<$models.WorkspaceChangesView> {
+    return $Call.ByID(1980103603);
+}
+
 export function ListWorkspaceFiles(relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
     return $Call.ByID(2892581193, relativePath);
 }
@@ -79,6 +83,10 @@ export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<voi
 
 export function PickWorkspace(): $CancellablePromise<string> {
     return $Call.ByID(1262469545);
+}
+
+export function ReadWorkspaceDiff(relativePath: string): $CancellablePromise<$models.WorkspaceDiffView> {
+    return $Call.ByID(3675187873, relativePath);
 }
 
 export function ReadWorkspaceFile(relativePath: string): $CancellablePromise<$models.WorkspaceFilePreview> {

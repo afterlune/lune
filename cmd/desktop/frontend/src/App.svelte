@@ -9,7 +9,7 @@
   import type {
     Bootstrap, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
     SubmitInput, PendingRequestView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
-    WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
+    WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
   type LocalMessage = ConversationMessage & {
@@ -38,6 +38,7 @@
   type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
+  type WorkspaceChanges = Omit<WorkspaceChangesView, 'files'> & { files: NonNullable<WorkspaceChangesView['files']> };
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
@@ -53,7 +54,7 @@
   let sessionFilter = $state('');
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
-  let sidebarView = $state<'sessions' | 'files'>('sessions');
+  let sidebarView = $state<'sessions' | 'files' | 'changes'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let planMode = $state(false);
@@ -101,6 +102,17 @@
   });
   let workspaceSettingsSaving = $state(false);
   let filePreview = $state<WorkspaceFilePreview | null>(null);
+  let workspaceChanges = $state<WorkspaceChanges | null>(null);
+  let workspaceChangesLoading = $state(false);
+  let workspaceChangesError = $state('');
+  let selectedWorkspaceChange = $state('');
+  let workspaceDiff = $state<WorkspaceDiffView | null>(null);
+  let workspaceDiffLoading = $state(false);
+  let workspaceDiffError = $state('');
+  let workspaceChangesRequest = 0;
+  let workspaceDiffRequest = 0;
+  let workspaceChangesForSession = '';
+  let workspaceChangesForDirectory = '';
   let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
 
@@ -114,6 +126,8 @@
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
+  const activeWorkspaceChange = $derived(workspaceChanges?.files.find((file) => file.path === selectedWorkspaceChange) ?? null);
+  const workspaceDiffLines = $derived(workspaceDiff?.content ? workspaceDiff.content.replace(/\r\n/g, '\n').split('\n') : []);
   const transcriptRows = $derived.by(() => {
     let userMessageIndex = -1;
     return messages.map((message) => {
@@ -482,6 +496,135 @@
     executionHistory: [],
   };
 
+  const previewWorkspaceChanges: WorkspaceChanges = {
+    available: true, message: '', added: 24, removed: 8, refreshedAt: '2026-10-17T02:35:00Z',
+    files: [
+      { path: 'cmd/desktop/frontend/src/App.svelte', status: ' M', added: 6, removed: 3, binary: false },
+      { path: 'internal/desktop/workspace_changes.go', status: 'M ', added: 16, removed: 4, binary: false },
+      { path: 'testdata/sample.bin', status: '??', added: 2, removed: 0, binary: true },
+    ],
+  };
+  const previewWorkspaceDiffs: Record<string, WorkspaceDiffView> = {
+    'cmd/desktop/frontend/src/App.svelte': {
+      path: 'cmd/desktop/frontend/src/App.svelte', status: ' M', binary: false, truncated: false,
+      content: 'diff --git a/cmd/desktop/frontend/src/App.svelte b/cmd/desktop/frontend/src/App.svelte\n--- a/cmd/desktop/frontend/src/App.svelte\n+++ b/cmd/desktop/frontend/src/App.svelte\n@@ -55,7 +55,7 @@\n-  let sidebarView = $state<\'sessions\' | \'files\'>(\'sessions\');\n+  let sidebarView = $state<\'sessions\' | \'files\' | \'changes\'>(\'sessions\');\n',
+    },
+    'internal/desktop/workspace_changes.go': {
+      path: 'internal/desktop/workspace_changes.go', status: 'M ', binary: false, truncated: false,
+      content: 'diff --git a/internal/desktop/workspace_changes.go b/internal/desktop/workspace_changes.go\nindex 08a410a..fd10b21 100644\n--- a/internal/desktop/workspace_changes.go\n+++ b/internal/desktop/workspace_changes.go\n@@ -62,7 +62,10 @@ func (s *DesktopService) ListWorkspaceChanges() (WorkspaceChangesView, error) {\n-\tresult := WorkspaceChangesView{Files: []WorkspaceChangeView{}}\n+\tresult := WorkspaceChangesView{\n+\t\tFiles:     []WorkspaceChangeView{},\n+\t\tRefreshed: time.Now().UTC().Format(time.RFC3339Nano),\n+\t}\n \tif _, err := exec.LookPath("git"); err != nil {\n-\t\treturn WorkspaceChangesView{}, err\n+\t\tresult.Message = "找不到 Git，请安装 Git 后重试。"\n+\t\treturn result, nil\n \t}\n',
+    },
+    'testdata/sample.bin': {
+      path: 'testdata/sample.bin', status: '??', binary: true, truncated: false, content: '',
+    },
+  };
+
+  function previewChangesForVariant(): WorkspaceChanges {
+    if (previewVariant === 'changes-empty') return { ...previewWorkspaceChanges, files: [], added: 0, removed: 0 };
+    if (previewVariant === 'changes-unavailable') return { ...previewWorkspaceChanges, available: false, message: '当前会话目录不在可用的 Git 仓库中。', files: [], added: 0, removed: 0 };
+    return previewWorkspaceChanges;
+  }
+
+  function sameWorkspacePath(left: string, right: string) {
+    const normalizedLeft = left.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    const normalizedRight = right.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    return navigator.userAgent.includes('Windows')
+      ? normalizedLeft.toLocaleLowerCase() === normalizedRight.toLocaleLowerCase()
+      : normalizedLeft === normalizedRight;
+  }
+
+  function sessionSharesActiveDirectory(sessionId: string) {
+    if (sessionId === session?.id) return true;
+    const completedSession = sessions.find((item) => item.id === sessionId);
+    const directory = completedSession?.workingDirectory || completedSession?.worktreePath || '';
+    return !!directory && !!workingDirectory && sameWorkspacePath(directory, workingDirectory);
+  }
+
+  async function refreshWorkspaceChanges() {
+    const request = ++workspaceChangesRequest;
+    ++workspaceDiffRequest;
+    const requestSession = session?.id ?? '';
+    const requestDirectory = workingDirectory;
+    if (workspaceChangesForSession !== requestSession || workspaceChangesForDirectory !== requestDirectory) {
+      workspaceChanges = null;
+      selectedWorkspaceChange = '';
+      workspaceChangesForSession = '';
+      workspaceChangesForDirectory = '';
+    }
+    workspaceChangesLoading = true;
+    workspaceChangesError = '';
+    workspaceDiffLoading = false;
+    workspaceDiffError = '';
+    workspaceDiff = null;
+    if (!requestSession || !requestDirectory) {
+      workspaceChanges = null;
+      selectedWorkspaceChange = '';
+      workspaceChangesLoading = false;
+      return;
+    }
+    try {
+      const rawResult = previewMode ? previewChangesForVariant() : await Desktop.ListWorkspaceChanges();
+      const result: WorkspaceChanges = { ...rawResult, files: rawResult.files ?? [] };
+      if (request !== workspaceChangesRequest || session?.id !== requestSession || workingDirectory !== requestDirectory || sidebarView !== 'changes') return;
+      workspaceChanges = result;
+      workspaceChangesForSession = requestSession;
+      workspaceChangesForDirectory = requestDirectory;
+      const nextPath = result.available
+        ? result.files.find((file) => file.path === selectedWorkspaceChange)?.path ?? result.files[0]?.path ?? ''
+        : '';
+      selectedWorkspaceChange = nextPath;
+      if (nextPath) void loadWorkspaceDiff(nextPath);
+    } catch (error) {
+      if (request === workspaceChangesRequest && session?.id === requestSession && workingDirectory === requestDirectory) {
+        workspaceChangesError = String(error);
+        workspaceChanges = null;
+        selectedWorkspaceChange = '';
+      }
+    } finally {
+      if (request === workspaceChangesRequest) workspaceChangesLoading = false;
+    }
+  }
+
+  async function loadWorkspaceDiff(path: string) {
+    const request = ++workspaceDiffRequest;
+    const requestSession = session?.id ?? '';
+    const requestDirectory = workingDirectory;
+    selectedWorkspaceChange = path;
+    workspaceDiffLoading = true;
+    workspaceDiffError = '';
+    workspaceDiff = null;
+    try {
+      const result = previewMode
+        ? previewWorkspaceDiffs[path] ?? { path, status: activeWorkspaceChange?.status ?? '', content: '', binary: false, truncated: false }
+        : await Desktop.ReadWorkspaceDiff(path);
+      if (request !== workspaceDiffRequest || session?.id !== requestSession || workingDirectory !== requestDirectory || selectedWorkspaceChange !== path) return;
+      workspaceDiff = result;
+    } catch (error) {
+      if (request === workspaceDiffRequest && session?.id === requestSession && selectedWorkspaceChange === path) workspaceDiffError = String(error);
+    } finally {
+      if (request === workspaceDiffRequest) workspaceDiffLoading = false;
+    }
+  }
+
+  function changeStatusLabel(status: string) {
+    if (status === '??' || status.includes('A')) return 'A';
+    if (status.includes('D')) return 'D';
+    if (status.includes('R')) return 'R';
+    if (status.includes('C')) return 'C';
+    if (status.includes('U')) return 'U';
+    return 'M';
+  }
+
+  function changeStatusDescription(status: string) {
+    if (status === '??') return '未跟踪';
+    const staged = status[0] !== ' ';
+    const unstaged = status[1] !== ' ';
+    if (status.includes('A')) return staged ? '已暂存新增' : '新增';
+    if (status.includes('D')) return staged ? '已暂存删除' : '删除';
+    if (status.includes('R')) return '重命名';
+    if (status.includes('U')) return '冲突';
+    return staged && unstaged ? '暂存及未暂存修改' : staged ? '已暂存修改' : '未暂存修改';
+  }
+
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
     if (planReview && session && session.id !== state.session.id) {
       deferredPlanReviews = [...deferredPlanReviews, { sessionId: session.id, ...planReview }];
@@ -526,6 +669,7 @@
       } else startElapsedTimer(true);
     }
     presentDeferredPlanReview();
+    if (sidebarView === 'changes' && !previewMode) void refreshWorkspaceChanges();
   }
 
   function applySessionRefresh(state: WorkspaceState) {
@@ -912,6 +1056,7 @@
   function onTurnResult(result: TurnResultEvent) {
     if (previewMode && cancelledPreviewExecutions.has(result.executionId)) return;
     updateSessionStatus(result.sessionId, result.status === 'paused' ? 'waiting' : result.status || (result.error ? 'failed' : 'completed'));
+    if (sidebarView === 'changes' && sessionSharesActiveDirectory(result.sessionId)) void refreshWorkspaceChanges();
     if (result.sessionId !== session?.id) {
       if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { sessionId: result.sessionId, executionID: result.executionId, text: result.plan }];
       return;
@@ -1780,6 +1925,7 @@
         <div class="sidebar-view-tabs">
           <button class:active={sidebarView === 'sessions'} onclick={() => sidebarView = 'sessions'}>会话</button>
           <button class:active={sidebarView === 'files'} onclick={() => sidebarView = 'files'}>文件</button>
+          <button class:active={sidebarView === 'changes'} onclick={() => { sidebarView = 'changes'; void refreshWorkspaceChanges(); }}>变更</button>
           {#if sidebarView === 'sessions'}<button class="tiny-add" aria-label="新建会话" onclick={toggleCreateSessionMenu}>＋</button>{/if}
         </div>
         {#if sidebarView === 'sessions'}
@@ -1800,6 +1946,25 @@
             {/each}
             {#if !visibleSessions.length}<div class="session-search-empty">没有匹配的会话</div>{/if}
           </div>
+        {:else if sidebarView === 'changes'}
+          <section class="workspace-changes-sidebar" aria-label="工作区变更文件">
+            {#if workspaceChangesLoading && !workspaceChanges}<div class="workspace-change-empty"><span class="spinner"></span>正在读取 Git 状态…</div>
+            {:else if workspaceChangesError}<div class="workspace-change-empty error">{workspaceChangesError}</div>
+            {:else if workspaceChanges && !workspaceChanges.available}<div class="workspace-change-empty">{workspaceChanges.message}</div>
+            {:else if workspaceChanges?.files.length === 0}<div class="workspace-change-empty">当前工作区没有相对 HEAD 的变更。</div>
+            {:else if workspaceChanges}
+              <div class="workspace-change-sidebar-summary">{workspaceChanges.files.length} 个文件 <span>+{workspaceChanges.added} −{workspaceChanges.removed}</span></div>
+              <div class="workspace-change-file-list">
+                {#each workspaceChanges.files as file (file.path)}
+                  <button class:chosen={selectedWorkspaceChange === file.path} class="workspace-change-row" title={`${file.path} · ${changeStatusDescription(file.status)}`} aria-label={`${file.path}，${changeStatusDescription(file.status)}`} onclick={() => void loadWorkspaceDiff(file.path)}>
+                    <span class={`workspace-change-status ${changeStatusLabel(file.status).toLowerCase()}`}>{changeStatusLabel(file.status)}</span>
+                    <span class="workspace-change-path">{file.path}</span>
+                    <span class="workspace-change-stats"><i>+{file.added}</i><i>−{file.removed}</i></span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </section>
         {:else}
           {#key workingDirectory}<WorkspaceExplorer previewMode={previewMode} onPreviewFile={openWorkspaceFile} onError={showError} />{/key}
         {/if}
@@ -1825,7 +1990,7 @@
     <main class="main-panel">
       <header class="topbar">
         <div class="crumbs">
-          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{session?.title || '新会话'}</span><span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
+          {#if workspace}<span class="crumb-root">{workspace.split(/[\\/]/).at(-1)}</span><span class="crumb-separator">/</span><span class="crumb-current">{sidebarView === 'changes' ? '变更审查' : session?.title || '新会话'}</span>{#if sidebarView !== 'changes'}<span class={`crumb-mode ${workspaceMode === 'worktree' ? 'worktree' : ''}`}>{workspaceMode === 'worktree' ? 'WORKTREE' : 'LOCAL'}</span>{#if workspaceMode === 'worktree'}<span class="crumb-working-path" title={workingDirectory}>{workingDirectory}</span>{/if}{/if}{:else}<span class="crumb-current">桌面工作区</span>{/if}
         </div>
         <div class="top-actions">
           {#if workspace}
@@ -1854,6 +2019,51 @@
         </section>
       {:else if !session}
         <section class="workspace-loading"><div class="spinner"></div><span>正在载入会话…</span></section>
+      {:else if sidebarView === 'changes'}
+        <section class="workspace-changes-page" aria-label="工作区变更审查">
+          <header class="workspace-changes-heading">
+            <div>
+              <p class="eyebrow">GIT · 相对 HEAD</p>
+              <h1>工作区变更</h1>
+              <p>查看当前会话目录中的暂存、未暂存与未跟踪文件。</p>
+            </div>
+            <button class="subtle-button workspace-change-refresh" aria-label="刷新工作区变更" disabled={workspaceChangesLoading} onclick={() => void refreshWorkspaceChanges()}>
+              {#if workspaceChangesLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}刷新
+            </button>
+          </header>
+
+          {#if workspaceChangesError}
+            <div class="workspace-changes-state error"><strong>读取变更失败</strong><span>{workspaceChangesError}</span><button class="small-button" onclick={() => void refreshWorkspaceChanges()}>重试</button></div>
+          {:else if workspaceChangesLoading && !workspaceChanges}
+            <div class="workspace-changes-state"><span class="spinner"></span><span>正在读取 Git 工作区状态…</span></div>
+          {:else if workspaceChanges && !workspaceChanges.available}
+            <div class="workspace-changes-state"><strong>无法读取 Git 变更</strong><span>{workspaceChanges.message}</span></div>
+          {:else if workspaceChanges?.files.length === 0}
+            <div class="workspace-changes-state"><strong>工作区干净</strong><span>当前会话目录没有相对 HEAD 的文件变更。</span></div>
+          {:else if workspaceChanges}
+            <section class="workspace-diff-panel">
+              <header class="workspace-diff-heading">
+                <div class="workspace-diff-path-group">
+                  {#if activeWorkspaceChange}<span class={`workspace-change-status ${changeStatusLabel(activeWorkspaceChange.status).toLowerCase()}`}>{changeStatusLabel(activeWorkspaceChange.status)}</span>{/if}
+                  <strong title={activeWorkspaceChange?.path}>{activeWorkspaceChange?.path || '选择一个文件'}</strong>
+                  {#if activeWorkspaceChange?.originalPath}<span class="workspace-diff-original">来自 {activeWorkspaceChange.originalPath}</span>{/if}
+                </div>
+                {#if activeWorkspaceChange}<span class="workspace-diff-stats"><i>+{activeWorkspaceChange.added}</i><i>−{activeWorkspaceChange.removed}</i><small>{changeStatusDescription(activeWorkspaceChange.status)}</small></span>{/if}
+              </header>
+              <div class="workspace-diff-scroll">
+                {#if workspaceDiffLoading}<div class="workspace-diff-state"><span class="spinner"></span>正在读取文件差异…</div>
+                {:else if workspaceDiffError}<div class="workspace-diff-state error">{workspaceDiffError}<button class="small-button" onclick={() => activeWorkspaceChange && void loadWorkspaceDiff(activeWorkspaceChange.path)}>重试</button></div>
+                {:else if !activeWorkspaceChange}<div class="workspace-diff-state">从左侧选择一个文件以查看差异。</div>
+                {:else if workspaceDiff?.binary}<div class="workspace-diff-state"><strong>二进制文件</strong><span>此文件无法作为文本差异显示。</span></div>
+                {:else if workspaceDiff}
+                  <pre class="workspace-diff-code" aria-label="Unified diff">{#each workspaceDiffLines as line, index}<span class:diff-added={line.startsWith('+') && !line.startsWith('+++')} class:diff-removed={line.startsWith('-') && !line.startsWith('---')} class:diff-hunk={line.startsWith('@@')} class:diff-meta={line.startsWith('diff --git') || line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('new file mode')}>{line || '\u00a0'}</span>{/each}</pre>
+                  {#if workspaceDiff.truncated}<div class="workspace-preview-truncated">差异较大，仅显示前 8 MiB。</div>{/if}
+                {/if}
+              </div>
+            </section>
+          {/if}
+          {#if workspaceChanges?.available && workspaceChanges.files.length > 0}<footer class="workspace-changes-footer">{workspaceChanges.files.length} 个文件 · +{workspaceChanges.added} −{workspaceChanges.removed}{#if workspaceChanges.refreshedAt}<span>刷新于 {new Date(workspaceChanges.refreshedAt).toLocaleTimeString()}</span>{/if}</footer>{/if}
+        </section>
       {:else}
         <div class="conversation-scroll" id="conversation-scroll">
           <div class="conversation-content">

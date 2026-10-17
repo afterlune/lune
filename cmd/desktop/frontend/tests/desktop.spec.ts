@@ -18,6 +18,30 @@ test('workspace file sidebar browses folders and opens a read-only preview', asy
   await expect(page.locator('.workspace-file-preview')).toContainText('cmd/desktop/main.go');
 });
 
+test('workspace changes page lists files and shows a unified diff', async ({ page }) => {
+  await page.goto('/?preview=changes');
+  await page.getByRole('button', { name: '变更' }).click();
+
+  await expect(page.getByRole('heading', { name: '工作区变更' })).toBeVisible();
+  await expect(page.locator('.workspace-change-file-list')).toContainText('cmd/desktop/frontend/src/App.svelte');
+  await expect(page.locator('.workspace-diff-code')).toContainText("let sidebarView = $state<'sessions' | 'files' | 'changes'>('sessions');");
+  await expect(page).toHaveScreenshot('desktop-changes.png', { fullPage: true });
+
+  await page.getByRole('button', { name: /testdata\/sample\.bin/ }).click();
+  await expect(page.locator('.workspace-diff-state')).toContainText('二进制文件');
+});
+
+test('workspace changes page explains clean and unavailable Git states', async ({ page }) => {
+  await page.goto('/?preview=changes-empty');
+  await page.getByRole('button', { name: '变更' }).click();
+  await expect(page.getByText('工作区干净')).toBeVisible();
+
+  await page.goto('/?preview=changes-unavailable');
+  await page.getByRole('button', { name: '变更' }).click();
+  await expect(page.getByText('无法读取 Git 变更')).toBeVisible();
+  await expect(page.locator('.workspace-changes-page').getByText('当前会话目录不在可用的 Git 仓库中。')).toBeVisible();
+});
+
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {
   await page.goto('/?preview=1');
   await page.getByRole('button', { name: '项目设置' }).click();

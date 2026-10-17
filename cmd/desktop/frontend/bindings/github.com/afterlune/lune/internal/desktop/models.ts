@@ -232,6 +232,24 @@ export interface ToolExecutionDetailsView {
     "truncated"?: boolean;
 }
 
+export interface WorkspaceChangeView {
+    "path": string;
+    "originalPath"?: string;
+    "status": string;
+    "added": number;
+    "removed": number;
+    "binary": boolean;
+}
+
+export interface WorkspaceChangesView {
+    "available": boolean;
+    "message": string;
+    "files": WorkspaceChangeView[] | null;
+    "added": number;
+    "removed": number;
+    "refreshedAt": string;
+}
+
 export interface WorkspaceConfigInput {
     "contextWindow": number;
     "autoCompact": boolean;
@@ -252,6 +270,14 @@ export interface WorkspaceConfigView {
     "maxAttachmentBytes": number;
     "maxTotalBytes": number;
     "mcpServers": MCPServerConfigView[] | null;
+}
+
+export interface WorkspaceDiffView {
+    "path": string;
+    "status": string;
+    "content": string;
+    "binary": boolean;
+    "truncated": boolean;
 }
 
 export interface WorkspaceFileEntry {
