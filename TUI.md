@@ -74,9 +74,11 @@
 | **`/permissions [mode]`** | 查看或直接设置权限模式（`read-only`、`workspace`、`ask`、`full-access`） |
 | **`/model [name]`** | 查看或切换会话绑定的模型名称配置 |
 | **`/theme [dark\|light\|auto]`** | 查看或切换界面主题模式（自适应终端背景色、高对比度深色、明亮浅色） |
-| **`/sessions`** | 查看当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
+| **`/sessions [query]`** | 查看或关键词模糊检索当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
 | **`/open <id\|prefix>`** | 切换至指定会话（支持唯一前缀模糊匹配，如前 6~8 位 ID；任务运行中受安全互锁保护禁止切换） |
 | **`/title [name]`** | 查看或自定义重命名当前会话标题，Header、Footer 与 `/sessions` 实时同步持久化 |
+| **`/export [path]`** | 将当前会话的完整转录历史一键导出为 GitHub Flavored Markdown 归档文件（包含会话元数据、对话流及工具调用折叠块） |
+| **`/context`** | 呈现当前会话的上下文全景诊断（工作区、权限、AGENTS.md / CLAUDE.md 规则注入、注册工具总数、Token 预算利用率进度条与轮次） |
 | **`/diff [path]`** | 在视口中以红绿语法高亮直接查看当前 Git 工作区的代码修改差异（无需跳出 TUI） |
 | **`/review [path]`** | 结构化查看工作区代码变动汇总（修改、新增、删除及增删行统计），或细粒度审查特定文件 |
 | **`/mcp [subcommand]`** | 管理已配置的外部 MCP 服务器（`/mcp list` 查看列表、`/mcp enable <name>` 启用并发现工具、`/mcp disable <name>` 禁用卸载、`/mcp auth <name>` OAuth 授权） |
@@ -140,6 +142,13 @@
 ### 4.7 工作区变更汇总与 MCP 生态管理 (`/review`, `/mcp`)
 - 执行 `/review`：输出当前 Git 工作区的变更文件状态清单（`M`/`A`/`D`/`??`）与增删行概览统计；指定文件路径时细粒度审查该文件的代码 diff。
 - 执行 `/mcp`：支持 `/mcp list` 查看已配置服务器状态与工具数；`/mcp enable <name>` 动态加载并注册工具；`/mcp disable <name>` 注销卸载；`/mcp auth <name>` 唤起浏览器完成 Streamable HTTP OAuth 认证。
+
+### 4.8 工具故障恢复交互卡片 (`ToolFailureRecovery`)
+- 当工具执行遇到可恢复错误且 Core 需要人工介入决策时（`EventToolRecoveryRequired`），TUI 弹出琥珀色警告卡片。
+- 卡片明确展示工具名称、调用参数（超长文本自动平滑截断）以及两个清晰的操作选项：
+  1. `1. Retry tool execution`（重试执行）：尝试重新执行该工具调用。
+  2. `2. Skip this tool call`（跳过调用）：绕过当前调用，继续推进任务会话。
+- 方向键 `Up` / `Down` 切换选项，`Enter` 确认决策并自动通过 `runtime.Recover()` 恢复推进；按 `Esc` 快速跳过。
 
 ---
 

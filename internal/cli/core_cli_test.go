@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +26,11 @@ type fakeCLICore struct {
 	discarded  int
 	compact    int
 	mode       core.PermissionMode
-	latest     core.Session
-	sequence   int
+	latest         core.Session
+	initialTitle   string
+	initialHistory json.RawMessage
+	sessions       []core.Session
+	sequence       int
 	resolved   []bool
 	resolveErr error
 	runtime    *fakeCLIRuntime
@@ -62,7 +67,15 @@ func (f *fakeCLICore) LatestSession(context.Context) (core.Session, bool, error)
 
 func (f *fakeCLICore) CreateSession(_ context.Context, history json.RawMessage) (core.Session, error) {
 	f.sequence++
-	f.latest = core.Session{ID: fmt.Sprintf("session-%d", f.sequence), History: append(json.RawMessage(nil), history...)}
+	title := f.initialTitle
+	if title == "" {
+		title = fmt.Sprintf("Session session-%d", f.sequence)
+	}
+	hist := history
+	if (len(hist) == 0 || string(hist) == "null") && len(f.initialHistory) > 0 {
+		hist = f.initialHistory
+	}
+	f.latest = core.Session{ID: fmt.Sprintf("session-%d", f.sequence), Title: title, History: append(json.RawMessage(nil), hist...)}
 	return f.latest, nil
 }
 
@@ -105,6 +118,9 @@ func (f *fakeCLICore) GetSession(_ context.Context, id string) (core.Session, er
 }
 
 func (f *fakeCLICore) ListSessions(_ context.Context, limit int, reverse bool) ([]core.Session, error) {
+	if len(f.sessions) > 0 {
+		return f.sessions, nil
+	}
 	if f.latest.ID != "" {
 		return []core.Session{f.latest}, nil
 	}
@@ -779,5 +795,88 @@ func TestCLIClearAndFork(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Forked to new session: session-2") {
 		t.Fatalf("stdout = %q, want forked session confirmation", stdout)
+	}
+}
+
+func TestCLISessionsFilter(t *testing.T) {
+	client := &fakeCLICore{
+		sessions: []core.Session{
+			{ID: "sess-abc-1", Title: "Fix parser bug"},
+			{ID: "sess-def-2", Title: "Add unit tests"},
+			{ID: "sess-ghi-3", Title: "Fix lexer bug"},
+		},
+	}
+
+	// 1. Filter with "bug"
+	stdout, stderr := runCLI(t, client, "/sessions bug\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Matching sessions (2 found for \"bug\"):") {
+		t.Fatalf("stdout = %q, want 2 matching sessions", stdout)
+	}
+	if !strings.Contains(stdout, "Fix parser bug") || !strings.Contains(stdout, "Fix lexer bug") {
+		t.Fatalf("stdout = %q, want bug sessions", stdout)
+	}
+	if strings.Contains(stdout, "Add unit tests") {
+		t.Fatalf("stdout = %q, did not want unit tests session", stdout)
+	}
+
+	// 2. Filter with no match
+	stdout2, _ := runCLI(t, client, "/sessions non-existent\n/exit\n", nil)
+	if !strings.Contains(stdout2, `No sessions matching "non-existent".`) {
+		t.Fatalf("stdout2 = %q, want no sessions matching", stdout2)
+	}
+}
+
+func TestCLIExport(t *testing.T) {
+	tmpDir := t.TempDir()
+	exportFile := filepath.Join(tmpDir, "exported.md")
+
+	client := &fakeCLICore{
+		initialTitle: "CLI Export Test",
+		initialHistory: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello cli"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello user"}]}
+		]`),
+	}
+
+	stdout, stderr := runCLI(t, client, fmt.Sprintf("/export %s\n/exit\n", exportFile), nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Exported session transcript to") {
+		t.Fatalf("stdout = %q, want export confirmation", stdout)
+	}
+
+	content, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("failed to read exported file: %v", err)
+	}
+	contentStr := string(content)
+	if !strings.Contains(contentStr, "# Session Transcript: CLI Export Test") {
+		t.Errorf("expected title in exported file, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "hello cli") || !strings.Contains(contentStr, "hello user") {
+		t.Errorf("expected conversation in exported file, got: %s", contentStr)
+	}
+}
+
+func TestCLIContext(t *testing.T) {
+	client := &fakeCLICore{
+		latest: core.Session{
+			ID:    "sess-ctx-1",
+			Title: "Context CLI Test",
+		},
+	}
+
+	stdout, stderr := runCLI(t, client, "/context\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	for _, want := range []string{"Context Status & Diagnostics", "Workspace & Permissions:", "Session & Model:", "Capabilities & Tools:"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, missing %q", stdout, want)
+		}
 	}
 }

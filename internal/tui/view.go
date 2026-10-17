@@ -441,6 +441,66 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
 
+// renderToolRecoveryPanel renders the tool recovery modal when a tool fails and needs retry or skip.
+func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
+	if recovery == nil {
+		return ""
+	}
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+
+	var lines []string
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.WarningAmber)).
+		Render("Tool Failure Recovery Required")
+	lines = append(lines, title)
+
+	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(recovery.ToolName))
+	lines = append(lines, toolLine)
+
+	if recovery.Arguments != "" && recovery.Arguments != "null" {
+		argsStr := recovery.Arguments
+		if len(argsStr) > 100 {
+			argsStr = argsStr[:97] + "..."
+		}
+		lines = append(lines, styleTextMuted().Render("Arguments: "+argsStr))
+	}
+
+	lines = append(lines, "")
+
+	options := []struct {
+		Label string
+		Desc  string
+	}{
+		{"1. Retry tool execution", "Attempt executing the tool again"},
+		{"2. Skip this tool call", "Bypass execution and continue session"},
+	}
+
+	for i, opt := range options {
+		marker := "  "
+		if i == recovery.Selected {
+			marker = "› "
+		}
+		raw := fmt.Sprintf("%s%-28s %s", marker, opt.Label, opt.Desc)
+		if i == recovery.Selected {
+			pad := max(0, width-lipgloss.Width(raw)-4)
+			lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
+		} else {
+			lblStyled := styleTextPrimary().Render(marker + fmt.Sprintf("%-28s ", opt.Label))
+			descStyled := styleTextMuted().Render(opt.Desc)
+			lines = append(lines, lblStyled+descStyled)
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, styleTextMuted().Render("enter select · esc skip"))
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
 // renderApprovalPanel renders a permission approval modal.
 func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	th := activeTheme()

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1101,6 +1103,155 @@ func TestReviewCommand(t *testing.T) {
 	lastSys2 := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys2, "Workspace Changes Review") && !strings.Contains(lastSys2, "No unstaged or uncommitted changes in workspace") {
 		t.Errorf("expected review summary or no-changes message, got: %s", lastSys2)
+	}
+}
+
+func TestToolRecoveryModal(t *testing.T) {
+	rec := &ActiveToolRecovery{
+		InvocationID: "inv-1",
+		CallID:       "call-1",
+		ToolName:     "run_command",
+		Arguments:    `{"command":"npm test"}`,
+		Selected:     0,
+	}
+
+	// 1. Render test
+	rendered := renderToolRecoveryPanel(rec, 80)
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, "Tool Failure Recovery Required") {
+		t.Errorf("expected title in modal, got: %s", stripped)
+	}
+	if !strings.Contains(stripped, "run_command") {
+		t.Errorf("expected tool name in modal, got: %s", stripped)
+	}
+	if !strings.Contains(stripped, "1. Retry tool execution") || !strings.Contains(stripped, "2. Skip this tool call") {
+		t.Errorf("expected retry and skip options, got: %s", stripped)
+	}
+
+	// 2. Key navigation
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+	m.activeToolRecovery = rec
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'j'}) // down
+	if m.activeToolRecovery.Selected != 1 {
+		t.Errorf("expected Selected to be 1 after down key, got: %d", m.activeToolRecovery.Selected)
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: 'k'}) // up
+	if m.activeToolRecovery.Selected != 0 {
+		t.Errorf("expected Selected to be 0 after up key, got: %d", m.activeToolRecovery.Selected)
+	}
+
+	// 3. View integration
+	viewStr := ansi.Strip(m.View().Content)
+	if !strings.Contains(viewStr, "Tool Failure Recovery Required") {
+		t.Errorf("expected View to include tool recovery panel, got: %s", viewStr)
+	}
+}
+
+func TestExportCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess-export")
+	tmpDir := t.TempDir()
+	m.workspace = tmpDir
+	m.sessionTitle = "Export Test Session"
+	m.entries = []TranscriptEntry{
+		{
+			ID:        "u1",
+			Kind:      KindUser,
+			Text:      "Show me current files",
+			Timestamp: time.Now(),
+		},
+		{
+			ID:          "t1",
+			Kind:        KindTool,
+			ToolName:    "run_command",
+			ToolCommand: "ls -la",
+			ToolOutput:  "file1.txt\nfile2.txt",
+			Timestamp:   time.Now(),
+		},
+		{
+			ID:        "a1",
+			Kind:      KindAssistant,
+			Text:      "Found 2 files: file1.txt, file2.txt",
+			Timestamp: time.Now(),
+		},
+	}
+
+	exportPath := filepath.Join(tmpDir, "exported_transcript.md")
+	m.handleSlashCommand("/export " + exportPath)
+
+	lastEntry := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastEntry, "Exported session transcript to") {
+		t.Fatalf("expected export success message, got: %s", lastEntry)
+	}
+
+	content, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("failed to read exported file: %v", err)
+	}
+	contentStr := string(content)
+	if !strings.Contains(contentStr, "# Session Transcript: Export Test Session") {
+		t.Errorf("expected title in exported file, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Show me current files") {
+		t.Errorf("expected user message in exported file, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Tool: <code>run_command</code>") {
+		t.Errorf("expected tool details in exported file, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Found 2 files") {
+		t.Errorf("expected assistant text in exported file, got: %s", contentStr)
+	}
+}
+
+func TestContextCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess-context")
+	tmpDir := t.TempDir()
+	m.workspace = tmpDir
+
+	// Create AGENTS.md in tmpDir
+	agentsFile := filepath.Join(tmpDir, "AGENTS.md")
+	_ = os.WriteFile(agentsFile, []byte("# Test Rules\nDo something good."), 0644)
+
+	m.totalInputTokens = 15000
+	m.contextWindow = 128000
+	m.estimatedInputTokens = 12000
+
+	m.handleSlashCommand("/context")
+	lastEntry := m.entries[len(m.entries)-1].Text
+
+	if !strings.Contains(lastEntry, "Context Status & Diagnostics") {
+		t.Errorf("expected Context Status title, got: %s", lastEntry)
+	}
+	if !strings.Contains(lastEntry, "AGENTS.md`: Active") {
+		t.Errorf("expected AGENTS.md active detection, got: %s", lastEntry)
+	}
+	if !strings.Contains(lastEntry, "Budget:") {
+		t.Errorf("expected Budget progress bar, got: %s", lastEntry)
+	}
+	if !strings.Contains(lastEntry, "12,000 / 128,000 tokens") {
+		t.Errorf("expected tokens in context diagnostics, got: %s", lastEntry)
+	}
+}
+
+func TestSessionsCommandAndAutocomplete(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+
+	// Autocomplete verification
+	matches := filterCommands("/exp")
+	if len(matches) == 0 || matches[0].Command != "/export" {
+		t.Errorf("expected /export in autocomplete, got: %#v", matches)
+	}
+	matchesCtx := filterCommands("/cont")
+	if len(matchesCtx) == 0 || matchesCtx[0].Command != "/context" {
+		t.Errorf("expected /context in autocomplete, got: %#v", matchesCtx)
+	}
+
+	// Sessions without client
+	m.handleSlashCommand("/sessions myquery")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Session management unavailable") {
+		t.Errorf("expected unavailable message, got: %s", lastSys)
 	}
 }
 

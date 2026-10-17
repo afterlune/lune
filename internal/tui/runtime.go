@@ -145,6 +145,7 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.activeApproval = nil
 	m.activePlanReview = nil
 	m.activeRecovery = nil
+	m.activeToolRecovery = nil
 	m.updateLayout()
 	m.refreshViewportContent()
 	m.viewport.GotoBottom()
@@ -324,6 +325,13 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.refreshViewportContent()
 		m.updateLayout()
 
+	case core.EventToolRecoveryRequired:
+		m.thinking = false
+		m.running = false
+		m.checkPendingState(context.Background())
+		m.refreshViewportContent()
+		m.updateLayout()
+
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil
 		m.running = true
@@ -349,6 +357,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			m.checkPendingState(context.Background())
 		} else {
 			m.activeRecovery = nil
+			m.activeToolRecovery = nil
 		}
 		m.refreshViewportContent()
 		m.updateLayout()
@@ -357,6 +366,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.thinking = false
 		m.running = false
 		m.activeRecovery = nil
+		m.activeToolRecovery = nil
 		m.currentStreamText = ""
 		m.refreshViewportContent()
 		m.updateLayout()

@@ -425,6 +425,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if m.activeToolRecovery != nil {
+			m.activeToolRecovery.Selected = 1
+			return m.resolveActiveToolRecovery()
+		}
 		if m.activeQuestion != nil {
 			m.activeQuestion = nil
 			if m.runtime != nil {
@@ -553,6 +557,26 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return taskDiscardedMsg{discarded: ok, err: err}
 				}
 			}
+		}
+		return m, nil
+	}
+
+	if m.activeToolRecovery != nil {
+		switch keyStr {
+		case "up", "k":
+			if m.activeToolRecovery.Selected > 0 {
+				m.activeToolRecovery.Selected--
+				m.updateLayout()
+			}
+			return m, nil
+		case "down", "j":
+			if m.activeToolRecovery.Selected < 1 {
+				m.activeToolRecovery.Selected++
+				m.updateLayout()
+			}
+			return m, nil
+		case "enter":
+			return m.resolveActiveToolRecovery()
 		}
 		return m, nil
 	}
@@ -872,4 +896,41 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 			return nil
 		},
 	)
+}
+
+func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
+	tr := m.activeToolRecovery
+	if tr == nil {
+		return m, nil
+	}
+	retry := tr.Selected == 0
+	invocationID := tr.InvocationID
+	toolName := tr.ToolName
+	m.activeToolRecovery = nil
+	m.running = true
+	m.thinking = false
+	m.taskStartedAt = time.Now()
+	m.scrolledUp = false
+	m.refreshViewportContent()
+	m.viewport.GotoBottom()
+	m.updateLayout()
+
+	decisionStr := "Skipping"
+	decision := core.ToolRecoverySkip
+	if retry {
+		decisionStr = "Retrying"
+		decision = core.ToolRecoveryRetry
+	}
+	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decisionStr, toolName))
+
+	runtime := m.runtime
+	sessionID := m.sessionID
+	return m, func() tea.Msg {
+		ctx := context.Background()
+		if err := runtime.ResolveToolRecovery(ctx, invocationID, decision); err != nil {
+			return turnSubmittedMsg{sessionID: sessionID, err: err}
+		}
+		sub, err := runtime.Recover(ctx)
+		return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+	}
 }

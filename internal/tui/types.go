@@ -101,6 +101,16 @@ type ActiveRecovery struct {
 	Selected       int // 0: retry/resume, 1: discard
 }
 
+// ActiveToolRecovery holds the state of a pending tool recovery decision.
+type ActiveToolRecovery struct {
+	ExecutionID  string
+	InvocationID string
+	CallID       string
+	ToolName     string
+	Arguments    string
+	Selected     int // 0: retry, 1: skip
+}
+
 // ImageAttachment represents a pasted clipboard image.
 type ImageAttachment struct {
 	ID        int

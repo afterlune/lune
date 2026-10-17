@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,9 +22,11 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
 	{Command: "/model", Description: "choose an active model profile"},
 	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
-	{Command: "/sessions", Description: "list recent sessions in this workspace"},
+	{Command: "/sessions", Description: "list or search recent sessions in this workspace"},
 	{Command: "/open", Description: "switch to an existing session by ID or prefix"},
 	{Command: "/title", Description: "view or set custom title for this session"},
+	{Command: "/export", Description: "export session conversation transcript to a markdown file"},
+	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
 	{Command: "/diff", Description: "inspect git code changes in workspace"},
 	{Command: "/review", Description: "summarize and review workspace changes"},
 	{Command: "/mcp", Description: "manage external MCP servers: list, enable, disable, auth"},
@@ -115,7 +119,15 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Session management unavailable.")
 			return m, nil
 		}
-		sessions, err := m.client.ListSessions(context.Background(), 20, false)
+		query := ""
+		if len(parts) > 1 {
+			query = strings.ToLower(strings.TrimSpace(strings.Join(parts[1:], " ")))
+		}
+		limit := 20
+		if query != "" {
+			limit = 100
+		}
+		sessions, err := m.client.ListSessions(context.Background(), limit, false)
 		if err != nil {
 			m.addSystemEntry("Failed to list sessions: " + err.Error())
 			return m, nil
@@ -124,9 +136,27 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("No saved sessions in this workspace.")
 			return m, nil
 		}
-		var lines []string
-		lines = append(lines, "**Recent Sessions:**")
+		var filtered []core.Session
 		for _, s := range sessions {
+			if query == "" {
+				filtered = append(filtered, s)
+			} else {
+				if strings.Contains(strings.ToLower(s.ID), query) || strings.Contains(strings.ToLower(s.Title), query) {
+					filtered = append(filtered, s)
+				}
+			}
+		}
+		if len(filtered) == 0 {
+			m.addSystemEntry(fmt.Sprintf("No sessions matching %q.", query))
+			return m, nil
+		}
+		var lines []string
+		if query != "" {
+			lines = append(lines, fmt.Sprintf("**Matching Sessions (%d found for %q):**", len(filtered), query))
+		} else {
+			lines = append(lines, "**Recent Sessions:**")
+		}
+		for _, s := range filtered {
 			marker := "  "
 			if s.ID == m.sessionID {
 				marker = "› "
@@ -538,6 +568,24 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "/export":
+		targetPath := ""
+		if len(parts) > 1 {
+			targetPath = strings.TrimSpace(strings.Join(parts[1:], " "))
+		}
+		resultText, err := m.exportTranscript(targetPath)
+		if err != nil {
+			m.addSystemEntry("Export failed: " + err.Error())
+		} else {
+			m.addSystemEntry(resultText)
+		}
+		return m, nil
+
+	case "/context":
+		contextText := m.renderContextDiagnostics()
+		m.addSystemEntry(contextText)
+		return m, nil
+
 	case "/status":
 		statusText := m.renderStatusTable()
 		m.addSystemEntry(statusText)
@@ -710,4 +758,218 @@ type sessionCreatedMsg struct {
 type taskDiscardedMsg struct {
 	discarded bool
 	err       error
+}
+
+func (m *tuiModel) exportTranscript(targetPath string) (string, error) {
+	if targetPath == "" {
+		shortID := m.sessionID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		if shortID == "" {
+			shortID = "current"
+		}
+		targetPath = fmt.Sprintf("export-%s-%s.md", shortID, time.Now().Format("20060102-150405"))
+	}
+	if !filepath.IsAbs(targetPath) && m.workspace != "" {
+		targetPath = filepath.Join(m.workspace, targetPath)
+	}
+
+	title := m.sessionTitle
+	if title == "" {
+		title = "<untitled session>"
+	}
+	modelName := m.currentModel
+	if modelName == "" && m.client != nil {
+		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
+	if modelName == "" {
+		modelName = "<default>"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Session Transcript: %s\n\n", title))
+	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", m.sessionID))
+	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", m.workspace))
+	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", modelName))
+	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n", time.Now().Format(time.RFC3339)))
+	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- **Token Usage:** %s in (cached: %s) · %s out (reasoning: %s)\n",
+			formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
+			formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+	}
+	sb.WriteString("\n---\n\n")
+
+	entryCount := 0
+	for _, entry := range m.entries {
+		switch entry.Kind {
+		case KindUser:
+			entryCount++
+			sb.WriteString(fmt.Sprintf("### User (%s)\n\n%s\n\n", entry.Timestamp.Format("15:04:05"), entry.Text))
+		case KindAssistant:
+			entryCount++
+			sb.WriteString(fmt.Sprintf("### Assistant (%s)\n\n%s\n\n", entry.Timestamp.Format("15:04:05"), entry.Text))
+		case KindTool:
+			entryCount++
+			status := "Completed"
+			if entry.ToolExitCode != nil && *entry.ToolExitCode != 0 {
+				status = fmt.Sprintf("Failed (exit code %d)", *entry.ToolExitCode)
+			}
+			toolName := entry.ToolName
+			if toolName == "" {
+				toolName = "tool"
+			}
+			sb.WriteString(fmt.Sprintf("<details>\n<summary>Tool: <code>%s</code> (%s)</summary>\n\n", toolName, status))
+			if entry.ToolCommand != "" {
+				sb.WriteString(fmt.Sprintf("**Command:**\n```sh\n%s\n```\n\n", entry.ToolCommand))
+			}
+			if entry.ToolArgs != "" && entry.ToolArgs != "null" {
+				sb.WriteString(fmt.Sprintf("**Arguments:**\n```json\n%s\n```\n\n", entry.ToolArgs))
+			}
+			if entry.ToolOutput != "" {
+				sb.WriteString(fmt.Sprintf("**Output:**\n```\n%s\n```\n\n", strings.TrimSpace(entry.ToolOutput)))
+			}
+			sb.WriteString("</details>\n\n")
+		case KindPlan:
+			entryCount++
+			sb.WriteString(fmt.Sprintf("### Plan\n\n%s\n\n", entry.Text))
+		case KindSystem:
+			sb.WriteString(fmt.Sprintf("> *System: %s*\n\n", entry.Text))
+		}
+	}
+
+	content := []byte(sb.String())
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(targetPath, content, 0644); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Exported session transcript to `%s` (%s bytes, %d items).", targetPath, formatTokens(int64(len(content))), entryCount), nil
+}
+
+func (m *tuiModel) renderContextDiagnostics() string {
+	var lines []string
+	lines = append(lines, "**Context Status & Diagnostics**\n")
+
+	// 1. Workspace & Rules
+	ws := m.workspace
+	if ws == "" && m.client != nil {
+		ws = m.client.Workspace()
+	}
+	permStr := string(m.permissionMode)
+	if m.planMode {
+		permStr += " (Plan mode locked)"
+	}
+	lines = append(lines, "**Workspace & Permissions:**")
+	lines = append(lines, fmt.Sprintf("- Directory: `%s`", ws))
+	lines = append(lines, fmt.Sprintf("- Permissions: `%s`", permStr))
+
+	ruleFiles := []string{"AGENTS.md", "CLAUDE.md"}
+	var foundRules []string
+	if ws != "" {
+		for _, rf := range ruleFiles {
+			p := filepath.Join(ws, rf)
+			if fi, err := os.Stat(p); err == nil {
+				foundRules = append(foundRules, fmt.Sprintf("`%s`: Active (%s bytes)", rf, formatTokens(fi.Size())))
+			}
+		}
+	}
+	if len(foundRules) > 0 {
+		lines = append(lines, fmt.Sprintf("- Rules: %s", strings.Join(foundRules, ", ")))
+	} else {
+		lines = append(lines, "- Rules: None detected in workspace root")
+	}
+
+	// 2. Session & Model
+	modelName := m.currentModel
+	if modelName == "" && m.client != nil {
+		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
+	if modelName == "" {
+		modelName = "<default>"
+	}
+	title := m.sessionTitle
+	if title == "" {
+		title = "<none>"
+	}
+	lines = append(lines, "\n**Session & Model:**")
+	lines = append(lines, fmt.Sprintf("- Active Model: `%s`", modelName))
+	lines = append(lines, fmt.Sprintf("- Session ID: `%s`", m.sessionID))
+	lines = append(lines, fmt.Sprintf("- Thread: `%s`", title))
+
+	// 3. Capabilities & Tools
+	lines = append(lines, "\n**Capabilities & Tools:**")
+	mcpServerCount := 0
+	mcpToolCount := 0
+	if m.client != nil {
+		for _, s := range m.client.MCPServers() {
+			if s.Enabled {
+				mcpServerCount++
+				mcpToolCount += s.ToolCount
+			}
+		}
+	}
+	if mcpServerCount > 0 {
+		lines = append(lines, fmt.Sprintf("- MCP Servers: %d active (%d tools registered)", mcpServerCount, mcpToolCount))
+	} else {
+		lines = append(lines, "- MCP Servers: None active")
+	}
+	if m.planMode {
+		lines = append(lines, "- Plan Mode: Active (restricted to read-only tools)")
+	} else {
+		lines = append(lines, "- Plan Mode: Inactive (all permitted tools available)")
+	}
+
+	// 4. Context Window & Token Utilization
+	lines = append(lines, "\n**Context Window Utilization:**")
+	if m.contextWindow > 0 {
+		ratio := 0.0
+		if m.estimatedInputTokens > 0 {
+			ratio = float64(m.estimatedInputTokens) / float64(m.contextWindow)
+		}
+		pct := ratio * 100.0
+		progressBar := renderProgressBar(ratio, 20)
+		lines = append(lines, fmt.Sprintf("- Budget: %s %.1f%% (%s / %s tokens)",
+			progressBar, pct, formatTokens(m.estimatedInputTokens), formatTokens(m.contextWindow)))
+	} else {
+		lines = append(lines, "- Budget: Standard context window (no provider limit reported yet)")
+	}
+	lines = append(lines, fmt.Sprintf("- Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
+		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
+		formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+
+	// 5. Conversation Metrics
+	userTurns := 0
+	asstTurns := 0
+	toolTurns := 0
+	for _, e := range m.entries {
+		switch e.Kind {
+		case KindUser:
+			userTurns++
+		case KindAssistant:
+			asstTurns++
+		case KindTool:
+			toolTurns++
+		}
+	}
+	lines = append(lines, fmt.Sprintf("- Conversation turns: %d total (%d user, %d assistant, %d tool calls)",
+		len(m.entries), userTurns, asstTurns, toolTurns))
+
+	return strings.Join(lines, "\n")
+}
+
+func renderProgressBar(ratio float64, width int) string {
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	filled := int(ratio * float64(width))
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", empty) + "]"
 }

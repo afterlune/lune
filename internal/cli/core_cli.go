@@ -9,10 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	core "github.com/afterlune/luneCore"
@@ -62,9 +64,11 @@ type cliCommandHelp struct {
 var cliCommands = []cliCommandHelp{
 	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
+	{name: "/context", usage: "/context", description: "Show context window budget, system rules, and capabilities."},
 	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
+	{name: "/export", usage: "/export [path]", description: "Export session conversation transcript to a markdown file."},
 	{name: "/fork", usage: "/fork", description: "Fork the current session."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
 	{name: "/mcp", usage: "/mcp [list|enable|disable|auth]", description: "Manage external MCP servers."},
@@ -76,7 +80,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
 	{name: "/review", usage: "/review [path]", description: "Summarize and review workspace changes."},
 	{name: "/rewind", usage: "/rewind [N]", description: "Rewind conversation to a previous turn."},
-	{name: "/sessions", usage: "/sessions", description: "List recent sessions in this workspace."},
+	{name: "/sessions", usage: "/sessions [query]", description: "List or search recent sessions in this workspace."},
 	{name: "/status", usage: "/status", description: "Show session, model, and token status."},
 	{name: "/title", usage: "/title [name]", description: "View or set custom title for this session."},
 }
@@ -163,10 +167,14 @@ func runCoreChatLoop(client cliCore, reader *bufio.Reader, stdout, stderr io.Wri
 			}
 		case line == "/status":
 			handleCoreCLIStatus(client, sessionID, sessionTitle, planMode, stdout)
+		case line == "/context":
+			handleCoreCLIContext(client, sessionID, sessionTitle, planMode, stdout)
+		case line == "/export" || strings.HasPrefix(line, "/export "):
+			handleCoreCLIExport(client, sessionID, line, stdout, stderr)
 		case line == "/model" || strings.HasPrefix(line, "/model "):
 			handleCoreCLIModel(client, sessionID, line, stdout, stderr)
-		case line == "/sessions":
-			handleCoreCLISessions(client, sessionID, stdout, stderr)
+		case line == "/sessions" || strings.HasPrefix(line, "/sessions "):
+			handleCoreCLISessions(client, sessionID, line, stdout, stderr)
 		case line == "/open" || strings.HasPrefix(line, "/open "):
 			newID, newRuntime, openErr := handleCoreCLIOpen(client, sessionID, line, stdout, stderr)
 			if openErr != nil {
@@ -363,9 +371,18 @@ func handleCoreCLIModel(client cliCore, sessionID, line string, stdout, stderr i
 	fmt.Fprintf(stdout, "Active model set to %s.\n", client.ModelForSession(ctx, sessionID))
 }
 
-func handleCoreCLISessions(client cliCore, currentSessionID string, stdout, stderr io.Writer) {
+func handleCoreCLISessions(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	query := ""
+	if len(fields) > 1 {
+		query = strings.ToLower(strings.Join(fields[1:], " "))
+	}
 	ctx := context.Background()
-	sessions, err := client.ListSessions(ctx, 20, false)
+	limit := 20
+	if query != "" {
+		limit = 100
+	}
+	sessions, err := client.ListSessions(ctx, limit, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: list sessions: %v\n", err)
 		return
@@ -374,8 +391,26 @@ func handleCoreCLISessions(client cliCore, currentSessionID string, stdout, stde
 		fmt.Fprintln(stdout, "No sessions found.")
 		return
 	}
-	fmt.Fprintln(stdout, "Recent sessions:")
+	var filtered []core.Session
 	for _, s := range sessions {
+		if query == "" {
+			filtered = append(filtered, s)
+		} else {
+			if strings.Contains(strings.ToLower(s.ID), query) || strings.Contains(strings.ToLower(s.Title), query) {
+				filtered = append(filtered, s)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		fmt.Fprintf(stdout, "No sessions matching %q.\n", query)
+		return
+	}
+	if query != "" {
+		fmt.Fprintf(stdout, "Matching sessions (%d found for %q):\n", len(filtered), query)
+	} else {
+		fmt.Fprintln(stdout, "Recent sessions:")
+	}
+	for _, s := range filtered {
 		prefix := "  "
 		if s.ID == currentSessionID {
 			prefix = "> "
@@ -391,6 +426,214 @@ func handleCoreCLISessions(client cliCore, currentSessionID string, stdout, stde
 		timeStr := s.UpdatedAt.Format("2006-01-02 15:04:05")
 		fmt.Fprintf(stdout, "%s%-14s %-25s %s\n", prefix, shortID, title, timeStr)
 	}
+}
+
+func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMode bool, stdout io.Writer) {
+	ctx := context.Background()
+	workspace := client.Workspace()
+	model := client.ModelForSession(ctx, sessionID)
+	mode := client.PermissionMode()
+	if sessionTitle == "" {
+		if s, err := client.GetSession(ctx, sessionID); err == nil && s.Title != "" {
+			sessionTitle = s.Title
+		} else {
+			sessionTitle = "<untitled>"
+		}
+	}
+
+	fmt.Fprintln(stdout, "Context Status & Diagnostics")
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintln(stdout, "Workspace & Permissions:")
+	fmt.Fprintf(stdout, "  Directory:   %s\n", workspace)
+	permStr := string(mode)
+	if planMode {
+		permStr += " (Plan mode locked)"
+	}
+	fmt.Fprintf(stdout, "  Permissions: %s\n", permStr)
+
+	ruleFiles := []string{"AGENTS.md", "CLAUDE.md"}
+	var foundRules []string
+	if workspace != "" {
+		for _, rf := range ruleFiles {
+			p := filepath.Join(workspace, rf)
+			if fi, err := os.Stat(p); err == nil {
+				foundRules = append(foundRules, fmt.Sprintf("%s (%d bytes)", rf, fi.Size()))
+			}
+		}
+	}
+	if len(foundRules) > 0 {
+		fmt.Fprintf(stdout, "  Rules:       %s\n", strings.Join(foundRules, ", "))
+	} else {
+		fmt.Fprintln(stdout, "  Rules:       None detected in workspace root")
+	}
+
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintln(stdout, "Session & Model:")
+	fmt.Fprintf(stdout, "  Model:       %s\n", model)
+	fmt.Fprintf(stdout, "  Session ID:  %s\n", sessionID)
+	fmt.Fprintf(stdout, "  Title:       %s\n", sessionTitle)
+
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintln(stdout, "Capabilities & Tools:")
+	mcpServers := client.MCPServers()
+	activeServers := 0
+	activeTools := 0
+	for _, s := range mcpServers {
+		if s.Enabled {
+			activeServers++
+			activeTools += s.ToolCount
+		}
+	}
+	if activeServers > 0 {
+		fmt.Fprintf(stdout, "  MCP Servers: %d active (%d tools registered)\n", activeServers, activeTools)
+	} else {
+		fmt.Fprintln(stdout, "  MCP Servers: None active")
+	}
+	if planMode {
+		fmt.Fprintln(stdout, "  Plan Mode:   Active (restricted to read-only tools)")
+	} else {
+		fmt.Fprintln(stdout, "  Plan Mode:   Inactive (all permitted tools available)")
+	}
+
+	// Session token usage
+	if s, err := client.GetSession(ctx, sessionID); err == nil {
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Token Usage:")
+		fmt.Fprintf(stdout, "  Input:       %d (cached: %d)\n", s.SessionUsage.Input, s.SessionUsage.Cached)
+		fmt.Fprintf(stdout, "  Output:      %d (reasoning: %d)\n", s.SessionUsage.Output, s.SessionUsage.Reasoning)
+	}
+}
+
+func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
+	ctx := context.Background()
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: get session: %v\n", err)
+		return
+	}
+	fields := strings.Fields(line)
+	targetPath := ""
+	if len(fields) > 1 {
+		targetPath = strings.TrimSpace(strings.Join(fields[1:], " "))
+	}
+	if targetPath == "" {
+		shortID := sessionID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		if shortID == "" {
+			shortID = "current"
+		}
+		targetPath = fmt.Sprintf("export-%s-%s.md", shortID, time.Now().Format("20060102-150405"))
+	}
+	workspace := client.Workspace()
+	if !filepath.IsAbs(targetPath) && workspace != "" {
+		targetPath = filepath.Join(workspace, targetPath)
+	}
+
+	title := saved.Title
+	if title == "" {
+		title = "<untitled session>"
+	}
+	model := client.ModelForSession(ctx, sessionID)
+	if model == "" {
+		model = "<default>"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Session Transcript: %s\n\n", title))
+	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", sessionID))
+	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", workspace))
+	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", model))
+	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n", time.Now().Format(time.RFC3339)))
+	if saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 {
+		sb.WriteString(fmt.Sprintf("- **Token Usage:** %d in (cached: %d) · %d out (reasoning: %d)\n",
+			saved.SessionUsage.Input, saved.SessionUsage.Cached,
+			saved.SessionUsage.Output, saved.SessionUsage.Reasoning))
+	}
+	sb.WriteString("\n---\n\n")
+
+	entryCount := 0
+	if len(saved.History) > 0 && string(saved.History) != "null" {
+		var items []json.RawMessage
+		if json.Unmarshal(saved.History, &items) == nil {
+			for _, item := range items {
+				var val struct {
+					Type      string          `json:"type"`
+					Role      string          `json:"role"`
+					Name      string          `json:"name"`
+					Arguments json.RawMessage `json:"arguments"`
+					Content   json.RawMessage `json:"content"`
+				}
+				if json.Unmarshal(item, &val) != nil {
+					continue
+				}
+				switch val.Type {
+				case "message":
+					text := cliExtractMessageContent(val.Content)
+					if text == "" {
+						continue
+					}
+					entryCount++
+					role := "User"
+					if val.Role == "assistant" {
+						role = "Assistant"
+					}
+					sb.WriteString(fmt.Sprintf("### %s\n\n%s\n\n", role, text))
+				case "function_call":
+					entryCount++
+					args := string(val.Arguments)
+					if len(args) > 0 && args[0] == '"' {
+						var unquoted string
+						if json.Unmarshal(val.Arguments, &unquoted) == nil {
+							args = unquoted
+						}
+					}
+					sb.WriteString(fmt.Sprintf("<details>\n<summary>Tool: <code>%s</code></summary>\n\n", val.Name))
+					if args != "" && args != "null" {
+						sb.WriteString(fmt.Sprintf("**Arguments:**\n```json\n%s\n```\n\n", args))
+					}
+					sb.WriteString("</details>\n\n")
+				}
+			}
+		}
+	}
+
+	content := []byte(sb.String())
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		fmt.Fprintf(stderr, "error: create directory: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(targetPath, content, 0644); err != nil {
+		fmt.Fprintf(stderr, "error: write file: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stdout, "Exported session transcript to %s (%d bytes, %d items).\n", targetPath, len(content), entryCount)
+}
+
+func cliExtractMessageContent(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return text
+	}
+	var parts []json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, raw := range parts {
+		var part struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &part) == nil && (part.Type == "input_text" || part.Type == "output_text") {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
 }
 
 func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) (string, cliRuntime, error) {

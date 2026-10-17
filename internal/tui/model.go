@@ -33,10 +33,11 @@ type tuiModel struct {
 	running           bool
 	taskStartedAt     time.Time
 	activeQuestion    *ActiveQuestion
-	activeApproval    *ActiveApproval
-	activePlanReview  *ActivePlanReview
-	activeRecovery    *ActiveRecovery
-	queuedTurns       []QueuedItem
+	activeApproval     *ActiveApproval
+	activePlanReview   *ActivePlanReview
+	activeRecovery     *ActiveRecovery
+	activeToolRecovery *ActiveToolRecovery
+	queuedTurns        []QueuedItem
 	autocompleteOpen  bool
 	autocompleteItems []AutocompleteItem
 	autocompleteIndex int
@@ -196,6 +197,8 @@ func (m *tuiModel) updateLayout() {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
 	} else if m.activeRecovery != nil {
 		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
+	} else if m.activeToolRecovery != nil {
+		modalHeight = lipgloss.Height(renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)) + 1
 	} else if m.activeQuestion != nil {
 		modalHeight = lipgloss.Height(renderQuestionPanel(m.activeQuestion, contentWidth)) + 1
 	} else if m.activeApproval != nil {
@@ -377,6 +380,8 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
 	} else if m.activeRecovery != nil {
 		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
+	} else if m.activeToolRecovery != nil {
+		sections = append(sections, renderToolRecoveryPanel(m.activeToolRecovery, contentWidth))
 	} else if m.activeQuestion != nil {
 		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
 	} else if m.activeApproval != nil {
@@ -463,6 +468,7 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 	var foundQuestion *core.UserQuestionRequest
 	var foundApproval *core.ApprovalRequest
 	var foundRecovery *core.PendingModelRecovery
+	var foundToolRecovery *core.ToolRecoveryRequest
 	for _, req := range reqs {
 		if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil && foundQuestion == nil {
 			foundQuestion = req.UserQuestion
@@ -472,6 +478,9 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 		}
 		if req.Kind == core.PendingModelRecoveryRequest && req.ModelRecovery != nil && foundRecovery == nil {
 			foundRecovery = req.ModelRecovery
+		}
+		if req.Kind == core.PendingToolRecovery && req.ToolRecovery != nil && foundToolRecovery == nil {
+			foundToolRecovery = req.ToolRecovery
 		}
 	}
 
@@ -519,6 +528,20 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 		}
 	} else {
 		m.activeRecovery = nil
+	}
+
+	if foundToolRecovery != nil {
+		if m.activeToolRecovery == nil || m.activeToolRecovery.InvocationID != foundToolRecovery.InvocationID {
+			m.activeToolRecovery = &ActiveToolRecovery{
+				InvocationID: foundToolRecovery.InvocationID,
+				CallID:       foundToolRecovery.CallID,
+				ToolName:     foundToolRecovery.Tool,
+				Arguments:    string(foundToolRecovery.Arguments),
+				Selected:     0,
+			}
+		}
+	} else {
+		m.activeToolRecovery = nil
 	}
 }
 
