@@ -125,6 +125,28 @@ func TestParseFlagsPromptAndPassThrough(t *testing.T) {
 	if flags.Prompt != "-not-a-flag --also-text" {
 		t.Errorf("expected passthrough prompt, got: %q", flags.Prompt)
 	}
+
+	// Explicit --prompt and --prompt=
+	flags, err = ParseFlags([]string{"--prompt", "optimize performance"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.Prompt != "optimize performance" {
+		t.Errorf("expected prompt 'optimize performance', got: %q", flags.Prompt)
+	}
+
+	flags, err = ParseFlags([]string{"--prompt=fix memory leak"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.Prompt != "fix memory leak" {
+		t.Errorf("expected prompt 'fix memory leak', got: %q", flags.Prompt)
+	}
+
+	_, err = ParseFlags([]string{"--prompt"})
+	if err == nil {
+		t.Errorf("expected error for missing --prompt argument")
+	}
 }
 
 func TestPrintHelpAndVersion(t *testing.T) {
@@ -133,6 +155,9 @@ func TestPrintHelpAndVersion(t *testing.T) {
 	helpStr := bufHelp.String()
 	if !strings.Contains(helpStr, "LuneAgent - Autonomous AI coding agent") || !strings.Contains(helpStr, "--workspace") {
 		t.Errorf("expected help output, got: %s", helpStr)
+	}
+	if !strings.Contains(helpStr, "Pipeline / Stdin Stream") || !strings.Contains(helpStr, "--prompt") {
+		t.Errorf("expected pipeline section in help output, got: %s", helpStr)
 	}
 
 	var bufVer bytes.Buffer

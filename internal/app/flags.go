@@ -132,6 +132,21 @@ func ParseFlags(args []string) (CLIFlags, error) {
 			continue
 		}
 
+		// Prompt flag (--prompt)
+		if arg == "--prompt" {
+			if i+1 >= len(args) {
+				return flags, fmt.Errorf("flag %s requires a prompt argument", arg)
+			}
+			i++
+			promptParts = append(promptParts, args[i])
+			continue
+		}
+		if strings.HasPrefix(arg, "--prompt=") {
+			parts := strings.SplitN(arg, "=", 2)
+			promptParts = append(promptParts, parts[1])
+			continue
+		}
+
 		// Unknown flag
 		if strings.HasPrefix(arg, "-") && arg != "-" {
 			return flags, fmt.Errorf("unknown flag: %s (run 'lune --help' for usage)", arg)
@@ -183,6 +198,7 @@ Flags:
   -m, --model <profile>      Set model profile for session
   -p, --permission <mode>    Set permission mode: read-only, workspace, ask, full-access
   -s, --session <id|prefix>  Resume or open an existing session
+      --prompt <text>        Instruction prompt (can also be passed as positional arguments)
       --plan                 Start in Plan mode (read-only exploration)
       --tui                  Force full-screen interactive TUI mode
       --cli                  Force classic streaming CLI mode
@@ -198,6 +214,12 @@ Execution Modes:
   One-Shot / Script Mode:
     lune "prompt..."         Run task non-interactively, stream output, and exit
     lune -m fast "diff..."   Run single-turn task with specified model profile
+
+  Pipeline / Stdin Stream:
+    cat file.go | lune "explain this code"   Read stdin as context, append to prompt, run one-shot
+    git diff | lune "review changes"         Read diff from stdin, stream review to stdout
+    cat prompt.txt | lune                    Read prompt from stdin, execute and stream output
+    lune "prompt..." > output.md             Stream response to redirected file (status to stderr)
 
 `, AppVersion)
 }

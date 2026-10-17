@@ -8,11 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/afterlune/lune/internal/cli"
 	"github.com/afterlune/lune/internal/tui"
 	core "github.com/afterlune/luneCore"
 )
+
+// maxPipedStdinBytes limits the maximum data read from standard input pipe (10 MB).
+const maxPipedStdinBytes = 10 * 1024 * 1024
+
+var runOneShot = RunOneShot
 
 // Run executes the application using os.Args[1:] and standard I/O streams.
 func Run() error {
@@ -47,10 +53,22 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		workspace = cwd
 	}
 
+	// Read standard input if piped (non-terminal)
+	pipedInput, err := readPipedStdin(stdin)
+	if err != nil {
+		return err
+	}
+
+	if flags.Prompt == "-" {
+		flags.Prompt = ""
+	}
+
+	effectivePrompt := combinePromptAndStdin(flags.Prompt, pipedInput)
+
 	// Decide execution mode:
-	// 1. One-Shot mode (if Prompt is provided)
+	// 1. One-Shot mode (if prompt or piped input is provided)
 	// 2. Interactive TUI or CLI mode
-	isOneShot := flags.Prompt != ""
+	isOneShot := effectivePrompt != ""
 
 	// Determine if interactive TUI should be used
 	interactive := false
@@ -60,6 +78,9 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		} else if flags.ForceCLI {
 			interactive = false
 		} else {
+			if stdin == nil || !isTerminal(stdin) {
+				return errors.New("no prompt provided and standard input is empty (run 'lune --help' for usage)")
+			}
 			interactive = useTUI(stdin, stdout)
 		}
 	}
@@ -84,7 +105,7 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 	defer func() { runErr = errors.Join(runErr, client.Close()) }()
 
 	if isOneShot {
-		return RunOneShot(client, flags.Prompt, flags, stdout, stderr)
+		return runOneShot(client, effectivePrompt, flags, stdout, stderr)
 	}
 
 	if interactive {
@@ -102,6 +123,45 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		PermissionMode: flags.PermissionMode,
 		PlanMode:       flags.PlanMode,
 	})
+}
+
+// readPipedStdin reads standard input if it is connected to a pipe or file redirection.
+// If stdin is nil or is connected to a terminal (character device), it returns empty string without reading.
+func readPipedStdin(stdin *os.File) (string, error) {
+	return readPipedStdinWithLimit(stdin, maxPipedStdinBytes)
+}
+
+func readPipedStdinWithLimit(stdin *os.File, limit int64) (string, error) {
+	if stdin == nil || isTerminal(stdin) {
+		return "", nil
+	}
+
+	reader := io.LimitReader(stdin, limit+1)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("read standard input: %w", err)
+	}
+
+	if int64(len(data)) > limit {
+		return "", fmt.Errorf("piped standard input exceeds maximum allowed size of %d MB", limit/(1024*1024))
+	}
+
+	return string(data), nil
+}
+
+// combinePromptAndStdin combines an optional command line prompt with piped standard input.
+func combinePromptAndStdin(prompt, stdinText string) string {
+	prompt = strings.TrimSpace(prompt)
+	stdinText = strings.TrimSpace(stdinText)
+
+	if prompt == "" {
+		return stdinText
+	}
+	if stdinText == "" {
+		return prompt
+	}
+
+	return prompt + "\n\n---\n" + stdinText
 }
 
 func useTUI(stdin *os.File, stdout io.Writer) bool {
