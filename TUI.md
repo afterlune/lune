@@ -99,8 +99,9 @@
 | **`/sessions [query]`** | 查看或关键词模糊检索当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
 | **`/open <id\|prefix>`** | 切换至指定会话（支持唯一前缀模糊匹配，如前 6~8 位 ID；任务运行中受安全互锁保护禁止切换） |
 | **`/title [name]`** | 查看或自定义重命名当前会话标题，Header、Footer 与 `/sessions` 实时同步持久化 |
+| **`/memory [subcmd]`** | 管理工作区长期记忆库（`/memory list [query]` 查看与关键词检索、`/memory add [category] <text>` 沉淀技术偏好/约定/决策、`/memory remove <id\|prefix>` 精确或前缀删除、`/memory clear [--force]` 清空记忆） |
 | **`/export [path]`** | 将当前会话的完整转录历史一键导出为 GitHub Flavored Markdown 归档文件（包含会话元数据、对话流及工具调用折叠块） |
-| **`/context`** | 呈现当前会话的上下文全景诊断（工作区、权限、AGENTS.md / CLAUDE.md 规则注入、注册工具总数、Token 预算利用率进度条与轮次） |
+| **`/context`** | 呈现当前会话的上下文全景诊断（工作区、权限、AGENTS.md / CLAUDE.md 规则注入、注册工具总数、工作区长期记忆统计、Token 预算利用率进度条与轮次） |
 | **`/diff [path]`** | 在视口中以红绿语法高亮直接查看当前 Git 工作区的代码修改差异（无需跳出 TUI） |
 | **`/review [path]`** | 结构化查看工作区代码变动汇总（修改、新增、删除及增删行统计），或细粒度审查特定文件 |
 | **`/mcp [subcommand]`** | 管理已配置的外部 MCP 服务器（`/mcp list` 查看列表、`/mcp enable <name>` 启用并发现工具、`/mcp disable <name>` 禁用卸载、`/mcp auth <name>` OAuth 授权） |

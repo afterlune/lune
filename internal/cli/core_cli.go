@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	core "github.com/afterlune/luneCore"
+	"github.com/afterlune/luneCore/memory"
 )
 
 type cliRuntime interface {
@@ -53,6 +54,11 @@ type cliCore interface {
 	EnableMCPServer(string) error
 	DisableMCPServer(string) error
 	AuthenticateMCPServer(context.Context, string) error
+	ListMemories(context.Context, int) ([]memory.Item, error)
+	SearchMemories(context.Context, string, int) ([]memory.SearchResult, error)
+	AddMemory(context.Context, memory.Input) (memory.Item, error)
+	DeleteMemory(context.Context, string) error
+	ClearMemories(context.Context) error
 }
 
 type cliCommandHelp struct {
@@ -72,6 +78,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/fork", usage: "/fork", description: "Fork the current session."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
 	{name: "/mcp", usage: "/mcp [list|enable|disable|auth]", description: "Manage external MCP servers."},
+	{name: "/memory", usage: "/memory [list|add|remove|clear]", description: "View and manage workspace long-term memories."},
 	{name: "/model", usage: "/model [profile]", description: "View or change active model profile."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
 	{name: "/open", usage: "/open [id|prefix]", description: "Switch to an existing session."},
@@ -228,6 +235,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIStatus(client, sessionID, sessionTitle, planMode, stdout)
 		case line == "/context":
 			handleCoreCLIContext(client, sessionID, sessionTitle, planMode, stdout)
+		case line == "/memory" || strings.HasPrefix(line, "/memory "):
+			handleCoreCLIMemory(client, line, stdout, stderr)
 		case line == "/export" || strings.HasPrefix(line, "/export "):
 			handleCoreCLIExport(client, sessionID, line, stdout, stderr)
 		case line == "/model" || strings.HasPrefix(line, "/model "):
@@ -560,6 +569,203 @@ func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMo
 		fmt.Fprintln(stdout, "Token Usage:")
 		fmt.Fprintf(stdout, "  Input:       %d (cached: %d)\n", s.SessionUsage.Input, s.SessionUsage.Cached)
 		fmt.Fprintf(stdout, "  Output:      %d (reasoning: %d)\n", s.SessionUsage.Output, s.SessionUsage.Reasoning)
+	}
+
+	if items, err := client.ListMemories(ctx, 100); err == nil {
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "Workspace Memory:")
+		if len(items) > 0 {
+			fmt.Fprintf(stdout, "  Stored:      %d active items (use '/memory' to view or manage)\n", len(items))
+		} else {
+			fmt.Fprintln(stdout, "  Stored:      None yet (use '/memory add <text>' to record conventions)")
+		}
+	}
+}
+
+func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) {
+	ctx := context.Background()
+	parts := strings.Fields(line)
+	subcmd := "list"
+	if len(parts) > 1 {
+		subcmd = strings.ToLower(parts[1])
+	}
+
+	switch subcmd {
+	case "list":
+		query := ""
+		if len(parts) > 2 {
+			query = strings.TrimSpace(strings.Join(parts[2:], " "))
+		}
+		if query != "" {
+			results, err := client.SearchMemories(ctx, query, 20)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: search memories: %v\n", err)
+				return
+			}
+			if len(results) == 0 {
+				fmt.Fprintf(stdout, "No workspace memories matching %q found.\n", query)
+				return
+			}
+			fmt.Fprintf(stdout, "Workspace Memories (%d matches for %q):\n", len(results), query)
+			for _, r := range results {
+				shortID := r.Item.ID
+				if len(shortID) > 8 {
+					shortID = shortID[:8]
+				}
+				timeStr := r.Item.UpdatedAt.Format("Jan 02 15:04")
+				fmt.Fprintf(stdout, "  [%s] %-12s %s (%s)\n", shortID, r.Item.Category, r.Item.Content, timeStr)
+			}
+			return
+		}
+
+		items, err := client.ListMemories(ctx, 50)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: list memories: %v\n", err)
+			return
+		}
+		if len(items) == 0 {
+			fmt.Fprintln(stdout, "No workspace memories stored yet.")
+			fmt.Fprintln(stdout, "Use '/memory add <text>' to record conventions, technical preferences, or rules.")
+			return
+		}
+		fmt.Fprintf(stdout, "Workspace Memories (%d items):\n", len(items))
+		for _, item := range items {
+			shortID := item.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			timeStr := item.UpdatedAt.Format("Jan 02 15:04")
+			fmt.Fprintf(stdout, "  [%s] %-12s %s (%s)\n", shortID, item.Category, item.Content, timeStr)
+		}
+		fmt.Fprintln(stdout, "\nUse '/memory add <text>' to record, '/memory remove <id>' to delete.")
+
+	case "add":
+		if len(parts) < 3 {
+			fmt.Fprintln(stderr, "Usage: /memory add [category] <content>")
+			fmt.Fprintln(stderr, "Categories: preference, convention, decision, correction, verified_fact (default: preference)")
+			return
+		}
+		cat := memory.CategoryPreference
+		contentParts := parts[2:]
+		firstLower := strings.ToLower(parts[2])
+		switch memory.Category(firstLower) {
+		case memory.CategoryPreference, memory.CategoryConvention, memory.CategoryDecision, memory.CategoryCorrection, memory.CategoryVerifiedFact:
+			cat = memory.Category(firstLower)
+			contentParts = parts[3:]
+		}
+		content := strings.TrimSpace(strings.Join(contentParts, " "))
+		if content == "" {
+			fmt.Fprintln(stderr, "error: memory content cannot be empty")
+			return
+		}
+		item, err := client.AddMemory(ctx, memory.Input{
+			Category:   cat,
+			Content:    content,
+			Importance: 3,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: add memory: %v\n", err)
+			return
+		}
+		shortID := item.ID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		fmt.Fprintf(stdout, "Added workspace memory [%s] (%s): %s\n", shortID, item.Category, item.Content)
+
+	case "remove", "delete":
+		if len(parts) < 3 {
+			fmt.Fprintln(stderr, "Usage: /memory remove <id|prefix>")
+			return
+		}
+		target := parts[2]
+		items, err := client.ListMemories(ctx, 200)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: query memories: %v\n", err)
+			return
+		}
+		var matches []memory.Item
+		for _, it := range items {
+			if strings.HasPrefix(strings.ToLower(it.ID), strings.ToLower(target)) {
+				matches = append(matches, it)
+			}
+		}
+		if len(matches) == 0 {
+			fmt.Fprintf(stderr, "error: memory item %q not found\n", target)
+			return
+		}
+		if len(matches) > 1 {
+			var ids []string
+			for _, m := range matches {
+				s := m.ID
+				if len(s) > 8 {
+					s = s[:8]
+				}
+				ids = append(ids, s)
+			}
+			fmt.Fprintf(stderr, "error: memory ID prefix %q is ambiguous (%d matches: %s)\n", target, len(matches), strings.Join(ids, ", "))
+			return
+		}
+		match := matches[0]
+		if err := client.DeleteMemory(ctx, match.ID); err != nil {
+			fmt.Fprintf(stderr, "error: delete memory: %v\n", err)
+			return
+		}
+		shortID := match.ID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		fmt.Fprintf(stdout, "Deleted workspace memory [%s]: %s\n", shortID, match.Content)
+
+	case "clear":
+		hasForce := false
+		for _, p := range parts[2:] {
+			if p == "--force" || p == "confirm" || p == "-f" {
+				hasForce = true
+				break
+			}
+		}
+		if !hasForce {
+			fmt.Fprintln(stderr, "Are you sure you want to clear all workspace memories?")
+			fmt.Fprintln(stderr, "Run '/memory clear --force' to confirm.")
+			return
+		}
+		if err := client.ClearMemories(ctx); err != nil {
+			fmt.Fprintf(stderr, "error: clear memories: %v\n", err)
+			return
+		}
+		fmt.Fprintln(stdout, "Cleared all workspace memories.")
+
+	case "help":
+		fmt.Fprintln(stdout, "Workspace Memory Commands:")
+		fmt.Fprintln(stdout, "  /memory or /memory list           List recent workspace memories")
+		fmt.Fprintln(stdout, "  /memory list <query>              Search memories by text")
+		fmt.Fprintln(stdout, "  /memory add [category] <content>  Add a workspace convention or preference")
+		fmt.Fprintln(stdout, "  /memory remove <id|prefix>        Remove a memory item by ID or prefix")
+		fmt.Fprintln(stdout, "  /memory clear --force             Clear all workspace memories")
+		fmt.Fprintln(stdout, "\nCategories: preference, convention, decision, correction, verified_fact")
+
+	default:
+		// Unknown subcmd: treat as query search
+		query := strings.TrimSpace(strings.Join(parts[1:], " "))
+		results, err := client.SearchMemories(ctx, query, 20)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: search memories: %v\n", err)
+			return
+		}
+		if len(results) == 0 {
+			fmt.Fprintf(stdout, "No workspace memories matching %q found.\n", query)
+			return
+		}
+		fmt.Fprintf(stdout, "Workspace Memories (%d matches for %q):\n", len(results), query)
+		for _, r := range results {
+			shortID := r.Item.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			timeStr := r.Item.UpdatedAt.Format("Jan 02 15:04")
+			fmt.Fprintf(stdout, "  [%s] %-12s %s (%s)\n", shortID, r.Item.Category, r.Item.Content, timeStr)
+		}
 	}
 }
 

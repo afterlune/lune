@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	core "github.com/afterlune/luneCore"
+	"github.com/afterlune/luneCore/memory"
 )
 
 type fakeCLICore struct {
@@ -34,6 +36,8 @@ type fakeCLICore struct {
 	resolved   []bool
 	resolveErr error
 	runtime    *fakeCLIRuntime
+	memories   []memory.Item
+	memSeq     int
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -172,6 +176,60 @@ func (f *fakeCLICore) DisableMCPServer(name string) error {
 }
 
 func (f *fakeCLICore) AuthenticateMCPServer(_ context.Context, name string) error {
+	return nil
+}
+
+func (f *fakeCLICore) ListMemories(_ context.Context, limit int) ([]memory.Item, error) {
+	if limit <= 0 || limit > len(f.memories) {
+		limit = len(f.memories)
+	}
+	res := make([]memory.Item, limit)
+	copy(res, f.memories[:limit])
+	return res, nil
+}
+
+func (f *fakeCLICore) SearchMemories(_ context.Context, query string, limit int) ([]memory.SearchResult, error) {
+	q := strings.ToLower(query)
+	var results []memory.SearchResult
+	for _, item := range f.memories {
+		if strings.Contains(strings.ToLower(item.Content), q) || strings.Contains(strings.ToLower(string(item.Category)), q) {
+			results = append(results, memory.SearchResult{Item: item, Score: 1.0})
+			if limit > 0 && len(results) >= limit {
+				break
+			}
+		}
+	}
+	return results, nil
+}
+
+func (f *fakeCLICore) AddMemory(_ context.Context, in memory.Input) (memory.Item, error) {
+	f.memSeq++
+	id := fmt.Sprintf("mem-%04d", f.memSeq)
+	now := time.Now()
+	item := memory.Item{
+		ID:         id,
+		Category:   in.Category,
+		Content:    in.Content,
+		Importance: in.Importance,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	f.memories = append([]memory.Item{item}, f.memories...)
+	return item, nil
+}
+
+func (f *fakeCLICore) DeleteMemory(_ context.Context, id string) error {
+	for i, item := range f.memories {
+		if item.ID == id {
+			f.memories = append(f.memories[:i], f.memories[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("memory not found")
+}
+
+func (f *fakeCLICore) ClearMemories(_ context.Context) error {
+	f.memories = nil
 	return nil
 }
 
@@ -874,9 +932,68 @@ func TestCLIContext(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	for _, want := range []string{"Context Status & Diagnostics", "Workspace & Permissions:", "Session & Model:", "Capabilities & Tools:"} {
+	for _, want := range []string{"Context Status & Diagnostics", "Workspace & Permissions:", "Session & Model:", "Capabilities & Tools:", "Workspace Memory:"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, missing %q", stdout, want)
 		}
 	}
 }
+
+func TestCLIMemoryCommands(t *testing.T) {
+	client := &fakeCLICore{}
+
+	// 1. Initially empty
+	stdout, _ := runCLI(t, client, "/memory list\n/exit\n", nil)
+	if !strings.Contains(stdout, "No workspace memories stored yet.") {
+		t.Fatalf("stdout = %q, want empty memory message", stdout)
+	}
+
+	// 2. Add preference
+	stdout, _ = runCLI(t, client, "/memory add preference Always use structured errors\n/exit\n", nil)
+	if !strings.Contains(stdout, "Added workspace memory [mem-0001] (preference): Always use structured errors") {
+		t.Fatalf("stdout = %q, want add preference confirmation", stdout)
+	}
+
+	// 3. Add convention
+	stdout, _ = runCLI(t, client, "/memory add convention Follow standard table tests\n/exit\n", nil)
+	if !strings.Contains(stdout, "Added workspace memory [mem-0002] (convention): Follow standard table tests") {
+		t.Fatalf("stdout = %q, want add convention confirmation", stdout)
+	}
+
+	// 4. List memories
+	stdout, _ = runCLI(t, client, "/memory list\n/exit\n", nil)
+	if !strings.Contains(stdout, "Workspace Memories (2 items):") || !strings.Contains(stdout, "Always use structured errors") {
+		t.Fatalf("stdout = %q, want list items", stdout)
+	}
+
+	// 5. Search memories
+	stdout, _ = runCLI(t, client, "/memory list structured\n/exit\n", nil)
+	if !strings.Contains(stdout, "Workspace Memories (1 matches for \"structured\"):") {
+		t.Fatalf("stdout = %q, want search match", stdout)
+	}
+
+	// 6. Delete memory by prefix
+	stdout, _ = runCLI(t, client, "/memory remove mem-0001\n/exit\n", nil)
+	if !strings.Contains(stdout, "Deleted workspace memory [mem-0001]") {
+		t.Fatalf("stdout = %q, want delete confirmation", stdout)
+	}
+
+	// 7. Clear memories requires --force
+	_, stderr := runCLI(t, client, "/memory clear\n/exit\n", nil)
+	if !strings.Contains(stderr, "Run '/memory clear --force' to confirm.") {
+		t.Fatalf("stderr = %q, want clear confirmation warning", stderr)
+	}
+
+	// 8. Clear memories with --force
+	stdout, _ = runCLI(t, client, "/memory clear --force\n/exit\n", nil)
+	if !strings.Contains(stdout, "Cleared all workspace memories.") {
+		t.Fatalf("stdout = %q, want cleared confirmation", stdout)
+	}
+
+	// 9. Verify empty after clear
+	stdout, _ = runCLI(t, client, "/memory\n/exit\n", nil)
+	if !strings.Contains(stdout, "No workspace memories stored yet.") {
+		t.Fatalf("stdout = %q, want empty after clear", stdout)
+	}
+}
+

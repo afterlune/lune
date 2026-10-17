@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1233,6 +1234,9 @@ func TestContextCommand(t *testing.T) {
 	if !strings.Contains(lastEntry, "12,000 / 128,000 tokens") {
 		t.Errorf("expected tokens in context diagnostics, got: %s", lastEntry)
 	}
+	if !strings.Contains(lastEntry, "Workspace Memory:") {
+		t.Errorf("expected Workspace Memory in context diagnostics, got: %s", lastEntry)
+	}
 }
 
 func TestSessionsCommandAndAutocomplete(t *testing.T) {
@@ -1246,6 +1250,10 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	matchesCtx := filterCommands("/cont")
 	if len(matchesCtx) == 0 || matchesCtx[0].Command != "/context" {
 		t.Errorf("expected /context in autocomplete, got: %#v", matchesCtx)
+	}
+	matchesMem := filterCommands("/mem")
+	if len(matchesMem) == 0 || matchesMem[0].Command != "/memory" {
+		t.Errorf("expected /memory in autocomplete, got: %#v", matchesMem)
 	}
 
 	// Sessions without client
@@ -1318,6 +1326,99 @@ func TestFileMentionAutocomplete(t *testing.T) {
 		t.Errorf("expected composer to retain draft 'review @cm', got: %q", m.composer.Value())
 	}
 }
+
+func TestMemoryCommand(t *testing.T) {
+	// 1. Without client
+	m := newTUIModel(nil, nil, "test-sess")
+	m.handleSlashCommand("/memory")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Memory management unavailable") {
+		t.Errorf("expected unavailable message without client, got: %s", lastSys)
+	}
+
+	// 2. With real core client in tempDir
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+	mWithClient := newTUIModel(client, nil, "test-sess")
+
+	// Initially empty
+	mWithClient.handleSlashCommand("/memory")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "No workspace memories stored yet") {
+		t.Errorf("expected empty message, got: %s", lastSys)
+	}
+
+	// Add convention
+	mWithClient.handleSlashCommand("/memory add convention Always verify tests")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Added workspace memory") || !strings.Contains(lastSys, "convention") {
+		t.Errorf("expected added message, got: %s", lastSys)
+	}
+
+	// Add preference
+	mWithClient.handleSlashCommand("/memory add Keep responses concise")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Added workspace memory") || !strings.Contains(lastSys, "preference") {
+		t.Errorf("expected added preference, got: %s", lastSys)
+	}
+
+	// List
+	mWithClient.handleSlashCommand("/memory list")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Workspace Memories (2 items)") {
+		t.Errorf("expected 2 items, got: %s", lastSys)
+	}
+
+	// Search
+	mWithClient.handleSlashCommand("/memory list verify")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Workspace Memories") || !strings.Contains(lastSys, "verify") {
+		t.Errorf("expected search match for verify, got: %s", lastSys)
+	}
+
+	// Remove by prefix or exact ID
+	// Extract short ID from list output: `[mem-...` or similar
+	items, err := client.ListMemories(context.Background(), 10)
+	if err != nil || len(items) == 0 {
+		t.Fatalf("expected memories in store, got error: %v", err)
+	}
+	targetID := items[0].ID
+	mWithClient.handleSlashCommand("/memory remove " + targetID[:6])
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Deleted workspace memory") {
+		t.Errorf("expected deleted confirmation, got: %s", lastSys)
+	}
+
+	// Clear requires confirmation
+	mWithClient.handleSlashCommand("/memory clear")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Are you sure you want to clear all workspace memories?") {
+		t.Errorf("expected confirmation warning, got: %s", lastSys)
+	}
+
+	// Clear with force
+	mWithClient.handleSlashCommand("/memory clear --force")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "Cleared all workspace memories.") {
+		t.Errorf("expected cleared confirmation, got: %s", lastSys)
+	}
+
+	// List after clear
+	mWithClient.handleSlashCommand("/memory list")
+	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
+	if !strings.Contains(lastSys, "No workspace memories stored yet") {
+		t.Errorf("expected empty list after clear, got: %s", lastSys)
+	}
+}
+
 
 
 
