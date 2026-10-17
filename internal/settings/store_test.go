@@ -36,6 +36,68 @@ func TestStorePersistsThemeAndRecentWorkspace(t *testing.T) {
 	}
 }
 
+func TestStorePersistsAppearanceAndReadsLegacyTheme(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SetTheme("dark"); err != nil {
+		t.Fatal(err)
+	}
+	appearance, err := store.Appearance()
+	if err != nil || appearance.Theme != "dark" || appearance.PanelOpacity != defaultPanelOpacity {
+		t.Fatalf("Appearance() = %#v, %v", appearance, err)
+	}
+	appearance.Theme = "anime"
+	appearance.WallpaperType = "dynamic"
+	appearance.WallpaperFile = "wallpaper-123.webm"
+	appearance.PanelOpacity = 82
+	if err := store.SaveAppearance(appearance); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Appearance()
+	if err != nil || loaded != appearance {
+		t.Fatalf("Appearance() = %#v, %v; want %#v", loaded, err, appearance)
+	}
+	theme, err := store.Theme()
+	if err != nil || theme != "anime" {
+		t.Fatalf("Theme() = %q, %v; want anime", theme, err)
+	}
+}
+
+func TestStoreAppearanceMigratesExistingTheme(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec(`INSERT INTO app_settings(key, value) VALUES ('theme', 'light')`); err != nil {
+		t.Fatal(err)
+	}
+	appearance, err := store.Appearance()
+	if err != nil || appearance.Theme != "light" || appearance.WallpaperType != "static" || appearance.PanelOpacity != defaultPanelOpacity {
+		t.Fatalf("Appearance() = %#v, %v; want migrated light defaults", appearance, err)
+	}
+}
+
+func TestStoreRejectsInvalidAppearance(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, appearance := range []Appearance{
+		{Theme: "anime", WallpaperType: "video", PanelOpacity: 80},
+		{Theme: "anime", WallpaperType: "static", PanelOpacity: 99},
+		{Theme: "anime", WallpaperType: "static", WallpaperFile: `..\\secrets.png`, PanelOpacity: 80},
+	} {
+		if err := store.SaveAppearance(appearance); err == nil {
+			t.Errorf("SaveAppearance(%#v) succeeded, want validation error", appearance)
+		}
+	}
+}
+
 func TestStoreEncryptsAndRestoresProviderKeys(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("DPAPI is Windows-only")

@@ -4,7 +4,51 @@ test('desktop workspace preview matches the approved baseline', async ({ page })
   await page.goto('/?preview=1');
   await expect(page.getByRole('main').getByText('重构桌面端提问流程')).toBeVisible();
   await expect(page.getByText('帮我检查 Question 面板的交互，并把截图测试流程接入桌面端。')).toBeVisible();
+  await expect(page.locator('.wallpaper-layer')).toHaveCount(0);
   await expect(page).toHaveScreenshot('desktop-workspace.png', { fullPage: true });
+});
+
+test('theme and tool controls are available in the intended locations', async ({ page }) => {
+  await page.goto('/?preview=1');
+  await expect(page.getByRole('group', { name: '主题快捷切换' }).getByRole('button')).toHaveCount(2);
+  await expect(page.locator('.topbar select')).toHaveCount(0);
+  await expect(page.locator('.composer').getByRole('combobox', { name: '工具权限' })).toHaveCount(1);
+  await expect(page.locator('.composer').getByRole('combobox', { name: '会话模型' })).toHaveCount(1);
+
+  await page.getByRole('button', { name: '切换到深色主题' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page).toHaveScreenshot('desktop-dark.png', { fullPage: true });
+  await page.getByRole('button', { name: '切换到浅色主题' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+});
+
+test('anime appearance preview is editable only in settings and Cancel restores it', async ({ page }) => {
+  await page.goto('/?preview=1');
+  await page.locator('.top-settings').click();
+  await page.getByRole('tab', { name: '外观与主题' }).click();
+  await page.getByRole('button', { name: '二次元' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'anime');
+  await expect(page.locator('.theme-switch')).not.toContainText('二次元');
+
+  await page.locator('#panel-opacity').evaluate((element: HTMLInputElement) => {
+    element.value = '88';
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('.opacity-control output')).toHaveText('88%');
+  await expect(page).toHaveScreenshot('desktop-settings-appearance.png', { fullPage: true });
+
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('assistant responses expose copy and safe last-response regeneration actions', async ({ page }) => {
+  await page.goto('/?preview=1');
+  const actions = page.locator('.assistant-message-actions');
+  await expect(actions.getByRole('button', { name: '复制回复' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '重新生成回复' })).toBeVisible();
+  await actions.getByRole('button', { name: '重新生成回复' }).click();
+  await expect(page.locator('.message-row').last()).toContainText('修改后的回复。');
 });
 
 test('workspace file sidebar browses folders and opens a read-only preview', async ({ page }) => {

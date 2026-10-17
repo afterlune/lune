@@ -38,6 +38,23 @@ export interface ActivityFileChange {
     "truncated"?: boolean;
 }
 
+export interface AppearanceSettingsInput {
+    "theme": string;
+    "wallpaperType": string;
+    "wallpaperFile": string;
+    "wallpaperName": string;
+    "panelOpacity": number;
+}
+
+export interface AppearanceView {
+    "theme": string;
+    "wallpaperType": string;
+    "wallpaperFile": string;
+    "wallpaperName": string;
+    "wallpaperURL": string;
+    "panelOpacity": number;
+}
+
 export interface ApplyWorktreeChangesResult {
     "files": string[] | null;
     "destination": string;
@@ -46,6 +63,7 @@ export interface ApplyWorktreeChangesResult {
 
 export interface Bootstrap {
     "theme": string;
+    "appearance": AppearanceView;
     "recentWorkspaces": settings$0.RecentWorkspace[] | null;
     "models": ModelSettingsView;
     "workspace": string;
@@ -311,6 +329,13 @@ export interface ToolExecutionDetailsView {
     "command"?: ActivityCommandOutput | null;
     "changes"?: ActivityFileChange[] | null;
     "truncated"?: boolean;
+}
+
+export interface WallpaperSelection {
+    "file": string;
+    "name": string;
+    "type": string;
+    "url": string;
 }
 
 export interface WorkspaceChangeView {

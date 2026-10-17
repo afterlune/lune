@@ -49,6 +49,10 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
     return $Call.ByID(87151138, sessionID);
 }
 
+export function DiscardWallpaper(file: string): $CancellablePromise<void> {
+    return $Call.ByID(3553992017, file);
+}
+
 export function EditUserMessage(messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
     return $Call.ByID(376143777, messageID, input);
 }
@@ -114,6 +118,10 @@ export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<voi
     return $Call.ByID(2369930560, relativePath);
 }
 
+export function PickWallpaper(wallpaperType: string): $CancellablePromise<$models.WallpaperSelection> {
+    return $Call.ByID(3896265226, wallpaperType);
+}
+
 export function PickWorkspace(): $CancellablePromise<string> {
     return $Call.ByID(1262469545);
 }
@@ -160,6 +168,10 @@ export function ResolveUserInteraction(id: string, responseJSON: string): $Cance
 
 export function RestorePlanMode(): $CancellablePromise<void> {
     return $Call.ByID(1616448049);
+}
+
+export function SaveAppearanceSettings(input: $models.AppearanceSettingsInput): $CancellablePromise<$models.AppearanceView> {
+    return $Call.ByID(2851964451, input);
 }
 
 export function SaveModelSettings(input: $models.ModelSettingsInput): $CancellablePromise<$models.ModelSettingsView> {

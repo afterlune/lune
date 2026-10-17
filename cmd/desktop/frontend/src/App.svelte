@@ -8,7 +8,7 @@
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
-    Bootstrap, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
+    AppearanceView, Bootstrap, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
     SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
     WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
@@ -54,10 +54,25 @@
   };
   type DesktopProcessList = { processes: DesktopProcess[]; unavailableSessions: DesktopProcessSession[] };
   type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
+  type SettingsTab = 'models' | 'appearance';
 
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
   let theme = $state('system');
+  const defaultAppearance: AppearanceView = { theme: 'system', wallpaperType: 'static', wallpaperFile: '', wallpaperName: '', wallpaperURL: '', panelOpacity: 80 };
+  let appearance = $state<AppearanceView>({ ...defaultAppearance });
+  let appearanceDraft = $state<AppearanceView>({ ...defaultAppearance });
+  let settingsTab = $state<SettingsTab>('models');
+  let wallpaperCandidateFile = $state('');
+  let wallpaperObjectURL = $state('');
+  let wallpaperURL = $state('');
+  let activeWallpaperType = $state('static');
+  let wallpaperVideo = $state<HTMLVideoElement>();
+  let appVisible = $state(true);
+  let reducedMotion = $state(false);
+  let systemPrefersDark = $state(false);
+  let copiedMessageID = $state('');
+  let copyResetTimer: number | undefined;
   let recent = $state<Bootstrap['recentWorkspaces']>([]);
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
   let workspace = $state('');
@@ -126,6 +141,7 @@
   let profileForms = $state<ModelProfileInput[]>([]);
   let defaultModel = $state('');
   let maxParallelAgents = $state(4);
+  let modelSettingsSnapshot = $state('');
   let settingsSaving = $state(false);
   let editDraft = $state<EditDraft | null>(null);
   let editConfirmation = $state<EditConfirmation | null>(null);
@@ -171,6 +187,9 @@
   const canWrite = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
   const canEditMessages = $derived(models.configured && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
+  const appearanceDirty = $derived(appearanceKey(appearanceDraft) !== appearanceKey(appearance));
+  const modelSettingsDirty = $derived(serializeModelSettings() !== modelSettingsSnapshot);
+  const effectiveDarkTheme = $derived(theme === 'dark' || (theme === 'system' && systemPrefersDark));
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
@@ -222,6 +241,44 @@
     theme = value;
     document.documentElement.dataset.theme = value;
   }
+
+  function applyAppearanceState(value: AppearanceView) {
+    applyTheme(value.theme || 'system');
+    activeWallpaperType = value.wallpaperType || 'static';
+    wallpaperURL = value.wallpaperURL || '';
+    document.documentElement.style.setProperty('--anime-panel-opacity', String((value.panelOpacity || 80) / 100));
+  }
+
+  function appearanceKey(value: AppearanceView) {
+    return JSON.stringify({
+      theme: value.theme, wallpaperType: value.wallpaperType,
+      wallpaperFile: value.wallpaperFile, wallpaperName: value.wallpaperName,
+      panelOpacity: value.panelOpacity,
+      wallpaperURL: value.wallpaperURL,
+    });
+  }
+
+  function appearanceSettingsInput(value: AppearanceView) {
+    return {
+      theme: value.theme, wallpaperType: value.wallpaperType,
+      wallpaperFile: value.wallpaperFile, wallpaperName: value.wallpaperName,
+      panelOpacity: value.panelOpacity,
+    };
+  }
+
+  function previewAppearanceDraft(value: AppearanceView) {
+    appearanceDraft = { ...value };
+    applyAppearanceState(appearanceDraft);
+  }
+
+  $effect(() => {
+    const video = wallpaperVideo;
+    if (!video) return;
+    const play = theme === 'anime' && activeWallpaperType === 'dynamic' &&
+      /\.(mp4|webm)(?:$|\?)/i.test(wallpaperURL) && appVisible && !reducedMotion;
+    if (play) void video.play().catch(() => {});
+    else video.pause();
+  });
 
   function sameMessageContent(left: ConversationMessage, right: ConversationMessage) {
     const leftImages = left.images ?? [];
@@ -548,7 +605,7 @@
   }
 
   const previewBootstrap: Bootstrap = {
-    theme: 'light', recentWorkspaces: [], models: {
+    theme: 'light', appearance: { ...defaultAppearance, theme: 'light' }, recentWorkspaces: [], models: {
       providers: [{ name: 'deepseek', protocol: 'responses', baseURL: 'https://api.deepseek.com', hasAPIKey: true, serverCompaction: false }],
       profiles: [{ name: '工作模型', provider: 'deepseek', model: 'deepseek-chat', maxOutputTokens: 0, supportsInputAudio: false }],
       defaultModel: '工作模型', maxParallelAgents: 4, configured: true,
@@ -1313,7 +1370,9 @@
   async function initialize() {
     if (previewMode) {
       await new Promise((resolve) => setTimeout(resolve, 80));
-      theme = previewBootstrap.theme;
+      appearance = { ...previewBootstrap.appearance };
+      appearanceDraft = { ...appearance };
+      applyAppearanceState(appearance);
       worktreeAvailable = true;
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
@@ -1412,18 +1471,18 @@
         void refreshDesktopProcesses();
       }
       loading = false;
-      applyTheme(theme);
       return;
     }
     try {
       const data = await Desktop.Bootstrap();
-      theme = data.theme || 'system';
+      appearance = data.appearance ?? { ...defaultAppearance, theme: data.theme || 'system' };
+      appearanceDraft = { ...appearance };
+      applyAppearanceState(appearance);
       recent = data.recentWorkspaces ?? [];
       models = data.models;
       workspace = data.workspace;
       workingDirectory = data.workspace;
       permissionMode = data.permissionMode || 'workspace';
-      applyTheme(theme);
       Events.On('agent-event', (event: { data: AgentEvent }) => onAgentEvent(event.data));
       Events.On('turn-result', (event: { data: TurnResultEvent }) => onTurnResult(event.data));
       Events.On('pending-changed', (event: { data: string }) => {
@@ -1733,7 +1792,84 @@
     if (profileForms.length === 0) profileForms = [{ name: 'default', provider: providerForms[0].name, model: '', maxOutputTokens: 0, supportsInputAudio: false }];
     defaultModel = models.defaultModel || profileForms[0]?.name || 'default';
     maxParallelAgents = models.maxParallelAgents || 4;
+    modelSettingsSnapshot = serializeModelSettings();
+    appearanceDraft = { ...appearance };
+    settingsTab = 'models';
+    wallpaperCandidateFile = '';
+    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
+    wallpaperObjectURL = '';
     modal = 'settings';
+  }
+
+  function modelSettingsInput() {
+    return {
+      providers: providerForms.map(({ name, protocol, baseURL, apiKey, serverCompaction }) => ({ name, protocol, baseURL, apiKey, serverCompaction })),
+      profiles: profileForms.map(({ name, provider, model, maxOutputTokens, supportsInputAudio }) => ({ name, provider, model, maxOutputTokens, supportsInputAudio })),
+      defaultModel, maxParallelAgents,
+    };
+  }
+
+  function serializeModelSettings() {
+    return JSON.stringify(modelSettingsInput());
+  }
+
+  function cancelSettings() {
+    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
+    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
+    wallpaperCandidateFile = '';
+    wallpaperObjectURL = '';
+    appearanceDraft = { ...appearance };
+    applyAppearanceState(appearance);
+    modal = null;
+  }
+
+  function setWallpaperType(type: 'static' | 'dynamic') {
+    if (appearanceDraft.wallpaperType === type) return;
+    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
+    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
+    wallpaperCandidateFile = '';
+    wallpaperObjectURL = '';
+    previewAppearanceDraft({ ...appearanceDraft, wallpaperType: type, wallpaperFile: '', wallpaperName: '', wallpaperURL: '' });
+  }
+
+  function resetWallpaper() {
+    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
+    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
+    wallpaperCandidateFile = '';
+    wallpaperObjectURL = '';
+    previewAppearanceDraft({ ...appearanceDraft, wallpaperType: 'static', wallpaperFile: '', wallpaperName: '', wallpaperURL: '' });
+  }
+
+  async function chooseWallpaper() {
+    if (previewMode) {
+      document.getElementById('wallpaper-picker')?.click();
+      return;
+    }
+    try {
+      const selected: WallpaperSelection = await Desktop.PickWallpaper(appearanceDraft.wallpaperType);
+      if (!selected.file) return;
+      if (wallpaperCandidateFile && wallpaperCandidateFile !== appearance.wallpaperFile) {
+        await Desktop.DiscardWallpaper(wallpaperCandidateFile);
+      }
+      wallpaperCandidateFile = selected.file;
+      previewAppearanceDraft({
+        ...appearanceDraft, wallpaperType: selected.type,
+        wallpaperFile: selected.file, wallpaperName: selected.name, wallpaperURL: selected.url,
+      });
+    } catch (error) { showError(error); }
+  }
+
+  function previewBrowserWallpaper(file: File) {
+    const extension = file.name.toLowerCase().split('.').pop() || '';
+    const allowed = appearanceDraft.wallpaperType === 'static'
+      ? ['png', 'jpg', 'jpeg', 'webp'] : ['gif', 'mp4', 'webm'];
+    if (!allowed.includes(extension)) { showError('文件格式与所选壁纸类型不匹配'); return; }
+    if (!file.size || file.size > 100 * 1024 * 1024) { showError('壁纸文件不能超过 100 MiB'); return; }
+    if (wallpaperObjectURL) URL.revokeObjectURL(wallpaperObjectURL);
+    const url = URL.createObjectURL(file);
+    wallpaperObjectURL = url;
+    wallpaperCandidateFile = file.name;
+    previewAppearanceDraft({ ...appearanceDraft, wallpaperFile: file.name, wallpaperName: file.name, wallpaperURL: url });
   }
 
   function workspaceSettingsFromView(config: WorkspaceConfigView): WorkspaceSettingsForm {
@@ -1813,30 +1949,44 @@
   }
 
   async function saveSettings() {
+    if (settingsSaving) return;
     settingsSaving = true;
     try {
-      const selectedSessionID = session?.id;
-      const input = {
-        providers: providerForms.map(({ name, protocol, baseURL, apiKey, serverCompaction }) => ({ name, protocol, baseURL, apiKey, serverCompaction })),
-        profiles: profileForms.map(({ name, provider, model, maxOutputTokens, supportsInputAudio }) => ({ name, provider, model, maxOutputTokens, supportsInputAudio })),
-        defaultModel, maxParallelAgents,
-      };
-      if (!previewMode) models = await Desktop.SaveModelSettings(input);
-      else models = { ...models, configured: true, defaultModel };
-      modal = null;
-      if (workspace && !previewMode) {
-        if (selectedSessionID) installWorkspaceState(await Desktop.OpenSession(selectedSessionID));
-        else await completeWorkspaceOpen(await Desktop.OpenWorkspace(workspace));
+      if (appearanceKey(appearanceDraft) !== appearanceKey(appearance)) {
+        if (previewMode) appearance = { ...appearanceDraft };
+        else appearance = await Desktop.SaveAppearanceSettings(appearanceSettingsInput(appearanceDraft));
+        appearanceDraft = { ...appearance };
+        applyAppearanceState(appearance);
+        wallpaperCandidateFile = '';
+        wallpaperObjectURL = '';
       }
+      if (serializeModelSettings() !== modelSettingsSnapshot) {
+        const selectedSessionID = session?.id;
+        const input = modelSettingsInput();
+        if (!previewMode) models = await Desktop.SaveModelSettings(input);
+        else models = { ...models, configured: true, defaultModel };
+        modelSettingsSnapshot = serializeModelSettings();
+        if (workspace && !previewMode) {
+          if (selectedSessionID) installWorkspaceState(await Desktop.OpenSession(selectedSessionID));
+          else await completeWorkspaceOpen(await Desktop.OpenWorkspace(workspace));
+        }
+      }
+      modal = null;
     } catch (error) { showError(error); }
     finally { settingsSaving = false; }
   }
 
   async function changeTheme(value: string) {
-    applyTheme(value);
-    if (!previewMode) {
-      try { await Desktop.SetTheme(value); }
-      catch (error) { showError(error); }
+    const next = { ...appearance, theme: value };
+    applyAppearanceState(next);
+    if (previewMode) { appearance = next; appearanceDraft = { ...next }; return; }
+    try {
+      await Desktop.SetTheme(value);
+      appearance = next;
+      appearanceDraft = { ...next };
+    } catch (error) {
+      applyAppearanceState(appearance);
+      showError(error);
     }
   }
 
@@ -2236,6 +2386,64 @@
     editDraft = null;
   }
 
+  function previousUserForAssistant(message: LocalMessage) {
+    const assistantIndex = messages.findIndex((item) => item.id === message.id);
+    if (assistantIndex < 0 || assistantIndex !== messages.length - 1) return null;
+    for (let index = assistantIndex - 1; index >= 0; index--) {
+      if (messages[index].role === 'user') {
+        return {
+          message: messages[index],
+          userMessageIndex: messages.slice(0, index).filter((item) => item.role === 'user').length,
+        };
+      }
+    }
+    return null;
+  }
+
+  function canRegenerateAssistant(message: LocalMessage) {
+    const previous = previousUserForAssistant(message);
+    return !!previous && !running && !workOutstanding && canEditMessages &&
+      !message.interrupted && previous.message.deliveryState !== 'queued' && previous.message.deliveryState !== 'failed';
+  }
+
+  async function copyAssistantMessage(message: LocalMessage) {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(message.text);
+      else {
+        const textarea = document.createElement('textarea');
+        textarea.value = message.text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('复制失败');
+      }
+      copiedMessageID = message.id;
+      if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer);
+      copyResetTimer = window.setTimeout(() => { copiedMessageID = ''; copyResetTimer = undefined; }, 1600);
+    } catch (error) { showError(error); }
+  }
+
+  async function regenerateAssistantMessage(message: LocalMessage) {
+    const previous = previousUserForAssistant(message);
+    if (!previous || !canRegenerateAssistant(message)) return;
+    const images = (previous.message.images ?? []).flatMap((dataURL, index) => {
+      const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/i.exec(dataURL);
+      return match ? [{ name: `image-${index + 1}`, mediaType: match[1].toLowerCase(), data: match[2] }] : [];
+    });
+    const targetID = previous.message.canonicalID || previous.message.executionID || previous.message.id;
+    const draft: EditDraft = {
+      messageID: previous.message.id, targetID, userMessageIndex: previous.userMessageIndex,
+      wasQueued: false, previousText: composerText, previousAttachments: attachments,
+    };
+    await applyUserMessageEdit({
+      draft, request: { text: previous.message.text, images, userMessageIndex: previous.userMessageIndex },
+      pendingAtConfirm: false,
+    });
+  }
+
   function requestEditConfirmation() {
     if (!editDraft || !canWrite) return;
     const text = composerText.trim();
@@ -2516,8 +2724,26 @@
   }
 
   onMount(() => {
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const syncColorScheme = () => systemPrefersDark = colorScheme.matches;
+    const syncMotionPreference = () => reducedMotion = motionPreference.matches;
+    const syncVisibility = () => appVisible = !document.hidden;
+    syncColorScheme();
+    syncMotionPreference();
+    syncVisibility();
+    colorScheme.addEventListener('change', syncColorScheme);
+    motionPreference.addEventListener('change', syncMotionPreference);
+    document.addEventListener('visibilitychange', syncVisibility);
     void initialize();
-    return () => clearElapsedTimer();
+    return () => {
+      clearElapsedTimer();
+      if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer);
+      colorScheme.removeEventListener('change', syncColorScheme);
+      motionPreference.removeEventListener('change', syncMotionPreference);
+      document.removeEventListener('visibilitychange', syncVisibility);
+      if (wallpaperObjectURL) URL.revokeObjectURL(wallpaperObjectURL);
+    };
   });
 </script>
 
@@ -2529,6 +2755,17 @@
   <div class="boot"><span class="brand-mark">l</span><span>正在启动 luneAgent…</span></div>
 {:else}
   <div class="app-shell" role="region" aria-label="桌面工作区拖放区域" ondragover={(event) => event.preventDefault()} ondrop={onDrop}>
+    {#if theme === 'anime'}
+      <div class="wallpaper-layer" aria-hidden="true">
+        {#if wallpaperURL && appVisible && (activeWallpaperType !== 'dynamic' || !reducedMotion)}
+          {#if activeWallpaperType === 'dynamic' && /\.(mp4|webm)(?:$|\?)/i.test(wallpaperURL)}
+            <video bind:this={wallpaperVideo} src={wallpaperURL} autoplay muted loop playsinline></video>
+          {:else}
+            <img src={wallpaperURL} alt="" />
+          {/if}
+        {/if}
+      </div>
+    {/if}
     <aside class="sidebar">
       <div class="brand-row">
         <div class="brand-mark">l</div>
@@ -2697,11 +2934,11 @@
           {#if workspace}
             <button class="subtle-button" onclick={() => void closeWorkspace()} title="关闭工作区">关闭工作区</button>
             <span class="top-divider"></span>
-            <label class="permission-select"><span>权限</span><select value={permissionMode} disabled={planMode || workOutstanding} onchange={(event) => void setPermission(event.currentTarget.value)}>
-              <option value="read-only">只读</option><option value="workspace">工作区</option><option value="ask">每次询问</option><option value="full-access">完全访问</option>
-            </select></label>
           {/if}
-          <label class="theme-select" title="主题"><span>{theme === 'dark' ? '◐' : theme === 'light' ? '☼' : '◑'}</span><select value={theme} onchange={(event) => void changeTheme(event.currentTarget.value)} aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+          <div class="theme-switch" role="group" aria-label="主题快捷切换">
+            <button class:active={!effectiveDarkTheme} aria-label="切换到浅色主题" aria-pressed={!effectiveDarkTheme} onclick={() => void changeTheme('light')} title="切换到浅色主题">☼ 浅色</button>
+            <button class:active={effectiveDarkTheme} aria-label="切换到深色主题" aria-pressed={effectiveDarkTheme} onclick={() => void changeTheme('dark')} title="切换到深色主题">☾ 深色</button>
+          </div>
           <button class="icon-button top-settings" aria-label="设置" onclick={setSettingsForm}>⚙</button>
         </div>
       </header>
@@ -2907,6 +3144,11 @@
                       {#if row.message.deliveryState === 'queued'}<button class="message-cancel-button" aria-label="撤回排队消息" disabled={cancellingQueuedExecution === row.message.executionID} onclick={() => void cancelQueuedMessage(row.message)}>{cancellingQueuedExecution === row.message.executionID ? '正在撤回…' : '撤回'}</button>{/if}
                       {#if canEditMessages && (row.message.deliveryState === 'queued' || row.message.deliveryState === 'submitted' || row.message.deliveryState === undefined)}<button class="message-edit-button" aria-label="编辑消息" onclick={() => startEditingMessage(row.message, row.userMessageIndex)}>编辑</button>{/if}
                     </div>
+                  {:else if row.message.role === 'assistant' && row.message.text}
+                    <div class="message-actions assistant-message-actions">
+                      <button class="message-edit-button" aria-label="复制回复" title={copiedMessageID === row.message.id ? '已复制' : '复制回复'} onclick={() => void copyAssistantMessage(row.message)}>{copiedMessageID === row.message.id ? '✓' : '⧉'}</button>
+                      {#if canRegenerateAssistant(row.message)}<button class="message-edit-button" aria-label="重新生成回复" title="重新生成回复" onclick={() => void regenerateAssistantMessage(row.message)}>↻</button>{/if}
+                    </div>
                   {/if}
                 </div>
               </article>
@@ -2995,9 +3237,14 @@
                 <button class:plan-active={planMode} class="plan-toggle" onclick={() => void setPlanMode(!planMode)} disabled={workOutstanding || !!editDraft}><span>◈</span> Plan 模式</button>
               </div>
               <div class="composer-right">
+                {#if workspace}
+                  <select class="permission-profile-select" value={permissionMode} disabled={planMode || workOutstanding} aria-label="工具权限" onchange={(event) => void setPermission(event.currentTarget.value)}>
+                    <option value="read-only">权限 · 只读</option><option value="workspace">权限 · 工作区</option><option value="ask">权限 · 每次询问</option><option value="full-access">权限 · 完全访问</option>
+                  </select>
+                {/if}
                 {#if models.configured && models.profiles?.length && session}
                   <select class="model-profile-select" value={session.settings.model_profile || models.defaultModel} disabled={workOutstanding} aria-label="会话模型" onchange={(event) => void setSessionModel(event.currentTarget.value)}>
-                    {#each models.profiles as profile}<option value={profile.name}>{profile.name}</option>{/each}
+                    {#each models.profiles as profile}<option value={profile.name}>模型 · {profile.name}</option>{/each}
                   </select>
                 {:else}<span class="model-label">未配置模型</span>{/if}
                 {#if running}<button class="stop-button" onclick={() => void interruptTask()} disabled={interrupting} title="中断任务">{interrupting ? '正在中断…' : '■ 中断'}</button>{/if}
@@ -3020,39 +3267,101 @@
 {#if errorMessage}<div class="toast-error" role="status">{errorMessage}<button onclick={() => errorMessage = ''}>×</button></div>{/if}
 
 {#if modal}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; worktreeRemovalTarget = null; worktreeRemovalError = ''; } }}>
-          {#if modal === 'settings'}
+  <div class="modal-backdrop" role="presentation" onclick={(event) => {
+    if (event.target !== event.currentTarget) return;
+    if (modal === 'settings') cancelSettings();
+    else { modal = null; editConfirmation = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; worktreeRemovalTarget = null; worktreeRemovalError = ''; }
+  }}>
+    {#if modal === 'settings'}
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><div class="modal-header-actions">{#if workspace}<button class="small-button" onclick={() => void openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div></div>
+        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">设置</h2></div><div class="modal-header-actions">{#if workspace}<button class="small-button" onclick={() => void openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={cancelSettings}>×</button></div></div>
         <div class="modal-body settings-body">
-          <section class="settings-section"><div class="settings-section-heading"><div><h3>模型提供方</h3><p>API 密钥使用当前 Windows 用户 DPAPI 加密保存。</p></div><button class="small-button" onclick={addProvider}>＋ 添加提供方</button></div>
-            {#each providerForms as provider, index (index)}
-              <div class="provider-form">
-                <div class="form-grid">
-                  <label>名称<input bind:value={provider.name} /></label>
-                  <label>协议<select bind:value={provider.protocol}><option value="responses">Responses API</option><option value="anthropic-messages">Anthropic Messages</option></select></label>
-                  <label class="wide-field">API 地址<input bind:value={provider.baseURL} placeholder="https://api.example.com/v1" /></label>
-                  <label class="wide-field">API 密钥<input type="password" bind:value={provider.apiKey} placeholder={provider.hasAPIKey ? '留空则保留已保存的密钥' : '粘贴 API 密钥'} autocomplete="new-password" /></label>
-                  <label class="check-label"><input type="checkbox" bind:checked={provider.serverCompaction} /> 服务端上下文压缩</label>
+          <div class="settings-tabs" role="tablist" aria-label="设置分类">
+            <button role="tab" aria-selected={settingsTab === 'models'} class:active={settingsTab === 'models'} onclick={() => settingsTab = 'models'}><span>⚙</span> 模型与提供方</button>
+            <button role="tab" aria-selected={settingsTab === 'appearance'} class:active={settingsTab === 'appearance'} onclick={() => settingsTab = 'appearance'}><span>◐</span> 外观与主题</button>
+          </div>
+          <div class="settings-content">
+            {#if settingsTab === 'models'}
+              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型提供方</h3><p>API 密钥使用当前 Windows 用户 DPAPI 加密保存。</p></div><button class="small-button" onclick={addProvider}>＋ 添加提供方</button></div>
+                {#each providerForms as provider, index (index)}
+                  <div class="provider-form">
+                    <div class="form-grid">
+                      <label>名称<input bind:value={provider.name} /></label>
+                      <label>协议<select bind:value={provider.protocol}><option value="responses">Responses API</option><option value="anthropic-messages">Anthropic Messages</option></select></label>
+                      <label class="wide-field">API 地址<input bind:value={provider.baseURL} placeholder="https://api.example.com/v1" /></label>
+                      <label class="wide-field">API 密钥<input type="password" bind:value={provider.apiKey} placeholder={provider.hasAPIKey ? '留空则保留已保存的密钥' : '粘贴 API 密钥'} autocomplete="new-password" /></label>
+                      <label class="check-label"><input type="checkbox" bind:checked={provider.serverCompaction} /> 服务端上下文压缩</label>
+                    </div>
+                    {#if providerForms.length > 1}<button class="remove-row" onclick={() => providerForms = providerForms.filter((_, i) => i !== index)}>移除提供方</button>{/if}
+                  </div>
+                {/each}
+              </section>
+              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型档案</h3><p>档案名称会显示在会话的模型选择器中。</p></div><button class="small-button" onclick={addProfile}>＋ 添加模型</button></div>
+                {#each profileForms as profile, index (index)}
+                  <div class="profile-form">
+                    <label>档案名称<input bind:value={profile.name} /></label>
+                    <label>提供方<select bind:value={profile.provider}>{#each providerForms as provider}<option value={provider.name}>{provider.name}</option>{/each}</select></label>
+                    <label>模型 ID<input bind:value={profile.model} placeholder="例如 deepseek-chat" /></label>
+                    <label>最大输出 Token<input type="number" min="0" bind:value={profile.maxOutputTokens} /></label>
+                    {#if profileForms.length > 1}<button class="remove-row" onclick={() => profileForms = profileForms.filter((_, i) => i !== index)}>移除模型</button>{/if}
+                  </div>
+                {/each}
+                <div class="form-grid bottom-grid"><label>默认模型<select bind:value={defaultModel}>{#each profileForms as profile}<option value={profile.name}>{profile.name}</option>{/each}</select></label><label>并行 Agent 数<input type="number" min="1" max="32" bind:value={maxParallelAgents} /></label></div>
+              </section>
+            {:else}
+              <section class="appearance-settings">
+                <div class="settings-section-heading"><div><h3>应用主题</h3><p>二次元主题只在此处启用；顶部快捷切换仅包含浅色和深色。</p></div></div>
+                <div class="theme-cards" role="group" aria-label="应用主题">
+                  <button class:chosen={appearanceDraft.theme === 'system'} class="theme-card" onclick={() => previewAppearanceDraft({ ...appearanceDraft, theme: 'system' })}><span class="theme-card-icon">◐</span><strong>跟随系统</strong></button>
+                  <button class:chosen={appearanceDraft.theme === 'light'} class="theme-card" onclick={() => previewAppearanceDraft({ ...appearanceDraft, theme: 'light' })}><span class="theme-card-icon">☼</span><strong>浅色</strong></button>
+                  <button class:chosen={appearanceDraft.theme === 'dark'} class="theme-card" onclick={() => previewAppearanceDraft({ ...appearanceDraft, theme: 'dark' })}><span class="theme-card-icon">☾</span><strong>深色</strong></button>
+                  <button class:chosen={appearanceDraft.theme === 'anime'} class="theme-card anime-card" onclick={() => previewAppearanceDraft({ ...appearanceDraft, theme: 'anime' })}><span class="theme-card-icon">✿</span><strong>二次元</strong></button>
                 </div>
-                {#if providerForms.length > 1}<button class="remove-row" onclick={() => providerForms = providerForms.filter((_, i) => i !== index)}>移除提供方</button>{/if}
-              </div>
-            {/each}
-          </section>
-          <section class="settings-section"><div class="settings-section-heading"><div><h3>模型档案</h3><p>档案名称会显示在会话的模型选择器中。</p></div><button class="small-button" onclick={addProfile}>＋ 添加模型</button></div>
-            {#each profileForms as profile, index (index)}
-              <div class="profile-form">
-                <label>档案名称<input bind:value={profile.name} /></label>
-                <label>提供方<select bind:value={profile.provider}>{#each providerForms as provider}<option value={provider.name}>{provider.name}</option>{/each}</select></label>
-                <label>模型 ID<input bind:value={profile.model} placeholder="例如 deepseek-chat" /></label>
-                <label>最大输出 Token<input type="number" min="0" bind:value={profile.maxOutputTokens} /></label>
-                {#if profileForms.length > 1}<button class="remove-row" onclick={() => profileForms = profileForms.filter((_, i) => i !== index)}>移除模型</button>{/if}
-              </div>
-            {/each}
-            <div class="form-grid bottom-grid"><label>默认模型<select bind:value={defaultModel}>{#each profileForms as profile}<option value={profile.name}>{profile.name}</option>{/each}</select></label><label>并行 Agent 数<input type="number" min="1" max="32" bind:value={maxParallelAgents} /></label></div>
-          </section>
+
+                <div class="appearance-subsection">
+                  <div class="settings-section-heading"><div><h3>二次元背景</h3><p>壁纸保存在本机，不会上传或同步。</p></div></div>
+                  <div class="wallpaper-mode-switch" role="group" aria-label="壁纸类型">
+                    <button class:selected={appearanceDraft.wallpaperType === 'static'} aria-pressed={appearanceDraft.wallpaperType === 'static'} onclick={() => setWallpaperType('static')}>▧ 静态壁纸</button>
+                    <button class:selected={appearanceDraft.wallpaperType === 'dynamic'} aria-pressed={appearanceDraft.wallpaperType === 'dynamic'} onclick={() => setWallpaperType('dynamic')}>▷ 动态壁纸</button>
+                  </div>
+                  <input id="wallpaper-picker" type="file" accept={appearanceDraft.wallpaperType === 'static' ? 'image/png,image/jpeg,image/webp' : 'image/gif,video/mp4,video/webm'} hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; if (file) previewBrowserWallpaper(file); event.currentTarget.value = ''; }} />
+                  <div class="wallpaper-editor">
+                    <div class="wallpaper-preview" aria-label="壁纸预览">
+                      {#if appearanceDraft.wallpaperURL && appearanceDraft.wallpaperType === 'dynamic' && reducedMotion}
+                        <div class="wallpaper-empty-preview"><span>Ⅱ</span><strong>已根据系统设置暂停动态预览</strong></div>
+                      {:else if appearanceDraft.wallpaperURL && appearanceDraft.wallpaperType === 'dynamic' && /\.(mp4|webm)(?:$|\?)/i.test(appearanceDraft.wallpaperURL)}
+                        <video src={appearanceDraft.wallpaperURL} autoplay={appVisible} muted loop playsinline></video>
+                      {:else if appearanceDraft.wallpaperURL}
+                        <img src={appearanceDraft.wallpaperURL} alt="当前壁纸预览" />
+                      {:else if appearanceDraft.wallpaperFile}
+                        <div class="wallpaper-empty-preview"><span>!</span><strong>找不到本地壁纸，请重新选择</strong></div>
+                      {:else}
+                        <div class="wallpaper-empty-preview"><span>✿</span><strong>本地壁纸预览</strong></div>
+                      {/if}
+                    </div>
+                    <div class="wallpaper-controls">
+                      <button class="small-button" onclick={() => void chooseWallpaper()}>▰ 更换壁纸</button>
+                      <strong class="wallpaper-filename" title={appearanceDraft.wallpaperName || appearanceDraft.wallpaperFile || '未选择壁纸'}>{appearanceDraft.wallpaperName || appearanceDraft.wallpaperFile || '未选择壁纸'}</strong>
+                      <p>静态图：PNG / JPG / WebP<br />动态壁纸：GIF / MP4 / WebM</p>
+                      <button class="quiet-button reset-wallpaper" onclick={resetWallpaper}>恢复默认背景</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="appearance-adjustments">
+                  <div class="opacity-control">
+                    <label for="panel-opacity"><strong>面板透明度</strong><output>{appearanceDraft.panelOpacity}%</output></label>
+                    <input id="panel-opacity" type="range" min="60" max="95" step="1" value={appearanceDraft.panelOpacity} oninput={(event) => previewAppearanceDraft({ ...appearanceDraft, panelOpacity: Number(event.currentTarget.value) })} />
+                    <p>只调整侧边栏、会话区和对话框前景面板，壁纸保持原亮度。</p>
+                  </div>
+                  <div class="glass-preview"><strong>毛玻璃预览</strong><span>在当前壁纸下查看前景面板效果</span><div><b>会话内容</b><small>玻璃面板保持文字清晰</small></div></div>
+                </div>
+                <p class="appearance-save-note">壁纸和透明度会立即预览；保存后应用，取消会还原到之前设置。</p>
+              </section>
+            {/if}
+          </div>
         </div>
-        <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>取消</button><button class="primary-button" disabled={settingsSaving} onclick={() => void saveSettings()}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={cancelSettings}>取消</button><button class="primary-button" disabled={settingsSaving || (!appearanceDirty && !modelSettingsDirty)} onclick={() => void saveSettings()}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
       </div>
     {:else if modal === 'apply-worktree' && worktreeApplyConfirmation}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="worktree-apply-title" tabindex="-1">

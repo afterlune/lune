@@ -18,6 +18,15 @@ import (
 )
 
 const defaultTheme = "system"
+const defaultPanelOpacity = 80
+
+type Appearance struct {
+	Theme         string `json:"theme"`
+	WallpaperType string `json:"wallpaperType"`
+	WallpaperFile string `json:"wallpaperFile,omitempty"`
+	WallpaperName string `json:"wallpaperName,omitempty"`
+	PanelOpacity  int    `json:"panelOpacity"`
+}
 
 type Store struct{ db *sql.DB }
 
@@ -27,6 +36,14 @@ func UserSettingsPath() (string, error) {
 		return "", fmt.Errorf("find user config directory: %w", err)
 	}
 	return filepath.Join(root, "luneAgent", "settings.db"), nil
+}
+
+func UserSettingsDirectory() (string, error) {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(path), nil
 }
 
 func OpenUser() (*Store, error) {
@@ -268,30 +285,113 @@ func (s *Store) SaveModelConfigWith(config publicmodel.Config, applyFile, rollba
 	return nil
 }
 
-func (s *Store) Theme() (string, error) {
-	var theme string
-	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'theme'`).Scan(&theme)
+func (s *Store) Appearance() (Appearance, error) {
+	var encoded string
+	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'appearance'`).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		return defaultTheme, nil
+		// Read the previous single-value setting on first launch after this
+		// appearance setting is introduced.
+		var theme string
+		if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'theme'`).Scan(&theme); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Appearance{}, fmt.Errorf("read theme setting: %w", err)
+		}
+		if supportedTheme(theme) {
+			return defaultAppearance(theme), nil
+		}
+		return defaultAppearance(defaultTheme), nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read theme setting: %w", err)
+		return Appearance{}, fmt.Errorf("read appearance setting: %w", err)
 	}
-	switch theme {
-	case "system", "light", "dark":
-		return theme, nil
-	default:
-		return defaultTheme, nil
+	var appearance Appearance
+	if err := json.Unmarshal([]byte(encoded), &appearance); err != nil {
+		return Appearance{}, fmt.Errorf("decode appearance setting: %w", err)
 	}
+	if appearance.Theme == "" || !supportedTheme(appearance.Theme) {
+		appearance.Theme = defaultTheme
+	}
+	if appearance.WallpaperType == "" {
+		appearance.WallpaperType = "static"
+	}
+	if appearance.PanelOpacity == 0 {
+		appearance.PanelOpacity = defaultPanelOpacity
+	}
+	if err := validateAppearance(appearance); err != nil {
+		return Appearance{}, fmt.Errorf("invalid saved appearance setting: %w", err)
+	}
+	return appearance, nil
+}
+
+func (s *Store) SaveAppearance(appearance Appearance) error {
+	if err := validateAppearance(appearance); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(appearance)
+	if err != nil {
+		return fmt.Errorf("encode appearance setting: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin appearance setting transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('appearance', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, string(encoded)); err != nil {
+		return fmt.Errorf("save appearance setting: %w", err)
+	}
+	// Keep the legacy theme key in sync for the existing Theme API and older
+	// settings readers while all new appearance fields live in one value.
+	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('theme', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, appearance.Theme); err != nil {
+		return fmt.Errorf("save legacy theme setting: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit appearance setting: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) Theme() (string, error) {
+	appearance, err := s.Appearance()
+	if err != nil {
+		return "", err
+	}
+	return appearance.Theme, nil
 }
 
 func (s *Store) SetTheme(theme string) error {
-	if theme != "system" && theme != "light" && theme != "dark" {
+	if !supportedTheme(theme) {
 		return fmt.Errorf("unsupported theme %q", theme)
 	}
-	_, err := s.db.Exec(`INSERT INTO app_settings(key, value) VALUES ('theme', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, theme)
+	appearance, err := s.Appearance()
 	if err != nil {
-		return fmt.Errorf("save theme setting: %w", err)
+		return err
+	}
+	appearance.Theme = theme
+	return s.SaveAppearance(appearance)
+}
+
+func defaultAppearance(theme string) Appearance {
+	return Appearance{Theme: theme, WallpaperType: "static", PanelOpacity: defaultPanelOpacity}
+}
+
+func supportedTheme(theme string) bool {
+	return theme == "system" || theme == "light" || theme == "dark" || theme == "anime"
+}
+
+func validateAppearance(appearance Appearance) error {
+	if !supportedTheme(appearance.Theme) {
+		return fmt.Errorf("unsupported theme %q", appearance.Theme)
+	}
+	if appearance.WallpaperType != "static" && appearance.WallpaperType != "dynamic" {
+		return fmt.Errorf("unsupported wallpaper type %q", appearance.WallpaperType)
+	}
+	if appearance.PanelOpacity < 60 || appearance.PanelOpacity > 95 {
+		return fmt.Errorf("panel opacity must be between 60 and 95")
+	}
+	if strings.ContainsAny(appearance.WallpaperFile, `/\\`) || appearance.WallpaperFile == "." || appearance.WallpaperFile == ".." {
+		return fmt.Errorf("wallpaper file must be a file name")
+	}
+	if strings.ContainsAny(appearance.WallpaperName, `/\\`) {
+		return fmt.Errorf("wallpaper name must be a file name")
 	}
 	return nil
 }

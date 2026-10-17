@@ -28,7 +28,7 @@ func run() error {
 		Name:        "luneAgent",
 		Description: "本地 Agent 桌面端",
 		Services:    []application.Service{application.NewService(service)},
-		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(frontend)},
+		Assets:      application.AssetOptions{Handler: desktop.WallpaperAssetHandler(application.AssetFileServerFS(frontend))},
 	})
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "luneAgent", Width: 1440, Height: 920, MinWidth: 980, MinHeight: 640,

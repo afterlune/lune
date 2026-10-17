@@ -11,7 +11,9 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -68,6 +70,7 @@ type desktopSessionContext struct {
 const (
 	workspaceModeLocal    = "local"
 	workspaceModeWorktree = "worktree"
+	maxWallpaperBytes     = 100 << 20
 )
 
 func NewDesktopService() (*DesktopService, error) {
@@ -98,11 +101,36 @@ func (s *DesktopService) ServiceShutdown() error {
 
 type Bootstrap struct {
 	Theme      string                     `json:"theme"`
+	Appearance AppearanceView             `json:"appearance"`
 	Recent     []settings.RecentWorkspace `json:"recentWorkspaces"`
 	Models     ModelSettingsView          `json:"models"`
 	Workspace  string                     `json:"workspace"`
 	SessionID  string                     `json:"sessionId"`
 	Permission string                     `json:"permissionMode"`
+}
+
+type AppearanceView struct {
+	Theme         string `json:"theme"`
+	WallpaperType string `json:"wallpaperType"`
+	WallpaperFile string `json:"wallpaperFile"`
+	WallpaperName string `json:"wallpaperName"`
+	WallpaperURL  string `json:"wallpaperURL"`
+	PanelOpacity  int    `json:"panelOpacity"`
+}
+
+type AppearanceSettingsInput struct {
+	Theme         string `json:"theme"`
+	WallpaperType string `json:"wallpaperType"`
+	WallpaperFile string `json:"wallpaperFile"`
+	WallpaperName string `json:"wallpaperName"`
+	PanelOpacity  int    `json:"panelOpacity"`
+}
+
+type WallpaperSelection struct {
+	File string `json:"file"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 
 type ProviderView struct {
@@ -153,7 +181,7 @@ type ModelSettingsInput struct {
 }
 
 func (s *DesktopService) Bootstrap() (Bootstrap, error) {
-	theme, err := s.store.Theme()
+	appearance, err := s.store.Appearance()
 	if err != nil {
 		return Bootstrap{}, err
 	}
@@ -167,7 +195,10 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := Bootstrap{Theme: theme, Recent: recent, Models: modelSettingsView(modelConfig), Workspace: s.workspace, SessionID: s.sessionID}
+	result := Bootstrap{
+		Theme: appearance.Theme, Appearance: appearanceView(appearance), Recent: recent,
+		Models: modelSettingsView(modelConfig), Workspace: s.workspace, SessionID: s.sessionID,
+	}
 	if s.core != nil {
 		result.Permission = string(s.core.PermissionMode())
 	}
@@ -291,7 +322,234 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 	return modelSettingsView(config), nil
 }
 
-func (s *DesktopService) SetTheme(theme string) error { return s.store.SetTheme(theme) }
+func appearanceView(appearance settings.Appearance) AppearanceView {
+	view := AppearanceView{
+		Theme: appearance.Theme, WallpaperType: appearance.WallpaperType,
+		WallpaperFile: appearance.WallpaperFile, WallpaperName: appearance.WallpaperName,
+		PanelOpacity: appearance.PanelOpacity,
+	}
+	if appearance.WallpaperFile != "" {
+		if path, err := wallpaperPath(appearance.WallpaperFile); err == nil {
+			if _, err := os.Stat(path); err == nil {
+				view.WallpaperURL = "/wallpapers/" + appearance.WallpaperFile
+			}
+		}
+	}
+	return view
+}
+
+func (s *DesktopService) SaveAppearanceSettings(input AppearanceSettingsInput) (AppearanceView, error) {
+	appearance := settings.Appearance{
+		Theme: input.Theme, WallpaperType: input.WallpaperType,
+		WallpaperFile: input.WallpaperFile, WallpaperName: input.WallpaperName,
+		PanelOpacity: input.PanelOpacity,
+	}
+	if input.WallpaperFile != "" {
+		if appearance.WallpaperName == "" {
+			appearance.WallpaperName = input.WallpaperFile
+		}
+		if err := validateWallpaperFile(input.WallpaperType, input.WallpaperFile); err != nil {
+			return AppearanceView{}, err
+		}
+		wallpaperPath, err := wallpaperPath(input.WallpaperFile)
+		if err != nil {
+			return AppearanceView{}, err
+		}
+		if _, err := os.Stat(wallpaperPath); err != nil {
+			return AppearanceView{}, fmt.Errorf("找不到所选壁纸文件: %w", err)
+		}
+	}
+	previous, err := s.store.Appearance()
+	if err != nil {
+		return AppearanceView{}, err
+	}
+	if err := s.store.SaveAppearance(appearance); err != nil {
+		return AppearanceView{}, err
+	}
+	if previous.WallpaperFile != "" && previous.WallpaperFile != appearance.WallpaperFile {
+		if path, pathErr := wallpaperPath(previous.WallpaperFile); pathErr == nil {
+			_ = os.Remove(path)
+		}
+	}
+	return appearanceView(appearance), nil
+}
+
+func (s *DesktopService) PickWallpaper(wallpaperType string) (WallpaperSelection, error) {
+	filters, extensions, err := wallpaperPickerOptions(wallpaperType)
+	if err != nil {
+		return WallpaperSelection{}, err
+	}
+	s.mu.Lock()
+	app := s.app
+	s.mu.Unlock()
+	if app == nil {
+		return WallpaperSelection{}, errors.New("桌面文件选择器尚未就绪")
+	}
+	source, err := app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+		CanChooseFiles: true, CanChooseDirectories: false, AllowsOtherFileTypes: false,
+		Title: "选择壁纸", ButtonText: "选择", Filters: filters,
+	}).PromptForSingleSelection()
+	if err != nil {
+		return WallpaperSelection{}, err
+	}
+	if source == "" {
+		return WallpaperSelection{}, nil
+	}
+	ext := strings.ToLower(filepath.Ext(source))
+	if _, ok := extensions[ext]; !ok {
+		return WallpaperSelection{}, fmt.Errorf("不支持此壁纸格式: %s", ext)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return WallpaperSelection{}, fmt.Errorf("读取壁纸文件: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return WallpaperSelection{}, errors.New("壁纸必须是普通文件")
+	}
+	if info.Size() <= 0 || info.Size() > maxWallpaperBytes {
+		return WallpaperSelection{}, fmt.Errorf("壁纸文件不能超过 %d MiB", maxWallpaperBytes>>20)
+	}
+	dir, err := wallpaperDirectory()
+	if err != nil {
+		return WallpaperSelection{}, err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return WallpaperSelection{}, fmt.Errorf("创建壁纸目录: %w", err)
+	}
+	target, err := os.CreateTemp(dir, "wallpaper-*"+ext)
+	if err != nil {
+		return WallpaperSelection{}, fmt.Errorf("创建壁纸副本: %w", err)
+	}
+	name := filepath.Base(target.Name())
+	cleanup := func() { _ = target.Close(); _ = os.Remove(target.Name()) }
+	input, err := os.Open(source)
+	if err != nil {
+		cleanup()
+		return WallpaperSelection{}, fmt.Errorf("打开壁纸文件: %w", err)
+	}
+	written, copyErr := io.Copy(target, io.LimitReader(input, maxWallpaperBytes+1))
+	closeInputErr := input.Close()
+	closeTargetErr := target.Close()
+	if copyErr != nil || closeInputErr != nil || closeTargetErr != nil {
+		_ = os.Remove(target.Name())
+		return WallpaperSelection{}, errors.Join(copyErr, closeInputErr, closeTargetErr)
+	}
+	if written > maxWallpaperBytes {
+		_ = os.Remove(target.Name())
+		return WallpaperSelection{}, fmt.Errorf("壁纸文件不能超过 %d MiB", maxWallpaperBytes>>20)
+	}
+	return WallpaperSelection{
+		File: name, Name: filepath.Base(source), Type: wallpaperType,
+		URL: "/wallpapers/" + name,
+	}, nil
+}
+
+func (s *DesktopService) DiscardWallpaper(file string) error {
+	if file == "" {
+		return nil
+	}
+	appearance, err := s.store.Appearance()
+	if err != nil {
+		return err
+	}
+	if file == appearance.WallpaperFile {
+		return nil
+	}
+	path, err := wallpaperPath(file)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("清理未保存的壁纸: %w", err)
+	}
+	return nil
+}
+
+func wallpaperPickerOptions(wallpaperType string) ([]application.FileFilter, map[string]struct{}, error) {
+	switch wallpaperType {
+	case "static":
+		return []application.FileFilter{{DisplayName: "静态图片 (*.png;*.jpg;*.jpeg;*.webp)", Pattern: "*.png;*.jpg;*.jpeg;*.webp"}}, map[string]struct{}{".png": {}, ".jpg": {}, ".jpeg": {}, ".webp": {}}, nil
+	case "dynamic":
+		return []application.FileFilter{{DisplayName: "动态壁纸 (*.gif;*.mp4;*.webm)", Pattern: "*.gif;*.mp4;*.webm"}}, map[string]struct{}{".gif": {}, ".mp4": {}, ".webm": {}}, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported wallpaper type %q", wallpaperType)
+	}
+}
+
+func wallpaperDirectory() (string, error) {
+	dir, err := settings.UserSettingsDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "wallpapers"), nil
+}
+
+func wallpaperPath(file string) (string, error) {
+	if file == "" || filepath.Base(file) != file || strings.ContainsAny(file, `/\\`) {
+		return "", errors.New("invalid wallpaper file name")
+	}
+	dir, err := wallpaperDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, file), nil
+}
+
+func validateWallpaperFile(wallpaperType, file string) error {
+	_, extensions, err := wallpaperPickerOptions(wallpaperType)
+	if err != nil {
+		return err
+	}
+	if _, ok := extensions[strings.ToLower(filepath.Ext(file))]; !ok {
+		return errors.New("壁纸文件格式与选择的静态/动态类型不匹配")
+	}
+	_, err = wallpaperPath(file)
+	return err
+}
+
+func WallpaperAssetHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "/wallpapers/"
+		if !strings.HasPrefix(r.URL.Path, prefix) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		file := strings.TrimPrefix(r.URL.Path, prefix)
+		if file == "" || filepath.Base(file) != file || strings.ContainsAny(file, `/\\`) {
+			http.NotFound(w, r)
+			return
+		}
+		path, err := wallpaperPath(file)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch strings.ToLower(filepath.Ext(file)) {
+		case ".png":
+			w.Header().Set("Content-Type", "image/png")
+		case ".jpg", ".jpeg":
+			w.Header().Set("Content-Type", "image/jpeg")
+		case ".webp":
+			w.Header().Set("Content-Type", "image/webp")
+		case ".gif":
+			w.Header().Set("Content-Type", "image/gif")
+		case ".mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+		case ".webm":
+			w.Header().Set("Content-Type", "video/webm")
+		}
+		http.ServeFile(w, r, path)
+	})
+}
+
+func (s *DesktopService) SetTheme(theme string) error {
+	appearance, err := s.store.Appearance()
+	if err != nil {
+		return err
+	}
+	appearance.Theme = theme
+	return s.store.SaveAppearance(appearance)
+}
 
 func (s *DesktopService) PickWorkspace() (string, error) {
 	s.mu.Lock()
