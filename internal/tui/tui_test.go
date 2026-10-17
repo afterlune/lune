@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1237,6 +1238,9 @@ func TestContextCommand(t *testing.T) {
 	if !strings.Contains(lastEntry, "Workspace Memory:") {
 		t.Errorf("expected Workspace Memory in context diagnostics, got: %s", lastEntry)
 	}
+	if !strings.Contains(lastEntry, "Background Processes:") {
+		t.Errorf("expected Background Processes in context diagnostics, got: %s", lastEntry)
+	}
 }
 
 func TestSessionsCommandAndAutocomplete(t *testing.T) {
@@ -1254,6 +1258,18 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	matchesMem := filterCommands("/mem")
 	if len(matchesMem) == 0 || matchesMem[0].Command != "/memory" {
 		t.Errorf("expected /memory in autocomplete, got: %#v", matchesMem)
+	}
+	matchesPS := filterCommands("/ps")
+	if len(matchesPS) == 0 || matchesPS[0].Command != "/ps" {
+		t.Errorf("expected /ps in autocomplete, got: %#v", matchesPS)
+	}
+	matchesStop := filterCommands("/stop")
+	if len(matchesStop) == 0 || matchesStop[0].Command != "/stop" {
+		t.Errorf("expected /stop in autocomplete, got: %#v", matchesStop)
+	}
+	matchesLogs := filterCommands("/log")
+	if len(matchesLogs) == 0 || matchesLogs[0].Command != "/logs" {
+		t.Errorf("expected /logs in autocomplete, got: %#v", matchesLogs)
 	}
 
 	// Sessions without client
@@ -1416,6 +1432,85 @@ func TestMemoryCommand(t *testing.T) {
 	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
 	if !strings.Contains(lastSys, "No workspace memories stored yet") {
 		t.Errorf("expected empty list after clear, got: %s", lastSys)
+	}
+}
+
+func TestProcessCommands(t *testing.T) {
+	// 1. Without runtime
+	m := newTUIModel(nil, nil, "test-sess")
+	m.handleSlashCommand("/ps")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Background process management unavailable") {
+		t.Errorf("expected unavailable message without runtime, got: %s", lastSys)
+	}
+
+	m.handleSlashCommand("/stop all")
+	lastSys = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Process termination unavailable") {
+		t.Errorf("expected unavailable message without runtime, got: %s", lastSys)
+	}
+
+	m.handleSlashCommand("/logs cmd-1")
+	lastSys = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Process logs unavailable") {
+		t.Errorf("expected unavailable message without runtime, got: %s", lastSys)
+	}
+
+	// 2. With real core client and session runtime
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("failed to open session runtime: %v", err)
+	}
+	mWithRuntime := newTUIModel(client, runtime, session.ID)
+
+	// Initially empty ps
+	mWithRuntime.handleSlashCommand("/ps")
+	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
+	if !strings.Contains(lastSys, "No background processes in current session.") {
+		t.Errorf("expected empty processes message, got: %s", lastSys)
+	}
+
+	// Usage error for /stop
+	mWithRuntime.handleSlashCommand("/stop")
+	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
+	if !strings.Contains(lastSys, "Usage: `/stop <id|prefix|all>`") {
+		t.Errorf("expected usage message, got: %s", lastSys)
+	}
+
+	// Stop all when none running
+	mWithRuntime.handleSlashCommand("/stop all")
+	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
+	if !strings.Contains(lastSys, "No active background processes to stop.") {
+		t.Errorf("expected no active processes message, got: %s", lastSys)
+	}
+
+	// Usage error for /logs
+	mWithRuntime.handleSlashCommand("/logs")
+	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
+	if !strings.Contains(lastSys, "Usage: `/logs <id|prefix> [--tail N]`") {
+		t.Errorf("expected usage message, got: %s", lastSys)
+	}
+
+	// Logs for non-existent process
+	mWithRuntime.handleSlashCommand("/logs non-existent")
+	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
+	if !strings.Contains(lastSys, "Process \"non-existent\" not found.") {
+		t.Errorf("expected not found message, got: %s", lastSys)
 	}
 }
 

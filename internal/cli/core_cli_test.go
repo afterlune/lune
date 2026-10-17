@@ -88,8 +88,10 @@ func (f *fakeCLICore) Compact(context.Context, string) (int, error) { return f.c
 func (f *fakeCLICore) Workspace() string { return `C:\workspace` }
 
 func (f *fakeCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
-	if f.runtime == nil || f.runtime.sessionID != sessionID {
+	if f.runtime == nil {
 		f.runtime = newFakeCLIRuntime(f, sessionID, nil)
+	} else {
+		f.runtime.sessionID = sessionID
 	}
 	return f.runtime, nil
 }
@@ -256,6 +258,8 @@ type fakeCLIRuntime struct {
 	turns     map[string]fakeCLITurn
 	events    chan core.Event
 	runner    func(context.Context, core.TurnRequest) (json.RawMessage, error)
+	commands  []core.CommandInfo
+	outputs   map[string]string
 }
 
 type fakeCLITurn struct {
@@ -266,7 +270,8 @@ type fakeCLITurn struct {
 
 func newFakeCLIRuntime(client *fakeCLICore, sessionID string, approval *approvalCLICore) *fakeCLIRuntime {
 	return &fakeCLIRuntime{client: client, sessionID: sessionID, approval: approval,
-		cancels: make(map[string]context.CancelFunc), turns: make(map[string]fakeCLITurn)}
+		cancels: make(map[string]context.CancelFunc), turns: make(map[string]fakeCLITurn),
+		outputs: make(map[string]string)}
 }
 
 func (r *fakeCLIRuntime) SessionID() string { return r.sessionID }
@@ -416,6 +421,40 @@ func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
 		r.approval.results <- allowed
 	}
 	return nil
+}
+
+func (r *fakeCLIRuntime) ListCommands(_ context.Context) ([]core.CommandInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res := make([]core.CommandInfo, len(r.commands))
+	copy(res, r.commands)
+	return res, nil
+}
+
+func (r *fakeCLIRuntime) ReadCommand(_ context.Context, id string, _ core.CommandReadOptions) (core.CommandOutput, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, cmd := range r.commands {
+		if cmd.ID == id {
+			out := r.outputs[id]
+			return core.CommandOutput{Command: cmd, Output: out}, nil
+		}
+	}
+	return core.CommandOutput{}, errors.New("command not found")
+}
+
+func (r *fakeCLIRuntime) StopCommand(_ context.Context, id string) (core.CommandOutput, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, cmd := range r.commands {
+		if cmd.ID == id {
+			r.commands[i].Status = core.CommandCancelled
+			now := time.Now()
+			r.commands[i].FinishedAt = now
+			return core.CommandOutput{Command: r.commands[i]}, nil
+		}
+	}
+	return core.CommandOutput{}, errors.New("command not found")
 }
 
 func (f *blockingCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
@@ -996,4 +1035,65 @@ func TestCLIMemoryCommands(t *testing.T) {
 		t.Fatalf("stdout = %q, want empty after clear", stdout)
 	}
 }
+
+func TestCLIPsAndStopCommands(t *testing.T) {
+	client := &fakeCLICore{}
+
+	// 1. Initially empty
+	stdout, _ := runCLI(t, client, "/ps\n/exit\n", nil)
+	if !strings.Contains(stdout, "No background processes in current session.") {
+		t.Fatalf("stdout = %q, want empty processes message", stdout)
+	}
+
+	// 2. Add two background commands to runtime
+	now := time.Now()
+	exitZero := 0
+	client.runtime = &fakeCLIRuntime{
+		client: client,
+		commands: []core.CommandInfo{
+			{
+				ID:        "cmd-1001-dev",
+				Command:   "npm run dev",
+				Status:    core.CommandRunning,
+				StartedAt: now.Add(-30 * time.Second),
+			},
+			{
+				ID:         "cmd-1002-test",
+				Command:    "go test ./...",
+				Status:     core.CommandSucceeded,
+				StartedAt:  now.Add(-60 * time.Second),
+				FinishedAt: now.Add(-55 * time.Second),
+				ExitCode:   &exitZero,
+			},
+		},
+		outputs: map[string]string{
+			"cmd-1001-dev": "VITE v5.0.0 ready in 350 ms\nLocal: http://localhost:5173/\nNetwork: use --host to expose",
+		},
+	}
+
+	// 3. /ps lists both commands
+	stdout, _ = runCLI(t, client, "/ps\n/exit\n", nil)
+	if !strings.Contains(stdout, "Background Processes (2):") || !strings.Contains(stdout, "npm run dev") || !strings.Contains(stdout, "go test ./...") {
+		t.Fatalf("stdout = %q, want list of 2 processes", stdout)
+	}
+
+	// 4. /logs for cmd-1001-dev
+	stdout, _ = runCLI(t, client, "/logs cmd-1001\n/exit\n", nil)
+	if !strings.Contains(stdout, "Logs for [cmd-1001]") || !strings.Contains(stdout, "http://localhost:5173/") {
+		t.Fatalf("stdout = %q, want logs for process", stdout)
+	}
+
+	// 5. /stop for specific ID prefix
+	stdout, _ = runCLI(t, client, "/stop cmd-1001\n/exit\n", nil)
+	if !strings.Contains(stdout, "Stopped background process [cmd-1001]: npm run dev") {
+		t.Fatalf("stdout = %q, want stop confirmation", stdout)
+	}
+
+	// 6. /stop all when 0 active processes
+	stdout, _ = runCLI(t, client, "/stop all\n/exit\n", nil)
+	if !strings.Contains(stdout, "No active background processes to stop.") {
+		t.Fatalf("stdout = %q, want no active processes message", stdout)
+	}
+}
+
 
