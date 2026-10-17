@@ -37,15 +37,13 @@ Beta 安装包尚未签名，Windows 可能显示 SmartScreen 提示。安装器
 
 在模型设置中添加提供方、模型 ID 和默认模型。API 密钥保存在 `%APPDATA%\luneAgent\settings.db`，并由当前 Windows 用户的 DPAPI 加密。前端只接收密钥是否已保存的标记，留空可保留已保存的密钥。
 
-提供方、模型档案、默认模型、主题和最近工作区是用户级设置，会被桌面端、TUI 和 CLI 共用。MCP、上下文和图片附件限制仍属于工作区 `config.json`。
+Desktop 的提供方、模型档案、默认模型、主题和最近工作区保存在当前用户的 `settings.db`。TUI/CLI 继续使用自己的工作区 `config.json`，不读取 Desktop 数据库。Desktop 的项目运行设置（上下文窗口、自动压缩、输出预留、图片限制和 MCP 服务）按规范化项目路径保存在 `settings.db` 中；同一项目的 Local 与 Worktree 会话共用这些设置。
+
+Desktop 完全忽略项目中的 `config.json`，不会导入、迁移或改写它。需要配置 Desktop 时，在工作区侧栏打开“项目设置”；需要配置 TUI/CLI 时，编辑工作区的 `config.json`。两套配置各自独立。
 
 Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`，Worktree 的代码目录保存在用户缓存目录下 `luneAgent/worktrees/<project-hash>/<session-id>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。
 
 每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。会话完成或删除后，工作树都会保留；Desktop 显示工作目录，合并、检查和清理由用户使用 Git 完成。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
-
-打开包含旧模型配置的工作区时，桌面端会先显示迁移预览。对于同名提供方、模型档案或默认模型，可以分别保留全局设置或使用项目设置。迁移取消或失败时，项目配置保持原样；也可以直接用原有项目配置打开工作区。
-
-迁移项目模型设置时，Core 会先读取并校验工作区运行配置，再合并全局模型档案并验证最终配置。MCP、上下文和附件设置会保留在工作区 `config.json` 中，模型设置与凭据会迁入用户级设置。
 
 ## 运行中发送与编辑
 
@@ -65,7 +63,7 @@ Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-h
 
 侧栏可搜索、重命名和删除会话，并显示 Local/Worktree 模式及运行状态。不同会话可以并行运行，切换会话不会中断后台任务。删除当前会话时先切换到其他会话；如果没有其他会话，会先创建一个 Local 会话。删除会同时清除 Desktop 执行记录与会话数据，但保留关联的 Git 工作树。
 
-MCP 面板读取当前工作区 `config.json` 中已配置的服务，可查看连接状态、启用或停用服务，并为远程 HTTP 服务启动授权。服务定义仍由工作区配置文件管理；任务执行或待处理请求期间不能更改 MCP 状态。
+项目设置面板可编辑上下文、自动压缩、输出预留、图片限制和 MCP 服务（本地进程参数、远程 HTTP 地址及环境变量），也可查看连接状态、启用或停用服务，并为远程 HTTP 服务启动授权。环境变量值使用当前 Windows 用户的 DPAPI 加密保存在数据库中，前端只会收到变量名称和是否已配置的标记。更改项目运行设置会在所有会话空闲后重建该项目的 Local 与 Worktree Core，并恢复当前选中的会话。
 
 ## 前端预览与截图
 

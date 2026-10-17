@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -68,6 +69,9 @@ func TestRemoveDesktopWorktreeStateDirRejectsPathsOutsideManagedRoot(t *testing.
 }
 
 func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Desktop settings require Windows DPAPI")
+	}
 	configRoot := filepath.Join(t.TempDir(), "roaming")
 	cacheRoot := filepath.Join(t.TempDir(), "local")
 	t.Setenv("APPDATA", configRoot)
@@ -81,12 +85,18 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	saveDesktopTestModels(t, settingsStore)
 	legacyCore, err := core.New(core.Config{Workspace: workspace})
 	if err != nil {
 		_ = settingsStore.Close()
 		t.Fatal(err)
 	}
 	defer legacyCore.Close()
+	configPath := filepath.Join(workspace, "config.json")
+	ignoredConfig := []byte(`{"not":"a Desktop config"}`)
+	if err := os.WriteFile(configPath, ignoredConfig, 0600); err != nil {
+		t.Fatal(err)
+	}
 	service := &DesktopService{store: settingsStore, waiting: map[string]bool{}, sessionContexts: map[string]*desktopSessionContext{}}
 	t.Cleanup(func() {
 		if err := service.CloseWorkspace(true); err != nil {
@@ -97,19 +107,19 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 		}
 	})
 
-	preview, err := service.OpenWorkspace(workspace)
+	opened, err := service.OpenWorkspace(workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !preview.NeedsMigration {
-		t.Fatal("workspace with project model settings did not present migration")
-	}
-	opened, err := service.OpenWorkspaceWithProjectModels(workspace)
-	if err != nil {
-		t.Fatalf("Desktop OpenWorkspace with TUI/Core state locked: %v", err)
-	}
 	if !samePath(opened.Workspace, workspace) {
 		t.Fatalf("opened workspace = %q, want %q", opened.Workspace, workspace)
+	}
+	if len(service.projectConfig.MCPServers) != 0 || service.projectConfig.ModelConfig.DefaultModel != "main" {
+		t.Fatalf("Desktop loaded project config.json instead of SQLite settings: %#v", service.projectConfig)
+	}
+	unchanged, err := os.ReadFile(configPath)
+	if err != nil || string(unchanged) != string(ignoredConfig) {
+		t.Fatalf("Desktop changed or read project config.json: contents=%q error=%v", unchanged, err)
 	}
 	if samePath(filepath.Join(service.stateRoot, "local"), filepath.Join(workspace, ".luneagent")) {
 		t.Fatalf("Desktop Core reused TUI state directory %q", service.stateRoot)
@@ -174,6 +184,9 @@ func TestCreateGitWorktreeUsesHeadAndMapsNestedWorkspace(t *testing.T) {
 }
 
 func TestDesktopWorktreeSessionPersistsAcrossRestartAndDeleteKeepsCheckout(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Desktop settings require Windows DPAPI")
+	}
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is required for the Worktree integration test")
@@ -200,6 +213,7 @@ func TestDesktopWorktreeSessionPersistsAcrossRestartAndDeleteKeepsCheckout(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	saveDesktopTestModels(t, settingsStore)
 	service := &DesktopService{store: settingsStore, waiting: map[string]bool{}, sessionContexts: map[string]*desktopSessionContext{}}
 	t.Cleanup(func() {
 		if err := service.CloseWorkspace(true); err != nil {
@@ -215,12 +229,8 @@ func TestDesktopWorktreeSessionPersistsAcrossRestartAndDeleteKeepsCheckout(t *te
 	}
 	t.Cleanup(func() { _ = tuiCore.Close() })
 
-	preview, err := service.OpenWorkspace(repository)
-	if err != nil || !preview.NeedsMigration {
-		t.Fatalf("project model migration preview = %#v, error=%v", preview, err)
-	}
-	if _, err := service.OpenWorkspaceWithProjectModels(repository); err != nil {
-		t.Fatalf("open project with its existing model settings: %v", err)
+	if _, err := service.OpenWorkspace(repository); err != nil {
+		t.Fatalf("open project using Desktop model settings: %v", err)
 	}
 	created, err := service.CreateSession(workspaceModeWorktree)
 	if err != nil {
@@ -248,10 +258,10 @@ func TestDesktopWorktreeSessionPersistsAcrossRestartAndDeleteKeepsCheckout(t *te
 	if err := service.CloseWorkspace(false); err != nil {
 		t.Fatalf("close Desktop workspace: %v", err)
 	}
-	if _, err := service.OpenWorkspaceWithProjectModels(repository); err != nil {
+	if _, err := service.OpenWorkspace(repository); err != nil {
 		t.Fatalf("restore Desktop workspace: %v", err)
 	}
-	restored, err := service.workspaceResult(false, nil)
+	restored, err := service.workspaceResult()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +290,20 @@ func TestDesktopWorktreeSessionPersistsAcrossRestartAndDeleteKeepsCheckout(t *te
 		t.Fatalf("close Desktop workspace before Worktree cleanup: %v", err)
 	}
 	runGitForTest(t, gitPath, repository, "worktree", "remove", "--force", worktreePath)
+}
+
+func saveDesktopTestModels(t *testing.T, store *settings.Store) {
+	t.Helper()
+	config := publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{"host": {
+			Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "test-key",
+		}},
+		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultModel: "main",
+	}
+	if err := store.SaveModelConfig(config); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRestoreWorktreeSessionsSharesCoreStateAndDeletesOneSessionSafely(t *testing.T) {
@@ -345,7 +369,7 @@ func TestRestoreWorktreeSessionsSharesCoreStateAndDeletesOneSessionSafely(t *tes
 	}
 	service := &DesktopService{
 		core: localCore, localCore: localCore, workspace: localWorkspace, activeWorkspace: localWorkspace,
-		stateRoot: stateRoot, modelConfig: config, activityStore: store, waiting: map[string]bool{},
+		stateRoot: stateRoot, projectConfig: core.ProjectConfig{ModelConfig: *config}, activityStore: store, waiting: map[string]bool{},
 		sessionContexts: map[string]*desktopSessionContext{},
 	}
 	t.Cleanup(func() {

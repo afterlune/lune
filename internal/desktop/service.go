@@ -42,12 +42,13 @@ type DesktopService struct {
 	activeContext      *desktopSessionContext
 	sessionContexts    map[string]*desktopSessionContext
 	stateRoot          string
-	modelConfig        *publicmodel.Config
+	projectConfig      core.ProjectConfig
+	reconfiguring      bool
+	mcpOperations      int
 	planMode           bool
 	previousMode       core.PermissionMode
 	waiting            map[string]bool
 	suppressedActivity map[string]struct{}
-	projectModelView   *ModelSettingsView
 }
 
 type desktopSessionContext struct {
@@ -170,9 +171,6 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	if s.core != nil {
 		result.Permission = string(s.core.PermissionMode())
 	}
-	if s.projectModelView != nil {
-		result.Models = *s.projectModelView
-	}
 	return result, nil
 }
 
@@ -193,6 +191,11 @@ func modelSettingsView(config publicmodel.Config) ModelSettingsView {
 	sort.Slice(view.Providers, func(i, j int) bool { return view.Providers[i].Name < view.Providers[j].Name })
 	sort.Slice(view.Models, func(i, j int) bool { return view.Models[i].Name < view.Models[j].Name })
 	return view
+}
+
+func (s *DesktopService) projectModelsView() *ModelSettingsView {
+	view := modelSettingsView(s.projectConfig.ModelConfig)
+	return &view
 }
 
 func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSettingsView, error) {
@@ -221,6 +224,10 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 		}
 	}
 	s.mu.Lock()
+	if s.reconfiguring {
+		s.mu.Unlock()
+		return ModelSettingsView{}, errors.New("设置正在应用")
+	}
 	workspace, sessionID := s.workspace, s.sessionID
 	for _, sessionContext := range s.sessionContexts {
 		if sessionContext == nil || sessionContext.runtime == nil {
@@ -231,9 +238,18 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 			s.mu.Unlock()
 			return ModelSettingsView{}, stateErr
 		}
-		if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
+		if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || state.Task.Status == core.TaskPaused {
 			s.mu.Unlock()
 			return ModelSettingsView{}, errors.New("请等待所有会话任务结束后再修改模型设置")
+		}
+		pending, pendingErr := sessionContext.runtime.PendingRequests(context.Background())
+		if pendingErr != nil {
+			s.mu.Unlock()
+			return ModelSettingsView{}, pendingErr
+		}
+		if len(pending) != 0 {
+			s.mu.Unlock()
+			return ModelSettingsView{}, errors.New("请先处理所有会话中的待处理请求，再修改模型设置")
 		}
 	}
 	if workspace != "" {
@@ -241,12 +257,20 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 			s.mu.Unlock()
 			return ModelSettingsView{}, err
 		}
+		s.reconfiguring = true
 	}
 	s.mu.Unlock()
+	if workspace != "" {
+		defer func() {
+			s.mu.Lock()
+			s.reconfiguring = false
+			s.mu.Unlock()
+		}()
+	}
 	if err := s.store.SaveModelConfig(config); err != nil {
 		if workspace != "" {
 			if reopenErr := s.startWorkspace(workspace); reopenErr == nil && sessionID != "" {
-				_, reopenErr = s.OpenSession(sessionID)
+				_, reopenErr = s.openSession(sessionID, true)
 				err = errors.Join(err, reopenErr)
 			} else {
 				err = errors.Join(err, reopenErr)
@@ -259,7 +283,7 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 			return ModelSettingsView{}, err
 		}
 		if sessionID != "" {
-			if _, err := s.OpenSession(sessionID); err != nil {
+			if _, err := s.openSession(sessionID, true); err != nil {
 				return ModelSettingsView{}, err
 			}
 		}
@@ -297,8 +321,6 @@ type WorkspaceOpenResult struct {
 	Sessions          []SessionSummary   `json:"sessions"`
 	Permission        string             `json:"permissionMode"`
 	Models            *ModelSettingsView `json:"models,omitempty"`
-	NeedsMigration    bool               `json:"needsMigration"`
-	Migration         *MigrationPreview  `json:"migration,omitempty"`
 	WorktreeAvailable bool               `json:"worktreeAvailable"`
 }
 
@@ -316,6 +338,10 @@ func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error)
 		return WorkspaceOpenResult{}, fmt.Errorf("工作区不可用: %s", absolute)
 	}
 	s.mu.Lock()
+	if s.reconfiguring {
+		s.mu.Unlock()
+		return WorkspaceOpenResult{}, errors.New("项目设置正在应用")
+	}
 	if s.workspace != "" && !samePath(s.workspace, absolute) {
 		if err := s.closeWorkspaceLocked(false); err != nil {
 			s.mu.Unlock()
@@ -323,76 +349,15 @@ func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error)
 		}
 	}
 	if s.localCore != nil && samePath(s.workspace, absolute) {
-		result, resultErr := s.workspaceResultLocked(false, nil)
+		result, resultErr := s.workspaceResultLocked()
 		s.mu.Unlock()
 		return result, resultErr
 	}
 	s.mu.Unlock()
-	current, err := s.store.LoadModelConfig()
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	_, _, _, incoming, hasLegacy, err := readLegacyModelSettings(absolute)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	if hasLegacy {
-		preview, err := previewMigration(absolute, current, incoming)
-		if err != nil {
-			return WorkspaceOpenResult{}, err
-		}
-		return WorkspaceOpenResult{Workspace: absolute, NeedsMigration: true, Migration: preview}, nil
-	}
 	if err := s.startWorkspace(absolute); err != nil {
 		return WorkspaceOpenResult{}, err
 	}
-	return s.workspaceResult(false, nil)
-}
-
-func (s *DesktopService) CompleteModelMigration(path string, choices map[string]string) (WorkspaceOpenResult, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	_, original, _, _, hasLegacy, err := readLegacyModelSettings(absolute)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	if !hasLegacy {
-		return WorkspaceOpenResult{}, errors.New("项目中没有可迁移的模型设置")
-	}
-	current, err := s.store.LoadModelConfig()
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	err = migrateProjectModelSettings(absolute, current, choices, s.store.SaveModelConfigWith)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	if err := s.startWorkspace(absolute); err != nil {
-		restoreErr := restoreOriginalConfig(filepath.Join(absolute, "config.json"), original)
-		settingsErr := s.store.RestoreModelConfig(current)
-		return WorkspaceOpenResult{}, errors.Join(err, restoreErr, settingsErr)
-	}
-	return s.workspaceResult(false, nil)
-}
-
-func (s *DesktopService) OpenWorkspaceWithProjectModels(path string) (WorkspaceOpenResult, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	_, _, _, _, hasLegacy, err := readLegacyModelSettings(absolute)
-	if err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	if !hasLegacy {
-		return WorkspaceOpenResult{}, errors.New("项目没有本地模型设置")
-	}
-	if err := s.startWorkspaceWithModelConfig(absolute, nil); err != nil {
-		return WorkspaceOpenResult{}, err
-	}
-	return s.workspaceResult(false, nil)
+	return s.workspaceResult()
 }
 
 func (s *DesktopService) startWorkspace(path string) error {
@@ -400,28 +365,18 @@ func (s *DesktopService) startWorkspace(path string) error {
 	if err != nil {
 		return err
 	}
-	var supplied *publicmodel.Config
-	if len(modelConfig.Models) > 0 {
-		supplied = &modelConfig
+	projectConfig, _, err := s.store.LoadWorkspaceConfig(path)
+	if err != nil {
+		return err
 	}
-	return s.startWorkspaceWithModelConfig(path, supplied)
+	projectConfig.ModelConfig = modelConfig
+	if err := projectConfig.Validate(); err != nil {
+		return fmt.Errorf("Desktop 项目配置无效: %w", err)
+	}
+	return s.startWorkspaceWithConfig(path, projectConfig)
 }
 
-func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig *publicmodel.Config) error {
-	var projectView *ModelSettingsView
-	if modelConfig == nil {
-		_, _, _, projectConfig, found, err := readLegacyModelSettings(path)
-		if err != nil {
-			return err
-		}
-		if found {
-			view := modelSettingsView(projectConfig)
-			for index := range view.Providers {
-				view.Providers[index].HasAPIKey = false
-			}
-			projectView = &view
-		}
-	}
+func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig core.ProjectConfig) error {
 	helper := "lune-sandbox.exe"
 	if runtime.GOOS != "windows" {
 		helper = "lune-sandbox"
@@ -435,7 +390,7 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 		return err
 	}
 	localStateDir := filepath.Join(stateRoot, "local")
-	config := core.Config{Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ModelConfig: modelConfig}
+	config := core.Config{Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath, ProjectConfig: &projectConfig}
 	created, err := core.New(config)
 	if err != nil {
 		if errors.Is(err, core.ErrStateDirInUse) {
@@ -453,9 +408,8 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 	s.mu.Lock()
 	s.core, s.localCore, s.workspace, s.activeWorkspace, s.runtime, s.sessionID = created, created, path, path, nil, ""
 	s.activityStore = activityStore
-	s.projectModelView = projectView
 	s.stateRoot = stateRoot
-	s.modelConfig = modelConfig
+	s.projectConfig = projectConfig
 	if s.sessionContexts == nil {
 		s.sessionContexts = make(map[string]*desktopSessionContext)
 	}
@@ -463,7 +417,10 @@ func (s *DesktopService) startWorkspaceWithModelConfig(path string, modelConfig 
 	s.planMode, s.previousMode = false, ""
 	s.mu.Unlock()
 	if err := s.restoreSessionContexts(); err != nil {
-		return errors.Join(err, s.CloseWorkspace(true))
+		s.mu.Lock()
+		closeErr := s.closeWorkspaceLocked(true)
+		s.mu.Unlock()
+		return errors.Join(err, closeErr)
 	}
 	return nil
 }
@@ -561,11 +518,11 @@ func (s *DesktopService) newCore(workspace, stateDir string) (*core.Core, error)
 		helperPath = ""
 	}
 	s.mu.Lock()
-	modelConfig := s.modelConfig
+	projectConfig := s.projectConfig
 	s.mu.Unlock()
 	return core.New(core.Config{
 		Workspace: workspace, StateDir: stateDir, Logger: slog.Default(),
-		SandboxHelperPath: helperPath, ModelConfig: modelConfig,
+		SandboxHelperPath: helperPath, ProjectConfig: &projectConfig,
 	})
 }
 
@@ -621,13 +578,13 @@ func sessionContextStatus(sessionContext *desktopSessionContext) string {
 	}
 }
 
-func (s *DesktopService) workspaceResult(needsMigration bool, preview *MigrationPreview) (WorkspaceOpenResult, error) {
+func (s *DesktopService) workspaceResult() (WorkspaceOpenResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.workspaceResultLocked(needsMigration, preview)
+	return s.workspaceResultLocked()
 }
 
-func (s *DesktopService) workspaceResultLocked(needsMigration bool, preview *MigrationPreview) (WorkspaceOpenResult, error) {
+func (s *DesktopService) workspaceResultLocked() (WorkspaceOpenResult, error) {
 	localCore := s.localCore
 	if localCore == nil {
 		localCore = s.core
@@ -639,10 +596,8 @@ func (s *DesktopService) workspaceResultLocked(needsMigration bool, preview *Mig
 	if err != nil {
 		return WorkspaceOpenResult{}, err
 	}
-	result := WorkspaceOpenResult{
-		Workspace: s.workspace, Permission: string(localCore.PermissionMode()), Models: s.projectModelView,
-		NeedsMigration: needsMigration, Migration: preview,
-	}
+	models := modelSettingsView(s.projectConfig.ModelConfig)
+	result := WorkspaceOpenResult{Workspace: s.workspace, Permission: string(localCore.PermissionMode()), Models: &models}
 	if _, err := inspectGitWorkspace(s.workspace); err == nil {
 		result.WorktreeAvailable = true
 	}
@@ -684,6 +639,9 @@ func (s *DesktopService) workspaceResultLocked(needsMigration bool, preview *Mig
 func (s *DesktopService) CloseWorkspace(interrupt bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.reconfiguring {
+		return errors.New("项目设置正在应用")
+	}
 	return s.closeWorkspaceLocked(interrupt)
 }
 
@@ -764,8 +722,8 @@ func (s *DesktopService) closeWorkspaceLocked(interrupt bool) error {
 	s.workspace, s.activeWorkspace, s.sessionID = "", "", ""
 	s.activeContext = nil
 	s.sessionContexts = map[string]*desktopSessionContext{}
-	s.activityStore, s.stateRoot, s.modelConfig = nil, "", nil
-	s.projectModelView = nil
+	s.activityStore, s.stateRoot = nil, ""
+	s.projectConfig = core.ProjectConfig{}
 	s.planMode, s.previousMode = false, ""
 	return errors.Join(closeErr, activityCloseErr)
 }
@@ -818,7 +776,15 @@ type PendingRequestView struct {
 }
 
 func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
+	return s.openSession(sessionID, false)
+}
+
+func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (WorkspaceState, error) {
 	s.mu.Lock()
+	if s.reconfiguring && !allowReconfigure {
+		s.mu.Unlock()
+		return WorkspaceState{}, errors.New("项目设置正在应用")
+	}
 	localCore := s.localCore
 	if localCore == nil {
 		localCore = s.core
@@ -901,7 +867,7 @@ func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
 	if err != nil {
 		return WorkspaceState{}, err
 	}
-	list, err := s.workspaceResultLocked(false, nil)
+	list, err := s.workspaceResultLocked()
 	if err != nil {
 		return WorkspaceState{}, err
 	}
@@ -917,13 +883,17 @@ func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
 	return WorkspaceState{
 		Workspace: sessionContext.workspace, ProjectRoot: s.workspace, WorkspaceMode: sessionContext.mode,
 		WorkingDirectory: sessionContext.workspace, WorktreePath: sessionContext.worktreePath, Session: view, Sessions: list.Sessions,
-		Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state, Pending: pendingRequestViews(pending),
+		Permission: string(s.core.PermissionMode()), Models: s.projectModelsView(), State: state, Pending: pendingRequestViews(pending),
 		ExecutionHistory: activityHistory,
 	}, nil
 }
 
 func (s *DesktopService) CreateSession(mode string) (WorkspaceState, error) {
 	s.mu.Lock()
+	if s.reconfiguring {
+		s.mu.Unlock()
+		return WorkspaceState{}, errors.New("项目设置正在应用")
+	}
 	localCore := s.localCore
 	if localCore == nil {
 		localCore = s.core
@@ -1694,7 +1664,7 @@ func (s *DesktopService) RefreshSession() (WorkspaceState, error) {
 	if err != nil {
 		return WorkspaceState{}, err
 	}
-	list, err := s.workspaceResultLocked(false, nil)
+	list, err := s.workspaceResultLocked()
 	if err != nil {
 		return WorkspaceState{}, err
 	}
@@ -1706,7 +1676,7 @@ func (s *DesktopService) RefreshSession() (WorkspaceState, error) {
 		Workspace: s.activeWorkspace, ProjectRoot: s.workspace, WorkspaceMode: s.activeContextModeLocked(),
 		WorkingDirectory: s.activeWorkspace, WorktreePath: s.activeWorktreePathLocked(),
 		Session:  SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
-		Sessions: list.Sessions, Permission: string(s.core.PermissionMode()), Models: s.projectModelView, State: state,
+		Sessions: list.Sessions, Permission: string(s.core.PermissionMode()), Models: s.projectModelsView(), State: state,
 		Pending: pendingRequestViews(requests), ExecutionHistory: activityHistory,
 	}, nil
 }

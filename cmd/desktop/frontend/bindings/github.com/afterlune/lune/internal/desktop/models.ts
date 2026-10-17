@@ -76,27 +76,43 @@ export interface ImageInput {
     "data": string;
 }
 
+export interface MCPEnvironmentInput {
+    "name": string;
+    "value": string;
+}
+
+export interface MCPEnvironmentView {
+    "name": string;
+    "hasValue": boolean;
+}
+
+export interface MCPServerConfigInput {
+    "name": string;
+    "originalName"?: string;
+    "transport": string;
+    "command": string;
+    "args": string[] | null;
+    "url": string;
+    "clientMetadataURL": string;
+    "env": MCPEnvironmentInput[] | null;
+}
+
+export interface MCPServerConfigView {
+    "name": string;
+    "transport": string;
+    "command": string;
+    "args": string[] | null;
+    "url": string;
+    "clientMetadataURL": string;
+    "env": MCPEnvironmentView[] | null;
+}
+
 export interface MCPServerView {
     "name": string;
     "transport": string;
     "enabled": boolean;
     "connected": boolean;
     "toolCount": number;
-}
-
-export interface MigrationItem {
-    "kind": string;
-    "name": string;
-    "existing"?: string;
-    "incoming": string;
-}
-
-export interface MigrationPreview {
-    "workspace": string;
-    "providers": string[] | null;
-    "models": string[] | null;
-    "defaultModel": string;
-    "conflicts": MigrationItem[] | null;
 }
 
 export interface ModelProfileInput {
@@ -216,6 +232,28 @@ export interface ToolExecutionDetailsView {
     "truncated"?: boolean;
 }
 
+export interface WorkspaceConfigInput {
+    "contextWindow": number;
+    "autoCompact": boolean;
+    "autoCompactThreshold": number;
+    "reserveOutputTokens": number;
+    "maxAttachmentFiles": number;
+    "maxAttachmentBytes": number;
+    "maxTotalBytes": number;
+    "mcpServers": MCPServerConfigInput[] | null;
+}
+
+export interface WorkspaceConfigView {
+    "contextWindow": number;
+    "autoCompact": boolean;
+    "autoCompactThreshold": number;
+    "reserveOutputTokens": number;
+    "maxAttachmentFiles": number;
+    "maxAttachmentBytes": number;
+    "maxTotalBytes": number;
+    "mcpServers": MCPServerConfigView[] | null;
+}
+
 export interface WorkspaceFileEntry {
     "name": string;
     "path": string;
@@ -239,8 +277,6 @@ export interface WorkspaceOpenResult {
     "sessions": SessionSummary[] | null;
     "permissionMode": string;
     "models"?: ModelSettingsView | null;
-    "needsMigration": boolean;
-    "migration"?: MigrationPreview | null;
     "worktreeAvailable": boolean;
 }
 

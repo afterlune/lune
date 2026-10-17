@@ -33,10 +33,6 @@ export function CloseWorkspace(interrupt: boolean): $CancellablePromise<void> {
     return $Call.ByID(4281136060, interrupt);
 }
 
-export function CompleteModelMigration(path: string, choices: { [_ in string]?: string } | null): $CancellablePromise<$models.WorkspaceOpenResult> {
-    return $Call.ByID(3798999781, path, choices);
-}
-
 export function CreateSession(mode: string): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(498841211, mode);
 }
@@ -47,6 +43,10 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
 
 export function EditUserMessage(messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
     return $Call.ByID(376143777, messageID, input);
+}
+
+export function GetWorkspaceConfig(): $CancellablePromise<$models.WorkspaceConfigView> {
+    return $Call.ByID(2361918958);
 }
 
 export function ImplementPlan(executionID: string, mode: string): $CancellablePromise<$models.PlanResult> {
@@ -75,10 +75,6 @@ export function OpenWorkspace(path: string): $CancellablePromise<$models.Workspa
 
 export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<void> {
     return $Call.ByID(2369930560, relativePath);
-}
-
-export function OpenWorkspaceWithProjectModels(path: string): $CancellablePromise<$models.WorkspaceOpenResult> {
-    return $Call.ByID(118759913, path);
 }
 
 export function PickWorkspace(): $CancellablePromise<string> {
@@ -111,6 +107,14 @@ export function RestorePlanMode(): $CancellablePromise<void> {
 
 export function SaveModelSettings(input: $models.ModelSettingsInput): $CancellablePromise<$models.ModelSettingsView> {
     return $Call.ByID(3658786612, input);
+}
+
+/**
+ * SaveWorkspaceConfig persists Desktop-owned project settings and restarts all
+ * Local and Worktree Cores while preserving the selected session.
+ */
+export function SaveWorkspaceConfig(input: $models.WorkspaceConfigInput): $CancellablePromise<$models.WorkspaceConfigView> {
+    return $Call.ByID(26185835, input);
 }
 
 export function SearchWorkspaceFiles(query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {

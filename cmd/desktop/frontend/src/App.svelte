@@ -7,8 +7,9 @@
   import * as Desktop from '../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
   import { TaskStatus } from '../bindings/github.com/afterlune/luneCore/internal/runtime/models';
   import type {
-    Bootstrap, ConversationMessage, MigrationPreview, ModelProfileInput, ModelSettingsView, SubmitInput,
-    MCPServerView, PendingRequestView, ProviderInput, SessionSummary, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
+    Bootstrap, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView,
+    SubmitInput, PendingRequestView, ProviderInput, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
+    WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
   } from '../bindings/github.com/afterlune/lune/internal/desktop/models';
 
   type LocalMessage = ConversationMessage & {
@@ -31,7 +32,10 @@
   type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
   type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
   type ProviderForm = ProviderInput & { hasAPIKey: boolean };
-  type Modal = 'settings' | 'migration' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | null;
+  type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
+  type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
+  type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers'> & { mcpServers: MCPServerForm[] };
+  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
 
@@ -76,9 +80,6 @@
   let refreshing = false;
   let errorMessage = $state('');
   let modal = $state<Modal>(null);
-  let migration = $state<MigrationPreview | null>(null);
-  let migrationChoices = $state<Record<string, string>>({});
-  let migrationPath = $state('');
   let switchTarget = $state('');
   let planReview = $state<{ executionID: string; text: string } | null>(null);
   let deferredPlanReviews = $state<{ sessionId: string; executionID: string; text: string }[]>([]);
@@ -94,6 +95,11 @@
   let applyingEdit = $state(false);
   let mcpServers = $state<MCPServerView[]>([]);
   let mcpUpdatingServer = $state('');
+  let workspaceSettingsForm = $state<WorkspaceSettingsForm>({
+    contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
+    maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, mcpServers: [],
+  });
+  let workspaceSettingsSaving = $state(false);
   let filePreview = $state<WorkspaceFilePreview | null>(null);
   let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
@@ -992,6 +998,74 @@
     modal = 'settings';
   }
 
+  function workspaceSettingsFromView(config: WorkspaceConfigView): WorkspaceSettingsForm {
+    return {
+      contextWindow: config.contextWindow,
+      autoCompact: config.autoCompact,
+      autoCompactThreshold: config.autoCompactThreshold,
+      reserveOutputTokens: config.reserveOutputTokens,
+      maxAttachmentFiles: config.maxAttachmentFiles,
+      maxAttachmentBytes: config.maxAttachmentBytes,
+      maxTotalBytes: config.maxTotalBytes,
+      mcpServers: (config.mcpServers ?? []).map((server) => ({
+        name: server.name, originalName: server.name, transport: server.transport, command: server.command,
+        args: server.args ?? [], argsText: (server.args ?? []).join('\n'),
+        url: server.url, clientMetadataURL: server.clientMetadataURL,
+        env: (server.env ?? []).map((item) => ({ name: item.name, value: '', hasValue: item.hasValue })),
+      })),
+    };
+  }
+
+  function addMCPServer() {
+    const name = 'server-' + (workspaceSettingsForm.mcpServers.length + 1);
+    workspaceSettingsForm.mcpServers = [...workspaceSettingsForm.mcpServers, {
+      name, originalName: '', transport: 'stdio', command: '', args: [], argsText: '', url: '', clientMetadataURL: '', env: [],
+    }];
+  }
+
+  function addMCPEnvironment(server: MCPServerForm) {
+    server.env = [...server.env, { name: '', value: '', hasValue: false }];
+  }
+
+  function mcpStatus(name: string) {
+    return mcpServers.find((server) => server.name === name);
+  }
+
+  async function saveWorkspaceSettings() {
+    if (workspaceSettingsSaving || workOutstanding || pending.length || mcpUpdatingServer) return;
+    workspaceSettingsSaving = true;
+    try {
+      const input: WorkspaceConfigInput = {
+        contextWindow: workspaceSettingsForm.contextWindow,
+        autoCompact: workspaceSettingsForm.autoCompact,
+        autoCompactThreshold: workspaceSettingsForm.autoCompactThreshold,
+        reserveOutputTokens: workspaceSettingsForm.reserveOutputTokens,
+        maxAttachmentFiles: workspaceSettingsForm.maxAttachmentFiles,
+        maxAttachmentBytes: workspaceSettingsForm.maxAttachmentBytes,
+        maxTotalBytes: workspaceSettingsForm.maxTotalBytes,
+        mcpServers: workspaceSettingsForm.mcpServers.map((server) => {
+          const stdio = server.transport === 'stdio';
+          return {
+            name: server.name, originalName: server.originalName, transport: server.transport,
+            command: stdio ? server.command : '',
+            args: stdio ? server.argsText.split(/\r?\n/).filter((argument) => argument.length > 0) : [],
+            url: stdio ? '' : server.url, clientMetadataURL: stdio ? '' : server.clientMetadataURL,
+            env: stdio ? server.env.filter((item) => item.name.trim()).map(({ name, value }) => ({ name, value })) : [],
+          };
+        }),
+      };
+      if (previewMode) {
+        workspaceSettingsForm = { ...workspaceSettingsForm, mcpServers: workspaceSettingsForm.mcpServers.map((server) => ({ ...server, args: server.argsText.split(/\r?\n/).filter(Boolean) })) };
+      } else {
+        const saved = await Desktop.SaveWorkspaceConfig(input);
+        workspaceSettingsForm = workspaceSettingsFromView(saved);
+        mcpServers = await Desktop.ListMCPServers() ?? [];
+      }
+      errorMessage = '';
+    } catch (error) { showError(error); }
+    finally { workspaceSettingsSaving = false; }
+  }
+
   function addProvider() {
     providerForms = [...providerForms, { name: `provider-${providerForms.length + 1}`, protocol: 'responses', baseURL: 'https://api.openai.com/v1', apiKey: '', hasAPIKey: false, serverCompaction: false }];
   }
@@ -1003,6 +1077,7 @@
   async function saveSettings() {
     settingsSaving = true;
     try {
+      const selectedSessionID = session?.id;
       const input = {
         providers: providerForms.map(({ name, protocol, baseURL, apiKey, serverCompaction }) => ({ name, protocol, baseURL, apiKey, serverCompaction })),
         profiles: profileForms.map(({ name, provider, model, maxOutputTokens, supportsInputAudio }) => ({ name, provider, model, maxOutputTokens, supportsInputAudio })),
@@ -1012,8 +1087,8 @@
       else models = { ...models, configured: true, defaultModel };
       modal = null;
       if (workspace && !previewMode) {
-        const result = await Desktop.OpenWorkspace(workspace);
-        await completeWorkspaceOpen(result);
+        if (selectedSessionID) installWorkspaceState(await Desktop.OpenSession(selectedSessionID));
+        else await completeWorkspaceOpen(await Desktop.OpenWorkspace(workspace));
       }
     } catch (error) { showError(error); }
     finally { settingsSaving = false; }
@@ -1042,7 +1117,7 @@
       return;
     }
     try {
-      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace', needsMigration: false, worktreeAvailable: true } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
+      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace', worktreeAvailable: true } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
       await completeWorkspaceOpen(result);
     } catch (error) { showError(error); }
   }
@@ -1054,42 +1129,11 @@
     worktreeAvailable = result.worktreeAvailable ?? false;
     createSessionMenu = false;
     if (result.models) models = result.models;
-    if (result.needsMigration && result.migration) {
-      migration = result.migration;
-      migrationPath = result.workspace;
-      migrationChoices = Object.fromEntries((result.migration.conflicts ?? []).map((item) => [`${item.kind}:${item.name}`, 'keep']));
-      modal = 'migration';
-      return;
-    }
     sessions = result.sessions ?? [];
     permissionMode = result.permissionMode || 'workspace';
     if (sessions.length > 0) await openSession(sessions[0].id);
     else if (!previewMode) installWorkspaceState(await Desktop.CreateSession('local'));
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
-  }
-
-  async function finishMigration() {
-    if (!migration) return;
-    busy = true;
-    try {
-      const result = await Desktop.CompleteModelMigration(migrationPath, migrationChoices);
-      migration = null;
-      modal = null;
-      await completeWorkspaceOpen(result);
-    } catch (error) { showError(error); }
-    finally { busy = false; }
-  }
-
-  async function openProjectModels() {
-    if (previewMode) return;
-    busy = true;
-    try {
-      const result = await Desktop.OpenWorkspaceWithProjectModels(migrationPath);
-      migration = null;
-      modal = null;
-      await completeWorkspaceOpen(result);
-    } catch (error) { showError(error); }
-    finally { busy = false; }
   }
 
   async function confirmWorkspaceSwitch() {
@@ -1226,10 +1270,15 @@
     if (!workspace) return;
     if (previewMode) {
       mcpServers = [];
+      workspaceSettingsForm = {
+        contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
+        maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, mcpServers: [],
+      };
       modal = 'mcp';
       return;
     }
     try {
+      workspaceSettingsForm = workspaceSettingsFromView(await Desktop.GetWorkspaceConfig());
       mcpServers = await Desktop.ListMCPServers() ?? [];
       modal = 'mcp';
     } catch (error) { showError(error); }
@@ -1768,7 +1817,7 @@
 
       <div class="sidebar-bottom">
         <div class="sidebar-profile"><div class="avatar">L</div><div><strong>本地工作区</strong><span>{models.configured ? `默认模型 · ${models.defaultModel}` : '尚未配置模型'}</span></div></div>
-        {#if workspace}<button class="settings-entry" onclick={() => void openMCPManager()}><span>⎇</span> MCP 工具</button>{/if}
+        {#if workspace}<button class="settings-entry" onclick={() => void openMCPManager()}><span>⎇</span> 项目设置</button>{/if}
         <button class="settings-entry" onclick={setSettingsForm}><span>⚙</span> 模型与偏好设置 <span class="settings-shortcut">⌘ ,</span></button>
       </div>
     </aside>
@@ -1945,7 +1994,7 @@
   <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; } }}>
           {#if modal === 'settings'}
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><div class="modal-header-actions">{#if workspace}<button class="small-button" onclick={() => void openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div></div>
         <div class="modal-body settings-body">
           <section class="settings-section"><div class="settings-section-heading"><div><h3>模型提供方</h3><p>API 密钥使用当前 Windows 用户 DPAPI 加密保存。</p></div><button class="small-button" onclick={addProvider}>＋ 添加提供方</button></div>
             {#each providerForms as provider, index (index)}
@@ -1996,40 +2045,61 @@
       </div>
     {:else if modal === 'mcp'}
       <div class="modal mcp-modal" role="dialog" aria-modal="true" aria-labelledby="mcp-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">PROJECT TOOLS</span><h2 id="mcp-title">MCP 工具</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">PROJECT SETTINGS</span><h2 id="mcp-title">项目设置与 MCP</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
         <div class="modal-body mcp-body">
-          <p class="mcp-description">服务定义来自当前工作区的 config.json。这里可以启用、停用和授权已配置的服务；运行任务期间不可更改。</p>
-          {#if mcpServers.length}
-            <div class="mcp-server-list">
-              {#each mcpServers as server (server.name)}
-                <article class="mcp-server-card">
-                  <div class="mcp-server-main"><div><strong>{server.name}</strong><span>{server.transport === 'stdio' ? '本地进程' : '远程 HTTP'} · {server.enabled ? server.connected ? `已连接 · ${server.toolCount} 个工具` : '已启用 · 未连接' : '已停用'}</span></div><label class="mcp-switch"><input type="checkbox" checked={server.enabled} disabled={workOutstanding || pending.length > 0 || !!mcpUpdatingServer} onchange={(event) => void setMCPServerEnabled(server, event.currentTarget.checked)} /><span>{server.enabled ? '已启用' : '已停用'}</span></label></div>
-                  {#if server.transport === 'streamable-http' && server.enabled}<div class="mcp-server-actions"><button class="small-button" disabled={workOutstanding || pending.length > 0 || !!mcpUpdatingServer} onclick={() => void authenticateMCPServer(server)}>{mcpUpdatingServer === server.name ? '正在连接…' : '授权 / 重新连接'}</button></div>{/if}
-                </article>
-              {/each}
+          <p class="mcp-description">Desktop 按项目路径将这些运行设置保存在用户数据库中。TUI/CLI 继续读取 config.json；两边互不导入或改写配置。</p>
+          <section class="settings-section project-runtime-section">
+            <div class="settings-section-heading"><div><h3>上下文与附件</h3><p>所有会话使用同一套项目运行参数；数值为 0 时采用 Core 默认值。</p></div></div>
+            <div class="form-grid">
+              <label>上下文窗口 Token<input type="number" min="0" step="1000" bind:value={workspaceSettingsForm.contextWindow} /></label>
+              <label>预留输出 Token<input type="number" min="0" step="1000" bind:value={workspaceSettingsForm.reserveOutputTokens} /></label>
+              <label class="check-label"><input type="checkbox" bind:checked={workspaceSettingsForm.autoCompact} /> 自动压缩上下文</label>
+              <label>压缩阈值（0–1）<input type="number" min="0" max="1" step="0.05" bind:value={workspaceSettingsForm.autoCompactThreshold} disabled={!workspaceSettingsForm.autoCompact} /></label>
+              <label>单条消息最多图片数<input type="number" min="0" bind:value={workspaceSettingsForm.maxAttachmentFiles} /></label>
+              <label>单张图片上限（字节）<input type="number" min="0" step="1048576" bind:value={workspaceSettingsForm.maxAttachmentBytes} /></label>
+              <label class="wide-field">图片总大小上限（字节）<input type="number" min="0" step="1048576" bind:value={workspaceSettingsForm.maxTotalBytes} /></label>
             </div>
-          {:else}
-            <div class="mcp-empty">当前工作区没有配置 MCP 服务。请先在 config.json 的 mcpServers 中添加服务。</div>
-          {/if}
+          </section>
+          <section class="settings-section">
+            <div class="settings-section-heading"><div><h3>MCP 服务</h3><p>本地环境变量仅显示名称，留空保留已保存的值；移除变量行即可清除。</p></div><button class="small-button" onclick={addMCPServer}>＋ 添加服务</button></div>
+            {#if workspaceSettingsForm.mcpServers.length}
+              <div class="mcp-server-list">
+                {#each workspaceSettingsForm.mcpServers as server, index (index)}
+                  {@const status = mcpStatus(server.name)}
+                  <article class="mcp-server-card">
+                    <div class="mcp-server-main">
+                      <div><strong>{server.name || '未命名服务'}</strong><span>{status ? (status.transport === 'stdio' ? '本地进程' : '远程 HTTP') + ' · ' + (status.enabled ? (status.connected ? `已连接 · ${status.toolCount} 个工具` : '已启用 · 未连接') : '已停用') : '尚未应用'}</span></div>
+                      {#if status}<label class="mcp-switch"><input type="checkbox" checked={status.enabled} disabled={workspaceHasOutstanding || pending.length > 0 || !!mcpUpdatingServer || workspaceSettingsSaving} onchange={(event) => void setMCPServerEnabled(status, event.currentTarget.checked)} /><span>{status.enabled ? '已启用' : '已停用'}</span></label>{/if}
+                    </div>
+                    <div class="form-grid mcp-config-grid">
+                      <label>名称<input bind:value={server.name} /></label>
+                      <label>连接方式<select bind:value={server.transport}><option value="stdio">本地进程</option><option value="streamable-http">远程 HTTP</option></select></label>
+                      {#if server.transport === 'stdio'}
+                        <label class="wide-field">可执行程序<input bind:value={server.command} placeholder="例如 npx" /></label>
+                        <label class="wide-field">参数（每行一个）<textarea bind:value={server.argsText} rows="3" placeholder="每行填写一个参数，例如 -y"></textarea></label>
+                        <div class="wide-field mcp-env-list">
+                          <div class="settings-section-heading"><strong>环境变量</strong><button class="small-button" onclick={() => addMCPEnvironment(server)}>＋ 添加变量</button></div>
+                          {#each server.env as item, envIndex (envIndex)}
+                            <div class="mcp-env-row"><input aria-label="变量名称" bind:value={item.name} placeholder="变量名" /><input aria-label="变量值" type="password" bind:value={item.value} placeholder={item.hasValue ? '留空保留已保存的值' : '变量值'} autocomplete="new-password" /><button class="remove-env" aria-label="删除环境变量" onclick={() => server.env = server.env.filter((_, i) => i !== envIndex)}>×</button></div>
+                          {/each}
+                        </div>
+                      {:else}
+                        <label class="wide-field">服务 URL<input bind:value={server.url} placeholder="https://example.com/mcp" /></label>
+                        <label class="wide-field">OAuth Client Metadata URL<input bind:value={server.clientMetadataURL} placeholder="可选的 HTTPS 地址" /></label>
+                      {/if}
+                    </div>
+                    {#if status?.transport === 'streamable-http' && status.enabled}<div class="mcp-server-actions"><button class="small-button" disabled={workspaceHasOutstanding || pending.length > 0 || !!mcpUpdatingServer || workspaceSettingsSaving} onclick={() => void authenticateMCPServer(status)}>{mcpUpdatingServer === status.name ? '正在连接…' : '授权 / 重新连接'}</button></div>{/if}
+                    <div class="mcp-server-actions"><button class="remove-server" disabled={workspaceSettingsSaving} onclick={() => workspaceSettingsForm.mcpServers = workspaceSettingsForm.mcpServers.filter((_, i) => i !== index)}>删除服务</button></div>
+                  </article>
+                {/each}
+              </div>
+            {:else}
+              <div class="mcp-empty">尚未添加 MCP 服务。</div>
+            {/if}
+          </section>
           {#if mcpUpdatingServer}<div class="mcp-progress">正在处理 {mcpUpdatingServer}…</div>{/if}
         </div>
-        <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>关闭</button></div>
-      </div>
-    {:else if modal === 'migration' && migration}
-      <div class="modal migration-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">WORKSPACE SETUP</span><h2 id="migration-title">迁移项目模型设置</h2></div><button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div>
-        <div class="modal-body"><p class="migration-summary">项目配置中发现模型设置。迁移后，提供方、模型档案和默认模型会保存在当前 Windows 用户的全局设置中；API 密钥会加密，项目配置中的模型字段会在同一操作成功后移除。也可以保留项目配置直接打开工作区。</p>
-          <div class="migration-counts"><span><b>{migration.providers?.length ?? 0}</b> 个提供方</span><span><b>{migration.models?.length ?? 0}</b> 个模型档案</span></div>
-          {#if migration.conflicts?.length}
-            <h3 class="conflict-title">同名设置冲突</h3>
-            <div class="conflict-list">{#each migration.conflicts as conflict (`${conflict.kind}:${conflict.name}`)}
-              <div class="conflict-row"><div><strong>{conflict.name}</strong><span>{conflict.kind === 'provider' ? '提供方' : conflict.kind === 'model' ? '模型档案' : '默认模型'}</span><div class="conflict-values"><small>全局：{conflict.existing}</small><small>项目：{conflict.incoming}</small></div></div><select bind:value={migrationChoices[`${conflict.kind}:${conflict.name}`]}><option value="keep">保留全局设置</option><option value="replace">使用项目设置</option></select></div>
-            {/each}</div>
-          {:else}
-            <div class="no-conflicts">没有同名冲突，可以直接导入这些设置。</div>
-          {/if}
-        </div>
-        <div class="modal-footer"><button class="quiet-button" onclick={() => { modal = null; migration = null; workspace = ''; session = null; sessions = []; }}>取消</button><button class="quiet-button" disabled={busy} onclick={() => void openProjectModels()}>保留项目设置打开</button><button class="primary-button" disabled={busy} onclick={() => void finishMigration()}>{busy ? '正在迁移…' : '迁移并打开'}</button></div>
+        <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>关闭</button><button class="primary-button" disabled={workspaceSettingsSaving || workspaceHasOutstanding || pending.length > 0 || !!mcpUpdatingServer} onclick={() => void saveWorkspaceSettings()}>{workspaceSettingsSaving ? '正在应用…' : '应用项目设置'}</button></div>
       </div>
     {:else if modal === 'switch' || modal === 'close'}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" tabindex="-1">

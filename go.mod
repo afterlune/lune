@@ -6,7 +6,7 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.10
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/afterlune/luneCore v0.1.1-0.20261017055336-af25ec645081
+	github.com/afterlune/luneCore v0.1.1-0.20261017063533-f88e3a677c4b
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203

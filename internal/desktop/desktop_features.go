@@ -54,10 +54,18 @@ func (s *DesktopService) AuthenticateMCPServer(name string) error {
 	name = strings.TrimSpace(name)
 	s.mu.Lock()
 	agent := s.core
+	if agent != nil {
+		s.mcpOperations++
+	}
 	s.mu.Unlock()
 	if agent == nil {
 		return errors.New("请先打开工作区")
 	}
+	defer func() {
+		s.mu.Lock()
+		s.mcpOperations--
+		s.mu.Unlock()
+	}()
 	if name == "" {
 		return errors.New("MCP 服务名称不能为空")
 	}

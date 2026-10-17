@@ -18,6 +18,19 @@ test('workspace file sidebar browses folders and opens a read-only preview', asy
   await expect(page.locator('.workspace-file-preview')).toContainText('cmd/desktop/main.go');
 });
 
+test('project settings edits runtime limits and MCP definitions', async ({ page }) => {
+  await page.goto('/?preview=1');
+  await page.getByRole('button', { name: '项目设置' }).click();
+  await expect(page.getByRole('dialog', { name: '项目设置与 MCP' })).toBeVisible();
+  await page.getByLabel('上下文窗口 Token').fill('48000');
+  await page.getByRole('button', { name: '添加服务' }).click();
+  await page.getByLabel('名称').fill('docs');
+  await page.getByLabel('连接方式').selectOption('streamable-http');
+  await page.getByLabel('服务 URL').fill('https://docs.example.test/mcp');
+  await expect(page.getByText('尚未应用')).toBeVisible();
+  await expect(page).toHaveScreenshot('desktop-project-settings.png', { fullPage: true });
+});
+
 test('session sidebar supports renaming a conversation', async ({ page }) => {
   await page.goto('/?preview=1');
   const session = page.locator('.session-entry').first();
