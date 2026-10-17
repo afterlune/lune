@@ -87,6 +87,11 @@ type tuiModel struct {
 	sessionsConfirmDelete bool
 	sessionsDeletingID    string
 
+	// Tool output pager modal
+	toolPagerOpen    bool
+	toolPagerIndex   int
+	toolPagerScrollY int
+
 	// Prompt history navigation
 	promptHistory []string
 	historyIndex  int
@@ -228,6 +233,8 @@ func (m *tuiModel) updateLayout() {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
 	} else if m.sessionsModalOpen {
 		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
+	} else if m.toolPagerOpen {
+		modalHeight = lipgloss.Height(renderToolPagerModal(m, contentWidth)) + 1
 	} else if m.activeRecovery != nil {
 		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
 	} else if m.activeToolRecovery != nil {
@@ -413,6 +420,8 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
 	} else if m.sessionsModalOpen {
 		sections = append(sections, renderSessionsModal(m, contentWidth))
+	} else if m.toolPagerOpen {
+		sections = append(sections, renderToolPagerModal(m, contentWidth))
 	} else if m.activeRecovery != nil {
 		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
 	} else if m.activeToolRecovery != nil {
@@ -595,8 +604,10 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 			Type      string          `json:"type"`
 			Role      string          `json:"role"`
 			Name      string          `json:"name"`
+			CallID    string          `json:"call_id"`
 			Arguments json.RawMessage `json:"arguments"`
 			Content   json.RawMessage `json:"content"`
+			Output    json.RawMessage `json:"output"`
 		}
 		if err := json.Unmarshal(item, &value); err != nil {
 			continue
@@ -617,7 +628,7 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				Text:      text,
 				Timestamp: time.Now(),
 			})
-		case "function_call":
+		case "function_call", "custom_tool_call":
 			args := string(value.Arguments)
 			if len(args) > 0 && args[0] == '"' {
 				var unquoted string
@@ -625,16 +636,75 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 					args = unquoted
 				}
 			}
+			callID := value.CallID
+			if callID == "" {
+				callID = fmt.Sprintf("hist-tool-%d", i)
+			}
 			entries = append(entries, TranscriptEntry{
 				ID:          fmt.Sprintf("hist-tool-%d", i),
 				Kind:        KindTool,
+				ToolCallID:  callID,
 				ToolName:    value.Name,
+				ToolArgs:    args,
 				ToolCommand: value.Name + " " + args,
 				Timestamp:   time.Now(),
 			})
+		case "function_call_output", "custom_tool_call_output":
+			outText := extractToolOutputString(value.Output)
+			found := false
+			if value.CallID != "" {
+				for j := len(entries) - 1; j >= 0; j-- {
+					if entries[j].Kind == KindTool && entries[j].ToolCallID == value.CallID {
+						entries[j].ToolOutput = outText
+						found = true
+						break
+					}
+				}
+			}
+			if !found && len(entries) > 0 {
+				for j := len(entries) - 1; j >= 0; j-- {
+					if entries[j].Kind == KindTool && entries[j].ToolOutput == "" {
+						entries[j].ToolOutput = outText
+						break
+					}
+				}
+			}
 		}
 	}
 	return entries
+}
+
+func extractToolOutputString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			var part struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(p, &part) == nil && part.Text != "" {
+				b.WriteString(part.Text)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	var obj struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Text != "" {
+		return obj.Text
+	}
+	return string(raw)
 }
 
 func messageContentText(content json.RawMessage) string {

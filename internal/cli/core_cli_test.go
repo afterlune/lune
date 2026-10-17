@@ -1163,4 +1163,67 @@ func TestCLIDropCommand(t *testing.T) {
 	}
 }
 
+func TestCLIDetailCommand(t *testing.T) {
+	// 1. Session without any tool executions
+	clientEmpty := &fakeCLICore{
+		latest: core.Session{
+			ID:    "sess-empty",
+			Title: "Empty Tool Session",
+		},
+	}
+	stdout, stderr := runCLI(t, clientEmpty, "/detail\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "No tool executions found in current session.") {
+		t.Fatalf("stdout = %q, want 'No tool executions found'", stdout)
+	}
+
+	// 2. Session with tool calls in history
+	clientWithTools := &fakeCLICore{
+		initialTitle: "Tool Detail Session",
+		initialHistory: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"list and check"}]},
+			{"type":"function_call","call_id":"c1","name":"list_dir","arguments":"{\"path\":\".\"}"},
+			{"type":"function_call_output","call_id":"c1","output":"main.go\ngo.mod\nREADME.md"},
+			{"type":"function_call","call_id":"c2","name":"run_command","arguments":"{\"command\":\"git status\"}"},
+			{"type":"function_call_output","call_id":"c2","output":"On branch main\nChanges not staged for commit:\n  modified: app.go"}
+		]`),
+	}
+
+	// /detail with no args defaults to latest tool (tool 2)
+	stdout, stderr = runCLI(t, clientWithTools, "/detail\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "--- Tool 2 of 2: run_command") {
+		t.Fatalf("stdout = %q, want tool 2 header", stdout)
+	}
+	if !strings.Contains(stdout, "On branch main") || !strings.Contains(stdout, "modified: app.go") {
+		t.Fatalf("stdout = %q, want git status output", stdout)
+	}
+	if !strings.Contains(stdout, "Showing latest tool 2 of 2") {
+		t.Fatalf("stdout = %q, want navigation hint", stdout)
+	}
+
+	// /detail 1 inspects the first tool (list_dir)
+	stdout, stderr = runCLI(t, clientWithTools, "/detail 1\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "--- Tool 1 of 2: list_dir") {
+		t.Fatalf("stdout = %q, want tool 1 header", stdout)
+	}
+	if !strings.Contains(stdout, "main.go") || !strings.Contains(stdout, "README.md") {
+		t.Fatalf("stdout = %q, want list_dir output", stdout)
+	}
+
+	// /detail out of range
+	_, stderr = runCLI(t, clientWithTools, "/detail 99\n/exit\n", nil)
+	if !strings.Contains(stderr, "error: tool index 99 out of range (1-2)") {
+		t.Fatalf("stderr = %q, want out of range error", stderr)
+	}
+}
+
+
 

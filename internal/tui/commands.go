@@ -31,6 +31,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
 	{Command: "/drop", Description: "delete a saved session: /drop <id|prefix>"},
 	{Command: "/delete", Description: "alias for /drop"},
+	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session conversation transcript to a markdown file"},
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
@@ -235,6 +236,15 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/drop", "/delete":
 		return m.handleDropCommand(parts)
+
+	case "/detail":
+		target := -1
+		if len(parts) > 1 {
+			if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
+				target = n - 1
+			}
+		}
+		return m.openToolPager(target)
 
 	case "/rewind":
 		if m.running {
@@ -1576,4 +1586,56 @@ func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
 	m.addSystemEntry("Opened session: " + targetID)
 	return m, m.subscribeRuntimeEvents()
 }
+
+// getToolEntryIndices returns the indices of all KindTool entries in m.entries.
+func (m *tuiModel) getToolEntryIndices() []int {
+	var indices []int
+	for i, entry := range m.entries {
+		if entry.Kind == KindTool {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}
+
+// toolPagerVisibleLines calculates the visible line capacity of the tool pager modal.
+func (m *tuiModel) toolPagerVisibleLines() int {
+	if m.height <= 0 {
+		return 10
+	}
+	lines := m.height - 12
+	if lines > 18 {
+		lines = 18
+	}
+	if lines < 5 {
+		lines = 5
+	}
+	return lines
+}
+
+// openToolPager opens the floating pager modal to inspect full tool output.
+func (m *tuiModel) openToolPager(targetIndex int) (tea.Model, tea.Cmd) {
+	indices := m.getToolEntryIndices()
+	if len(indices) == 0 {
+		m.addSystemEntry("No tool executions in current session.")
+		m.updateLayout()
+		return m, nil
+	}
+
+	m.shortcutsOpen = false
+	m.sessionsModalOpen = false
+	m.autocompleteOpen = false
+	m.toolPagerOpen = true
+	m.toolPagerScrollY = 0
+
+	if targetIndex < 0 || targetIndex >= len(indices) {
+		m.toolPagerIndex = len(indices) - 1
+	} else {
+		m.toolPagerIndex = targetIndex
+	}
+
+	m.updateLayout()
+	return m, nil
+}
+
 

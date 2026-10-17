@@ -92,7 +92,8 @@
 | **`Ctrl+O`** | **交互式会话切换浮层 (Interactive Session Switcher)**：呼出会话切换弹窗，支持关键字实时检索过滤、`↑`/`↓`（或 `Ctrl+P`/`Ctrl+N`）导航、`Enter` 确认切换、`Esc`/`Ctrl+O` 关闭；任务运行中受安全互锁保护禁止切换 |
 | **`Shift+Tab`** | 循环切换权限档位（`workspace` → `ask` → `full-access` → `read-only`；Plan 模式下锁定为只读不可提升） |
 | **`?`** | 输入框为空时打开快捷键速查面板（再次按 `?` 或 `Esc` 关闭） |
-| **`Ctrl+T`** | 展开/折叠最近一条工具执行的输出内容（亦可直接鼠标点击工具卡片） |
+| **`Ctrl+T`** | **超长工具输出检视翻页浮层 (Tool Output Pager Modal)**：呼出专用翻页器浮层，展示最近一次工具执行的全量原始输出；支持 `↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`[`/`]`（`p`/`n`）切换历史工具执行、`c`/`Ctrl+C` 一键完整复制至剪贴板、`Esc`/`q`/`Ctrl+T` 退出 |
+| **`/detail [index]`** | 打开超长工具输出检视翻页浮层（`/detail [index]`，无参数默认最新，支持 1-based 序号）；CLI 模式下直接向终端输出指定工具的全量原始结果 |
 | **`/plan`** | 切换进入/退出 Plan 规划模式（进入时锁定为 `read-only`，退出时恢复之前档位） |
 | **`/permissions [mode]`** | 查看或直接设置权限模式（`read-only`、`workspace`、`ask`、`full-access`） |
 | **`/model [name]`** | 查看或切换会话绑定的模型名称配置 |

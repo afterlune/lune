@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1821,6 +1822,191 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 		t.Fatalf("expected running guard warning for /drop")
 	}
 }
+
+func TestToolPagerModalInteractions(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-tool-pager")
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// 1. Pressing Ctrl+T when no tool executions exist
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be false when no tools exist")
+	}
+	if len(m.entries) == 0 || !strings.Contains(m.entries[len(m.entries)-1].Text, "No tool executions in current session.") {
+		t.Fatalf("expected 'No tool executions' system entry, got %v", m.entries)
+	}
+
+	// 2. Populate entries with multiple tool executions
+	tool1 := TranscriptEntry{
+		ID:          "tool-1",
+		Kind:        KindTool,
+		ToolName:    "list_dir",
+		ToolCommand: "list_dir .",
+		ToolOutput:  "file1.go\nfile2.go\nfile3.go",
+	}
+	var longOutputBuilder strings.Builder
+	for i := 1; i <= 50; i++ {
+		longOutputBuilder.WriteString(fmt.Sprintf("log line output item #%d\n", i))
+	}
+	tool2 := TranscriptEntry{
+		ID:          "tool-2",
+		Kind:        KindTool,
+		ToolName:    "run_command",
+		ToolCommand: "go test ./...",
+		ToolOutput:  longOutputBuilder.String(),
+	}
+	failExit := 1
+	tool3 := TranscriptEntry{
+		ID:           "tool-3",
+		Kind:         KindTool,
+		ToolName:     "run_command",
+		ToolCommand:  "git diff --check",
+		ToolOutput:   "error: trailing whitespace in file.go\nerror: missing newline at EOF",
+		ToolExitCode: &failExit,
+	}
+
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "Run tests and checks"},
+		tool1,
+		tool2,
+		tool3,
+	}
+	m.updateLayout()
+
+	// 3. Open pager via Ctrl+T
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be true after Ctrl+T")
+	}
+	if m.toolPagerIndex != 2 {
+		t.Fatalf("expected toolPagerIndex to point to latest tool (2), got %d", m.toolPagerIndex)
+	}
+	if m.toolPagerScrollY != 0 {
+		t.Fatalf("expected toolPagerScrollY to be 0, got %d", m.toolPagerScrollY)
+	}
+
+	// Verify modal rendering contains tool 3 info and failure badge
+	rendered := renderToolPagerModal(m, 100)
+	if !strings.Contains(rendered, "Tool Output Pager") || !strings.Contains(rendered, "(Tool 3 of 3)") {
+		t.Fatalf("expected tool 3 header in modal, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Failed (exit 1)") || !strings.Contains(rendered, "git diff --check") {
+		t.Fatalf("expected failed command in modal, got:\n%s", rendered)
+	}
+
+	// 4. Switch to previous tool using '[' or 'p'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '[', Text: "["}))
+	m = mod.(*tuiModel)
+	if m.toolPagerIndex != 1 {
+		t.Fatalf("expected toolPagerIndex to be 1 after '[', got %d", m.toolPagerIndex)
+	}
+	renderedTool2 := renderToolPagerModal(m, 100)
+	if !strings.Contains(renderedTool2, "(Tool 2 of 3)") || !strings.Contains(renderedTool2, "go test ./...") {
+		t.Fatalf("expected tool 2 in modal, got:\n%s", renderedTool2)
+	}
+
+	// 5. Test vertical scrolling on tool 2 (which has 50 lines)
+	visible := m.toolPagerVisibleLines()
+	// Scroll down with 'j'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
+	m = mod.(*tuiModel)
+	if m.toolPagerScrollY != 1 {
+		t.Fatalf("expected scrollY to be 1 after 'j', got %d", m.toolPagerScrollY)
+	}
+
+	// Scroll down with 'pgdown'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
+	m = mod.(*tuiModel)
+	if m.toolPagerScrollY != 1+visible {
+		t.Fatalf("expected scrollY to be %d after pgdown, got %d", 1+visible, m.toolPagerScrollY)
+	}
+
+	// Scroll to end with 'end' / 'G'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'G', Text: "G"}))
+	m = mod.(*tuiModel)
+	maxScroll := max(0, 50-visible)
+	if m.toolPagerScrollY != maxScroll {
+		t.Fatalf("expected scrollY to be maxScroll (%d), got %d", maxScroll, m.toolPagerScrollY)
+	}
+
+	// Scroll to top with 'home' / 'g'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
+	m = mod.(*tuiModel)
+	if m.toolPagerScrollY != 0 {
+		t.Fatalf("expected scrollY to be 0 after 'g', got %d", m.toolPagerScrollY)
+	}
+
+	// 6. Test copying tool output with 'c'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Text: "c"}))
+	m = mod.(*tuiModel)
+	if !strings.Contains(m.copyFeedback, "Copied") {
+		t.Fatalf("expected copy feedback, got %q", m.copyFeedback)
+	}
+	renderedWithCopy := renderToolPagerModal(m, 100)
+	if !strings.Contains(renderedWithCopy, "Copied") {
+		t.Fatalf("expected copy feedback rendered in footer, got:\n%s", renderedWithCopy)
+	}
+
+	// 7. Cycle previous to tool 0, then wrap around
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'p', Text: "p"}))
+	m = mod.(*tuiModel)
+	if m.toolPagerIndex != 0 {
+		t.Fatalf("expected toolPagerIndex to be 0 after 'p', got %d", m.toolPagerIndex)
+	}
+	// Wrap around backwards to 2
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '[', Text: "["}))
+	m = mod.(*tuiModel)
+	if m.toolPagerIndex != 2 {
+		t.Fatalf("expected toolPagerIndex to wrap to 2, got %d", m.toolPagerIndex)
+	}
+	// Cycle next with ']'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: ']', Text: "]"}))
+	m = mod.(*tuiModel)
+	if m.toolPagerIndex != 0 {
+		t.Fatalf("expected toolPagerIndex to wrap to 0, got %d", m.toolPagerIndex)
+	}
+
+	// 8. Close with 'q'
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
+	m = mod.(*tuiModel)
+	if m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be false after 'q'")
+	}
+
+	// 9. Open via /detail command with specific 1-based index
+	mod, _ = m.handleSlashCommand("/detail 2")
+	m = mod.(*tuiModel)
+	if !m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be true after /detail 2")
+	}
+	if m.toolPagerIndex != 1 {
+		t.Fatalf("expected toolPagerIndex to be 1 (/detail 2), got %d", m.toolPagerIndex)
+	}
+
+	// Close with Esc
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be false after Esc")
+	}
+
+	// Toggle open and close with Ctrl+T
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be true after Ctrl+T toggle open")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.toolPagerOpen {
+		t.Fatalf("expected toolPagerOpen to be false after Ctrl+T toggle close")
+	}
+}
+
 
 
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -658,6 +659,135 @@ func renderSessionsModal(m *tuiModel, width int) string {
 	return cardStyle.Render(strings.Join(lines, "\n"))
 }
 
+// renderToolPagerModal renders the dedicated floating pager modal for inspecting full tool output.
+func renderToolPagerModal(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+
+	indices := m.getToolEntryIndices()
+	if len(indices) == 0 {
+		return cardStyle.Render(styleTextMuted().Render("No tool executions in current session."))
+	}
+
+	idx := m.toolPagerIndex
+	if idx < 0 {
+		idx = 0
+	} else if idx >= len(indices) {
+		idx = len(indices) - 1
+	}
+
+	entry := m.entries[indices[idx]]
+	toolNum := idx + 1
+	totalTools := len(indices)
+
+	// Status badge
+	var statusBadge string
+	if entry.ToolExitCode != nil && *entry.ToolExitCode != 0 {
+		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).
+			Render(fmt.Sprintf("[Failed (exit %d)]", *entry.ToolExitCode))
+	} else if strings.EqualFold(entry.ToolName, "read_file") ||
+		strings.EqualFold(entry.ToolName, "list_dir") ||
+		strings.EqualFold(entry.ToolName, "grep") ||
+		strings.EqualFold(entry.ToolName, "glob") ||
+		strings.EqualFold(entry.ToolName, "find_files") {
+		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Bold(true).Render("[Explored]")
+	} else {
+		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("[Ran]")
+	}
+
+	// Tool command text
+	cmdStr := entry.ToolCommand
+	if cmdStr == "" {
+		cmdStr = entry.ToolName
+		if entry.ToolArgs != "" {
+			cmdStr += " " + entry.ToolArgs
+		}
+	}
+	availWidth := max(20, width-4)
+	truncCmd := truncateString(cmdStr, max(10, availWidth-lipgloss.Width(statusBadge)-3))
+	cmdStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(truncCmd)
+
+	output := entry.ToolOutput
+	trimmedOut := strings.TrimRight(output, "\r\n")
+	var rawLines []string
+	if strings.TrimSpace(trimmedOut) == "" {
+		rawLines = []string{}
+	} else {
+		rawLines = strings.Split(trimmedOut, "\n")
+	}
+	totalLines := len(rawLines)
+
+	visibleLines := m.toolPagerVisibleLines()
+	maxScroll := max(0, totalLines-visibleLines)
+	scrollY := m.toolPagerScrollY
+	if scrollY > maxScroll {
+		scrollY = maxScroll
+	}
+	if scrollY < 0 {
+		scrollY = 0
+	}
+
+	// Header line
+	titleLeft := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).
+		Render("Tool Output Pager") +
+		styleTextMuted().Render(fmt.Sprintf(" (Tool %d of %d)", toolNum, totalTools))
+
+	var scrollInfo string
+	if totalLines > 0 {
+		endLineNum := min(totalLines, scrollY+visibleLines)
+		scrollInfo = styleTextMuted().Render(fmt.Sprintf("Lines %d-%d of %d", scrollY+1, endLineNum, totalLines))
+	} else {
+		scrollInfo = styleTextMuted().Render("0 lines")
+	}
+
+	headerGap := max(1, availWidth-lipgloss.Width(titleLeft)-lipgloss.Width(scrollInfo))
+	headerLine := titleLeft + strings.Repeat(" ", headerGap) + scrollInfo
+
+	toolHeaderLine := statusBadge + " " + cmdStyled
+
+	var lines []string
+	lines = append(lines, headerLine)
+	lines = append(lines, toolHeaderLine)
+	lines = append(lines, "")
+
+	if totalLines == 0 {
+		lines = append(lines, "  "+styleTextMuted().Italic(true).Render("(no output)"))
+	} else {
+		endIdx := min(totalLines, scrollY+visibleLines)
+		numWidth := len(strconv.Itoa(totalLines))
+		if numWidth < 2 {
+			numWidth = 2
+		}
+		for i := scrollY; i < endIdx; i++ {
+			lineNumStr := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
+				Render(fmt.Sprintf("%*d │ ", numWidth, i+1))
+			lineContent := rawLines[i]
+			maxContentWidth := max(10, availWidth-numWidth-4)
+			if len(lineContent) > maxContentWidth {
+				lineContent = lineContent[:maxContentWidth-1] + "…"
+			}
+			contentStyled := styleTextPrimary().Render(lineContent)
+			lines = append(lines, lineNumStr+contentStyled)
+		}
+	}
+
+	lines = append(lines, "")
+
+	// Footer hint or copy feedback
+	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
+	} else {
+		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] switch tool · c copy · esc/q/ctrl+t close")
+		lines = append(lines, hint)
+	}
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
 // renderShortcutsPanel renders the keyboard shortcut cheat sheet in a 3-column layout.
 func renderShortcutsPanel(width int) string {
 	title := styleTextPrimary().Bold(true).Render("Keyboard Shortcuts")
@@ -685,7 +815,7 @@ func renderShortcutsPanel(width int) string {
 	col3Items := []struct{ Key, Desc string }{
 		{"Mouse Drag", "Select & auto-copy"},
 		{"Scroll", "History scroll"},
-		{"Ctrl+T", "Toggle tool expand"},
+		{"Ctrl+T", "Tool output pager"},
 		{"Ctrl+C", "Copy selection"},
 		{"Esc", "Clear selection"},
 	}

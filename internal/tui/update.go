@@ -476,6 +476,108 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// 0.2 Tool Output Pager Modal handling
+	if m.toolPagerOpen {
+		toolIndices := m.getToolEntryIndices()
+		toolCount := len(toolIndices)
+		if toolCount == 0 {
+			m.toolPagerOpen = false
+			m.updateLayout()
+			return m, nil
+		}
+		if m.toolPagerIndex < 0 {
+			m.toolPagerIndex = 0
+		} else if m.toolPagerIndex >= toolCount {
+			m.toolPagerIndex = toolCount - 1
+		}
+
+		entry := m.entries[toolIndices[m.toolPagerIndex]]
+		trimmedOut := strings.TrimRight(entry.ToolOutput, "\r\n")
+		var rawLines []string
+		if strings.TrimSpace(trimmedOut) == "" {
+			rawLines = []string{}
+		} else {
+			rawLines = strings.Split(trimmedOut, "\n")
+		}
+		totalLines := len(rawLines)
+		visibleLines := m.toolPagerVisibleLines()
+		maxScroll := max(0, totalLines-visibleLines)
+
+		switch keyStr {
+		case "esc", "q", "ctrl+t":
+			m.toolPagerOpen = false
+			m.updateLayout()
+			return m, nil
+
+		case "up", "k":
+			if m.toolPagerScrollY > 0 {
+				m.toolPagerScrollY--
+				m.updateLayout()
+			}
+			return m, nil
+
+		case "down", "j":
+			if m.toolPagerScrollY < maxScroll {
+				m.toolPagerScrollY++
+				m.updateLayout()
+			}
+			return m, nil
+
+		case "pgup":
+			m.toolPagerScrollY = max(0, m.toolPagerScrollY-visibleLines)
+			m.updateLayout()
+			return m, nil
+
+		case "pgdown":
+			m.toolPagerScrollY = min(maxScroll, m.toolPagerScrollY+visibleLines)
+			m.updateLayout()
+			return m, nil
+
+		case "home", "g":
+			m.toolPagerScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "end", "G":
+			m.toolPagerScrollY = maxScroll
+			m.updateLayout()
+			return m, nil
+
+		case "[", "p", "ctrl+p":
+			if m.toolPagerIndex > 0 {
+				m.toolPagerIndex--
+			} else {
+				m.toolPagerIndex = toolCount - 1
+			}
+			m.toolPagerScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "]", "n", "ctrl+n":
+			if m.toolPagerIndex < toolCount-1 {
+				m.toolPagerIndex++
+			} else {
+				m.toolPagerIndex = 0
+			}
+			m.toolPagerScrollY = 0
+			m.updateLayout()
+			return m, nil
+
+		case "c", "ctrl+c":
+			outText := entry.ToolOutput
+			_ = clipboard.WriteAll(outText)
+			count := utf8.RuneCountInString(outText)
+			m.copyFeedback = fmt.Sprintf("Copied %d chars of tool output to clipboard", count)
+			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+			expiresAt := m.copyFeedbackExpiresAt
+			m.updateLayout()
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearCopyFeedbackMsg{at: expiresAt}
+			})
+		}
+		return m, nil
+	}
+
 	// Trigger shortcut modal when typing '?' in an empty composer
 	if keyStr == "?" && m.composer.Value() == "" && !m.running {
 		m.shortcutsOpen = true
@@ -526,6 +628,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.sessionsFilter = ""
 			m.sessionsConfirmDelete = false
 			m.sessionsDeletingID = ""
+			m.updateLayout()
+			return m, nil
+		}
+		if m.toolPagerOpen {
+			m.toolPagerOpen = false
 			m.updateLayout()
 			return m, nil
 		}
@@ -614,15 +721,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+t":
-		// Toggle tool expand for latest tool entry
-		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].Kind == KindTool {
-				m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
-				m.refreshViewportContent()
-				break
-			}
-		}
-		return m, nil
+		return m.openToolPager(-1)
 
 	case "ctrl+o":
 		if m.running {

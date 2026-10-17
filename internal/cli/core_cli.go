@@ -75,6 +75,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
 	{name: "/context", usage: "/context", description: "Show context window budget, system rules, and capabilities."},
+	{name: "/detail", usage: "/detail [index]", description: "View full output of a tool call."},
 	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session (alias: /delete)."},
@@ -253,6 +254,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLILogs(runtime, line, stdout, stderr)
 		case line == "/export" || strings.HasPrefix(line, "/export "):
 			handleCoreCLIExport(client, sessionID, line, stdout, stderr)
+		case line == "/detail" || strings.HasPrefix(line, "/detail "):
+			handleCoreCLIDetail(client, runtime, sessionID, line, stdout, stderr)
 		case line == "/model" || strings.HasPrefix(line, "/model "):
 			handleCoreCLIModel(client, sessionID, line, stdout, stderr)
 		case line == "/sessions" || strings.HasPrefix(line, "/sessions "):
@@ -1117,6 +1120,152 @@ func cliExtractMessageContent(content json.RawMessage) string {
 		}
 	}
 	return out.String()
+}
+
+type cliToolEntry struct {
+	Name    string
+	Args    string
+	Command string
+	Output  string
+	CallID  string
+}
+
+func cliExtractToolOutputString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return str
+	}
+	var parts []json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			var part struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(p, &part) == nil && part.Text != "" {
+				b.WriteString(part.Text)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	var obj struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Text != "" {
+		return obj.Text
+	}
+	return string(raw)
+}
+
+func handleCoreCLIDetail(client cliCore, runtime cliRuntime, sessionID, line string, stdout, stderr io.Writer) {
+	ctx := context.Background()
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: get session: %v\n", err)
+		return
+	}
+
+	var tools []cliToolEntry
+	if len(saved.History) > 0 && string(saved.History) != "null" {
+		var items []json.RawMessage
+		if json.Unmarshal(saved.History, &items) == nil {
+			for i, item := range items {
+				var val struct {
+					Type      string          `json:"type"`
+					Name      string          `json:"name"`
+					CallID    string          `json:"call_id"`
+					Arguments json.RawMessage `json:"arguments"`
+					Output    json.RawMessage `json:"output"`
+				}
+				if json.Unmarshal(item, &val) != nil {
+					continue
+				}
+				switch val.Type {
+				case "function_call", "custom_tool_call":
+					args := string(val.Arguments)
+					if len(args) > 0 && args[0] == '"' {
+						var unquoted string
+						if json.Unmarshal(val.Arguments, &unquoted) == nil {
+							args = unquoted
+						}
+					}
+					callID := val.CallID
+					if callID == "" {
+						callID = fmt.Sprintf("call-%d", i)
+					}
+					tools = append(tools, cliToolEntry{
+						Name:    val.Name,
+						Args:    args,
+						Command: val.Name + " " + args,
+						CallID:  callID,
+					})
+				case "function_call_output", "custom_tool_call_output":
+					outText := cliExtractToolOutputString(val.Output)
+					found := false
+					if val.CallID != "" {
+						for j := len(tools) - 1; j >= 0; j-- {
+							if tools[j].CallID == val.CallID {
+								tools[j].Output = outText
+								found = true
+								break
+							}
+						}
+					}
+					if !found && len(tools) > 0 {
+						for j := len(tools) - 1; j >= 0; j-- {
+							if tools[j].Output == "" {
+								tools[j].Output = outText
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if len(tools) == 0 {
+		fmt.Fprintln(stdout, "No tool executions found in current session.")
+		return
+	}
+
+	parts := strings.Fields(line)
+	target := len(tools) - 1
+	if len(parts) > 1 {
+		idx, err := strconv.Atoi(parts[1])
+		if err != nil || idx < 1 || idx > len(tools) {
+			fmt.Fprintf(stderr, "error: tool index %s out of range (1-%d)\n", parts[1], len(tools))
+			return
+		}
+		target = idx - 1
+	}
+
+	entry := tools[target]
+	cmdStr := entry.Command
+	if cmdStr == "" {
+		cmdStr = entry.Name
+		if entry.Args != "" {
+			cmdStr += " " + entry.Args
+		}
+	}
+
+	fmt.Fprintf(stdout, "--- Tool %d of %d: %s ---\n", target+1, len(tools), cmdStr)
+	outTrimmed := strings.TrimSpace(entry.Output)
+	if outTrimmed == "" {
+		fmt.Fprintln(stdout, "(no output)")
+	} else {
+		fmt.Fprintln(stdout, outTrimmed)
+	}
+
+	if len(tools) > 1 && len(parts) <= 1 {
+		fmt.Fprintf(stdout, "\n(Showing latest tool %d of %d. Use '/detail <index>' to inspect earlier tools.)\n", target+1, len(tools))
+	}
 }
 
 func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) (string, cliRuntime, error) {
