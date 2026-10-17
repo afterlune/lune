@@ -124,17 +124,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
-			if m.currentStreamText != "" {
-				m.entries = append(m.entries, TranscriptEntry{
-					Kind: KindAssistant,
-					Text: m.currentStreamText,
-				})
-				m.currentStreamText = ""
-			}
 			if msg.result.Status == core.TaskPaused {
 				m.checkPendingState(context.Background())
 			}
 			if msg.result.ProposedPlan != nil && msg.result.ProposedPlan.Text != "" {
+				cleaned := stripProposedPlan(m.currentStreamText)
+				if cleaned != "" {
+					m.entries = append(m.entries, TranscriptEntry{
+						Kind: KindAssistant,
+						Text: cleaned,
+					})
+				}
+				m.currentStreamText = ""
 				m.entries = append(m.entries, TranscriptEntry{
 					Kind: KindPlan,
 					Text: msg.result.ProposedPlan.Text,
@@ -144,6 +145,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ExecutionID: msg.result.ExecutionID,
 					Selected:    0,
 				}
+			} else if m.currentStreamText != "" {
+				m.entries = append(m.entries, TranscriptEntry{
+					Kind: KindAssistant,
+					Text: m.currentStreamText,
+				})
+				m.currentStreamText = ""
 			}
 		}
 		m.refreshViewportContent()

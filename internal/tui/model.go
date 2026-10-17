@@ -268,7 +268,8 @@ func (m *tuiModel) updateLayout() {
 	} else if m.activePlanReview != nil {
 		modalHeight = lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, contentWidth)) + 1
 	} else if m.autocompleteOpen && len(m.autocompleteItems) > 0 {
-		modalHeight = len(m.autocompleteItems) + 1
+		visibleCount := min(len(m.autocompleteItems), maxVisibleAutocomplete)
+		modalHeight = visibleCount + 1
 	}
 
 	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
@@ -685,6 +686,34 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 			kind := KindAssistant
 			if value.Role == "user" {
 				kind = KindUser
+			}
+			if kind == KindAssistant && strings.Contains(text, "<proposed_plan>") {
+				openIdx := strings.Index(text, "<proposed_plan>")
+				closeIdx := strings.Index(text, "</proposed_plan>")
+				var planText string
+				if closeIdx > openIdx {
+					planText = strings.TrimSpace(text[openIdx+len("<proposed_plan>"):closeIdx])
+				} else {
+					planText = strings.TrimSpace(text[openIdx+len("<proposed_plan>"):])
+				}
+				surrounding := stripProposedPlan(text)
+				if surrounding != "" {
+					entries = append(entries, TranscriptEntry{
+						ID:        fmt.Sprintf("hist-%d", i),
+						Kind:      KindAssistant,
+						Text:      surrounding,
+						Timestamp: time.Now(),
+					})
+				}
+				if planText != "" {
+					entries = append(entries, TranscriptEntry{
+						ID:        fmt.Sprintf("hist-plan-%d", i),
+						Kind:      KindPlan,
+						Text:      planText,
+						Timestamp: time.Now(),
+					})
+				}
+				continue
 			}
 			entries = append(entries, TranscriptEntry{
 				ID:        fmt.Sprintf("hist-%d", i),

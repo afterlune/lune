@@ -210,6 +210,14 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
+		if m.currentStreamText != "" {
+			m.entries = append(m.entries, TranscriptEntry{
+				Kind:      KindAssistant,
+				Text:      m.currentStreamText,
+				Timestamp: time.Now(),
+			})
+			m.currentStreamText = ""
+		}
 		m.thinking = false
 		cmdText := event.Tool.Name
 		outText := ""
@@ -280,6 +288,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == event.Tool.ID {
 				m.entries[i].ToolStatus = event.CommandStatus
 				m.entries[i].ToolExitCode = event.CommandExitCode
+				if event.Tool.Details != nil && event.Tool.Details.Output != "" {
+					m.entries[i].ToolOutput = event.Tool.Details.Output
+				}
 				m.invalidateEntryCache()
 				break
 			}

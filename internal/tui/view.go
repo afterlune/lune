@@ -246,11 +246,29 @@ func renderWorking(elapsed time.Duration, thinking bool) string {
 	return bullet + title + "\n  " + branch + tip
 }
 
+// maxVisibleAutocomplete is the maximum number of items visible simultaneously in the autocomplete dropdown.
+const maxVisibleAutocomplete = 7
+
 // renderAutocompletePopup renders the floating slash command suggestions above the composer.
 func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) string {
 	if len(items) == 0 {
 		return ""
 	}
+	total := len(items)
+	visible := min(total, maxVisibleAutocomplete)
+
+	startIdx := 0
+	if total > visible {
+		startIdx = selected - visible/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+visible > total {
+			startIdx = total - visible
+		}
+	}
+	endIdx := startIdx + visible
+
 	var rows []string
 	leftCol := 16
 	for _, item := range items {
@@ -259,7 +277,8 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 	maxLeft := max(24, width*3/5)
 	leftCol = min(leftCol, maxLeft)
 
-	for i, item := range items {
+	for i := startIdx; i < endIdx; i++ {
+		item := items[i]
 		marker := "  "
 		if i == selected {
 			marker = "› "
@@ -279,6 +298,7 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 	}
 	return strings.Join(rows, "\n")
 }
+
 
 // renderQuestionPanel renders the clarification question card at the bottom.
 func renderQuestionPanel(q *ActiveQuestion, width int) string {
