@@ -1069,10 +1069,11 @@ func renderDiffModal(m *tuiModel, width int) string {
 
 	availWidth := max(20, width-4)
 
-	// Header line
+	// Header line with total workspace stats
+	totAdds, totDels := computeDiffStats(m.diffFiles)
 	titleLeft := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).
 		Render("Workspace Diff Pager") +
-		styleTextMuted().Render(fmt.Sprintf(" (File %d of %d)", fileNum, totalFiles))
+		styleTextMuted().Render(fmt.Sprintf(" (File %d of %d · %d files +%d/-%d)", fileNum, totalFiles, totalFiles, totAdds, totDels))
 
 	totalLines := len(file.Lines)
 	visibleLines := m.diffModalVisibleLines()
@@ -1096,6 +1097,9 @@ func renderDiffModal(m *tuiModel, width int) string {
 	headerGap := max(1, availWidth-lipgloss.Width(titleLeft)-lipgloss.Width(scrollInfo))
 	headerLine := titleLeft + strings.Repeat(" ", headerGap) + scrollInfo
 
+	// Multi-file tab bar
+	tabBar := renderDiffTabBar(m.diffFiles, idx, availWidth)
+
 	// File info line with path, additions (+) and deletions (-)
 	pathStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary)).Render(file.Path)
 	statsStyled := fmt.Sprintf(" %s %s",
@@ -1108,6 +1112,9 @@ func renderDiffModal(m *tuiModel, width int) string {
 
 	var lines []string
 	lines = append(lines, headerLine)
+	if tabBar != "" {
+		lines = append(lines, tabBar)
+	}
 	lines = append(lines, pathStyled+statsStyled)
 	lines = append(lines, "")
 
@@ -1155,7 +1162,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
 	} else {
-		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] or tab switch file · c copy · esc/q/ctrl+d close")
+		hint := styleTextMuted().Render("1-9 jump · [/] or tab switch · c copy · m draft commit · esc/q close")
 		lines = append(lines, hint)
 	}
 

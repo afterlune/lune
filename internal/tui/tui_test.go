@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -3154,6 +3155,132 @@ Here is our execution plan:
 	}
 	if !hasCompletedCard {
 		t.Errorf("expected completion summary card in transcript")
+	}
+}
+
+func TestDiffModalTabBarAndCommitHelper(t *testing.T) {
+	files := []DiffFile{
+		{Path: "internal/tui/diff.go", Additions: 42, Deletions: 5, Lines: []string{"+line1", "+line2"}},
+		{Path: "internal/tui/view.go", Additions: 10, Deletions: 2, Lines: []string{"+view1", "-view2"}},
+		{Path: "cmd/main.go", Additions: 3, Deletions: 0, Lines: []string{"+main1"}},
+	}
+
+	// 1. Test computeDiffStats
+	totAdds, totDels := computeDiffStats(files)
+	if totAdds != 55 || totDels != 7 {
+		t.Errorf("computeDiffStats = (+%d, -%d), want (+55, -7)", totAdds, totDels)
+	}
+
+	// 2. Test renderDiffTabBar
+	tabBar := renderDiffTabBar(files, 1, 80)
+	strippedTab := ansi.Strip(tabBar)
+	if !strings.Contains(strippedTab, "1.diff.go +42/-5") || !strings.Contains(strippedTab, "2.view.go +10/-2") {
+		t.Errorf("expected tab bar to render file tabs, got: %s", strippedTab)
+	}
+
+	// 3. Test draftCommitMessage
+	draft := draftCommitMessage(files)
+	if !strings.HasPrefix(draft, "feat(tui):") {
+		t.Errorf("expected feat(tui): prefix for draft commit, got: %s", draft)
+	}
+
+	// 4. Test diff modal number key jump and key 'm'
+	m := newTUIModel(nil, nil, "diff-test-sess")
+	m.width = 100
+	m.height = 30
+	m.diffModalOpen = true
+	m.diffFiles = files
+	m.diffFileIndex = 0
+
+	// Press '2' -> jumps to file index 1 (view.go)
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '2'}))
+	m = mod.(*tuiModel)
+	if m.diffFileIndex != 1 {
+		t.Errorf("expected diffFileIndex=1 after pressing '2', got %d", m.diffFileIndex)
+	}
+
+	// Press '3' -> jumps to file index 2 (main.go)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '3'}))
+	m = mod.(*tuiModel)
+	if m.diffFileIndex != 2 {
+		t.Errorf("expected diffFileIndex=2 after pressing '3', got %d", m.diffFileIndex)
+	}
+
+	// Press 'm' -> closes diff modal, drafts commit into composer
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm'}))
+	m = mod.(*tuiModel)
+	if m.diffModalOpen {
+		t.Errorf("expected diffModalOpen to be false after pressing 'm'")
+	}
+	if !strings.HasPrefix(m.composer.Value(), "/commit feat(tui):") {
+		t.Errorf("expected composer to contain drafted commit, got: %q", m.composer.Value())
+	}
+
+	// 5. Test isDesktopPath protection
+	if !isDesktopPath("cmd/desktop/main.go") || !isDesktopPath("internal/desktop/service.go") || !isDesktopPath("docs/desktop.md") {
+		t.Errorf("expected isDesktopPath to return true for desktop files")
+	}
+	if isDesktopPath("internal/tui/diff.go") || isDesktopPath("cmd/main.go") {
+		t.Errorf("expected isDesktopPath to return false for non-desktop files")
+	}
+}
+
+func TestCommitAndPushCommands(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Initialize git repo in tempDir
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = tempDir
+	if err := gitInit.Run(); err != nil {
+		t.Skip("git init not available, skipping git commit test")
+	}
+
+	gitConfig1 := exec.Command("git", "config", "user.name", "Test User")
+	gitConfig1.Dir = tempDir
+	_ = gitConfig1.Run()
+
+	gitConfig2 := exec.Command("git", "config", "user.email", "test@example.com")
+	gitConfig2.Dir = tempDir
+	_ = gitConfig2.Run()
+
+	m := newTUIModel(nil, nil, "commit-test-sess")
+	m.workspace = tempDir
+
+	// 1. Working tree clean
+	m.handleSlashCommand("/commit")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Working tree clean") {
+		t.Errorf("expected working tree clean message, got: %s", lastSys)
+	}
+
+	// 2. Create non-desktop file
+	_ = os.MkdirAll(filepath.Join(tempDir, "internal", "tui"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "internal", "tui", "code.go"), []byte("package tui\n"), 0644)
+
+	// Create desktop file (which MUST be ignored!)
+	_ = os.MkdirAll(filepath.Join(tempDir, "internal", "desktop"), 0755)
+	_ = os.WriteFile(filepath.Join(tempDir, "internal", "desktop", "ignore.go"), []byte("package desktop\n"), 0644)
+
+	// 3. /commit with no args: should draft commit message
+	m.handleSlashCommand("/commit")
+	if !strings.HasPrefix(m.composer.Value(), "/commit ") {
+		t.Errorf("expected drafted /commit in composer, got: %q", m.composer.Value())
+	}
+
+	// 4. /commit <msg>: executes commit, strictly staging ONLY non-desktop file
+	m.handleSlashCommand("/commit feat(tui): add initial code")
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Git Commit Succeeded") {
+		t.Errorf("expected Git Commit Succeeded, got: %s", lastSys2)
+	}
+
+	// Verify desktop file was NEVER staged or committed
+	statusCmd := exec.Command("git", "status", "--porcelain", "-u")
+	statusCmd.Dir = tempDir
+	statusOut, _ := statusCmd.Output()
+	statusStr := string(statusOut)
+	if !strings.Contains(statusStr, "internal/desktop/ignore.go") {
+		t.Errorf("expected desktop file to remain untracked (??), got: %s", statusStr)
 	}
 }
 

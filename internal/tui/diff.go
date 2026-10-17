@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
+
+	"charm.land/lipgloss/v2"
 )
 
 // DiffFile represents the diff output and statistics for a single changed file.
@@ -93,4 +97,183 @@ func parseGitDiff(raw string) []DiffFile {
 	}
 
 	return files
+}
+
+// computeDiffStats calculates total additions and deletions across all files.
+func computeDiffStats(files []DiffFile) (totalAdditions, totalDeletions int) {
+	for _, f := range files {
+		totalAdditions += f.Additions
+		totalDeletions += f.Deletions
+	}
+	return
+}
+
+// renderDiffTabBar constructs a horizontally scrollable tab row for changed files.
+func renderDiffTabBar(files []DiffFile, activeIdx int, width int) string {
+	if len(files) <= 1 {
+		return ""
+	}
+
+	th := activeTheme()
+	type tabItem struct {
+		text     string
+		width    int
+		isActive bool
+	}
+
+	var items []tabItem
+	for i, f := range files {
+		base := filepath.Base(f.Path)
+		isActive := (i == activeIdx)
+		stat := fmt.Sprintf("+%d/-%d", f.Additions, f.Deletions)
+		label := fmt.Sprintf("%d.%s %s", i+1, base, stat)
+
+		var rendered string
+		if isActive {
+			pillStyle := lipgloss.NewStyle().
+				Background(lipgloss.Color(th.SelectBg)).
+				Foreground(lipgloss.Color(th.SelectFg)).
+				Bold(true).
+				Padding(0, 1)
+			rendered = pillStyle.Render(label)
+		} else {
+			pillStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color(th.TextMuted)).
+				Padding(0, 1)
+			rendered = pillStyle.Render(label)
+		}
+
+		items = append(items, tabItem{
+			text:     rendered,
+			width:    lipgloss.Width(rendered),
+			isActive: isActive,
+		})
+	}
+
+	// Calculate visible window around activeIdx that fits within width
+	start := 0
+	end := len(items)
+
+	totalW := 0
+	for _, it := range items {
+		totalW += it.width + 1
+	}
+
+	if totalW > width {
+		currentW := items[activeIdx].width
+		start = activeIdx
+		end = activeIdx + 1
+
+		for {
+			expanded := false
+			if start > 0 {
+				needed := items[start-1].width + 1
+				if currentW+needed <= width-4 {
+					start--
+					currentW += needed
+					expanded = true
+				}
+			}
+			if end < len(items) {
+				needed := items[end].width + 1
+				if currentW+needed <= width-4 {
+					currentW += needed
+					end++
+					expanded = true
+				}
+			}
+			if !expanded {
+				break
+			}
+		}
+	}
+
+	var parts []string
+	if start > 0 {
+		parts = append(parts, styleTextMuted().Render("‹"))
+	}
+	for i := start; i < end; i++ {
+		parts = append(parts, items[i].text)
+	}
+	if end < len(items) {
+		parts = append(parts, styleTextMuted().Render("›"))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// draftCommitMessage synthesizes a conventional commit message from parsed diff files.
+func draftCommitMessage(files []DiffFile) string {
+	if len(files) == 0 {
+		return "chore: update workspace files"
+	}
+
+	scopeCounts := make(map[string]int)
+	totalAdditions := 0
+	totalDeletions := 0
+	isAllTests := true
+
+	for _, f := range files {
+		totalAdditions += f.Additions
+		totalDeletions += f.Deletions
+		if !strings.HasSuffix(f.Path, "_test.go") && !strings.Contains(f.Path, "test") {
+			isAllTests = false
+		}
+
+		parts := strings.Split(f.Path, "/")
+		if len(parts) >= 2 && parts[0] == "internal" {
+			scopeCounts[parts[1]]++
+		} else if len(parts) >= 2 {
+			scopeCounts[parts[0]]++
+		} else {
+			scopeCounts["root"]++
+		}
+	}
+
+	// Find most prominent scope
+	primaryScope := "app"
+	maxCount := 0
+	for scope, count := range scopeCounts {
+		if count > maxCount {
+			maxCount = count
+			primaryScope = scope
+		}
+	}
+	if primaryScope == "root" {
+		primaryScope = "core"
+	}
+
+	commitType := "feat"
+	if isAllTests {
+		commitType = "test"
+	} else if totalAdditions > 0 && totalDeletions == 0 {
+		commitType = "feat"
+	} else if totalDeletions > totalAdditions*2 {
+		commitType = "refactor"
+	}
+
+	// Synthesize a brief description based on files
+	var fileBaseNames []string
+	for _, f := range files {
+		base := filepath.Base(f.Path)
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+		base = strings.TrimSuffix(base, "_test")
+		found := false
+		for _, existing := range fileBaseNames {
+			if existing == base {
+				found = true
+				break
+			}
+		}
+		if !found && len(fileBaseNames) < 3 {
+			fileBaseNames = append(fileBaseNames, base)
+		}
+	}
+
+	desc := "update workspace components"
+	if len(fileBaseNames) > 0 {
+		desc = fmt.Sprintf("update %s", strings.Join(fileBaseNames, ", "))
+	}
+
+	return fmt.Sprintf("%s(%s): %s", commitType, primaryScope, desc)
 }

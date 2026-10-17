@@ -38,6 +38,8 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
 	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)"},
 	{Command: "/review", Description: "summarize and review workspace changes"},
+	{Command: "/commit", Description: "review diff and draft or execute git commit: /commit [msg]"},
+	{Command: "/push", Description: "push committed changes to remote git repository"},
 	{Command: "/mcp", Description: "manage external MCP servers: list, enable, disable, auth"},
 	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
 	{Command: "/compact", Description: "compact older conversation history"},
@@ -276,6 +278,12 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		lines = append(lines, "\n*Tip: Press `Ctrl+D` or use `/diff [path]` to inspect full diff in the interactive diff viewer.*")
 		m.addSystemEntry(strings.Join(lines, "\n"))
 		return m, nil
+
+	case "/commit":
+		return m.handleCommitCommand(parts)
+
+	case "/push":
+		return m.handlePushCommand(parts)
 
 	case "/mcp":
 		if m.client == nil {
@@ -2176,6 +2184,208 @@ func (m *tuiModel) openDiffModal(targetPath string) (tea.Model, tea.Cmd) {
 
 	m.updateLayout()
 	return m, nil
+}
+
+// isDesktopPath returns true if the relative slash path targets the desktop subsystem.
+func isDesktopPath(slashPath string) bool {
+	lower := strings.ToLower(slashPath)
+	return strings.HasPrefix(lower, "cmd/desktop") ||
+		strings.HasPrefix(lower, "internal/desktop") ||
+		strings.HasPrefix(lower, "docs/desktop.md") ||
+		strings.Contains(lower, "/desktop/")
+}
+
+// stageWorkspaceNonDesktopFiles stages all modified/untracked files while strictly avoiding desktop paths.
+func stageWorkspaceNonDesktopFiles(ws string) error {
+	statusCmd := exec.CommandContext(context.Background(), "git", "status", "--porcelain", "-u")
+	statusCmd.Dir = ws
+	out, err := statusCmd.Output()
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(out), "\n")
+	var toAdd []string
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if len(line) < 4 {
+			continue
+		}
+		rawPath := strings.TrimSpace(line[3:])
+		rawPath = strings.Trim(rawPath, "\"")
+		if parts := strings.Split(rawPath, " -> "); len(parts) == 2 {
+			rawPath = parts[1]
+		}
+		slashPath := strings.TrimPrefix(filepath.ToSlash(rawPath), "./")
+
+		// STRICT: Never stage or touch desktop files!
+		if isDesktopPath(slashPath) {
+			continue
+		}
+		toAdd = append(toAdd, rawPath)
+	}
+
+	if len(toAdd) == 0 {
+		return nil
+	}
+
+	args := append([]string{"add", "--"}, toAdd...)
+	addCmd := exec.CommandContext(context.Background(), "git", args...)
+	addCmd.Dir = ws
+	return addCmd.Run()
+}
+
+// handleCommitCommand either executes a git commit with the given message or drafts one into composer.
+func (m *tuiModel) handleCommitCommand(parts []string) (tea.Model, tea.Cmd) {
+	ws := m.workspace
+	if ws == "" && m.client != nil {
+		ws = m.client.Workspace()
+	}
+	if ws == "" {
+		m.addSystemEntry("Cannot commit: workspace path unavailable.")
+		return m, nil
+	}
+
+	// First check git status to inspect workspace changes and filter non-desktop files
+	statusCmd := exec.CommandContext(context.Background(), "git", "status", "--porcelain", "-u")
+	statusCmd.Dir = ws
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		m.addSystemEntry("Git error: " + err.Error())
+		return m, nil
+	}
+
+	statusLines := strings.Split(string(statusOut), "\n")
+	var nonDesktopFiles []string
+	for _, l := range statusLines {
+		l = strings.TrimRight(l, "\r")
+		if len(l) < 4 {
+			continue
+		}
+		p := strings.TrimSpace(l[3:])
+		p = strings.Trim(p, "\"")
+		if spl := strings.Split(p, " -> "); len(spl) == 2 {
+			p = spl[1]
+		}
+		slashP := strings.TrimPrefix(filepath.ToSlash(p), "./")
+		if !isDesktopPath(slashP) {
+			nonDesktopFiles = append(nonDesktopFiles, p)
+		}
+	}
+
+	if len(nonDesktopFiles) == 0 {
+		m.addSystemEntry("Working tree clean, no changes to commit.")
+		return m, nil
+	}
+
+	// 1. If user provided a message: /commit <message...>
+	if len(parts) > 1 {
+		msg := strings.TrimSpace(strings.Join(parts[1:], " "))
+		if msg == "" {
+			m.addSystemEntry("Commit message cannot be empty.")
+			return m, nil
+		}
+
+		// Stage changes, strictly skipping any desktop files
+		if err := stageWorkspaceNonDesktopFiles(ws); err != nil {
+			m.addSystemEntry("Failed to stage changes: " + err.Error())
+			return m, nil
+		}
+
+		// Check if there are staged changes
+		diffCmd := exec.CommandContext(context.Background(), "git", "diff", "--cached", "--quiet")
+		diffCmd.Dir = ws
+		if err := diffCmd.Run(); err == nil {
+			m.addSystemEntry("No staged changes to commit.")
+			return m, nil
+		}
+
+		// Execute commit
+		cmd := exec.CommandContext(context.Background(), "git", "commit", "-m", msg)
+		cmd.Dir = ws
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			m.addSystemEntry(fmt.Sprintf("Git commit failed: %s\n%s", err.Error(), string(out)))
+			return m, nil
+		}
+
+		summary := strings.TrimSpace(string(out))
+		card := fmt.Sprintf("✅ **Git Commit Succeeded**\n```text\n%s\n```\n*Tip: Use `/push` to push to remote.*", summary)
+		m.addSystemEntry(card)
+		m.updateLayout()
+		return m, nil
+	}
+
+	// 2. No message provided: draft a message from git diff and fill into composer
+	diffCmd := exec.CommandContext(context.Background(), "git", "diff", "HEAD")
+	diffCmd.Dir = ws
+	out, err := diffCmd.Output()
+	diffText := ""
+	if err == nil {
+		diffText = strings.TrimSpace(string(out))
+	}
+	if diffText == "" {
+		// Try staged or unstaged
+		diffCmd = exec.CommandContext(context.Background(), "git", "diff")
+		diffCmd.Dir = ws
+		out, err = diffCmd.Output()
+		if err == nil {
+			diffText = strings.TrimSpace(string(out))
+		}
+	}
+
+	var files []DiffFile
+	if diffText != "" {
+		parsed := parseGitDiff(diffText)
+		for _, f := range parsed {
+			if !isDesktopPath(filepath.ToSlash(f.Path)) {
+				files = append(files, f)
+			}
+		}
+	}
+
+	// If git diff didn't produce files (e.g. newly created untracked files)
+	if len(files) == 0 {
+		for _, p := range nonDesktopFiles {
+			files = append(files, DiffFile{Path: p, Additions: 1})
+		}
+	}
+
+	draft := draftCommitMessage(files)
+	cmdText := fmt.Sprintf("/commit %s", draft)
+	m.composer.SetValue(cmdText)
+	m.composer.CursorEnd()
+	m.addSystemEntry(fmt.Sprintf("Drafted commit message based on %d modified file(s). Edit in composer or press Enter to commit.", len(files)))
+	m.updateLayout()
+	return m, nil
+}
+
+// handlePushCommand pushes the current branch commits to the remote origin.
+func (m *tuiModel) handlePushCommand(parts []string) (tea.Model, tea.Cmd) {
+	ws := m.workspace
+	if ws == "" && m.client != nil {
+		ws = m.client.Workspace()
+	}
+	if ws == "" {
+		m.addSystemEntry("Cannot push: workspace path unavailable.")
+		return m, nil
+	}
+
+	m.addSystemEntry("Pushing commits to remote origin...")
+	m.updateLayout()
+
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD")
+		cmd.Dir = ws
+		out, err := cmd.CombinedOutput()
+		summary := strings.TrimSpace(string(out))
+		if err != nil {
+			return gitPushFinishedMsg{err: fmt.Errorf("%w\n%s", err, summary)}
+		}
+		return gitPushFinishedMsg{output: summary}
+	}
 }
 
 

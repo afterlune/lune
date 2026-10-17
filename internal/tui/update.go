@@ -23,6 +23,11 @@ type clearCopyFeedbackMsg struct {
 	at time.Time
 }
 
+type gitPushFinishedMsg struct {
+	output string
+	err    error
+}
+
 // Update handles all incoming Bubble Tea messages and key events.
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -282,6 +287,20 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Discard failed: " + msg.err.Error())
 		} else {
 			m.addSystemEntry("Discarded paused task.")
+		}
+		m.updateLayout()
+		return m, nil
+
+	case gitPushFinishedMsg:
+		if msg.err != nil {
+			m.addSystemEntry("Git push failed: " + msg.err.Error())
+		} else {
+			out := msg.output
+			if out == "" {
+				out = "Everything up-to-date"
+			}
+			card := fmt.Sprintf("🚀 **Git Push Succeeded**\n```\n%s\n```", out)
+			m.addSystemEntry(card)
 		}
 		m.updateLayout()
 		return m, nil
@@ -713,6 +732,40 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.diffScrollY = 0
 			m.updateLayout()
 			return m, nil
+
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			targetIdx := int(keyStr[0] - '1')
+			if targetIdx < fileCount {
+				m.diffFileIndex = targetIdx
+				m.diffScrollY = 0
+				m.updateLayout()
+			}
+			return m, nil
+
+		case "m":
+			draft := draftCommitMessage(m.diffFiles)
+			m.diffModalOpen = false
+			m.composer.SetValue(fmt.Sprintf("/commit %s", draft))
+			m.composer.CursorEnd()
+			m.addSystemEntry(fmt.Sprintf("Drafted commit message in composer: `/commit %s`. Press Enter to commit or edit.", draft))
+			m.updateLayout()
+			return m, nil
+
+		case "a":
+			var allDiffs []string
+			for _, f := range m.diffFiles {
+				allDiffs = append(allDiffs, f.RawDiff)
+			}
+			fullText := strings.Join(allDiffs, "\n\n")
+			_ = clipboard.WriteAll(fullText)
+			count := utf8.RuneCountInString(fullText)
+			m.copyFeedback = fmt.Sprintf("Copied all diffs (%d chars) to clipboard", count)
+			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+			expiresAt := m.copyFeedbackExpiresAt
+			m.updateLayout()
+			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+				return clearCopyFeedbackMsg{at: expiresAt}
+			})
 
 		case "c", "ctrl+c":
 			diffText := file.RawDiff
