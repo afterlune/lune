@@ -76,6 +76,9 @@
 | **`/theme [dark\|light\|auto]`** | 查看或切换界面主题模式（自适应终端背景色、高对比度深色、明亮浅色） |
 | **`/sessions`** | 查看当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
 | **`/open <id\|prefix>`** | 切换至指定会话（支持唯一前缀模糊匹配，如前 6~8 位 ID；任务运行中受安全互锁保护禁止切换） |
+| **`/title [name]`** | 查看或自定义重命名当前会话标题，Header、Footer 与 `/sessions` 实时同步持久化 |
+| **`/diff [path]`** | 在视口中以红绿语法高亮直接查看当前 Git 工作区的代码修改差异（无需跳出 TUI） |
+| **`/cancel-queue`** | 取消当前处于等待队列中的后续任务（亦可直接按 `Esc`） |
 | **`/rewind [N]`** | 回滚会话至前 N 轮对话（默认 1 轮；严格保证 Core SQLite 事务一致性，自动重载转录历史；运行态下禁止回滚） |
 | **`/status`** | 查看会话状态（模型、工作区路径、权限、标题、Session ID、主题模式、Context Window 占用百分比与精确 Token 统计） |
 | **`/compact`** | 触发老旧上下文自动精简压缩 |
@@ -121,6 +124,16 @@
   1. `1. Retry model request`（重试恢复）：触发 `runtime.Recover()`，继续推进暂停任务。
   2. `2. Discard paused task`（丢弃任务）：触发 `runtime.DiscardPaused()`，安全清理现场并返回空闲提示符。
 - 方向键 `Up` / `Down` 切换选项，`Enter` 确认操作，按 `Esc` 快速丢弃。
+
+### 4.5 任务排队机制 (`QueuedTurn`)
+- 任务执行中（`m.running == true`）用户输入并发送后续指令时，自动触发 `core.QueueInput` 进行安全 FIFO 排队。
+- 视口即时渲染琥珀色 `⏳ Queued › [指令文本]` 卡片，并提供撤回提示。
+- 用户可执行 `/cancel-queue` 或在非模态态下按 `Esc` 取消排队中的任务。
+- 当前任务执行完成（`EventTaskFinished`）后，底层的队列任务自动无缝转正为正式执行态（`EventTaskStarted`），卡片转为普通用户指令并启动动态计时。
+
+### 4.6 工作区变更审查 (`WorkspaceDiff`)
+- 执行 `/diff [path]` 时，直接在当前视口内输出当前 Git 工作区的代码变更差异。
+- 包含文件头（粗体白字）、增量行（柔和绿）、删减行（柔和红）与分块位置（粗体深蓝），免除频繁在外部终端与 IDE 之间切屏的成本。
 
 ---
 

@@ -82,9 +82,26 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.running = false
+			if len(m.queuedTurns) == 0 {
+				m.running = false
+			}
 			m.addSystemEntry("Failed to submit task: " + msg.err.Error())
 			m.updateLayout()
+			return m, nil
+		}
+		if msg.submission.Status == core.SubmissionQueued {
+			m.queuedTurns = append(m.queuedTurns, QueuedItem{
+				ExecutionID: msg.submission.ExecutionID,
+				QueueID:     msg.submission.QueueID,
+				CreatedAt:   time.Now(),
+			})
+			for i := len(m.entries) - 1; i >= 0; i-- {
+				if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == "" {
+					m.entries[i].ToolCallID = msg.submission.ExecutionID
+					break
+				}
+			}
+			m.refreshViewportContent()
 			return m, nil
 		}
 		m.running = true
@@ -431,6 +448,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.scrolledUp = false
 			m.viewport.GotoBottom()
 			return m, nil
+		}
+		if len(m.queuedTurns) > 0 {
+			return m.cancelQueuedTurn()
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			m.runtime.Interrupt(m.runningExecution)

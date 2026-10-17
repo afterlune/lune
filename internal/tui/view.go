@@ -81,9 +81,56 @@ func renderEntry(entry TranscriptEntry, width int) string {
 			}
 		}
 		return strings.Join(out, "\n")
+
+	case KindQueued:
+		icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render("⏳ ")
+		label := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Bold(true).Render("Queued › ")
+		content := styleTextPrimary().Render(strings.TrimSpace(entry.Text))
+		hint := styleTextMuted().Render(" (/cancel-queue to cancel)")
+		row := icon + label + content + hint
+		pad := max(0, width-lipgloss.Width(row))
+		return lipgloss.NewStyle().
+			Background(lipgloss.Color(activeTheme().CardBg)).
+			Render(row + strings.Repeat(" ", pad))
+
+	case KindDiff:
+		return renderDiffEntry(entry, width)
 	}
 
 	return ""
+}
+
+// renderDiffEntry formats Git unified diff outputs with syntax highlighting.
+func renderDiffEntry(entry TranscriptEntry, width int) string {
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render("• ")
+	title := styleTextPrimary().Bold(true).Render("Workspace Diff")
+
+	lines := strings.Split(entry.Text, "\n")
+	var formatted []string
+
+	styleAdd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().SuccessGreen))
+	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed))
+	styleHunk := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true)
+	styleFile := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true)
+	styleNormal := styleTextMuted()
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff --git") {
+			formatted = append(formatted, "\n  "+styleFile.Render(line))
+		} else if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			formatted = append(formatted, "  "+styleNormal.Render(line))
+		} else if strings.HasPrefix(line, "@@") {
+			formatted = append(formatted, "  "+styleHunk.Render(line))
+		} else if strings.HasPrefix(line, "+") {
+			formatted = append(formatted, "  "+styleAdd.Render(line))
+		} else if strings.HasPrefix(line, "-") {
+			formatted = append(formatted, "  "+styleDel.Render(line))
+		} else {
+			formatted = append(formatted, "  "+styleNormal.Render(line))
+		}
+	}
+
+	return bullet + title + "\n" + strings.Join(formatted, "\n")
 }
 
 // renderToolEntry renders tool executions (Ran, Failed, Explored).

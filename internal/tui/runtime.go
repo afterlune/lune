@@ -89,36 +89,15 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Add user entry to transcript and prompt history
-	m.entries = append(m.entries, TranscriptEntry{
-		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
-		Kind:      KindUser,
-		Text:      text,
-		Timestamp: time.Now(),
-	})
 	m.promptHistory = append(m.promptHistory, text)
 	m.historyIndex = len(m.promptHistory)
 	m.historyDraft = ""
-
-	m.running = true
-	m.thinking = false
-	m.taskStartedAt = time.Now()
-	m.currentStreamText = ""
-	m.streamActive = true
-	m.scrolledUp = false
-	m.activeQuestion = nil
-	m.activeApproval = nil
-	m.activePlanReview = nil
 	m.shortcutsOpen = false
 	m.autocompleteOpen = false
-	m.updateLayout()
-	m.refreshViewportContent()
-	m.viewport.GotoBottom()
 
 	input, err := core.ParseTaskInput(text)
 	if err != nil {
 		m.addSystemEntry("Failed to parse task input: " + err.Error())
-		m.running = false
 		m.updateLayout()
 		return m, nil
 	}
@@ -129,6 +108,47 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 
 	runtime := m.runtime
 	sessionID := m.sessionID
+
+	if m.running {
+		// Queue follow-up turn while active task runs
+		m.entries = append(m.entries, TranscriptEntry{
+			ID:        fmt.Sprintf("queued-%d", time.Now().UnixNano()),
+			Kind:      KindQueued,
+			Text:      text,
+			Timestamp: time.Now(),
+		})
+		m.refreshViewportContent()
+		m.updateLayout()
+		m.viewport.GotoBottom()
+
+		return m, func() tea.Msg {
+			ctx := context.Background()
+			sub, err := runtime.SubmitTurn(ctx, req, core.QueueInput)
+			return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+		}
+	}
+
+	// Normal submission when idle
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
+		Kind:      KindUser,
+		Text:      text,
+		Timestamp: time.Now(),
+	})
+	m.running = true
+	m.thinking = false
+	m.taskStartedAt = time.Now()
+	m.currentStreamText = ""
+	m.streamActive = true
+	m.scrolledUp = false
+	m.activeQuestion = nil
+	m.activeApproval = nil
+	m.activePlanReview = nil
+	m.activeRecovery = nil
+	m.updateLayout()
+	m.refreshViewportContent()
+	m.viewport.GotoBottom()
+
 	return m, tea.Batch(
 		tickClock(),
 		func() tea.Msg {
@@ -146,6 +166,29 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 // handleRuntimeEvent processes incoming runtime events from Core.
 func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	switch event.Kind {
+	case core.EventTaskStarted:
+		if len(m.queuedTurns) > 0 {
+			execID := event.ExecutionID
+			if execID != "" && m.queuedTurns[0].ExecutionID == execID {
+				m.queuedTurns = m.queuedTurns[1:]
+			}
+			for i := range m.entries {
+				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
+					m.entries[i].Kind = KindUser
+					m.entries[i].ToolCallID = execID
+					break
+				}
+			}
+			m.running = true
+			m.runningExecution = execID
+			m.taskStartedAt = time.Now()
+			m.thinking = false
+			m.currentStreamText = ""
+			m.refreshViewportContent()
+			m.updateLayout()
+			return m, waitForTurn(m.runtime, m.sessionID, execID)
+		}
+
 	case core.EventModelStream:
 		if event.Stream != nil {
 			switch event.Stream.Type {

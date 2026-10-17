@@ -943,4 +943,130 @@ func TestRewindAndOpenRunningGuards(t *testing.T) {
 	}
 }
 
+func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.runningExecution = "exec-active"
+
+	// 1. Submit turn while running -> should enter KindQueued
+	m.submitTurn("Follow-up task while model works")
+	if len(m.entries) == 0 {
+		t.Fatalf("expected queued entry in transcript")
+	}
+	lastEntry := m.entries[len(m.entries)-1]
+	if lastEntry.Kind != KindQueued || !strings.Contains(lastEntry.Text, "Follow-up task") {
+		t.Errorf("expected KindQueued entry, got %+v", lastEntry)
+	}
+	rendered := renderEntry(lastEntry, 80)
+	if !strings.Contains(rendered, "Queued ›") || !strings.Contains(rendered, "Follow-up task") {
+		t.Errorf("expected queued badge in rendered view, got: %s", rendered)
+	}
+
+	// 2. Simulate Core responding with SubmissionQueued
+	mod, _ := m.Update(turnSubmittedMsg{
+		sessionID: "test-sess",
+		submission: core.TurnSubmission{
+			Status:      core.SubmissionQueued,
+			ExecutionID: "exec-queued-1",
+			QueueID:     "q-1",
+		},
+	})
+	m = mod.(*tuiModel)
+	if len(m.queuedTurns) != 1 || m.queuedTurns[0].ExecutionID != "exec-queued-1" {
+		t.Fatalf("expected queued turn registered in m.queuedTurns, got %+v", m.queuedTurns)
+	}
+
+	// 3. Simulate Core promoting queued turn via EventTaskStarted
+	mod, _ = m.handleRuntimeEvent(core.Event{
+		Kind:        core.EventTaskStarted,
+		ExecutionID: "exec-queued-1",
+	})
+	m = mod.(*tuiModel)
+	if len(m.queuedTurns) != 0 {
+		t.Errorf("expected queued turns to be empty after task started, got %d", len(m.queuedTurns))
+	}
+	if m.runningExecution != "exec-queued-1" {
+		t.Errorf("expected runningExecution to be exec-queued-1, got %s", m.runningExecution)
+	}
+	// Check the entry was converted to KindUser
+	promoted := false
+	for _, e := range m.entries {
+		if e.ToolCallID == "exec-queued-1" && e.Kind == KindUser {
+			promoted = true
+			break
+		}
+	}
+	if !promoted {
+		t.Errorf("expected queued entry to be promoted to KindUser")
+	}
+
+	// 4. Test cancel queued turn
+	m.queuedTurns = append(m.queuedTurns, QueuedItem{ExecutionID: "exec-q2", Text: "Cancel me"})
+	m.entries = append(m.entries, TranscriptEntry{Kind: KindQueued, ToolCallID: "exec-q2", Text: "Cancel me"})
+	m.cancelQueuedTurn()
+	if len(m.queuedTurns) != 0 {
+		t.Errorf("expected queued turns to be empty after cancellation")
+	}
+	cancelledFound := false
+	for _, e := range m.entries {
+		if e.ToolCallID == "exec-q2" && strings.Contains(e.Text, "cancelled") {
+			cancelledFound = true
+			break
+		}
+	}
+	if !cancelledFound {
+		t.Errorf("expected entry to be marked as cancelled")
+	}
+}
+
+func TestDiffRendering(t *testing.T) {
+	diffContent := `diff --git a/main.go b/main.go
+index 1234567..89abcdef 100644
+--- a/main.go
++++ b/main.go
+@@ -10,3 +10,4 @@ func main() {
+-	fmt.Println("old")
++	fmt.Println("new line")
++	fmt.Println("added line")
+ }`
+	entry := TranscriptEntry{
+		Kind: KindDiff,
+		Text: diffContent,
+	}
+	rendered := renderEntry(entry, 80)
+	if !strings.Contains(rendered, "Workspace Diff") {
+		t.Errorf("expected 'Workspace Diff' title, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "diff --git a/main.go b/main.go") {
+		t.Errorf("expected file header in rendered diff, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "+") || !strings.Contains(rendered, "added line") {
+		t.Errorf("expected addition line in rendered diff, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "-") || !strings.Contains(rendered, "old") {
+		t.Errorf("expected deletion line in rendered diff, got: %s", rendered)
+	}
+}
+
+func TestTitleCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+
+	// 1. Inspect initial title (should be untitled or none)
+	m.handleSlashCommand("/title")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Current session title") {
+		t.Errorf("expected current session title message, got: %s", lastSys)
+	}
+
+	// 2. Set new title
+	m.handleSlashCommand("/title Refactor Architecture")
+	if m.sessionTitle != "Refactor Architecture" {
+		t.Errorf("expected sessionTitle to be 'Refactor Architecture', got: %s", m.sessionTitle)
+	}
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Session title updated to `Refactor Architecture`") {
+		t.Errorf("expected update notification, got: %s", lastSys2)
+	}
+}
+
 

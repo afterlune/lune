@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
 	{Command: "/sessions", Description: "list recent sessions in this workspace"},
 	{Command: "/open", Description: "switch to an existing session by ID or prefix"},
+	{Command: "/title", Description: "view or set custom title for this session"},
+	{Command: "/diff", Description: "inspect git code changes in workspace"},
+	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind the conversation to a previous turn"},
@@ -244,6 +248,58 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s).", removed))
 		return m, nil
 
+	case "/title":
+		if len(parts) > 1 {
+			newTitle := strings.TrimSpace(strings.Join(parts[1:], " "))
+			if m.client != nil {
+				if err := m.client.SetSessionTitle(context.Background(), m.sessionID, newTitle); err != nil {
+					m.addSystemEntry("Failed to set session title: " + err.Error())
+					return m, nil
+				}
+			}
+			m.sessionTitle = newTitle
+			m.updateLayout()
+			m.addSystemEntry(fmt.Sprintf("Session title updated to `%s`.", newTitle))
+		} else {
+			title := m.sessionTitle
+			if title == "" {
+				title = "<untitled>"
+			}
+			m.addSystemEntry(fmt.Sprintf("Current session title: `%s` (ID: `%s`)", title, m.sessionID))
+		}
+		return m, nil
+
+	case "/diff":
+		var diffArgs []string
+		diffArgs = append(diffArgs, "diff")
+		if len(parts) > 1 {
+			diffArgs = append(diffArgs, parts[1:]...)
+		}
+		cmd := exec.CommandContext(context.Background(), "git", diffArgs...)
+		cmd.Dir = m.workspace
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			m.addSystemEntry("Failed to run git diff: " + err.Error())
+			return m, nil
+		}
+		diffText := strings.TrimSpace(string(out))
+		if diffText == "" {
+			m.addSystemEntry("No unstaged or uncommitted changes in workspace.")
+			return m, nil
+		}
+		m.entries = append(m.entries, TranscriptEntry{
+			ID:        fmt.Sprintf("diff-%d", time.Now().UnixNano()),
+			Kind:      KindDiff,
+			Text:      diffText,
+			Timestamp: time.Now(),
+		})
+		m.refreshViewportContent()
+		m.updateLayout()
+		return m, nil
+
+	case "/cancel-queue":
+		return m.cancelQueuedTurn()
+
 	case "/plan":
 		m.planMode = !m.planMode
 		if m.planMode {
@@ -444,6 +500,30 @@ func formatTokens(n int64) string {
 		}
 	}
 	return string(out)
+}
+
+func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
+	if len(m.queuedTurns) == 0 {
+		m.addSystemEntry("No queued tasks to cancel.")
+		return m, nil
+	}
+	lastIdx := len(m.queuedTurns) - 1
+	target := m.queuedTurns[lastIdx]
+	m.queuedTurns = m.queuedTurns[:lastIdx]
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == target.ExecutionID || m.entries[i].ToolCallID == "") {
+			m.entries[i].Text += " (cancelled)"
+			break
+		}
+	}
+	m.refreshViewportContent()
+	m.updateLayout()
+	if m.runtime != nil && target.ExecutionID != "" {
+		ctx := context.Background()
+		_ = m.runtime.CancelQueuedTurn(ctx, target.ExecutionID)
+	}
+	m.addSystemEntry("Cancelled queued task.")
+	return m, nil
 }
 
 func (m *tuiModel) addSystemEntry(text string) {

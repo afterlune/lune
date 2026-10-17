@@ -17,7 +17,17 @@ const (
 	KindQuestionAnswered EntryKind = "question_answered"
 	KindPlan             EntryKind = "plan"
 	KindSystem           EntryKind = "system"
+	KindQueued           EntryKind = "queued"
+	KindDiff             EntryKind = "diff"
 )
+
+// QueuedItem tracks an input waiting in FIFO queue while another task runs.
+type QueuedItem struct {
+	ExecutionID string
+	QueueID     string
+	Text        string
+	CreatedAt   time.Time
+}
 
 // TranscriptEntry represents a single visual block in the conversation transcript.
 type TranscriptEntry struct {

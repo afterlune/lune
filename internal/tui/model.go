@@ -36,6 +36,7 @@ type tuiModel struct {
 	activeApproval    *ActiveApproval
 	activePlanReview  *ActivePlanReview
 	activeRecovery    *ActiveRecovery
+	queuedTurns       []QueuedItem
 	autocompleteOpen  bool
 	autocompleteItems []AutocompleteItem
 	autocompleteIndex int
@@ -429,6 +430,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 	m.runtime = rt
 	m.sessionID = sessionID
+	m.queuedTurns = nil
 	if m.client != nil {
 		m.currentModel = m.client.ModelForSession(ctx, sessionID)
 		if saved, err := m.client.GetSession(ctx, sessionID); err == nil {
