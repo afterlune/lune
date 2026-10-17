@@ -277,6 +277,9 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			m.currentStreamText = ""
 		}
 		m.running = false
+		if event.Status == core.TaskPaused {
+			m.checkPendingState(context.Background())
+		}
 		m.refreshViewportContent()
 		m.updateLayout()
 
