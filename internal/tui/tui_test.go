@@ -633,6 +633,28 @@ func TestPromptHistoryNavigationAndEscSemantics(t *testing.T) {
 	if m.composer.Value() != "My draft" {
 		t.Fatalf("expected Esc to leave composer draft intact, got %q", m.composer.Value())
 	}
+
+	// Esc when composer is empty steps back to edit last message ("Third prompt")
+	m.composer.SetValue("")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Third prompt" {
+		t.Fatalf("expected Esc on empty composer to restore 'Third prompt', got %q", m.composer.Value())
+	}
+
+	// Esc when text is present leaves composer text intact
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Third prompt" {
+		t.Fatalf("expected Esc on non-empty composer to leave text intact, got %q", m.composer.Value())
+	}
+
+	// Up key navigates to previous message ("Second prompt")
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "Second prompt" {
+		t.Fatalf("expected Up to load 'Second prompt', got %q", m.composer.Value())
+	}
 }
 
 func TestToolExpandAndCollapseHint(t *testing.T) {

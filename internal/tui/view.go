@@ -1002,6 +1002,7 @@ func renderShortcutsPanel(width int) string {
 	col1Title := styleTextPrimary().Bold(true).Underline(true).Render("Compose")
 	col1Items := []struct{ Key, Desc string }{
 		{"/", "Commands"},
+		{"Esc", "Edit last message"},
 		{"/clear", "Clear view"},
 		{"Up / Down", "Prompt history"},
 		{"Shift+Enter", "New line"},
@@ -1133,8 +1134,23 @@ func renderFooter(m *tuiModel, width int) string {
 	gap := max(1, width-leftLen-rightLen)
 	line1 := leftStr + strings.Repeat(" ", gap) + rightStr
 
-	// Line 2: ? for shortcuts
-	line2 := styleTextMuted().Render("? for shortcuts")
+	// Line 2: ? for shortcuts (left) + contextual hint (right)
+	line2Left := styleTextMuted().Render("? for shortcuts")
+	var line2RightText string
+	if m.running {
+		line2RightText = "esc to interrupt"
+	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
+		line2RightText = "esc to edit last message"
+	}
+
+	line2 := line2Left
+	if line2RightText != "" {
+		line2Right := styleTextMuted().Render(line2RightText)
+		gap2 := width - lipgloss.Width(line2Left) - lipgloss.Width(line2Right)
+		if gap2 >= 2 {
+			line2 = line2Left + strings.Repeat(" ", gap2) + line2Right
+		}
+	}
 
 	return line1 + "\n" + line2
 }

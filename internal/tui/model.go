@@ -155,6 +155,13 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		entries = []TranscriptEntry{}
 	}
 
+	var historyPrompts []string
+	for _, entry := range entries {
+		if entry.Kind == KindUser && entry.Text != "" {
+			historyPrompts = append(historyPrompts, entry.Text)
+		}
+	}
+
 	m := &tuiModel{
 		client:            client,
 		runtime:           runtime,
@@ -171,6 +178,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		composer:          comp,
 		viewport:          vp,
 		entries:           entries,
+		promptHistory:     historyPrompts,
+		historyIndex:      len(historyPrompts),
 		fileScanner:       NewWorkspaceFileScanner(workspace),
 		transcriptDirty:   true,
 	}
@@ -570,6 +579,14 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 			if m.entries == nil {
 				m.entries = []TranscriptEntry{}
 			}
+			m.promptHistory = nil
+			for _, entry := range m.entries {
+				if entry.Kind == KindUser && entry.Text != "" {
+					m.promptHistory = append(m.promptHistory, entry.Text)
+				}
+			}
+			m.historyIndex = len(m.promptHistory)
+			m.historyDraft = ""
 			m.invalidateEntryCache()
 			m.refreshViewportContent()
 		}

@@ -285,6 +285,14 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.entries == nil {
 			m.entries = []TranscriptEntry{}
 		}
+		m.promptHistory = nil
+		for _, entry := range m.entries {
+			if entry.Kind == KindUser && entry.Text != "" {
+				m.promptHistory = append(m.promptHistory, entry.Text)
+			}
+		}
+		m.historyIndex = len(m.promptHistory)
+		m.historyDraft = ""
 		m.currentStreamText = ""
 		m.scrolledUp = false
 		m.invalidateEntryCache()

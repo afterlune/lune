@@ -848,6 +848,15 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refreshViewportContent()
 			return m, nil
 		}
+		// If composer is empty and not running, Esc steps back to edit the last message
+		if !m.running && m.composer.Value() == "" && len(m.promptHistory) > 0 {
+			m.historyIndex = len(m.promptHistory) - 1
+			m.historyDraft = ""
+			m.composer.SetValue(m.promptHistory[m.historyIndex])
+			m.composer.CursorEnd()
+			m.updateLayout()
+			return m, nil
+		}
 		return m, nil
 
 	case "shift+tab":
