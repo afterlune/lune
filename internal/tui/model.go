@@ -35,6 +35,7 @@ type tuiModel struct {
 	activeQuestion    *ActiveQuestion
 	activeApproval    *ActiveApproval
 	activePlanReview  *ActivePlanReview
+	activeRecovery    *ActiveRecovery
 	autocompleteOpen  bool
 	autocompleteItems []AutocompleteItem
 	autocompleteIndex int
@@ -45,6 +46,14 @@ type tuiModel struct {
 	streamActive      bool
 	currentStreamText string
 	thinking          bool
+
+	// Token usage and context window statistics
+	totalInputTokens     int64
+	totalOutputTokens    int64
+	cachedTokens         int64
+	reasoningTokens      int64
+	contextWindow        int64
+	estimatedInputTokens int64
 
 	// Mouse text selection and copy feedback
 	isSelecting           bool
@@ -86,17 +95,39 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		currentModel = client.ModelForSession(context.Background(), sessionID)
 	}
 
+	var entries []TranscriptEntry
+	title := ""
+	var totalIn, totalOut, cached, reasoning int64
+	if client != nil && sessionID != "" {
+		if saved, err := client.GetSession(context.Background(), sessionID); err == nil {
+			title = saved.Title
+			totalIn = saved.SessionUsage.Input
+			totalOut = saved.SessionUsage.Output
+			cached = saved.SessionUsage.Cached
+			reasoning = saved.SessionUsage.Reasoning
+			entries = transcriptFromHistory(saved.History)
+		}
+	}
+	if entries == nil {
+		entries = []TranscriptEntry{}
+	}
+
 	m := &tuiModel{
-		client:         client,
-		runtime:        runtime,
-		workspace:      workspace,
-		sessionID:      sessionID,
-		currentModel:   currentModel,
-		permissionMode: permMode,
-		savedMode:      permMode,
-		composer:       comp,
-		viewport:       vp,
-		entries:        []TranscriptEntry{},
+		client:            client,
+		runtime:           runtime,
+		workspace:         workspace,
+		sessionID:         sessionID,
+		sessionTitle:      title,
+		currentModel:      currentModel,
+		permissionMode:    permMode,
+		savedMode:         permMode,
+		totalInputTokens:  totalIn,
+		totalOutputTokens: totalOut,
+		cachedTokens:      cached,
+		reasoningTokens:   reasoning,
+		composer:          comp,
+		viewport:          vp,
+		entries:           entries,
 	}
 
 	m.applyThemeStyles()
@@ -134,6 +165,7 @@ func (m *tuiModel) applyThemeStyles() {
 func (m *tuiModel) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
+		tea.RequestBackgroundColor,
 		m.subscribeRuntimeEvents(),
 	)
 }
@@ -152,7 +184,7 @@ func (m *tuiModel) updateLayout() {
 	// - Blank line gap before composer: 1 line
 	// - Composer band: composer height (1 to 5) + 2 padding rows
 	// - Footer: 2 lines
-	// - Popup / Question / Approval / Plan review if open
+	// - Popup / Question / Approval / Plan review / Recovery if open
 	headerHeight := 3
 	gapHeight := 1
 	composerBandHeight := m.composer.Height() + 2
@@ -161,6 +193,8 @@ func (m *tuiModel) updateLayout() {
 	var modalHeight int
 	if m.shortcutsOpen {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
+	} else if m.activeRecovery != nil {
+		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
 	} else if m.activeQuestion != nil {
 		modalHeight = lipgloss.Height(renderQuestionPanel(m.activeQuestion, contentWidth)) + 1
 	} else if m.activeApproval != nil {
@@ -337,9 +371,11 @@ func (m *tuiModel) View() tea.View {
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
 
-	// 3. Modal (Shortcuts / Question / Approval / Plan Review / Autocomplete)
+	// 3. Modal (Shortcuts / Recovery / Question / Approval / Plan Review / Autocomplete)
 	if m.shortcutsOpen {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
+	} else if m.activeRecovery != nil {
+		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
 	} else if m.activeQuestion != nil {
 		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
 	} else if m.activeApproval != nil {
@@ -395,6 +431,18 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	m.sessionID = sessionID
 	if m.client != nil {
 		m.currentModel = m.client.ModelForSession(ctx, sessionID)
+		if saved, err := m.client.GetSession(ctx, sessionID); err == nil {
+			m.sessionTitle = saved.Title
+			m.totalInputTokens = saved.SessionUsage.Input
+			m.totalOutputTokens = saved.SessionUsage.Output
+			m.cachedTokens = saved.SessionUsage.Cached
+			m.reasoningTokens = saved.SessionUsage.Reasoning
+			m.entries = transcriptFromHistory(saved.History)
+			if m.entries == nil {
+				m.entries = []TranscriptEntry{}
+			}
+			m.refreshViewportContent()
+		}
 	}
 	rt.SetUserInteractionAvailable(true)
 	m.checkPendingState(ctx)
@@ -412,12 +460,16 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 	}
 	var foundQuestion *core.UserQuestionRequest
 	var foundApproval *core.ApprovalRequest
+	var foundRecovery *core.PendingModelRecovery
 	for _, req := range reqs {
 		if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil && foundQuestion == nil {
 			foundQuestion = req.UserQuestion
 		}
 		if req.Kind == core.PendingApproval && req.Approval != nil && foundApproval == nil {
 			foundApproval = req.Approval
+		}
+		if req.Kind == core.PendingModelRecoveryRequest && req.ModelRecovery != nil && foundRecovery == nil {
+			foundRecovery = req.ModelRecovery
 		}
 	}
 
@@ -445,6 +497,26 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 		}
 	} else {
 		m.activeApproval = nil
+	}
+
+	if foundRecovery != nil {
+		if m.activeRecovery == nil || m.activeRecovery.CallID != foundRecovery.CallID {
+			reason := string(foundRecovery.Failure.Category)
+			if foundRecovery.Failure.StatusCode > 0 {
+				reason = fmt.Sprintf("%s (status=%d, attempts=%d)", foundRecovery.Failure.Category, foundRecovery.Failure.StatusCode, foundRecovery.Failure.Attempts)
+			}
+			m.activeRecovery = &ActiveRecovery{
+				RunID:          foundRecovery.RunID,
+				ExecutionID:    foundRecovery.ExecutionID,
+				InvocationID:   foundRecovery.InvocationID,
+				CallID:         foundRecovery.CallID,
+				Reason:         reason,
+				RetryNotBefore: foundRecovery.Failure.RetryNotBefore,
+				Selected:       0,
+			}
+		}
+	} else {
+		m.activeRecovery = nil
 	}
 }
 

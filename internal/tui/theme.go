@@ -13,13 +13,13 @@ const (
 type Theme struct {
 	// Canvas background
 	Canvas string
-	// Primary text (black / dark charcoal in light mode)
+	// Primary text
 	TextPrimary string
-	// Secondary text (cool gray)
+	// Secondary text
 	TextMuted string
-	// Accent / links / prompts (classic blue)
+	// Accent / links / prompts
 	AccentBlue string
-	// Selected row background (sky blue)
+	// Selected row background
 	SelectBg string
 	// Selected row text
 	SelectFg string
@@ -35,9 +35,6 @@ type Theme struct {
 	WarningAmber string
 	ExploredGray string
 }
-
-// CodexTheme is a type alias for Theme.
-type CodexTheme = Theme
 
 // LightTheme returns the light theme palette.
 var LightTheme = Theme{
@@ -73,11 +70,57 @@ var DarkTheme = Theme{
 	ExploredGray: "#8B949E",
 }
 
-// Active theme default (light theme by default).
-var currentTheme = LightTheme
+// ThemeMode specifies the theme preference.
+type ThemeMode string
+
+const (
+	ThemeModeAuto  ThemeMode = "auto"
+	ThemeModeDark  ThemeMode = "dark"
+	ThemeModeLight ThemeMode = "light"
+)
+
+var (
+	currentThemeMode = ThemeModeAuto
+	isTerminalDark   = true
+	currentTheme     = DarkTheme
+)
 
 func activeTheme() Theme {
 	return currentTheme
+}
+
+// SetThemeMode updates the active theme mode and recalculates active theme.
+func SetThemeMode(mode ThemeMode) {
+	currentThemeMode = mode
+	switch mode {
+	case ThemeModeDark:
+		currentTheme = DarkTheme
+	case ThemeModeLight:
+		currentTheme = LightTheme
+	case ThemeModeAuto:
+		if isTerminalDark {
+			currentTheme = DarkTheme
+		} else {
+			currentTheme = LightTheme
+		}
+	}
+}
+
+// UpdateTerminalBackground informs the theme system of the terminal's detected background.
+func UpdateTerminalBackground(dark bool) {
+	isTerminalDark = dark
+	if currentThemeMode == ThemeModeAuto {
+		if dark {
+			currentTheme = DarkTheme
+		} else {
+			currentTheme = LightTheme
+		}
+	}
+}
+
+// CurrentThemeMode returns the active theme mode setting.
+func CurrentThemeMode() ThemeMode {
+	return currentThemeMode
 }
 
 func styleTextPrimary() lipgloss.Style {

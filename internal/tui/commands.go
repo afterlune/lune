@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +14,13 @@ import (
 
 var builtinCommands = []AutocompleteItem{
 	{Command: "/new", Description: "start a new chat during a conversation"},
+	{Command: "/clear", Description: "clear transcript history from the current view"},
 	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
 	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
 	{Command: "/model", Description: "choose an active model profile"},
+	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
+	{Command: "/sessions", Description: "list recent sessions in this workspace"},
+	{Command: "/open", Description: "switch to an existing session by ID or prefix"},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind the conversation to a previous turn"},
@@ -61,7 +66,183 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/new":
+		if m.running {
+			m.addSystemEntry("Cannot start a new session while a task is running.")
+			return m, nil
+		}
 		return m, m.startNewSession()
+
+	case "/clear":
+		m.entries = nil
+		m.currentStreamText = ""
+		m.viewport.SetContent("")
+		m.scrolledUp = false
+		m.isSelecting = false
+		m.selectedText = ""
+		m.selectStartX = 0
+		m.selectEndX = 0
+		m.selectStartY = 0
+		m.selectEndY = 0
+		m.updateLayout()
+		return m, nil
+
+	case "/theme":
+		if len(parts) > 1 {
+			target := strings.ToLower(parts[1])
+			switch target {
+			case "dark", "light", "auto":
+				SetThemeMode(ThemeMode(target))
+				m.applyThemeStyles()
+				m.refreshViewportContent()
+				m.updateLayout()
+				m.addSystemEntry(fmt.Sprintf("Theme mode set to `%s` (active: %s).", target, CurrentThemeMode()))
+			default:
+				m.addSystemEntry(fmt.Sprintf("Unknown theme mode %q. Options: `dark`, `light`, `auto`.", parts[1]))
+			}
+		} else {
+			m.addSystemEntry(fmt.Sprintf("Current theme mode: `%s`.", CurrentThemeMode()))
+		}
+		return m, nil
+
+	case "/sessions":
+		if m.client == nil {
+			m.addSystemEntry("Session management unavailable.")
+			return m, nil
+		}
+		sessions, err := m.client.ListSessions(context.Background(), 20, false)
+		if err != nil {
+			m.addSystemEntry("Failed to list sessions: " + err.Error())
+			return m, nil
+		}
+		if len(sessions) == 0 {
+			m.addSystemEntry("No saved sessions in this workspace.")
+			return m, nil
+		}
+		var lines []string
+		lines = append(lines, "**Recent Sessions:**")
+		for _, s := range sessions {
+			marker := "  "
+			if s.ID == m.sessionID {
+				marker = "› "
+			}
+			title := s.Title
+			if title == "" {
+				title = "<untitled>"
+			}
+			shortID := s.ID
+			if len(shortID) > 12 {
+				shortID = shortID[:12]
+			}
+			timeStr := s.UpdatedAt.Format("Jan 02 15:04")
+			lines = append(lines, fmt.Sprintf("%s`%s`  %-24s  %s", marker, shortID, title, timeStr))
+		}
+		lines = append(lines, "\nSwitch with `/open <id>` (supports unique prefix).")
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	case "/open":
+		if m.running {
+			m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
+			return m, nil
+		}
+		if len(parts) < 2 {
+			m.addSystemEntry("Usage: `/open <session-id>` (or unique prefix).")
+			return m, nil
+		}
+		targetPrefix := parts[1]
+		ctx := context.Background()
+		targetID := ""
+		if _, err := m.client.GetSession(ctx, targetPrefix); err == nil {
+			targetID = targetPrefix
+		} else {
+			sessions, err := m.client.ListSessions(ctx, 100, false)
+			if err != nil {
+				m.addSystemEntry("Failed to query sessions: " + err.Error())
+				return m, nil
+			}
+			var matches []core.Session
+			for _, s := range sessions {
+				if strings.HasPrefix(strings.ToLower(s.ID), strings.ToLower(targetPrefix)) {
+					matches = append(matches, s)
+				}
+			}
+			if len(matches) == 0 {
+				m.addSystemEntry(fmt.Sprintf("No session found matching prefix `%s`.", targetPrefix))
+				return m, nil
+			} else if len(matches) > 1 {
+				var ids []string
+				for _, match := range matches {
+					short := match.ID
+					if len(short) > 12 {
+						short = short[:12]
+					}
+					ids = append(ids, short)
+				}
+				m.addSystemEntry(fmt.Sprintf("Prefix `%s` is ambiguous. Matches: %s", targetPrefix, strings.Join(ids, ", ")))
+				return m, nil
+			}
+			targetID = matches[0].ID
+		}
+
+		if targetID == m.sessionID {
+			m.addSystemEntry("Already in session: " + targetID)
+			return m, nil
+		}
+
+		if err := m.bindSessionRuntime(ctx, targetID); err != nil {
+			m.addSystemEntry("Failed to open session: " + err.Error())
+			return m, nil
+		}
+		m.activeQuestion = nil
+		m.activeApproval = nil
+		m.activePlanReview = nil
+		m.activeRecovery = nil
+		m.running = false
+		m.currentStreamText = ""
+		m.updateLayout()
+		m.addSystemEntry("Opened session: " + targetID)
+		return m, m.subscribeRuntimeEvents()
+
+	case "/rewind":
+		if m.running {
+			m.addSystemEntry("Cannot rewind while a task is running.")
+			return m, nil
+		}
+		turns := 1
+		if len(parts) > 1 {
+			if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
+				turns = n
+			} else {
+				m.addSystemEntry(fmt.Sprintf("Invalid turn count %q. Usage: `/rewind [N]`", parts[1]))
+				return m, nil
+			}
+		}
+		if m.client == nil {
+			m.addSystemEntry("Core client unavailable.")
+			return m, nil
+		}
+		ctx := context.Background()
+		removed, err := m.client.RewindSession(ctx, m.sessionID, turns)
+		if err != nil {
+			m.addSystemEntry("Rewind failed: " + err.Error())
+			return m, nil
+		}
+		saved, err := m.client.GetSession(ctx, m.sessionID)
+		if err != nil {
+			m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s), but failed to reload session: %v", removed, err))
+			return m, nil
+		}
+		m.sessionTitle = saved.Title
+		m.entries = transcriptFromHistory(saved.History)
+		if m.entries == nil {
+			m.entries = []TranscriptEntry{}
+		}
+		m.currentStreamText = ""
+		m.scrolledUp = false
+		m.refreshViewportContent()
+		m.updateLayout()
+		m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s).", removed))
+		return m, nil
 
 	case "/plan":
 		m.planMode = !m.planMode
@@ -223,8 +404,46 @@ func (m *tuiModel) renderStatusTable() string {
 		fmt.Sprintf("Permissions:    %s", permStr),
 		fmt.Sprintf("Thread name:    %s", title),
 		fmt.Sprintf("Session:        %s", m.sessionID),
+		fmt.Sprintf("Theme:          %s", CurrentThemeMode()),
 	}
+
+	if m.contextWindow > 0 {
+		pct := 0.0
+		if m.estimatedInputTokens > 0 {
+			pct = float64(m.estimatedInputTokens) / float64(m.contextWindow) * 100.0
+		}
+		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (est. input: %s, %.1f%% full)",
+			formatTokens(m.contextWindow), formatTokens(m.estimatedInputTokens), pct))
+	}
+	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+		lines = append(lines, fmt.Sprintf("Total Tokens:   in: %s (cached: %s) · out: %s (reasoning: %s)",
+			formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
+			formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+	}
+
 	return strings.Join(lines, "\n")
+}
+
+func formatTokens(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	in := fmt.Sprintf("%d", n)
+	var out []byte
+	rem := len(in) % 3
+	if rem > 0 {
+		out = append(out, in[:rem]...)
+		if len(in) > rem {
+			out = append(out, ',')
+		}
+	}
+	for i := rem; i < len(in); i += 3 {
+		out = append(out, in[i:i+3]...)
+		if i+3 < len(in) {
+			out = append(out, ',')
+		}
+	}
+	return string(out)
 }
 
 func (m *tuiModel) addSystemEntry(text string) {

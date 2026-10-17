@@ -262,6 +262,31 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 		}
 
+	case core.EventUsage:
+		m.totalInputTokens += event.Usage.InputTokens
+		m.totalOutputTokens += event.Usage.OutputTokens
+		m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
+		m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
+		if event.ContextWindow > 0 {
+			m.contextWindow = event.ContextWindow
+		}
+		if event.EstimatedInputTokens > 0 {
+			m.estimatedInputTokens = event.EstimatedInputTokens
+		}
+
+	case core.EventModelRecoveryRequired:
+		m.thinking = false
+		m.running = false
+		m.checkPendingState(context.Background())
+		m.refreshViewportContent()
+		m.updateLayout()
+
+	case core.EventModelRecoveryResumed:
+		m.activeRecovery = nil
+		m.running = true
+		m.refreshViewportContent()
+		m.updateLayout()
+
 	case core.EventTaskFinished:
 		if m.runningExecution != "" && event.ExecutionID != "" && event.ExecutionID != m.runningExecution {
 			return m, nil
@@ -279,6 +304,8 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.running = false
 		if event.Status == core.TaskPaused {
 			m.checkPendingState(context.Background())
+		} else {
+			m.activeRecovery = nil
 		}
 		m.refreshViewportContent()
 		m.updateLayout()
@@ -286,6 +313,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	case core.EventTaskDiscarded:
 		m.thinking = false
 		m.running = false
+		m.activeRecovery = nil
 		m.currentStreamText = ""
 		m.refreshViewportContent()
 		m.updateLayout()

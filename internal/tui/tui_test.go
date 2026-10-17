@@ -780,4 +780,167 @@ func TestEscCancelsActiveQuestion(t *testing.T) {
 	}
 }
 
+func TestClearCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "User msg 1"},
+		{Kind: KindAssistant, Text: "Assistant answer 1"},
+	}
+	// Active interactive modal should NOT be wiped by /clear
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{ID: "q-preserve"},
+	}
+
+	m.handleSlashCommand("/clear")
+
+	if len(m.entries) != 0 {
+		t.Errorf("expected entries to be cleared, got %d", len(m.entries))
+	}
+	if strings.TrimSpace(m.viewport.View()) != "" {
+		t.Errorf("expected viewport to be empty, got: %q", m.viewport.View())
+	}
+	if m.activeQuestion == nil || m.activeQuestion.Request.ID != "q-preserve" {
+		t.Errorf("expected activeQuestion modal to be preserved across /clear")
+	}
+}
+
+func TestThemeSwitching(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+
+	// /theme dark
+	m.handleSlashCommand("/theme dark")
+	if CurrentThemeMode() != "dark" {
+		t.Errorf("expected dark theme mode, got: %s", CurrentThemeMode())
+	}
+
+	// /theme light
+	m.handleSlashCommand("/theme light")
+	if CurrentThemeMode() != "light" {
+		t.Errorf("expected light theme mode, got: %s", CurrentThemeMode())
+	}
+
+	// /theme auto
+	m.handleSlashCommand("/theme auto")
+	if CurrentThemeMode() != "auto" {
+		t.Errorf("expected auto theme mode, got: %s", CurrentThemeMode())
+	}
+
+	// /theme status inspect
+	m.handleSlashCommand("/theme")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Current theme mode: `auto`") {
+		t.Errorf("expected theme inspect message, got: %s", lastSys)
+	}
+}
+
+func TestPasteMsgSafety(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	pasted := "Line 1 of multiline text\nLine 2 of multiline text\nLine 3"
+
+	mod, _ := m.Update(tea.PasteMsg{Content: pasted})
+	m = mod.(*tuiModel)
+
+	if m.running {
+		t.Errorf("pasting multiline text must NOT start task execution automatically")
+	}
+	if m.composer.Value() != pasted {
+		t.Errorf("expected composer to contain pasted text, got: %q", m.composer.Value())
+	}
+}
+
+func TestActiveRecoveryModalNavigationAndEsc(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.activeRecovery = &ActiveRecovery{
+		Reason:   "rate_limit (status=429, attempts=3)",
+		Selected: 0,
+	}
+
+	// Render panel
+	rendered := renderRecoveryPanel(m.activeRecovery, 80)
+	if !strings.Contains(rendered, "Model Recovery Required") {
+		t.Errorf("expected title in recovery panel, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "rate_limit") {
+		t.Errorf("expected reason in recovery panel, got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "1. Retry model request") {
+		t.Errorf("expected retry option in recovery panel, got: %s", rendered)
+	}
+
+	// Down arrow moves selection to discard
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+	m = mod.(*tuiModel)
+	if m.activeRecovery == nil || m.activeRecovery.Selected != 1 {
+		t.Errorf("expected selection 1 after down arrow, got %+v", m.activeRecovery)
+	}
+
+	// Up arrow moves selection back to retry
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
+	m = mod.(*tuiModel)
+	if m.activeRecovery == nil || m.activeRecovery.Selected != 0 {
+		t.Errorf("expected selection 0 after up arrow, got %+v", m.activeRecovery)
+	}
+
+	// Esc discards recovery
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.activeRecovery != nil {
+		t.Errorf("expected activeRecovery to be nil after Esc")
+	}
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Model recovery discarded") {
+		t.Errorf("expected 'Model recovery discarded' system entry, got: %s", lastSys)
+	}
+}
+
+func TestStatusTableUsageFormatting(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.contextWindow = 128000
+	m.estimatedInputTokens = 4200
+	m.totalInputTokens = 12450
+	m.cachedTokens = 8192
+	m.totalOutputTokens = 3210
+	m.reasoningTokens = 512
+
+	table := m.renderStatusTable()
+	if !strings.Contains(table, "Context Window: 128,000 tokens") {
+		t.Errorf("expected formatted context window, got: %s", table)
+	}
+	if !strings.Contains(table, "est. input: 4,200") {
+		t.Errorf("expected formatted estimated input, got: %s", table)
+	}
+	if !strings.Contains(table, "Total Tokens:   in: 12,450 (cached: 8,192)") {
+		t.Errorf("expected formatted token totals, got: %s", table)
+	}
+	if !strings.Contains(table, "out: 3,210 (reasoning: 512)") {
+		t.Errorf("expected formatted output & reasoning tokens, got: %s", table)
+	}
+}
+
+func TestRewindAndOpenRunningGuards(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+
+	// /rewind while running
+	m.handleSlashCommand("/rewind")
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Cannot rewind while a task is running") {
+		t.Errorf("expected rewind guard error, got: %s", lastSys)
+	}
+
+	// /open while running
+	m.handleSlashCommand("/open other-sess")
+	lastSys2 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys2, "Cannot switch sessions while a task is running") {
+		t.Errorf("expected open guard error, got: %s", lastSys2)
+	}
+
+	// /new while running
+	m.handleSlashCommand("/new")
+	lastSys3 := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys3, "Cannot start a new session while a task is running") {
+		t.Errorf("expected new session guard error, got: %s", lastSys3)
+	}
+}
+
 

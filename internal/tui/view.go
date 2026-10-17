@@ -334,6 +334,66 @@ func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 	return cardStyle.Width(max(20, width)).Render(content)
 }
 
+// renderRecoveryPanel renders the model recovery prompt when a provider times out or rate limits.
+func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
+	if recovery == nil {
+		return ""
+	}
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+
+	var lines []string
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.WarningAmber)).
+		Render("Model Recovery Required")
+	lines = append(lines, title)
+
+	reason := recovery.Reason
+	if reason == "" {
+		reason = "Model request was interrupted or failed retry deadline."
+	}
+	lines = append(lines, styleTextPrimary().Render("Reason: "+reason))
+
+	if !recovery.RetryNotBefore.IsZero() && time.Now().Before(recovery.RetryNotBefore) {
+		remaining := time.Until(recovery.RetryNotBefore).Round(time.Second)
+		lines = append(lines, styleTextMuted().Render(fmt.Sprintf("Retry cool-down: %s remaining", remaining)))
+	}
+
+	lines = append(lines, "")
+
+	options := []struct {
+		Label string
+		Desc  string
+	}{
+		{"1. Retry model request", "Resume the paused task and retry model call"},
+		{"2. Discard paused task", "Cancel current execution and return to prompt"},
+	}
+
+	for i, opt := range options {
+		marker := "  "
+		if i == recovery.Selected {
+			marker = "› "
+		}
+		raw := fmt.Sprintf("%s%-28s %s", marker, opt.Label, opt.Desc)
+		if i == recovery.Selected {
+			pad := max(0, width-lipgloss.Width(raw)-4)
+			lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
+		} else {
+			lblStyled := styleTextPrimary().Render(marker + fmt.Sprintf("%-28s ", opt.Label))
+			descStyled := styleTextMuted().Render(opt.Desc)
+			lines = append(lines, lblStyled+descStyled)
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, styleTextMuted().Render("enter select · esc discard"))
+
+	return cardStyle.Render(strings.Join(lines, "\n"))
+}
+
 // renderApprovalPanel renders a permission approval modal.
 func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	th := activeTheme()
@@ -384,9 +444,9 @@ func renderShortcutsPanel(width int) string {
 	col1Title := styleTextPrimary().Bold(true).Underline(true).Render("Compose")
 	col1Items := []struct{ Key, Desc string }{
 		{"/", "Commands"},
+		{"/clear", "Clear view"},
 		{"Up / Down", "Prompt history"},
 		{"Shift+Enter", "New line"},
-		{"Esc", "Cancel / Exit"},
 		{"Ctrl+C", "Interrupt / Quit"},
 	}
 
@@ -396,7 +456,7 @@ func renderShortcutsPanel(width int) string {
 		{"Shift+Tab", "Cycle permissions"},
 		{"/model", "Switch model"},
 		{"/status", "Show status"},
-		{"/plan", "Toggle Plan mode"},
+		{"/sessions", "List & switch"},
 	}
 
 	col3Title := styleTextPrimary().Bold(true).Underline(true).Render("Transcript")

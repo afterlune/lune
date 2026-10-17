@@ -80,6 +80,17 @@ type ActiveApproval struct {
 	Selected int // 0: allow, 1: deny
 }
 
+// ActiveRecovery holds the state of a pending model recovery request.
+type ActiveRecovery struct {
+	RunID          string
+	ExecutionID    string
+	InvocationID   string
+	CallID         string
+	Reason         string
+	RetryNotBefore time.Time
+	Selected       int // 0: retry/resume, 1: discard
+}
+
 // ImageAttachment represents a pasted clipboard image.
 type ImageAttachment struct {
 	ID        int

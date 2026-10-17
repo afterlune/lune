@@ -26,6 +26,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		UpdateTerminalBackground(msg.IsDark())
+		m.applyThemeStyles()
+		m.refreshViewportContent()
+		m.updateLayout()
+		return m, nil
+
+	case tea.PasteMsg:
+		m.composer.InsertString(msg.Content)
+		m.updateLayout()
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -277,6 +289,23 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return clearCopyFeedbackMsg{at: expiresAt}
 				})
 			}
+			if msg.X == m.selectStartX && msg.Y == m.selectStartY {
+				headerHeight := 3
+				clickedLineIdx := m.viewport.YOffset() + (msg.Y - headerHeight)
+				lines := strings.Split(m.viewport.View(), "\n")
+				if clickedLineIdx >= 0 && clickedLineIdx < len(lines) {
+					lineText := lines[clickedLineIdx]
+					if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") {
+						for i := len(m.entries) - 1; i >= 0; i-- {
+							if m.entries[i].Kind == KindTool {
+								m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
+								m.refreshViewportContent()
+								break
+							}
+						}
+					}
+				}
+			}
 			m.selectedText = ""
 			m.selectStartX = 0
 			m.selectEndX = 0
@@ -369,6 +398,16 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if m.activeRecovery != nil {
+			m.activeRecovery = nil
+			if m.runtime != nil {
+				_, _ = m.runtime.DiscardPaused(context.Background())
+			}
+			m.running = false
+			m.addSystemEntry("Model recovery discarded.")
+			m.updateLayout()
+			return m, nil
+		}
 		if m.activeQuestion != nil {
 			m.activeQuestion = nil
 			if m.runtime != nil {
@@ -458,6 +497,44 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+	}
+
+	if m.activeRecovery != nil {
+		switch keyStr {
+		case "up", "k":
+			if m.activeRecovery.Selected > 0 {
+				m.activeRecovery.Selected--
+				m.updateLayout()
+			}
+			return m, nil
+		case "down", "j":
+			if m.activeRecovery.Selected < 1 {
+				m.activeRecovery.Selected++
+				m.updateLayout()
+			}
+			return m, nil
+		case "enter":
+			if m.activeRecovery.Selected == 0 {
+				m.activeRecovery = nil
+				m.running = true
+				m.taskStartedAt = time.Now()
+				m.updateLayout()
+				sessionID := m.sessionID
+				return m, func() tea.Msg {
+					sub, err := m.runtime.Recover(context.Background())
+					return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+				}
+			} else {
+				m.activeRecovery = nil
+				m.running = false
+				m.updateLayout()
+				return m, func() tea.Msg {
+					ok, err := m.runtime.DiscardPaused(context.Background())
+					return taskDiscardedMsg{discarded: ok, err: err}
+				}
+			}
+		}
+		return m, nil
 	}
 
 	if m.activeApproval != nil {
