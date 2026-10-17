@@ -24,6 +24,7 @@ test('workspace changes page lists files and shows a unified diff', async ({ pag
 
   await expect(page.getByRole('heading', { name: '工作区变更' })).toBeVisible();
   await expect(page.locator('.workspace-change-file-list')).toContainText('cmd/desktop/frontend/src/App.svelte');
+  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
   await expect(page.locator('.workspace-diff-code')).toContainText("let sidebarView = $state<'sessions' | 'files' | 'changes'>('sessions');");
   await expect(page).toHaveScreenshot('desktop-changes.png', { fullPage: true });
 
@@ -40,6 +41,55 @@ test('workspace changes page explains clean and unavailable Git states', async (
   await page.getByRole('button', { name: '变更' }).click();
   await expect(page.getByText('无法读取 Git 变更')).toBeVisible();
   await expect(page.locator('.workspace-changes-page').getByText('当前会话目录不在可用的 Git 仓库中。')).toBeVisible();
+});
+
+test('Worktree changes can be selected and applied to the original project', async ({ page }) => {
+  await page.goto('/?preview=changes');
+  await page.getByRole('button', { name: '变更' }).click();
+  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
+  await page.getByRole('checkbox', { name: '选择 internal/desktop/workspace_changes.go 应用到原项目' }).check();
+
+  const applyButton = page.getByRole('button', { name: /应用所选文件.*2/ });
+  await expect(applyButton).toBeEnabled();
+  await applyButton.click();
+  const dialog = page.getByRole('dialog', { name: '将所选改动应用到原项目？' });
+  await expect(dialog).toContainText('D:\\Git\\luneAgent');
+  await expect(dialog.locator('.worktree-apply-file-list')).toContainText('App.svelte');
+  await expect(dialog.locator('.worktree-apply-file-list')).toContainText('workspace_changes.go');
+  await dialog.getByRole('button', { name: '确认应用' }).click();
+  await expect(page.getByRole('status')).toContainText('已将 2 个文件应用到原项目');
+  await expect(dialog).toHaveCount(0);
+});
+
+test('Worktree apply reports conflicts without closing the confirmation', async ({ page }) => {
+  await page.goto('/?preview=changes-conflict');
+  await page.getByRole('button', { name: '变更' }).click();
+  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
+  await page.getByRole('button', { name: /应用所选文件/ }).click();
+  const dialog = page.getByRole('dialog', { name: '将所选改动应用到原项目？' });
+  await dialog.getByRole('button', { name: '确认应用' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('未应用任何文件');
+  await expect(dialog).toBeVisible();
+});
+
+test('Worktree apply is disabled in read-only and waiting states', async ({ page }) => {
+  await page.goto('/?preview=changes-readonly');
+  await page.getByRole('button', { name: '变更' }).click();
+  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
+  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
+
+  await page.goto('/?preview=changes-waiting');
+  await page.getByRole('button', { name: '变更' }).click();
+  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
+  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
+});
+
+test('ask permission uses the apply confirmation as one-time authorization', async ({ page }) => {
+  await page.goto('/?preview=changes-ask');
+  await page.getByRole('button', { name: '变更' }).click();
+  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
+  await page.getByRole('button', { name: /应用所选文件/ }).click();
+  await expect(page.getByRole('dialog', { name: '将所选改动应用到原项目？' })).toContainText('确认即授权本次将以下改动写入原项目');
 });
 
 test('pending center counts background requests and opens the owning session', async ({ page }) => {

@@ -17,6 +17,14 @@ export function AnswerQuestion(input: $models.QuestionAnswerInput): $Cancellable
     return $Call.ByID(3818133423, input);
 }
 
+/**
+ * ApplyWorktreeChanges applies a selected set of changes from one stopped
+ * Worktree session to the original project working tree without staging them.
+ */
+export function ApplyWorktreeChanges(sessionID: string, paths: string[] | null): $CancellablePromise<$models.ApplyWorktreeChangesResult> {
+    return $Call.ByID(1085532051, sessionID, paths);
+}
+
 export function AuthenticateMCPServer(name: string): $CancellablePromise<void> {
     return $Call.ByID(385717039, name);
 }

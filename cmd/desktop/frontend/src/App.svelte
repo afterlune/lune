@@ -36,10 +36,11 @@
   type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
   type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
   type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers'> & { mcpServers: MCPServerForm[] };
-  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | null;
+  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | 'file-preview' | 'apply-worktree' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
   type WorkspaceChanges = Omit<WorkspaceChangesView, 'files'> & { files: NonNullable<WorkspaceChangesView['files']> };
+  type WorktreeApplyConfirmation = { sessionID: string; paths: string[]; files: NonNullable<WorkspaceChangesView['files']>; destination: string };
   type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
   type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
 
@@ -116,6 +117,11 @@
   let workspaceDiff = $state<WorkspaceDiffView | null>(null);
   let workspaceDiffLoading = $state(false);
   let workspaceDiffError = $state('');
+  let selectedApplyPaths = $state<string[]>([]);
+  let worktreeApplyConfirmation = $state<WorktreeApplyConfirmation | null>(null);
+  let applyingWorktreeChanges = $state(false);
+  let worktreeApplyError = $state('');
+  let worktreeApplyMessage = $state('');
   let workspaceChangesRequest = 0;
   let workspaceDiffRequest = 0;
   let workspaceChangesForSession = '';
@@ -136,6 +142,17 @@
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
   const pendingRequestCount = $derived(pendingSessions.reduce((count, item) => count + item.requests.length, 0));
   const activeWorkspaceChange = $derived(workspaceChanges?.files.find((file) => file.path === selectedWorkspaceChange) ?? null);
+  const selectedWorkspaceChanges = $derived(workspaceChanges?.files.filter((file) => selectedApplyPaths.includes(file.path)) ?? []);
+  const currentSessionSummary = $derived(sessions.find((item) => item.id === session?.id));
+  const worktreeApplyBlockedReason = $derived.by(() => {
+    if (workspaceMode !== 'worktree') return '当前会话不是 Worktree';
+    if (permissionMode === 'read-only') return '只读权限下不能写回原项目';
+    if (running || queuedMessageCount > 0 || pending.length > 0 || ['running', 'queued', 'waiting'].includes(currentSessionSummary?.status ?? '')) return '任务运行、排队或等待处理时不能应用';
+    if (!selectedApplyPaths.length) return '请先选择要应用的文件';
+    if (workspaceChangesLoading || applyingWorktreeChanges) return '正在读取或应用变更';
+    return '';
+  });
+  const canApplyWorktreeChanges = $derived(!worktreeApplyBlockedReason && (!previewMode || previewVariant.startsWith('changes')));
   const workspaceDiffLines = $derived(workspaceDiff?.content ? workspaceDiff.content.replace(/\r\n/g, '\n').split('\n') : []);
   const transcriptRows = $derived.by(() => {
     let userMessageIndex = -1;
@@ -588,6 +605,26 @@
     return previewWorkspaceChanges;
   }
 
+  function previewChangesWorkspaceState(): WorkspaceState {
+    const workingDirectory = `${previewState.workspace}\\.worktrees\\preview`;
+    const waiting = previewVariant === 'changes-waiting';
+    const permission = previewVariant === 'changes-readonly' ? 'read-only' : previewVariant === 'changes-ask' ? 'ask' : 'workspace';
+    const id = 'session-worktree-preview';
+    return {
+      ...previewState,
+      workspaceMode: 'worktree', workingDirectory, worktreePath: workingDirectory, permissionMode: permission,
+      session: { ...previewState.session, id, title: 'Worktree 结果审查' },
+      sessions: [{
+        id, title: 'Worktree 结果审查', updatedAt: previewState.session.updatedAt, mode: 'worktree',
+        workingDirectory, worktreePath: workingDirectory, status: waiting ? 'waiting' : 'completed',
+      }],
+      runtimeState: {
+        ...previewState.runtimeState,
+        Task: { ...previewState.runtimeState.Task, SessionID: id, Status: waiting ? TaskStatus.TaskPaused : TaskStatus.TaskCompleted },
+      },
+    };
+  }
+
   function sameWorkspacePath(left: string, right: string) {
     const normalizedLeft = left.replace(/[\\/]+$/, '').replace(/\\/g, '/');
     const normalizedRight = right.replace(/[\\/]+$/, '').replace(/\\/g, '/');
@@ -611,6 +648,8 @@
     if (workspaceChangesForSession !== requestSession || workspaceChangesForDirectory !== requestDirectory) {
       workspaceChanges = null;
       selectedWorkspaceChange = '';
+      selectedApplyPaths = [];
+      worktreeApplyMessage = '';
       workspaceChangesForSession = '';
       workspaceChangesForDirectory = '';
     }
@@ -632,6 +671,7 @@
       workspaceChanges = result;
       workspaceChangesForSession = requestSession;
       workspaceChangesForDirectory = requestDirectory;
+      selectedApplyPaths = selectedApplyPaths.filter((path) => result.files.some((file) => file.path === path));
       const nextPath = result.available
         ? result.files.find((file) => file.path === selectedWorkspaceChange)?.path ?? result.files[0]?.path ?? ''
         : '';
@@ -645,6 +685,59 @@
       }
     } finally {
       if (request === workspaceChangesRequest) workspaceChangesLoading = false;
+    }
+  }
+
+  function toggleApplyPath(path: string) {
+    selectedApplyPaths = selectedApplyPaths.includes(path)
+      ? selectedApplyPaths.filter((selected) => selected !== path)
+      : [...selectedApplyPaths, path];
+    worktreeApplyMessage = '';
+  }
+
+  function toggleAllApplyPaths() {
+    const availablePaths = workspaceChanges?.files.map((file) => file.path) ?? [];
+    selectedApplyPaths = availablePaths.length > 0 && availablePaths.every((path) => selectedApplyPaths.includes(path))
+      ? []
+      : availablePaths;
+    worktreeApplyMessage = '';
+  }
+
+  function beginWorktreeApply() {
+    if (!canApplyWorktreeChanges || !session) return;
+    worktreeApplyError = '';
+    worktreeApplyConfirmation = {
+      sessionID: session.id,
+      paths: selectedWorkspaceChanges.map((file) => file.path),
+      files: [...selectedWorkspaceChanges],
+      destination: workspace,
+    };
+    modal = 'apply-worktree';
+  }
+
+  async function confirmWorktreeApply() {
+    const confirmation = worktreeApplyConfirmation;
+    if (!confirmation || applyingWorktreeChanges) return;
+    applyingWorktreeChanges = true;
+    worktreeApplyError = '';
+    try {
+      let alreadyPresent = false;
+      if (previewMode) {
+        if (previewVariant === 'changes-conflict') throw new Error('原项目存在冲突，未应用任何文件: conflict.txt');
+      } else {
+        const result = await Desktop.ApplyWorktreeChanges(confirmation.sessionID, confirmation.paths);
+        alreadyPresent = result.alreadyPresent;
+      }
+      worktreeApplyMessage = alreadyPresent
+        ? `所选 ${confirmation.paths.length} 个文件已存在于原项目：${confirmation.destination}`
+        : `已将 ${confirmation.paths.length} 个文件应用到原项目：${confirmation.destination}`;
+      selectedApplyPaths = [];
+      worktreeApplyConfirmation = null;
+      modal = null;
+    } catch (error) {
+      worktreeApplyError = error instanceof Error ? error.message : String(error);
+    } finally {
+      applyingWorktreeChanges = false;
     }
   }
 
@@ -867,8 +960,8 @@
       worktreeAvailable = true;
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
-      installWorkspaceState(previewState);
       const variant = previewVariant;
+      installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : previewState);
       if (variant === 'pending-center') pendingSessions = previewPendingSessions;
       activities = [];
       if (variant === 'empty') {
@@ -2132,14 +2225,20 @@
             {:else if workspaceChanges && !workspaceChanges.available}<div class="workspace-change-empty">{workspaceChanges.message}</div>
             {:else if workspaceChanges?.files.length === 0}<div class="workspace-change-empty">当前工作区没有相对 HEAD 的变更。</div>
             {:else if workspaceChanges}
-              <div class="workspace-change-sidebar-summary">{workspaceChanges.files.length} 个文件 <span>+{workspaceChanges.added} −{workspaceChanges.removed}</span></div>
+              <div class="workspace-change-sidebar-summary">
+                <span>{workspaceChanges.files.length} 个文件 · +{workspaceChanges.added} −{workspaceChanges.removed}</span>
+                {#if workspaceMode === 'worktree'}<button class="workspace-select-all" onclick={toggleAllApplyPaths}>{selectedApplyPaths.length === workspaceChanges.files.length ? '清空' : '全选'}</button>{/if}
+              </div>
               <div class="workspace-change-file-list">
                 {#each workspaceChanges.files as file (file.path)}
-                  <button class:chosen={selectedWorkspaceChange === file.path} class="workspace-change-row" title={`${file.path} · ${changeStatusDescription(file.status)}`} aria-label={`${file.path}，${changeStatusDescription(file.status)}`} onclick={() => void loadWorkspaceDiff(file.path)}>
-                    <span class={`workspace-change-status ${changeStatusLabel(file.status).toLowerCase()}`}>{changeStatusLabel(file.status)}</span>
-                    <span class="workspace-change-path">{file.path}</span>
-                    <span class="workspace-change-stats"><i>+{file.added}</i><i>−{file.removed}</i></span>
-                  </button>
+                  <div class="workspace-change-row-wrap">
+                    {#if workspaceMode === 'worktree'}<input class="workspace-change-select" type="checkbox" checked={selectedApplyPaths.includes(file.path)} aria-label={`选择 ${file.path} 应用到原项目`} onchange={() => toggleApplyPath(file.path)} />{/if}
+                    <button class:chosen={selectedWorkspaceChange === file.path} class="workspace-change-row" title={`${file.path} · ${changeStatusDescription(file.status)}`} aria-label={`${file.path}，${changeStatusDescription(file.status)}`} onclick={() => void loadWorkspaceDiff(file.path)}>
+                      <span class={`workspace-change-status ${changeStatusLabel(file.status).toLowerCase()}`}>{changeStatusLabel(file.status)}</span>
+                      <span class="workspace-change-path">{file.path}</span>
+                      <span class="workspace-change-stats"><i>+{file.added}</i><i>−{file.removed}</i></span>
+                    </button>
+                  </div>
                 {/each}
               </div>
             {/if}
@@ -2204,12 +2303,17 @@
             <div>
               <p class="eyebrow">GIT · 相对 HEAD</p>
               <h1>工作区变更</h1>
-              <p>查看当前会话目录中的暂存、未暂存与未跟踪文件。</p>
+              <p>{workspaceMode === 'worktree' ? '查看隔离工作树中的改动，并选择要写回原项目的文件。' : '查看当前会话目录中的暂存、未暂存与未跟踪文件。'}</p>
             </div>
-            <button class="subtle-button workspace-change-refresh" aria-label="刷新工作区变更" disabled={workspaceChangesLoading} onclick={() => void refreshWorkspaceChanges()}>
-              {#if workspaceChangesLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}刷新
-            </button>
+            <div class="workspace-changes-actions">
+              {#if workspaceMode === 'worktree'}<button class="primary-button workspace-change-apply" disabled={!canApplyWorktreeChanges} title={worktreeApplyBlockedReason} onclick={beginWorktreeApply}>应用所选文件{#if selectedApplyPaths.length} · {selectedApplyPaths.length}{/if}</button>{/if}
+              <button class="subtle-button workspace-change-refresh" aria-label="刷新工作区变更" disabled={workspaceChangesLoading} onclick={() => void refreshWorkspaceChanges()}>
+                {#if workspaceChangesLoading}<span class="spinner"></span>{:else}<span>↻</span>{/if}刷新
+              </button>
+            </div>
           </header>
+
+          {#if worktreeApplyMessage}<div class="workspace-apply-message" role="status">{worktreeApplyMessage}</div>{/if}
 
           {#if workspaceChangesError}
             <div class="workspace-changes-state error"><strong>读取变更失败</strong><span>{workspaceChangesError}</span><button class="small-button" onclick={() => void refreshWorkspaceChanges()}>重试</button></div>
@@ -2384,7 +2488,7 @@
 {#if errorMessage}<div class="toast-error" role="status">{errorMessage}<button onclick={() => errorMessage = ''}>×</button></div>{/if}
 
 {#if modal}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; } }}>
+  <div class="modal-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) { modal = null; editConfirmation = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; } }}>
           {#if modal === 'settings'}
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
         <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">模型与偏好设置</h2></div><div class="modal-header-actions">{#if workspace}<button class="small-button" onclick={() => void openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={() => modal = null}>×</button></div></div>
@@ -2417,6 +2521,22 @@
           </section>
         </div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => modal = null}>取消</button><button class="primary-button" disabled={settingsSaving} onclick={() => void saveSettings()}>{settingsSaving ? '正在保存…' : '保存设置'}</button></div>
+      </div>
+    {:else if modal === 'apply-worktree' && worktreeApplyConfirmation}
+      <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="worktree-apply-title" tabindex="-1">
+        <div class="modal-header"><div><span class="eyebrow">WORKTREE RESULT</span><h2 id="worktree-apply-title">将所选改动应用到原项目？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { modal = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; }}>×</button></div>
+        <div class="modal-body worktree-apply-body">
+          <p>目标目录：<code>{worktreeApplyConfirmation.destination}</code></p>
+          <p>将应用 {worktreeApplyConfirmation.files.length} 个文件。应用前会检查整批变更；有冲突时不会修改原项目。改动不会暂存或提交，Worktree 会保留。</p>
+          {#if permissionMode === 'ask'}<p class="worktree-apply-permission">当前为“每次询问”。确认即授权本次将以下改动写入原项目。</p>{/if}
+          <ul class="worktree-apply-file-list">
+            {#each worktreeApplyConfirmation.files as file (file.path)}
+              <li><span class={`workspace-change-status ${changeStatusLabel(file.status).toLowerCase()}`}>{changeStatusLabel(file.status)}</span><code>{file.path}</code>{#if file.originalPath}<small>来自 {file.originalPath}</small>{/if}</li>
+            {/each}
+          </ul>
+          {#if worktreeApplyError}<div class="worktree-apply-error" role="alert">{worktreeApplyError}</div>{/if}
+        </div>
+        <div class="modal-footer"><button class="quiet-button" disabled={applyingWorktreeChanges} onclick={() => { modal = null; worktreeApplyConfirmation = null; worktreeApplyError = ''; }}>取消</button><button class="primary-button" disabled={applyingWorktreeChanges} onclick={() => void confirmWorktreeApply()}>{applyingWorktreeChanges ? '正在检查并应用…' : '确认应用'}</button></div>
       </div>
     {:else if modal === 'rename-session' && sessionActionTarget}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title" tabindex="-1">

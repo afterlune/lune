@@ -21,12 +21,13 @@ const (
 )
 
 type WorkspaceChangeView struct {
-	Path         string `json:"path"`
-	OriginalPath string `json:"originalPath,omitempty"`
-	Status       string `json:"status"`
-	Added        int    `json:"added"`
-	Removed      int    `json:"removed"`
-	Binary       bool   `json:"binary"`
+	Path                   string `json:"path"`
+	OriginalPath           string `json:"originalPath,omitempty"`
+	Status                 string `json:"status"`
+	Added                  int    `json:"added"`
+	Removed                int    `json:"removed"`
+	Binary                 bool   `json:"binary"`
+	originalRepositoryPath string
 }
 
 type WorkspaceChangesView struct {
@@ -61,14 +62,18 @@ type gitNumstat struct {
 }
 
 func (s *DesktopService) ListWorkspaceChanges() (WorkspaceChangesView, error) {
+	workspace, err := s.workspaceRoot()
+	if err != nil {
+		return WorkspaceChangesView{}, err
+	}
+	return listWorkspaceChangesAt(workspace)
+}
+
+func listWorkspaceChangesAt(workspace string) (WorkspaceChangesView, error) {
 	result := WorkspaceChangesView{Files: []WorkspaceChangeView{}, Refreshed: time.Now().UTC().Format(time.RFC3339Nano)}
 	if _, err := exec.LookPath("git"); err != nil {
 		result.Message = "找不到 Git，请安装 Git 后重试。"
 		return result, nil
-	}
-	workspace, err := s.workspaceRoot()
-	if err != nil {
-		return WorkspaceChangesView{}, err
 	}
 	gitInfo, err := inspectGitWorkspace(workspace)
 	if err != nil {
@@ -104,7 +109,7 @@ func (s *DesktopService) ListWorkspaceChanges() (WorkspaceChangesView, error) {
 		if !inScope {
 			continue
 		}
-		change := WorkspaceChangeView{Path: path, Status: entry.status}
+		change := WorkspaceChangeView{Path: path, Status: entry.status, originalRepositoryPath: entry.originalPath}
 		if entry.originalPath != "" {
 			change.OriginalPath, _ = pathWithinGitWorkspace(entry.originalPath, gitInfo.RelativePath)
 			if change.OriginalPath == "" {

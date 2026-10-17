@@ -38,6 +38,12 @@ export interface ActivityFileChange {
     "truncated"?: boolean;
 }
 
+export interface ApplyWorktreeChangesResult {
+    "files": string[] | null;
+    "destination": string;
+    "alreadyPresent": boolean;
+}
+
 export interface Bootstrap {
     "theme": string;
     "recentWorkspaces": settings$0.RecentWorkspace[] | null;

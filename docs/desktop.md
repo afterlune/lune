@@ -43,7 +43,7 @@ Desktop 完全忽略项目中的 `config.json`，不会导入、迁移或改写�
 
 Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`，Worktree 的代码目录保存在用户缓存目录下 `luneAgent/worktrees/<project-hash>/<session-id>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。
 
-每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。会话完成或删除后，工作树都会保留；Desktop 显示工作目录，合并、检查和清理由用户使用 Git 完成。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
+每个新会话可选 `Local` 或 `Worktree`，默认 `Local`。Local 直接操作所选目录；Worktree 从当前已提交 `HEAD` 创建 Git detached 工作树，不复制未提交改动。Worktree 只在 Git 仓库中可用，嵌套目录会映射到工作树里的相同相对路径。变更视图可选择 Worktree 文件并应用到原项目；Desktop 会先检查整批差异，存在冲突时不应用任何文件。应用后的改动保持未提交状态，不会自动暂存或提交。会话完成、结果应用或会话删除后，工作树都会保留，由用户自行检查和清理。Local 会话仍共享同一份项目文件；需要隔离并行修改时请选择 Worktree。
 
 ## 运行中发送与编辑
 

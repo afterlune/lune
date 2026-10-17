@@ -10,6 +10,7 @@ export type {
     ActivityCommandOutput,
     ActivityDiffLine,
     ActivityFileChange,
+    ApplyWorktreeChangesResult,
     Bootstrap,
     ConversationMessage,
     ExecutionActivityView,
