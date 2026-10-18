@@ -350,8 +350,8 @@ func newDesktopWorktreeManagerSessionGroup(t *testing.T, sessionCount int) deskt
 		worktreeIDs = append(worktreeIDs, saved.ID)
 	}
 	service := &DesktopService{
-		core: localCore, localCore: localCore, runtime: localRuntime, workspace: repository, activeWorkspace: repository,
-		sessionID: localSession.ID, activeContext: sessionContexts[localSession.ID], sessionContexts: sessionContexts,
+		localCore: localCore, workspace: repository,
+		activeContext: sessionContexts[localSession.ID], sessionContexts: sessionContexts,
 		activityStore: store, stateRoot: stateRoot, waiting: map[string]bool{}, suppressedActivity: map[string]struct{}{},
 		projectConfig: projectConfig,
 	}

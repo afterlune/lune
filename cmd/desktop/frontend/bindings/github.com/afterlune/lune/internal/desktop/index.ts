@@ -40,6 +40,7 @@ export type {
     ProviderInput,
     ProviderView,
     QuestionAnswerInput,
+    SessionControlsView,
     SessionSearchResult,
     SessionSummary,
     SessionView,

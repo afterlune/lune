@@ -17,13 +17,16 @@ type MCPServerView struct {
 	ToolCount int    `json:"toolCount"`
 }
 
-func (s *DesktopService) ListMCPServers() ([]MCPServerView, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.core == nil {
+func (s *DesktopService) ListMCPServers(sessionID string) ([]MCPServerView, error) {
+	c, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if c.core == nil {
 		return nil, errors.New("请先打开工作区")
 	}
-	statuses := s.core.MCPServers()
+	statuses := c.core.MCPServers()
 	servers := make([]MCPServerView, 0, len(statuses))
 	for _, status := range statuses {
 		servers = append(servers, MCPServerView{
@@ -34,26 +37,34 @@ func (s *DesktopService) ListMCPServers() ([]MCPServerView, error) {
 	return servers, nil
 }
 
-func (s *DesktopService) SetMCPServerEnabled(name string, enabled bool) error {
+func (s *DesktopService) SetMCPServerEnabled(sessionID, name string, enabled bool) error {
 	name = strings.TrimSpace(name)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.core == nil {
+	c, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if c.core == nil {
 		return errors.New("请先打开工作区")
 	}
 	if name == "" {
 		return errors.New("MCP 服务名称不能为空")
 	}
 	if enabled {
-		return s.core.EnableMCPServer(name)
+		return c.core.EnableMCPServer(name)
 	}
-	return s.core.DisableMCPServer(name)
+	return c.core.DisableMCPServer(name)
 }
 
-func (s *DesktopService) AuthenticateMCPServer(name string) error {
+func (s *DesktopService) AuthenticateMCPServer(sessionID, name string) error {
 	name = strings.TrimSpace(name)
+	c, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
-	agent := s.core
+	agent := c.core
 	if agent != nil {
 		s.mcpOperations++
 	}
@@ -73,6 +84,8 @@ func (s *DesktopService) AuthenticateMCPServer(name string) error {
 }
 
 func (s *DesktopService) DeleteSession(sessionID string) error {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	sessionID = strings.TrimSpace(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -82,7 +95,7 @@ func (s *DesktopService) DeleteSession(sessionID string) error {
 	if sessionID == "" {
 		return errors.New("会话标识不能为空")
 	}
-	if s.sessionID == sessionID {
+	if s.activeSessionIDLocked() == sessionID {
 		return errors.New("请先切换到其他会话，再删除当前会话")
 	}
 	sessionContext := s.sessionContexts[sessionID]
@@ -126,6 +139,11 @@ func (s *DesktopService) DeleteSession(sessionID string) error {
 	if sessionContext.eventCancel != nil {
 		sessionContext.eventCancel()
 	}
+	s.mu.Unlock()
+	if sessionContext.eventDone != nil {
+		<-sessionContext.eventDone
+	}
+	s.mu.Lock()
 	delete(s.sessionContexts, sessionID)
 	var closeErr error
 	if sessionContext.mode == workspaceModeWorktree {

@@ -13,8 +13,8 @@ import * as core$0 from "../../../luneCore/models.js";
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
-export function AnswerQuestion(input: $models.QuestionAnswerInput): $CancellablePromise<void> {
-    return $Call.ByID(3818133423, input);
+export function AnswerQuestion(sessionID: string, input: $models.QuestionAnswerInput): $CancellablePromise<void> {
+    return $Call.ByID(3818133423, sessionID, input);
 }
 
 /**
@@ -25,16 +25,16 @@ export function ApplyWorktreeChanges(sessionID: string, paths: string[] | null):
     return $Call.ByID(1085532051, sessionID, paths);
 }
 
-export function AuthenticateMCPServer(name: string): $CancellablePromise<void> {
-    return $Call.ByID(385717039, name);
+export function AuthenticateMCPServer(sessionID: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(385717039, sessionID, name);
 }
 
 export function Bootstrap(): $CancellablePromise<$models.Bootstrap> {
     return $Call.ByID(1891993685);
 }
 
-export function CancelQueuedTurn(executionID: string): $CancellablePromise<void> {
-    return $Call.ByID(1029971349, executionID);
+export function CancelQueuedTurn(sessionID: string, executionID: string): $CancellablePromise<void> {
+    return $Call.ByID(1029971349, sessionID, executionID);
 }
 
 export function CloseWorkspace(interrupt: boolean): $CancellablePromise<void> {
@@ -57,20 +57,20 @@ export function DiscardWallpaper(file: string): $CancellablePromise<void> {
     return $Call.ByID(3553992017, file);
 }
 
-export function EditUserMessage(messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
-    return $Call.ByID(376143777, messageID, input);
+export function EditUserMessage(sessionID: string, messageID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
+    return $Call.ByID(376143777, sessionID, messageID, input);
 }
 
 export function GetWorkspaceConfig(): $CancellablePromise<$models.WorkspaceConfigView> {
     return $Call.ByID(2361918958);
 }
 
-export function ImplementPlan(executionID: string, mode: string): $CancellablePromise<$models.PlanResult> {
-    return $Call.ByID(2356305697, executionID, mode);
+export function ImplementPlan(sessionID: string, executionID: string, mode: string): $CancellablePromise<$models.PlanResult> {
+    return $Call.ByID(2356305697, sessionID, executionID, mode);
 }
 
-export function Interrupt(): $CancellablePromise<boolean> {
-    return $Call.ByID(2941886036);
+export function Interrupt(sessionID: string, expectedExecutionID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(2941886036, sessionID, expectedExecutionID);
 }
 
 /**
@@ -86,8 +86,8 @@ export function ListDesktopWorktrees(): $CancellablePromise<$models.DesktopWorkt
     return $Call.ByID(3399958499);
 }
 
-export function ListMCPServers(): $CancellablePromise<$models.MCPServerView[] | null> {
-    return $Call.ByID(2843607385);
+export function ListMCPServers(sessionID: string): $CancellablePromise<$models.MCPServerView[] | null> {
+    return $Call.ByID(2843607385, sessionID);
 }
 
 /**
@@ -98,16 +98,16 @@ export function ListPendingSessions(): $CancellablePromise<$models.PendingSessio
     return $Call.ByID(2139294369);
 }
 
-export function ListWorkspaceChanges(): $CancellablePromise<$models.WorkspaceChangesView> {
-    return $Call.ByID(1980103603);
+export function ListWorkspaceChanges(sessionID: string): $CancellablePromise<$models.WorkspaceChangesView> {
+    return $Call.ByID(1980103603, sessionID);
 }
 
-export function ListWorkspaceFiles(relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
-    return $Call.ByID(2892581193, relativePath);
+export function ListWorkspaceFiles(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
+    return $Call.ByID(2892581193, sessionID, relativePath);
 }
 
-export function OpenMCPURL(serverName: string, target: string): $CancellablePromise<void> {
-    return $Call.ByID(1687039940, serverName, target);
+export function OpenMCPURL(sessionID: string, serverName: string, target: string): $CancellablePromise<void> {
+    return $Call.ByID(1687039940, sessionID, serverName, target);
 }
 
 export function OpenSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
@@ -118,8 +118,8 @@ export function OpenWorkspace(path: string): $CancellablePromise<$models.Workspa
     return $Call.ByID(3069324422, path);
 }
 
-export function OpenWorkspaceFile(relativePath: string): $CancellablePromise<void> {
-    return $Call.ByID(2369930560, relativePath);
+export function OpenWorkspaceFile(sessionID: string, relativePath: string): $CancellablePromise<void> {
+    return $Call.ByID(2369930560, sessionID, relativePath);
 }
 
 export function PickCommandToolchainFolder(): $CancellablePromise<string> {
@@ -142,40 +142,40 @@ export function ReadDesktopProcessOutput(sessionID: string, commandID: string, c
     return $Call.ByID(3868549089, sessionID, commandID, cursor, wait);
 }
 
-export function ReadWorkspaceDiff(relativePath: string): $CancellablePromise<$models.WorkspaceDiffView> {
-    return $Call.ByID(3675187873, relativePath);
+export function ReadWorkspaceDiff(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceDiffView> {
+    return $Call.ByID(3675187873, sessionID, relativePath);
 }
 
-export function ReadWorkspaceFile(relativePath: string): $CancellablePromise<$models.WorkspaceFilePreview> {
-    return $Call.ByID(1571039100, relativePath);
+export function ReadWorkspaceFile(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceFilePreview> {
+    return $Call.ByID(1571039100, sessionID, relativePath);
 }
 
-export function RecoverModel(): $CancellablePromise<void> {
-    return $Call.ByID(3412255156);
+export function RecoverModel(sessionID: string): $CancellablePromise<void> {
+    return $Call.ByID(3412255156, sessionID);
 }
 
-export function RefreshSession(): $CancellablePromise<$models.WorkspaceState> {
-    return $Call.ByID(3230290916);
+export function RefreshSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
+    return $Call.ByID(3230290916, sessionID);
 }
 
 export function RemoveDesktopWorktree(path: string): $CancellablePromise<void> {
     return $Call.ByID(2061114838, path);
 }
 
-export function ResolveApproval(id: string, allowed: boolean): $CancellablePromise<void> {
-    return $Call.ByID(2863008260, id, allowed);
+export function ResolveApproval(sessionID: string, id: string, allowed: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2863008260, sessionID, id, allowed);
 }
 
-export function ResolveToolRecovery(invocationID: string, decision: string): $CancellablePromise<void> {
-    return $Call.ByID(3985961298, invocationID, decision);
+export function ResolveToolRecovery(sessionID: string, invocationID: string, decision: string): $CancellablePromise<void> {
+    return $Call.ByID(3985961298, sessionID, invocationID, decision);
 }
 
-export function ResolveUserInteraction(id: string, responseJSON: string): $CancellablePromise<void> {
-    return $Call.ByID(505186132, id, responseJSON);
+export function ResolveUserInteraction(sessionID: string, id: string, responseJSON: string): $CancellablePromise<void> {
+    return $Call.ByID(505186132, sessionID, id, responseJSON);
 }
 
-export function RestorePlanMode(): $CancellablePromise<void> {
-    return $Call.ByID(1616448049);
+export function RestorePlanMode(sessionID: string): $CancellablePromise<$models.SessionControlsView> {
+    return $Call.ByID(1616448049, sessionID);
 }
 
 export function SaveAppearanceSettings(input: $models.AppearanceSettingsInput): $CancellablePromise<$models.AppearanceView> {
@@ -198,24 +198,24 @@ export function SearchWorkspaceConversation(query: string): $CancellablePromise<
     return $Call.ByID(3053592493, query);
 }
 
-export function SearchWorkspaceFiles(query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {
-    return $Call.ByID(178478345, query);
+export function SearchWorkspaceFiles(sessionID: string, query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {
+    return $Call.ByID(178478345, sessionID, query);
 }
 
-export function SetMCPServerEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
-    return $Call.ByID(3226871735, name, enabled);
+export function SetMCPServerEnabled(sessionID: string, name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3226871735, sessionID, name, enabled);
 }
 
-export function SetPermissionMode(mode: string): $CancellablePromise<void> {
-    return $Call.ByID(1434689843, mode);
+export function SetPermissionMode(sessionID: string, mode: string): $CancellablePromise<$models.SessionControlsView> {
+    return $Call.ByID(1434689843, sessionID, mode);
 }
 
-export function SetPlanMode(enabled: boolean): $CancellablePromise<void> {
-    return $Call.ByID(1612406795, enabled);
+export function SetPlanMode(sessionID: string, enabled: boolean): $CancellablePromise<$models.SessionControlsView> {
+    return $Call.ByID(1612406795, sessionID, enabled);
 }
 
-export function SetSessionModel(profile: string): $CancellablePromise<void> {
-    return $Call.ByID(1662203646, profile);
+export function SetSessionModel(sessionID: string, profile: string): $CancellablePromise<void> {
+    return $Call.ByID(1662203646, sessionID, profile);
 }
 
 export function SetSessionTitle(sessionID: string, title: string): $CancellablePromise<void> {
@@ -233,6 +233,6 @@ export function StopDesktopProcess(sessionID: string, commandID: string): $Cance
     return $Call.ByID(2531413948, sessionID, commandID);
 }
 
-export function Submit(input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
-    return $Call.ByID(1818956641, input);
+export function Submit(sessionID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
+    return $Call.ByID(1818956641, sessionID, input);
 }

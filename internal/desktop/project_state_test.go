@@ -368,7 +368,7 @@ func TestRestoreWorktreeSessionsSharesCoreStateAndDeletesOneSessionSafely(t *tes
 		}
 	}
 	service := &DesktopService{
-		core: localCore, localCore: localCore, workspace: localWorkspace, activeWorkspace: localWorkspace,
+		localCore: localCore, workspace: localWorkspace,
 		stateRoot: stateRoot, projectConfig: core.ProjectConfig{ModelConfig: *config}, activityStore: store, waiting: map[string]bool{},
 		sessionContexts: map[string]*desktopSessionContext{},
 	}

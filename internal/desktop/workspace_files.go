@@ -40,8 +40,10 @@ var skippedWorkspaceDirectories = map[string]struct{}{
 	"dist": {}, "build": {}, ".venv": {},
 }
 
-func (s *DesktopService) ListWorkspaceFiles(relativePath string) ([]WorkspaceFileEntry, error) {
-	root, err := s.workspaceRoot()
+func (s *DesktopService) ListWorkspaceFiles(sessionID string, relativePath string) ([]WorkspaceFileEntry, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	root, err := s.workspaceRoot(sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +89,10 @@ func (s *DesktopService) ListWorkspaceFiles(relativePath string) ([]WorkspaceFil
 	return result, nil
 }
 
-func (s *DesktopService) SearchWorkspaceFiles(query string) (WorkspaceFileSearchResult, error) {
-	root, err := s.workspaceRoot()
+func (s *DesktopService) SearchWorkspaceFiles(sessionID string, query string) (WorkspaceFileSearchResult, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	root, err := s.workspaceRoot(sessionID)
 	if err != nil {
 		return WorkspaceFileSearchResult{}, err
 	}
@@ -145,8 +149,10 @@ func (s *DesktopService) SearchWorkspaceFiles(query string) (WorkspaceFileSearch
 	return result, nil
 }
 
-func (s *DesktopService) ReadWorkspaceFile(relativePath string) (WorkspaceFilePreview, error) {
-	root, err := s.workspaceRoot()
+func (s *DesktopService) ReadWorkspaceFile(sessionID string, relativePath string) (WorkspaceFilePreview, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	root, err := s.workspaceRoot(sessionID)
 	if err != nil {
 		return WorkspaceFilePreview{}, err
 	}
@@ -182,8 +188,10 @@ func (s *DesktopService) ReadWorkspaceFile(relativePath string) (WorkspaceFilePr
 	}, nil
 }
 
-func (s *DesktopService) OpenWorkspaceFile(relativePath string) error {
-	root, err := s.workspaceRoot()
+func (s *DesktopService) OpenWorkspaceFile(sessionID string, relativePath string) error {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	root, err := s.workspaceRoot(sessionID)
 	if err != nil {
 		return err
 	}
@@ -207,11 +215,12 @@ func (s *DesktopService) OpenWorkspaceFile(relativePath string) error {
 	return app.Browser.OpenFile(path)
 }
 
-func (s *DesktopService) workspaceRoot() (string, error) {
+func (s *DesktopService) workspaceRoot(sessionID string) (string, error) {
 	s.mu.Lock()
-	root := s.activeWorkspace
-	if root == "" {
-		root = s.workspace
+	c := s.sessionContexts[sessionID]
+	root := ""
+	if c != nil {
+		root = c.workspace
 	}
 	s.mu.Unlock()
 	if root == "" {

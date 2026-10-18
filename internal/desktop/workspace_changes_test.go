@@ -64,8 +64,8 @@ func TestWorkspaceChangesListsStatusAndReadsDiffs(t *testing.T) {
 		}
 	}
 
-	service := &DesktopService{activeWorkspace: repository}
-	view, err := service.ListWorkspaceChanges()
+	service := &DesktopService{sessionContexts: map[string]*desktopSessionContext{"test": {workspace: repository}}}
+	view, err := service.ListWorkspaceChanges("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,25 +94,25 @@ func TestWorkspaceChangesListsStatusAndReadsDiffs(t *testing.T) {
 		t.Fatalf("rename entry = %#v", byPath["rename-new.txt"])
 	}
 
-	diff, err := service.ReadWorkspaceDiff("mixed.txt")
+	diff, err := service.ReadWorkspaceDiff("test", "mixed.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(diff.Content, "-second base") || !strings.Contains(diff.Content, "+second unstaged") || !strings.Contains(diff.Content, "+first staged") {
 		t.Fatalf("combined staged and unstaged diff = %q", diff.Content)
 	}
-	newFileDiff, err := service.ReadWorkspaceDiff("new file.txt")
+	newFileDiff, err := service.ReadWorkspaceDiff("test", "new file.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(newFileDiff.Content, "+first new line") || !strings.Contains(newFileDiff.Content, "+++ b/new file.txt") {
 		t.Fatalf("untracked file diff = %q", newFileDiff.Content)
 	}
-	binaryDiff, err := service.ReadWorkspaceDiff("binary.bin")
+	binaryDiff, err := service.ReadWorkspaceDiff("test", "binary.bin")
 	if err != nil || !binaryDiff.Binary {
 		t.Fatalf("binary diff = %#v, error=%v", binaryDiff, err)
 	}
-	if _, err := service.ReadWorkspaceDiff("../outside.txt"); err == nil {
+	if _, err := service.ReadWorkspaceDiff("test", "../outside.txt"); err == nil {
 		t.Fatal("ReadWorkspaceDiff accepted a path outside the current change list")
 	}
 }
@@ -147,8 +147,8 @@ func TestWorkspaceChangesAreLimitedToCurrentNestedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	service := &DesktopService{activeWorkspace: nested}
-	view, err := service.ListWorkspaceChanges()
+	service := &DesktopService{sessionContexts: map[string]*desktopSessionContext{"test": {workspace: nested}}}
+	view, err := service.ListWorkspaceChanges("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,8 +163,8 @@ func TestWorkspaceChangesAreLimitedToCurrentNestedWorkspace(t *testing.T) {
 }
 
 func TestWorkspaceChangesReportNonGitDirectory(t *testing.T) {
-	service := &DesktopService{activeWorkspace: t.TempDir()}
-	view, err := service.ListWorkspaceChanges()
+	service := &DesktopService{sessionContexts: map[string]*desktopSessionContext{"test": {workspace: t.TempDir()}}}
+	view, err := service.ListWorkspaceChanges("test")
 	if err != nil {
 		t.Fatal(err)
 	}

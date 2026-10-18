@@ -192,7 +192,7 @@ func newDesktopServiceForTest(t *testing.T, provider publicmodel.Provider) (*Des
 		_ = agent.Close()
 		t.Fatalf("OpenActivityStore: %v", err)
 	}
-	service := &DesktopService{core: agent, workspace: workspace, activityStore: activityStore, waiting: map[string]bool{}}
+	service := &DesktopService{localCore: agent, workspace: workspace, activityStore: activityStore, waiting: map[string]bool{}}
 	t.Cleanup(func() {
 		if err := service.CloseWorkspace(true); err != nil {
 			t.Errorf("CloseWorkspace: %v", err)
@@ -212,7 +212,7 @@ func TestSubmitQueuesMessageWhileAnotherExecutionRuns(t *testing.T) {
 	provider := &blockingDesktopProvider{started: make(chan struct{}, 3)}
 	service, _, sessionID := newDesktopServiceForTest(t, provider)
 	firstIndex := 0
-	first, err := service.Submit(SubmitInput{Text: "first", UserMessageIndex: &firstIndex})
+	first, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "first", UserMessageIndex: &firstIndex})
 	if err != nil {
 		t.Fatalf("Submit first message: %v", err)
 	}
@@ -222,14 +222,14 @@ func TestSubmitQueuesMessageWhileAnotherExecutionRuns(t *testing.T) {
 		t.Fatal("first model request did not start")
 	}
 	secondIndex := 1
-	second, err := service.Submit(SubmitInput{Text: "second", UserMessageIndex: &secondIndex})
+	second, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "second", UserMessageIndex: &secondIndex})
 	if err != nil {
 		t.Fatalf("Submit second message while running: %v", err)
 	}
 	if second.Status != core.SubmissionQueued || second.ExecutionID == "" || second.Position < 1 {
 		t.Fatalf("queued submission = %#v, want a queued execution behind the active turn", second)
 	}
-	state, err := service.runtime.State(context.Background())
+	state, err := service.activeContext.runtime.State(context.Background())
 	if err != nil {
 		t.Fatalf("runtime.State: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestSubmitQueuesMessageWhileAnotherExecutionRuns(t *testing.T) {
 	if queued == nil || queued.UserMessageIndex != 1 || queued.MessageText != "second" || queued.Status != "queued" {
 		t.Fatalf("queued message receipt = %#v, want persisted queued message at index 1", queued)
 	}
-	if !service.Interrupt() {
+	if !service.Interrupt(service.activeSessionIDLocked(), desktopTestExecutionID(service)) {
 		t.Fatal("Interrupt returned false")
 	}
 	select {
@@ -300,13 +300,13 @@ func TestSeparateSessionRuntimesCanRunInParallelAndSwitchWhileRunning(t *testing
 	}
 
 	localIndex, worktreeIndex := 0, 0
-	if _, err := service.Submit(SubmitInput{Text: "local task", UserMessageIndex: &localIndex}); err != nil {
+	if _, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "local task", UserMessageIndex: &localIndex}); err != nil {
 		t.Fatalf("submit local task: %v", err)
 	}
 	if _, err := service.OpenSession(worktreeSession.ID); err != nil {
 		t.Fatalf("switch to running worktree session: %v", err)
 	}
-	if _, err := service.Submit(SubmitInput{Text: "worktree task", UserMessageIndex: &worktreeIndex}); err != nil {
+	if _, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "worktree task", UserMessageIndex: &worktreeIndex}); err != nil {
 		t.Fatalf("submit worktree task: %v", err)
 	}
 	seen := map[string]bool{}
@@ -360,11 +360,11 @@ func TestWorktreePlanNewContextRegistersSiblingInSharedCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.localCore = agent
-	if err := service.SetPlanMode(true); err != nil {
+	if _, err := service.SetPlanMode(service.activeSessionIDLocked(), true); err != nil {
 		t.Fatal(err)
 	}
 	index := 0
-	submission, err := service.Submit(SubmitInput{Text: "plan the change", UserMessageIndex: &index})
+	submission, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "plan the change", UserMessageIndex: &index})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestWorktreePlanNewContextRegistersSiblingInSharedCore(t *testing.T) {
 	if err != nil || result.Status != core.TaskCompleted || result.ProposedPlan == nil {
 		t.Fatalf("plan result = %#v, error=%v", result, err)
 	}
-	implementation, err := service.ImplementPlan(submission.ExecutionID, string(core.PlanImplementNewContext))
+	implementation, err := service.ImplementPlan(service.activeSessionIDLocked(), submission.ExecutionID, string(core.PlanImplementNewContext))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestEditQueuedMessageReplacesItsPositionAndCancelsLaterQueue(t *testing.T) 
 	provider := &gatedDesktopProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
 	service, _, sessionID := newDesktopServiceForTest(t, provider)
 	firstIndex := 0
-	first, err := service.Submit(SubmitInput{Text: "first", UserMessageIndex: &firstIndex})
+	first, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "first", UserMessageIndex: &firstIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,24 +407,24 @@ func TestEditQueuedMessageReplacesItsPositionAndCancelsLaterQueue(t *testing.T) 
 		t.Fatalf("first provider input = %q", got)
 	}
 	secondIndex := 1
-	second, err := service.Submit(SubmitInput{Text: "second original", UserMessageIndex: &secondIndex})
+	second, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "second original", UserMessageIndex: &secondIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
 	thirdIndex := 2
-	third, err := service.Submit(SubmitInput{Text: "third original", UserMessageIndex: &thirdIndex})
+	third, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "third original", UserMessageIndex: &thirdIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	revised, err := service.EditUserMessage(second.ExecutionID, SubmitInput{Text: "second revised", UserMessageIndex: &secondIndex})
+	revised, err := service.EditUserMessage(service.activeSessionIDLocked(), second.ExecutionID, SubmitInput{Text: "second revised", UserMessageIndex: &secondIndex})
 	if err != nil {
 		t.Fatalf("EditUserMessage(queued): %v", err)
 	}
 	if revised.Status != core.SubmissionQueued || revised.ExecutionID != second.ExecutionID || revised.Position != second.Position {
 		t.Fatalf("revised queued submission = %#v, want original queue identity and position %#v", revised, second)
 	}
-	state, err := service.runtime.State(context.Background())
+	state, err := service.activeContext.runtime.State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestEditQueuedMessageReplacesItsPositionAndCancelsLaterQueue(t *testing.T) 
 	if editedMessage == nil || editedMessage.MessageText != "second revised" || editedMessage.Status != "queued" {
 		t.Fatalf("edited queued activity = %#v", editedMessage)
 	}
-	if result, err := service.runtime.WaitTurn(context.Background(), third.ExecutionID); err != nil || result.Status != core.TaskCancelled {
+	if result, err := service.activeContext.runtime.WaitTurn(context.Background(), third.ExecutionID); err != nil || result.Status != core.TaskCancelled {
 		t.Fatalf("later queued result = %#v, error=%v; want cancelled", result, err)
 	}
 
@@ -461,10 +461,10 @@ func TestEditQueuedMessageReplacesItsPositionAndCancelsLaterQueue(t *testing.T) 
 		t.Fatal("edited queued message did not start")
 	}
 	provider.release <- struct{}{}
-	if result, err := service.runtime.WaitTurn(context.Background(), first.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+	if result, err := service.activeContext.runtime.WaitTurn(context.Background(), first.ExecutionID); err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("first result = %#v, error=%v", result, err)
 	}
-	if result, err := service.runtime.WaitTurn(context.Background(), second.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+	if result, err := service.activeContext.runtime.WaitTurn(context.Background(), second.ExecutionID); err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("edited queued result = %#v, error=%v", result, err)
 	}
 }
@@ -485,7 +485,7 @@ func TestEditHistoricalMessageInterruptsCurrentTurnAndDropsQueue(t *testing.T) {
 	}
 	messageID := transcriptMessages(originalHistory)[0].ID
 	activeIndex := 1
-	active, err := service.Submit(SubmitInput{Text: "active work", UserMessageIndex: &activeIndex})
+	active, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "active work", UserMessageIndex: &activeIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,22 +495,22 @@ func TestEditHistoricalMessageInterruptsCurrentTurnAndDropsQueue(t *testing.T) {
 		t.Fatal("active task did not start")
 	}
 	queuedIndex := 2
-	queued, err := service.Submit(SubmitInput{Text: "queued work", UserMessageIndex: &queuedIndex})
+	queued, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "queued work", UserMessageIndex: &queuedIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
 	targetIndex := 0
-	replacement, err := service.EditUserMessage(messageID, SubmitInput{Text: "first revised", UserMessageIndex: &targetIndex})
+	replacement, err := service.EditUserMessage(service.activeSessionIDLocked(), messageID, SubmitInput{Text: "first revised", UserMessageIndex: &targetIndex})
 	if err != nil {
 		t.Fatalf("EditUserMessage(active history): %v", err)
 	}
-	if result, err := service.runtime.WaitTurn(ctx, replacement.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+	if result, err := service.activeContext.runtime.WaitTurn(ctx, replacement.ExecutionID); err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("replacement result = %#v, error=%v", result, err)
 	}
-	if result, err := service.runtime.WaitTurn(ctx, queued.ExecutionID); err != nil || result.Status != core.TaskCancelled {
+	if result, err := service.activeContext.runtime.WaitTurn(ctx, queued.ExecutionID); err != nil || result.Status != core.TaskCancelled {
 		t.Fatalf("queued result = %#v, error=%v; want cancelled", result, err)
 	}
-	if _, err := service.runtime.WaitTurn(ctx, active.ExecutionID); err != nil {
+	if _, err := service.activeContext.runtime.WaitTurn(ctx, active.ExecutionID); err != nil {
 		t.Fatalf("interrupted active result: %v", err)
 	}
 	saved, err := agent.GetSession(ctx, sessionID)
@@ -528,7 +528,7 @@ func TestEditActiveUncommittedMessageInterruptsAndReplacesItsTurn(t *testing.T) 
 	service, agent, sessionID := newDesktopServiceForTest(t, provider)
 	ctx := context.Background()
 	activeIndex := 0
-	active, err := service.Submit(SubmitInput{Text: "active original", UserMessageIndex: &activeIndex})
+	active, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "active original", UserMessageIndex: &activeIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,21 +538,21 @@ func TestEditActiveUncommittedMessageInterruptsAndReplacesItsTurn(t *testing.T) 
 		t.Fatal("active task did not start")
 	}
 	queuedIndex := 1
-	queued, err := service.Submit(SubmitInput{Text: "queued follow-up", UserMessageIndex: &queuedIndex})
+	queued, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "queued follow-up", UserMessageIndex: &queuedIndex})
 	if err != nil {
 		t.Fatal(err)
 	}
-	replacement, err := service.EditUserMessage(active.ExecutionID, SubmitInput{Text: "active revised", UserMessageIndex: &activeIndex})
+	replacement, err := service.EditUserMessage(service.activeSessionIDLocked(), active.ExecutionID, SubmitInput{Text: "active revised", UserMessageIndex: &activeIndex})
 	if err != nil {
 		t.Fatalf("EditUserMessage(active execution): %v", err)
 	}
-	if result, err := service.runtime.WaitTurn(ctx, replacement.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+	if result, err := service.activeContext.runtime.WaitTurn(ctx, replacement.ExecutionID); err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("replacement result = %#v, error=%v", result, err)
 	}
-	if result, err := service.runtime.WaitTurn(ctx, queued.ExecutionID); err != nil || result.Status != core.TaskCancelled {
+	if result, err := service.activeContext.runtime.WaitTurn(ctx, queued.ExecutionID); err != nil || result.Status != core.TaskCancelled {
 		t.Fatalf("queued result = %#v, error=%v; want cancelled", result, err)
 	}
-	if _, err := service.runtime.WaitTurn(ctx, active.ExecutionID); err != nil {
+	if _, err := service.activeContext.runtime.WaitTurn(ctx, active.ExecutionID); err != nil {
 		t.Fatalf("interrupted active result: %v", err)
 	}
 	saved, err := agent.GetSession(ctx, sessionID)
@@ -586,13 +586,13 @@ func TestEditUserMessageRewindsFollowingTurnsAndTheirActivity(t *testing.T) {
 		}
 	}
 	messageID := transcriptMessages(history)[2].ID
-	submission, err := service.EditUserMessage(messageID, SubmitInput{Text: "second revised"})
+	submission, err := service.EditUserMessage(service.activeSessionIDLocked(), messageID, SubmitInput{Text: "second revised"})
 	if err != nil {
 		t.Fatalf("EditUserMessage: %v", err)
 	}
 	ctxWait, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if result, err := service.runtime.WaitTurn(ctxWait, submission.ExecutionID); err != nil || result.Status != core.TaskCompleted {
+	if result, err := service.activeContext.runtime.WaitTurn(ctxWait, submission.ExecutionID); err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("edited turn result = %#v, error = %v", result, err)
 	}
 	saved, err := agent.GetSession(ctx, sessionID)
@@ -621,7 +621,7 @@ func TestEditUserMessageRejectsInvalidTargetsWithoutChangingHistory(t *testing.T
 	if err := agent.SetSessionHistory(context.Background(), sessionID, original); err != nil {
 		t.Fatalf("SetSessionHistory: %v", err)
 	}
-	if _, err := service.EditUserMessage("missing-message", SubmitInput{Text: "invalid index"}); err == nil {
+	if _, err := service.EditUserMessage(service.activeSessionIDLocked(), "missing-message", SubmitInput{Text: "invalid index"}); err == nil {
 		t.Fatal("EditUserMessage accepted an unknown user message ID")
 	}
 	saved, err := agent.GetSession(context.Background(), sessionID)
@@ -632,4 +632,12 @@ func TestEditUserMessageRejectsInvalidTargetsWithoutChangingHistory(t *testing.T
 	if len(messages) != 1 || messages[0].Text != "original" {
 		t.Fatalf("history changed after rejected edit: %#v", messages)
 	}
+}
+
+func desktopTestExecutionID(s *DesktopService) string {
+	state, err := s.activeContext.runtime.State(context.Background())
+	if err != nil {
+		return ""
+	}
+	return state.Task.ExecutionID
 }

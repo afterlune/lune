@@ -68,7 +68,7 @@ export interface Bootstrap {
     "models": ModelSettingsView;
     "workspace": string;
     "sessionId": string;
-    "permissionMode": string;
+    "controls": SessionControlsView;
 }
 
 /**
@@ -298,6 +298,12 @@ export interface QuestionAnswerInput {
     "answers": model$0.UserQuestionResponse[] | null;
 }
 
+export interface SessionControlsView {
+    "permissionMode": string;
+    "effectivePermissionMode": string;
+    "planMode": boolean;
+}
+
 export interface SessionSearchResult {
     "sessionId": string;
     "sessionTitle": string;
@@ -449,7 +455,7 @@ export interface WorkspaceState {
     "worktreePath"?: string;
     "session": SessionView;
     "sessions": SessionSummary[] | null;
-    "permissionMode": string;
+    "controls": SessionControlsView;
     "models"?: ModelSettingsView | null;
     "runtimeState": core$0.RuntimeState;
     "pending": PendingRequestView[] | null;

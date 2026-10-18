@@ -27,6 +27,8 @@ type PendingRequestSummary struct {
 // ListPendingSessions returns a transient, content-free index for every session
 // runtime attached to the active Desktop workspace.
 func (s *DesktopService) ListPendingSessions() ([]PendingSessionSummary, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,23 +109,29 @@ func summarizePendingRequests(requests []core.PendingRequest) []PendingRequestSu
 	return result
 }
 
-func (s *DesktopService) ResolveUserInteraction(id, responseJSON string) error {
+func (s *DesktopService) ResolveUserInteraction(sessionID, id, responseJSON string) error {
 	if id == "" || !json.Valid([]byte(responseJSON)) {
 		return errors.New("MCP 交互响应无效")
 	}
-	s.mu.Lock()
-	runtime := s.runtime
-	s.mu.Unlock()
+	c, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	runtime := c.runtime
 	if runtime == nil {
 		return errors.New("会话已关闭")
 	}
 	return runtime.ResolveUserInteraction(id, json.RawMessage(responseJSON))
 }
 
-func (s *DesktopService) OpenMCPURL(serverName, target string) error {
-	s.mu.Lock()
-	activeCore := s.core
-	s.mu.Unlock()
+func (s *DesktopService) OpenMCPURL(sessionID, serverName, target string) error {
+	c, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	activeCore := c.core
 	if activeCore == nil {
 		return errors.New("没有打开会话")
 	}

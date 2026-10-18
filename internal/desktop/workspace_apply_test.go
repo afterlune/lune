@@ -224,7 +224,7 @@ func TestDesktopApplyWorktreeChangesChecksPermissionAndWritesToOriginalNestedPro
 	service := &DesktopService{
 		workspace: nestedWorkspace, sessionContexts: map[string]*desktopSessionContext{saved.ID: context},
 	}
-	if err := agent.SetPermissionMode(core.PermissionReadOnly); err != nil {
+	if err := func() error { context.permissionMode = core.PermissionReadOnly; return nil }(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.ApplyWorktreeChanges(saved.ID, []string{"file.txt"}); err == nil || !strings.Contains(err.Error(), "只读权限") {
@@ -232,7 +232,7 @@ func TestDesktopApplyWorktreeChangesChecksPermissionAndWritesToOriginalNestedPro
 	}
 	assertApplyTestFile(t, nestedWorkspace, "file.txt", []byte("base\n"))
 
-	if err := agent.SetPermissionMode(core.PermissionWorkspace); err != nil {
+	if err := func() error { context.permissionMode = core.PermissionWorkspace; return nil }(); err != nil {
 		t.Fatal(err)
 	}
 	service.workspace = t.TempDir()

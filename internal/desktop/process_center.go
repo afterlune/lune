@@ -57,6 +57,8 @@ type DesktopProcessOutputView struct {
 // active Desktop workspace. Session metadata whose runtime could not be opened
 // is returned separately so it remains visible without exposing any actions.
 func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
 	result := DesktopProcessListView{
 		Processes:           []DesktopProcessView{},
 		UnavailableSessions: []DesktopProcessSessionView{},
@@ -122,7 +124,7 @@ func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) 
 
 	localCore := s.localCore
 	if localCore == nil {
-		localCore = s.core
+		localCore = s.activeCoreLocked()
 	}
 	if localCore != nil {
 		localSessions, err := localCore.ListSessions(context.Background(), 1000, true)
@@ -212,6 +214,8 @@ func (s *DesktopService) processRuntime(sessionID string) (*core.SessionRuntime,
 // ReadDesktopProcessOutput reads one cursor-bounded chunk. Wait requests can
 // block for at most Core's five-second follow interval.
 func (s *DesktopService) ReadDesktopProcessOutput(sessionID, commandID string, cursor int64, wait bool) (DesktopProcessOutputView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
 	if strings.TrimSpace(commandID) == "" {
 		return DesktopProcessOutputView{}, errors.New("进程 ID 不能为空")
 	}
@@ -242,6 +246,8 @@ func (s *DesktopService) ReadDesktopProcessOutput(sessionID, commandID string, c
 
 // StopDesktopProcess stops only the command addressed by its owning session runtime.
 func (s *DesktopService) StopDesktopProcess(sessionID, commandID string) error {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
 	if strings.TrimSpace(commandID) == "" {
 		return errors.New("进程 ID 不能为空")
 	}

@@ -78,7 +78,7 @@ func (provider pendingQuestionDesktopProvider) StreamResponse(ctx context.Contex
 func TestListPendingSessionsIncludesBackgroundSessionsWithoutQuestionText(t *testing.T) {
 	service, agent, firstSessionID := newDesktopServiceForTest(t, pendingQuestionDesktopProvider{})
 	firstIndex := 0
-	if _, err := service.Submit(SubmitInput{Text: "first task", UserMessageIndex: &firstIndex}); err != nil {
+	if _, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "first task", UserMessageIndex: &firstIndex}); err != nil {
 		t.Fatalf("submit first task: %v", err)
 	}
 	waitForPendingSessionCount(t, service, 1)
@@ -91,7 +91,7 @@ func TestListPendingSessionsIncludesBackgroundSessionsWithoutQuestionText(t *tes
 		t.Fatalf("open second session: %v", err)
 	}
 	secondIndex := 0
-	if _, err := service.Submit(SubmitInput{Text: "second task", UserMessageIndex: &secondIndex}); err != nil {
+	if _, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "second task", UserMessageIndex: &secondIndex}); err != nil {
 		t.Fatalf("submit second task: %v", err)
 	}
 	waitForPendingSessionCount(t, service, 2)

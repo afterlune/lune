@@ -36,13 +36,32 @@ type gitWorktreeEntry struct {
 	prunable bool
 }
 
-func (s *DesktopService) ListDesktopWorktrees() ([]DesktopWorktreeView, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.listDesktopWorktreesLocked()
+// worktreeInspection is a stable view of ownership while the workspace lifetime is pinned.
+type worktreeInspection struct {
+	workspace       string
+	activityStore   *ActivityStore
+	sessionContexts map[string]*desktopSessionContext
+	activeSessionID string
 }
 
-func (s *DesktopService) listDesktopWorktreesLocked() ([]DesktopWorktreeView, error) {
+func (s *DesktopService) worktreeInspectionLocked() *worktreeInspection {
+	contexts := make(map[string]*desktopSessionContext, len(s.sessionContexts))
+	for id, c := range s.sessionContexts {
+		contexts[id] = c
+	}
+	return &worktreeInspection{workspace: s.workspace, activityStore: s.activityStore, sessionContexts: contexts, activeSessionID: s.activeSessionIDLocked()}
+}
+
+func (s *DesktopService) ListDesktopWorktrees() ([]DesktopWorktreeView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	s.mu.Lock()
+	inspection := s.worktreeInspectionLocked()
+	s.mu.Unlock()
+	return inspection.listDesktopWorktrees()
+}
+
+func (s *worktreeInspection) listDesktopWorktrees() ([]DesktopWorktreeView, error) {
 	if strings.TrimSpace(s.workspace) == "" {
 		return nil, errors.New("请先打开工作区")
 	}
@@ -124,7 +143,7 @@ func (s *DesktopService) listDesktopWorktreesLocked() ([]DesktopWorktreeView, er
 
 	views := make([]DesktopWorktreeView, 0, len(candidates))
 	for _, candidate := range candidates {
-		view := s.desktopWorktreeViewLocked(candidate)
+		view := s.desktopWorktreeView(candidate)
 		views = append(views, view)
 	}
 	sort.Slice(views, func(i, j int) bool {
@@ -140,7 +159,7 @@ type desktopWorktreeCandidate struct {
 	records  []DesktopSessionRecord
 }
 
-func (s *DesktopService) desktopWorktreeViewLocked(candidate *desktopWorktreeCandidate) DesktopWorktreeView {
+func (s *worktreeInspection) desktopWorktreeView(candidate *desktopWorktreeCandidate) DesktopWorktreeView {
 	view := DesktopWorktreeView{
 		Path:          filepath.Clean(candidate.path),
 		GitRegistered: candidate.gitEntry != nil,
@@ -165,7 +184,7 @@ func (s *DesktopService) desktopWorktreeViewLocked(candidate *desktopWorktreeCan
 			if reason := removableSessionBlockReason(sessionContext); reason != "" {
 				blockReasons = append(blockReasons, reason)
 			}
-			if s.sessionID == record.ID {
+			if s.activeSessionID == record.ID {
 				view.RequiresLocalSwitch = true
 			}
 		}
@@ -246,13 +265,16 @@ func unknownCoreSessionReason(records []DesktopSessionRecord, groupIDs map[strin
 }
 
 func (s *DesktopService) RemoveDesktopWorktree(path string) error {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	inspection := s.worktreeInspectionLocked()
+	s.mu.Unlock()
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return errors.New("Worktree 路径不能为空")
 	}
-	views, err := s.listDesktopWorktreesLocked()
+	views, err := inspection.listDesktopWorktrees()
 	if err != nil {
 		return err
 	}
@@ -322,12 +344,12 @@ func (s *DesktopService) RemoveDesktopWorktree(path string) error {
 		}
 	}
 	if len(records) > 0 {
-		return s.removeWorktreeSessionGroupLocked(selected.Path, gitInfo.Root, records)
+		return s.removeWorktreeSessionGroup(selected.Path, gitInfo.Root, records)
 	}
 	return removeGitWorktree(gitInfo.Root, selected.Path)
 }
 
-func (s *DesktopService) removeWorktreeSessionGroupLocked(worktreePath, repositoryRoot string, records []DesktopSessionRecord) error {
+func (s *DesktopService) removeWorktreeSessionGroup(worktreePath, repositoryRoot string, records []DesktopSessionRecord) error {
 	groupIDs := make(map[string]struct{}, len(records))
 	contexts := make([]*desktopSessionContext, 0, len(records))
 	cores := make(map[*core.Core]struct{})
@@ -345,7 +367,7 @@ func (s *DesktopService) removeWorktreeSessionGroupLocked(worktreePath, reposito
 		if reason := removableSessionBlockReason(sessionContext); reason != "" {
 			return errors.New(reason)
 		}
-		if s.sessionID == record.ID {
+		if s.activeSessionIDLocked() == record.ID {
 			return errors.New("当前会话位于此 Worktree，请先切换到 Local 会话")
 		}
 		if _, err := sessionContext.core.GetSession(context.Background(), record.ID); err != nil {
@@ -369,6 +391,11 @@ func (s *DesktopService) removeWorktreeSessionGroupLocked(worktreePath, reposito
 			sessionContext.eventCancel()
 		}
 	}
+	for _, c := range contexts {
+		if c.eventDone != nil {
+			<-c.eventDone
+		}
+	}
 	for agent := range cores {
 		if err := agent.Close(); err != nil {
 			return fmt.Errorf("关闭 Worktree Core: %w", err)
@@ -389,10 +416,11 @@ func (s *DesktopService) removeWorktreeSessionGroupLocked(worktreePath, reposito
 			return err
 		}
 	}
+	s.mu.Lock()
 	for _, sessionContext := range contexts {
 		delete(s.sessionContexts, sessionContext.sessionID)
-		delete(s.waiting, sessionContext.sessionID)
 	}
+	s.mu.Unlock()
 	if err := removeGitWorktree(repositoryRoot, worktreePath); err != nil {
 		return err
 	}

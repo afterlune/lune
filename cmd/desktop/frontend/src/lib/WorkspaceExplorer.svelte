@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import * as Desktop from '../../bindings/github.com/afterlune/lune/internal/desktop/desktopservice';
+  import * as Desktop from './desktopApi';
   import type { WorkspaceFileEntry, WorkspaceFileSearchResult } from '../../bindings/github.com/afterlune/lune/internal/desktop/models';
 
-  let { onPreviewFile, onError, previewMode = false }: {
+  let { onPreviewFile, onError, previewMode = false, sessionID }: {
     onPreviewFile: (path: string) => void;
     onError: (error: unknown) => void;
     previewMode?: boolean;
+    sessionID: string;
   } = $props();
 
   let children = $state<Record<string, WorkspaceFileEntry[]>>({});
@@ -17,6 +18,7 @@
   let searching = $state(false);
   let searchTimer: number | undefined;
   let searchRequest = 0;
+  let disposed = false;
   const previewDirectories: Record<string, WorkspaceFileEntry[]> = {
     '': [
       { name: 'cmd', path: 'cmd', directory: true, size: 0 },
@@ -40,7 +42,7 @@
     return rows;
   });
 
-  onMount(() => { void loadDirectory(''); });
+  onMount(() => { void loadDirectory(''); return () => { disposed = true; searchRequest++; if (searchTimer !== undefined) window.clearTimeout(searchTimer); }; });
 
   async function loadDirectory(path: string) {
     loadingPath = path;
@@ -50,9 +52,9 @@
       return;
     }
     try {
-      const entries = await Desktop.ListWorkspaceFiles(path);
-      children = { ...children, [path]: entries ?? [] };
-    } catch (error) { onError(error); }
+      const entries = await Desktop.ListWorkspaceFiles(sessionID, path);
+      if (!disposed) children = { ...children, [path]: entries ?? [] };
+    } catch (error) { if (!disposed) onError(error); }
     finally { if (loadingPath === path) loadingPath = null; }
   }
 
@@ -89,10 +91,10 @@
     searching = true;
     searchTimer = window.setTimeout(async () => {
       try {
-        const result = await Desktop.SearchWorkspaceFiles(value);
+        const result = await Desktop.SearchWorkspaceFiles(sessionID, value);
         if (requestID === searchRequest) searchResult = result;
       }
-      catch (error) { onError(error); }
+      catch (error) { if (!disposed) onError(error); }
       finally { if (requestID === searchRequest) searching = false; }
     }, 180);
   }

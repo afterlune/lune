@@ -54,7 +54,7 @@ func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
 		t.Fatalf("OpenActivityStore: %v", err)
 	}
 	service := &DesktopService{
-		core: agent, workspace: workspace, activityStore: activityStore, waiting: map[string]bool{},
+		localCore: agent, workspace: workspace, activityStore: activityStore, waiting: map[string]bool{},
 	}
 	t.Cleanup(func() {
 		if err := service.CloseWorkspace(true); err != nil {
@@ -70,7 +70,7 @@ func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
 		t.Fatalf("OpenSession: %v", err)
 	}
 	firstMessageIndex := 0
-	first, err := service.Submit(SubmitInput{Text: "inspect", UserMessageIndex: &firstMessageIndex})
+	first, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "inspect", UserMessageIndex: &firstMessageIndex})
 	if err != nil {
 		t.Fatalf("Submit initial message: %v", err)
 	}
@@ -80,10 +80,10 @@ func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
 		t.Fatal("model provider did not start")
 	}
 
-	if !service.Interrupt() {
+	if !service.Interrupt(service.activeSessionIDLocked(), desktopTestExecutionID(service)) {
 		t.Fatal("Interrupt returned false")
 	}
-	state, err := service.runtime.State(context.Background())
+	state, err := service.activeContext.runtime.State(context.Background())
 	if err != nil {
 		t.Fatalf("runtime.State after interrupt: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
 	}
 
 	secondMessageIndex := 1
-	second, err := service.Submit(SubmitInput{Text: "continue", UserMessageIndex: &secondMessageIndex})
+	second, err := service.Submit(service.activeSessionIDLocked(), SubmitInput{Text: "continue", UserMessageIndex: &secondMessageIndex})
 	if err != nil {
 		t.Fatalf("Submit follow-up after interrupt: %v", err)
 	}

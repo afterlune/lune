@@ -25,17 +25,15 @@ type ApplyWorktreeChangesResult struct {
 // ApplyWorktreeChanges applies a selected set of changes from one stopped
 // Worktree session to the original project working tree without staging them.
 func (s *DesktopService) ApplyWorktreeChanges(sessionID string, paths []string) (ApplyWorktreeChangesResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.reconfiguring {
-		return ApplyWorktreeChangesResult{}, errors.New("项目设置正在应用")
+	sessionContext, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return ApplyWorktreeChangesResult{}, err
 	}
-	sessionContext := s.sessionContexts[sessionID]
-	if sessionContext == nil || sessionContext.core == nil || sessionContext.runtime == nil || sessionContext.mode != workspaceModeWorktree {
+	defer release()
+	if sessionContext.mode != workspaceModeWorktree {
 		return ApplyWorktreeChangesResult{}, errors.New("请选择一个已打开的 Worktree 会话")
 	}
-	if err := validateWorktreeApplyPermission(sessionContext.core.PermissionMode()); err != nil {
+	if err := validateWorktreeApplyPermission(core.PermissionMode(s.controlsFor(sessionContext).EffectivePermissionMode)); err != nil {
 		return ApplyWorktreeChangesResult{}, err
 	}
 	state, err := sessionContext.runtime.State(context.Background())

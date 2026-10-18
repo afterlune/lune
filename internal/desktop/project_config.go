@@ -156,6 +156,8 @@ func mergeWorkspaceConfig(current core.ProjectConfig, input WorkspaceConfigInput
 }
 
 func (s *DesktopService) GetWorkspaceConfig() (WorkspaceConfigView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.localCore == nil {
@@ -167,6 +169,8 @@ func (s *DesktopService) GetWorkspaceConfig() (WorkspaceConfigView, error) {
 // SaveWorkspaceConfig persists Desktop-owned project settings and restarts all
 // Local and Worktree Cores while preserving the selected session.
 func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (WorkspaceConfigView, error) {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	s.mu.Lock()
 	if s.reconfiguring {
 		s.mu.Unlock()
@@ -191,7 +195,8 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		s.mu.Unlock()
 		return WorkspaceConfigView{}, err
 	}
-	workspace, activeSession := s.workspace, s.sessionID
+	workspace, activeSession := s.workspace, s.activeSessionIDLocked()
+	savedControls := s.captureControlsLocked()
 	oldStoredConfig, found, err := s.store.LoadWorkspaceConfig(workspace)
 	if err != nil {
 		s.mu.Unlock()
@@ -240,6 +245,7 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		if startErr := s.startWorkspace(workspace); startErr != nil {
 			return startErr
 		}
+		s.restoreControls(savedControls)
 		if activeSession != "" {
 			if _, openErr := s.openSession(activeSession, true); openErr != nil {
 				return openErr
@@ -263,6 +269,7 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		finish()
 		return WorkspaceConfigView{}, errors.Join(err, rollbackErr)
 	}
+	s.restoreControls(savedControls)
 	if activeSession != "" {
 		if _, err := s.openSession(activeSession, true); err != nil {
 			s.mu.Lock()

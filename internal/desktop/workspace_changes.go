@@ -61,8 +61,10 @@ type gitNumstat struct {
 	binary  bool
 }
 
-func (s *DesktopService) ListWorkspaceChanges() (WorkspaceChangesView, error) {
-	workspace, err := s.workspaceRoot()
+func (s *DesktopService) ListWorkspaceChanges(sessionID string) (WorkspaceChangesView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	workspace, err := s.workspaceRoot(sessionID)
 	if err != nil {
 		return WorkspaceChangesView{}, err
 	}
@@ -140,8 +142,14 @@ func listWorkspaceChangesAt(workspace string) (WorkspaceChangesView, error) {
 	return result, nil
 }
 
-func (s *DesktopService) ReadWorkspaceDiff(relativePath string) (WorkspaceDiffView, error) {
-	listed, err := s.ListWorkspaceChanges()
+func (s *DesktopService) ReadWorkspaceDiff(sessionID string, relativePath string) (WorkspaceDiffView, error) {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	workspace, err := s.workspaceRoot(sessionID)
+	if err != nil {
+		return WorkspaceDiffView{}, err
+	}
+	listed, err := listWorkspaceChangesAt(workspace)
 	if err != nil {
 		return WorkspaceDiffView{}, err
 	}
@@ -157,10 +165,6 @@ func (s *DesktopService) ReadWorkspaceDiff(relativePath string) (WorkspaceDiffVi
 	}
 	if selected == nil {
 		return WorkspaceDiffView{}, errors.New("所选文件已不在当前 Git 变更列表中，请刷新后重试")
-	}
-	workspace, err := s.workspaceRoot()
-	if err != nil {
-		return WorkspaceDiffView{}, err
 	}
 	gitInfo, err := inspectGitWorkspace(workspace)
 	if err != nil {

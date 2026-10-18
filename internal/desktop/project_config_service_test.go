@@ -36,6 +36,12 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.SetPermissionMode(created.Session.ID, "full-access"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetPlanMode(created.Session.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	previousCore := service.localCore
 	if _, err := service.SaveWorkspaceConfig(WorkspaceConfigInput{AutoCompact: true, ContextWindow: -1}); err == nil {
 		t.Fatal("invalid project settings were accepted")
@@ -63,15 +69,18 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 	if service.localCore == previousCore {
 		t.Fatal("saving project settings did not recreate Core")
 	}
-	if service.sessionID != created.Session.ID {
-		t.Fatalf("active session after restart = %q, want %q", service.sessionID, created.Session.ID)
+	if service.activeSessionIDLocked() != created.Session.ID {
+		t.Fatalf("active session after restart = %q, want %q", service.activeSessionIDLocked(), created.Session.ID)
 	}
 	if len(service.commandToolchainPaths) != 1 || service.commandToolchainPaths[0] != toolchainPath {
 		t.Fatalf("active Core toolchain paths = %#v", service.commandToolchainPaths)
 	}
-	state, err := service.RefreshSession()
+	state, err := service.RefreshSession(service.activeSessionIDLocked())
 	if err != nil || state.Session.ID != created.Session.ID {
 		t.Fatalf("active session state = %#v, error=%v", state, err)
+	}
+	if !state.Controls.PlanMode || state.Controls.PermissionMode != "full-access" || state.Controls.EffectivePermissionMode != "read-only" {
+		t.Fatalf("rebuild lost controls: %+v", state.Controls)
 	}
 	stored, found, err := store.LoadWorkspaceConfig(workspace)
 	if err != nil || !found || stored.ContextWindow != input.ContextWindow || stored.ReserveOutputTokens != input.ReserveOutputTokens {
@@ -80,5 +89,15 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 	storedPaths, pathsFound, err := store.LoadWorkspaceCommandToolchainPaths(workspace)
 	if err != nil || !pathsFound || len(storedPaths) != 1 || storedPaths[0] != toolchainPath {
 		t.Fatalf("stored command toolchain paths = %#v, found=%v, error=%v", storedPaths, pathsFound, err)
+	}
+	if err := service.CloseWorkspace(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.OpenWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	state, err = service.OpenSession(created.Session.ID)
+	if err != nil || state.Controls.PlanMode || state.Controls.PermissionMode != "workspace" {
+		t.Fatalf("reopen did not reset controls: %+v err=%v", state.Controls, err)
 	}
 }
