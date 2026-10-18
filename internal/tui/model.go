@@ -335,7 +335,9 @@ func (m *tuiModel) refreshViewportContent() {
 	if m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount {
 		m.cachedBlocks = make([]string, len(m.entries))
 		for i, entry := range m.entries {
-			m.cachedBlocks[i] = renderEntry(entry, contentWidth)
+			if !isRoundMember(m.entries, i) {
+				m.cachedBlocks[i] = renderEntry(entry, contentWidth)
+			}
 		}
 		m.cachedEntryCount = len(m.entries)
 		m.cachedWidth = contentWidth
@@ -343,16 +345,80 @@ func (m *tuiModel) refreshViewportContent() {
 		m.cachedDirty = false
 	} else if len(m.entries) > m.cachedEntryCount {
 		for i := m.cachedEntryCount; i < len(m.entries); i++ {
-			m.cachedBlocks = append(m.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+			if !isRoundMember(m.entries, i) {
+				m.cachedBlocks = append(m.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+			} else {
+				m.cachedBlocks = append(m.cachedBlocks, "")
+			}
 		}
 		m.cachedEntryCount = len(m.entries)
 	}
 
-	m.entryLineRanges = make([]entryLineRange, 0, len(m.entries))
-	blocks := make([]string, 0, len(m.cachedBlocks)+3)
+	m.entryLineRanges = make([]entryLineRange, 0, len(m.entries)+4)
+	blocks := make([]string, 0, len(m.entries)+3)
 	currentLine := 0
-	for i, block := range m.cachedBlocks {
+	for i := 0; i < len(m.entries); {
+		if isRoundMember(m.entries, i) {
+			end := i + 1
+			for end < len(m.entries) && isRoundMember(m.entries, end) {
+				end++
+			}
+			roundSlice := m.entries[i:end]
+			hasRunningStep := false
+			for _, re := range roundSlice {
+				if re.ToolRunning || re.SubagentRunning || re.ReasoningLive {
+					hasRunningStep = true
+					break
+				}
+			}
+			live := hasRunningStep || (end == len(m.entries) && m.running && strings.TrimSpace(m.currentStreamText) == "")
+
+			if live || m.entries[i].RoundExpanded {
+				block, relRanges := renderExpandedToolRound(roundSlice, i, live, contentWidth)
+				if block != "" {
+					if len(blocks) > 0 {
+						currentLine += 2
+					}
+					for _, rr := range relRanges {
+						m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+							EntryIndex:    rr.EntryIndex,
+							StartLine:     currentLine + rr.StartLine,
+							EndLine:       currentLine + rr.EndLine,
+							IsRoundHeader: rr.IsRoundHeader,
+						})
+					}
+					lineCount := strings.Count(block, "\n") + 1
+					currentLine += lineCount - 1
+					blocks = append(blocks, block)
+				}
+			} else {
+				block := renderCollapsedToolRound(roundSlice, contentWidth)
+				if block != "" {
+					if len(blocks) > 0 {
+						currentLine += 2
+					}
+					lineCount := strings.Count(block, "\n") + 1
+					m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+						EntryIndex:    i,
+						StartLine:     currentLine,
+						EndLine:       currentLine + lineCount - 1,
+						IsRoundHeader: true,
+					})
+					currentLine += lineCount - 1
+					blocks = append(blocks, block)
+				}
+			}
+			i = end
+			continue
+		}
+
+		block := m.cachedBlocks[i]
 		if block == "" {
+			block = renderEntry(m.entries[i], contentWidth)
+			m.cachedBlocks[i] = block
+		}
+		if block == "" {
+			i++
 			continue
 		}
 		if len(blocks) > 0 {
@@ -366,6 +432,7 @@ func (m *tuiModel) refreshViewportContent() {
 		})
 		currentLine += lineCount - 1
 		blocks = append(blocks, block)
+		i++
 	}
 
 	if m.currentReasoningText != "" || m.currentStreamText != "" || m.running {

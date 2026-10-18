@@ -3534,3 +3534,142 @@ func TestCodexExecutionTimelineAlignment(t *testing.T) {
 	}
 }
 
+func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
+	m := newTUIModel(nil, nil, "grok-round-sess")
+	m.width = 100
+	m.height = 30
+	m.updateLayout()
+
+	// 1. Simulate an active (live) tool round while m.running == true and currentStreamText == ""
+	m.running = true
+	m.taskStartedAt = time.Now().Add(-46 * time.Second)
+	m.entries = []TranscriptEntry{
+		{
+			Kind: KindUser,
+			Text: "检查一下这个项目",
+		},
+		{
+			Kind:              KindReasoning,
+			Text:              "First let's list the root directory.",
+			ReasoningDuration: 1600 * time.Millisecond,
+		},
+		{
+			Kind:        KindTool,
+			ToolName:    "list_dir",
+			ToolCommand: "List D:\\Git\\luneAgent",
+			ToolOutput:  "cmd/\ninternal/\ngo.mod",
+		},
+		{
+			Kind:         KindQuestionAnswered,
+			QuestionText: "这次分析希望回答什么问题？",
+			AnswerText:   "整体代码审查 (推荐)",
+		},
+		{
+			Kind:        KindTool,
+			ToolName:    "read_file",
+			ToolCommand: "Read go.mod",
+			ToolOutput:  "module github.com/afterlune/lune",
+		},
+		{
+			Kind:        KindTool,
+			ToolName:    "run_command",
+			ToolCommand: "git status --short",
+			ToolOutput:  " M internal/tui/view.go\n M internal/tui/model.go",
+		},
+	}
+
+	m.invalidateEntryCache()
+	m.refreshViewportContent()
+	liveView := ansi.Strip(m.viewport.View())
+
+	// While live, the round should be expanded with ⠋ header and │ › child steps
+	if !strings.Contains(liveView, "Explored 1 directory, 1 file, ran 1 command") {
+		t.Fatalf("expected live round summary header, got:\n%s", liveView)
+	}
+	if !strings.Contains(liveView, "│ › Thought for 1.6s") ||
+		!strings.Contains(liveView, "│ › Listed D:\\Git\\luneAgent") ||
+		!strings.Contains(liveView, "│ › Ask 这次分析希望回答什么问题？") ||
+		!strings.Contains(liveView, "│ › Read go.mod") ||
+		!strings.Contains(liveView, "│ › Ran git status --short") {
+		t.Fatalf("expected live round child tree lines, got:\n%s", liveView)
+	}
+
+	// 2. Complete the turn via finalizeTurnOutput -> round auto-collapses into 1-line summary bar + Worked for 46s
+	m.currentStreamText = "这是一个多形态 AI 编程 Agent 宿主仓库。"
+	m.finalizeTurnOutput("", nil, "exec-grok-1")
+	m.running = false
+	m.refreshViewportContent()
+
+	collapsedView := ansi.Strip(m.viewport.View())
+	if !strings.Contains(collapsedView, "› Explored 1 directory, 1 file, ran 1 command") {
+		t.Fatalf("expected collapsed Grok summary bar, got:\n%s", collapsedView)
+	}
+	if strings.Contains(collapsedView, "│ › Read go.mod") {
+		t.Fatalf("expected child steps to be hidden when round is auto-collapsed, got:\n%s", collapsedView)
+	}
+	if !strings.Contains(collapsedView, "Worked for 46s") {
+		t.Fatalf("expected 'Worked for 46s' on completed assistant turn, got:\n%s", collapsedView)
+	}
+
+	// 3. Level 1 Click: Click on the collapsed round header bar -> expands the round tree (⌄ Explored ...)
+	var roundHeaderLine int = -1
+	for _, rng := range m.entryLineRanges {
+		if rng.IsRoundHeader && rng.EntryIndex == 1 {
+			roundHeaderLine = rng.StartLine
+			break
+		}
+	}
+	if roundHeaderLine < 0 {
+		t.Fatalf("expected round header range for EntryIndex 1, got %+v", m.entryLineRanges)
+	}
+
+	clickLine := func(absLine int) {
+		vpY := absLine - m.viewport.YOffset() + 3 // headerHeight == 3
+		mod, _ := m.Update(tea.MouseClickMsg{X: 5, Y: vpY, Button: tea.MouseLeft})
+		m = mod.(*tuiModel)
+		mod, _ = m.Update(tea.MouseReleaseMsg{X: 5, Y: vpY, Button: tea.MouseLeft})
+		m = mod.(*tuiModel)
+	}
+
+	clickLine(roundHeaderLine)
+	if !m.entries[1].RoundExpanded {
+		t.Fatalf("expected entries[1].RoundExpanded to be true after clicking round header")
+	}
+	expandedRoundView := ansi.Strip(m.viewport.View())
+	if !strings.Contains(expandedRoundView, "⌄ Explored 1 directory, 1 file, ran 1 command") ||
+		!strings.Contains(expandedRoundView, "│ › Ran git status --short") {
+		t.Fatalf("expected expanded round tree with ⌄ header and │ › children, got:\n%s", expandedRoundView)
+	}
+	if strings.Contains(expandedRoundView, "M internal/tui/view.go") {
+		t.Fatalf("expected child command output to remain collapsed until child item is clicked, got:\n%s", expandedRoundView)
+	}
+
+	// 4. Level 2 Click: Click on the child step "│ › Ran git status --short" (EntryIndex 5) -> expands its output inline
+	var childCmdLine int = -1
+	for _, rng := range m.entryLineRanges {
+		if !rng.IsRoundHeader && rng.EntryIndex == 5 {
+			childCmdLine = rng.StartLine
+			break
+		}
+	}
+	if childCmdLine < 0 {
+		t.Fatalf("expected child range for EntryIndex 5, got %+v", m.entryLineRanges)
+	}
+	clickLine(childCmdLine)
+	if !m.entries[5].ToolExpanded {
+		t.Fatalf("expected entries[5].ToolExpanded to be true after clicking child step")
+	}
+	childExpandedView := ansi.Strip(m.viewport.View())
+	if !strings.Contains(childExpandedView, "│ ⌄ Ran git status --short") ||
+		!strings.Contains(childExpandedView, "M internal/tui/view.go") {
+		t.Fatalf("expected inline command output inside expanded round tree, got:\n%s", childExpandedView)
+	}
+
+	// 5. Click the round header (⌄ Explored ...) again -> collapses the entire round back to 1 line
+	clickLine(roundHeaderLine)
+	if m.entries[1].RoundExpanded {
+		t.Fatalf("expected entries[1].RoundExpanded to be false after clicking ⌄ header")
+	}
+}
+
+

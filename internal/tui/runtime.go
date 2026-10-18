@@ -335,13 +335,22 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		text = stripProposedPlan(text)
 	}
 
+	var turnDur time.Duration
+	if !m.taskStartedAt.IsZero() {
+		turnDur = time.Since(m.taskStartedAt)
+	}
+
 	if strings.TrimSpace(text) != "" {
 		m.entries = append(m.entries, TranscriptEntry{
-			ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
-			Kind:      KindAssistant,
-			Text:      text,
-			Timestamp: time.Now(),
+			ID:           fmt.Sprintf("asst-%d", time.Now().UnixNano()),
+			Kind:         KindAssistant,
+			Text:         text,
+			TurnDuration: turnDur,
+			Timestamp:    time.Now(),
 		})
+		m.invalidateEntryCache()
+	} else if turnDur >= time.Second && len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && m.entries[len(m.entries)-1].TurnDuration == 0 {
+		m.entries[len(m.entries)-1].TurnDuration = turnDur
 		m.invalidateEntryCache()
 	}
 

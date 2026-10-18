@@ -398,8 +398,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				toggled := false
 				for _, rng := range m.entryLineRanges {
 					if absLine >= rng.StartLine && absLine <= rng.EndLine && rng.EntryIndex >= 0 && rng.EntryIndex < len(m.entries) {
+						if rng.IsRoundHeader {
+							m.entries[rng.EntryIndex].RoundExpanded = !m.entries[rng.EntryIndex].RoundExpanded
+							toggled = true
+							break
+						}
 						switch m.entries[rng.EntryIndex].Kind {
-						case KindTool:
+						case KindTool, KindQuestionAnswered:
 							m.entries[rng.EntryIndex].ToolExpanded = !m.entries[rng.EntryIndex].ToolExpanded
 							toggled = true
 						case KindReasoning:
@@ -418,8 +423,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						lineText := lines[vpRow]
 						if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "Running") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") {
 							for i := len(m.entries) - 1; i >= 0; i-- {
-								if m.entries[i].Kind == KindTool {
-									m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
+								if isRoundMember(m.entries, i) {
+									start := i
+									for start > 0 && isRoundMember(m.entries, start-1) {
+										start--
+									}
+									m.entries[start].RoundExpanded = !m.entries[start].RoundExpanded
 									toggled = true
 									break
 								}
@@ -1917,6 +1926,13 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindReasoning {
 			m.entries[i].ReasoningExpanded = !m.entries[i].ReasoningExpanded
+			if m.entries[i].ReasoningExpanded {
+				start := i
+				for start > 0 && isRoundMember(m.entries, start-1) {
+					start--
+				}
+				m.entries[start].RoundExpanded = true
+			}
 			m.invalidateEntryCache()
 			m.refreshViewportContent()
 			return m, nil

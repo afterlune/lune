@@ -25,9 +25,10 @@ const (
 
 // entryLineRange tracks the rendered line range of a TranscriptEntry in the viewport.
 type entryLineRange struct {
-	EntryIndex int
-	StartLine  int
-	EndLine    int
+	EntryIndex    int
+	StartLine     int
+	EndLine       int
+	IsRoundHeader bool
 }
 
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.
@@ -44,6 +45,10 @@ type TranscriptEntry struct {
 	Kind      EntryKind
 	Text      string
 	Timestamp time.Time
+
+	// Round grouping & turn duration fields
+	RoundExpanded bool
+	TurnDuration  time.Duration
 
 	// Tool specific fields
 	ToolCallID   string
