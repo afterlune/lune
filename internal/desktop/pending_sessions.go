@@ -13,7 +13,6 @@ import (
 type PendingSessionSummary struct {
 	ID               string                  `json:"id"`
 	Title            string                  `json:"title"`
-	Mode             string                  `json:"mode"`
 	WorkingDirectory string                  `json:"workingDirectory"`
 	UpdatedAt        string                  `json:"updatedAt"`
 	Requests         []PendingRequestSummary `json:"requests"`
@@ -52,12 +51,8 @@ func (s *DesktopService) ListPendingSessions() ([]PendingSessionSummary, error) 
 		if err != nil {
 			return nil, fmt.Errorf("读取会话 %q 的标题失败: %w", sessionContext.sessionID, err)
 		}
-		mode := sessionContext.mode
-		if mode == "" {
-			mode = workspaceModeLocal
-		}
 		result = append(result, PendingSessionSummary{
-			ID: sessionContext.sessionID, Title: saved.Title, Mode: mode,
+			ID: sessionContext.sessionID, Title: saved.Title,
 			WorkingDirectory: sessionContext.workspace, UpdatedAt: saved.UpdatedAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
 			Requests: summaries,
 		})

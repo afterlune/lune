@@ -82,46 +82,12 @@ func (s *DesktopService) subscribeEventsLocked(sessionContext *desktopSessionCon
 					continue
 				}
 				s.emit("agent-event", toAgentEvent(event))
-				if sessionSummaryEvent(event.Kind) {
-					s.updateSessionSummary(event.SessionID, string(event.Status))
-				}
 				if pendingRequestChanged(event.Kind) {
 					s.emit("pending-changed", sessionContext.sessionID)
 				}
 			}
 		}
 	}()
-}
-
-func sessionSummaryEvent(kind core.EventKind) bool {
-	switch kind {
-	case core.EventTaskQueued, core.EventTaskStarted, core.EventTaskFinished, core.EventTaskDiscarded,
-		core.EventApprovalRequired, core.EventApprovalCancelled, core.EventUserQuestionRequired,
-		core.EventUserInteractionRequired, core.EventUserInteractionCancelled, core.EventExecutionBlocked, core.EventModelRecoveryRequired,
-		core.EventModelRecoveryResumed, core.EventToolRecoveryRequired:
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *DesktopService) updateSessionSummary(sessionID, status string) {
-	s.mu.Lock()
-	sessionContext, store := s.sessionContexts[sessionID], s.activityStore
-	s.mu.Unlock()
-	if sessionContext == nil || sessionContext.mode != workspaceModeWorktree || store == nil {
-		return
-	}
-	saved, err := sessionContext.core.GetSession(context.Background(), sessionID)
-	if err != nil {
-		return
-	}
-	if status == "" {
-		status = sessionContextStatus(sessionContext)
-	}
-	if err := store.UpdateDesktopSession(context.Background(), sessionID, saved.Title, status, saved.UpdatedAt); err != nil {
-		slog.Warn("update Worktree session summary", "session_id", sessionID, "error", err)
-	}
 }
 
 func (s *DesktopService) persistActivityEvent(event core.Event) bool {

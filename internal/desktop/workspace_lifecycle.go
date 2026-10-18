@@ -23,16 +23,13 @@ type SessionSummary struct {
 	ID               string `json:"id"`
 	Title            string `json:"title"`
 	UpdatedAt        string `json:"updatedAt"`
-	Mode             string `json:"mode"`
 	WorkingDirectory string `json:"workingDirectory"`
-	WorktreePath     string `json:"worktreePath,omitempty"`
 	Status           string `json:"status"`
 }
 
 type SessionSearchResult struct {
 	SessionID        string `json:"sessionId"`
 	SessionTitle     string `json:"sessionTitle"`
-	Mode             string `json:"mode"`
 	WorkingDirectory string `json:"workingDirectory"`
 	UpdatedAt        string `json:"updatedAt"`
 	MatchKind        string `json:"matchKind"`
@@ -51,11 +48,10 @@ type sessionSearchCandidate struct {
 }
 
 type WorkspaceOpenResult struct {
-	Workspace         string             `json:"workspace"`
-	Sessions          []SessionSummary   `json:"sessions"`
-	Permission        string             `json:"permissionMode"`
-	Models            *ModelSettingsView `json:"models,omitempty"`
-	WorktreeAvailable bool               `json:"worktreeAvailable"`
+	Workspace  string             `json:"workspace"`
+	Sessions   []SessionSummary   `json:"sessions"`
+	Permission string             `json:"permissionMode"`
+	Models     *ModelSettingsView `json:"models,omitempty"`
 }
 
 func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error) {
@@ -171,8 +167,7 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 
 func (s *DesktopService) restoreSessionContexts() error {
 	s.mu.Lock()
-	localCore, workspace, stateRoot := s.localCore, s.workspace, s.stateRoot
-	store := s.activityStore
+	localCore, workspace := s.localCore, s.workspace
 	s.mu.Unlock()
 	if localCore == nil {
 		return errors.New("没有打开工作区")
@@ -184,92 +179,11 @@ func (s *DesktopService) restoreSessionContexts() error {
 	for _, saved := range localSessions {
 		if err := s.attachSessionRuntime(&desktopSessionContext{
 			core: localCore, sessionID: saved.ID, workspace: workspace,
-			mode: workspaceModeLocal, stateDir: filepath.Join(stateRoot, "local"),
 		}); err != nil {
 			return err
 		}
 	}
-	if store == nil {
-		return nil
-	}
-	worktreeSessions, err := store.DesktopSessions(context.Background())
-	if err != nil {
-		return err
-	}
-	worktreeCores := make(map[string]*core.Core)
-	worktreeCoreErrors := make(map[string]error)
-	for _, record := range worktreeSessions {
-		if _, err := os.Stat(record.Workspace); err != nil {
-			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, "missing", record.UpdatedAt)
-			continue
-		}
-		agent := worktreeCores[record.StateDir]
-		createdCore := false
-		if agent == nil {
-			if priorErr := worktreeCoreErrors[record.StateDir]; priorErr != nil {
-				status := "unavailable"
-				if errors.Is(priorErr, core.ErrStateDirInUse) {
-					status = "in use"
-				}
-				_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
-				continue
-			}
-			var err error
-			agent, err = s.newCore(record.Workspace, record.StateDir)
-			if err != nil {
-				worktreeCoreErrors[record.StateDir] = err
-				status := "unavailable"
-				if errors.Is(err, core.ErrStateDirInUse) {
-					status = "in use"
-				}
-				_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
-				continue
-			}
-			createdCore = true
-			worktreeCores[record.StateDir] = agent
-		}
-		if _, err := agent.GetSession(context.Background(), record.ID); err != nil {
-			if createdCore {
-				_ = agent.Close()
-				delete(worktreeCores, record.StateDir)
-			}
-			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, "unavailable", record.UpdatedAt)
-			continue
-		}
-		if err := s.attachSessionRuntime(&desktopSessionContext{
-			core: agent, sessionID: record.ID, workspace: record.Workspace,
-			mode: workspaceModeWorktree, stateDir: record.StateDir,
-			worktreePath: record.WorktreePath, repositoryRoot: record.RepositoryRoot,
-		}); err != nil {
-			if createdCore {
-				_ = agent.Close()
-				delete(worktreeCores, record.StateDir)
-			}
-			status := "unavailable"
-			_ = store.UpdateDesktopSession(context.Background(), record.ID, record.Title, status, record.UpdatedAt)
-		}
-	}
 	return nil
-}
-
-func (s *DesktopService) newCore(workspace, stateDir string) (*core.Core, error) {
-	helper := "lune-sandbox.exe"
-	if runtime.GOOS != "windows" {
-		helper = "lune-sandbox"
-	}
-	helperPath := filepath.Join(filepath.Dir(os.Args[0]), helper)
-	if _, err := os.Stat(helperPath); err != nil {
-		helperPath = ""
-	}
-	s.mu.Lock()
-	projectConfig := s.projectConfig
-	commandToolchainPaths := append([]string(nil), s.commandToolchainPaths...)
-	s.mu.Unlock()
-	return core.New(core.Config{
-		Workspace: workspace, StateDir: stateDir, Logger: slog.Default(),
-		SandboxHelperPath: helperPath, ProjectConfig: &projectConfig,
-		CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
-	})
 }
 
 func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionContext, replayFromStart ...bool) error {
@@ -350,36 +264,16 @@ func (s *DesktopService) workspaceResultLocked() (WorkspaceOpenResult, error) {
 	}
 	models := modelSettingsView(s.projectConfig.ModelConfig)
 	result := WorkspaceOpenResult{Workspace: s.workspace, Permission: string(core.PermissionWorkspace), Models: &models}
-	if _, err := inspectGitWorkspace(s.workspace); err == nil {
-		result.WorktreeAvailable = true
-	}
 	for _, session := range sessions {
-		mode, workingDirectory, status := workspaceModeLocal, s.workspace, "idle"
+		workingDirectory, status := s.workspace, "idle"
 		if context := s.sessionContexts[session.ID]; context != nil {
-			mode, workingDirectory = context.mode, context.workspace
+			workingDirectory = context.workspace
 			status = sessionContextStatus(context)
 		}
 		result.Sessions = append(result.Sessions, SessionSummary{
 			ID: session.ID, Title: session.Title, UpdatedAt: session.UpdatedAt.Format(time.RFC3339),
-			Mode: mode, WorkingDirectory: workingDirectory, Status: status,
+			WorkingDirectory: workingDirectory, Status: status,
 		})
-	}
-	if s.activityStore != nil {
-		worktreeSessions, err := s.activityStore.DesktopSessions(context.Background())
-		if err != nil {
-			return WorkspaceOpenResult{}, err
-		}
-		for _, session := range worktreeSessions {
-			status, workingDirectory := session.Status, session.Workspace
-			if context := s.sessionContexts[session.ID]; context != nil {
-				status, workingDirectory = sessionContextStatus(context), context.workspace
-			}
-			result.Sessions = append(result.Sessions, SessionSummary{
-				ID: session.ID, Title: session.Title, UpdatedAt: session.UpdatedAt.Format(time.RFC3339),
-				Mode: workspaceModeWorktree, WorkingDirectory: workingDirectory, Status: status,
-				WorktreePath: session.WorktreePath,
-			})
-		}
 	}
 	sort.Slice(result.Sessions, func(i, j int) bool { return result.Sessions[i].UpdatedAt > result.Sessions[j].UpdatedAt })
 	if len(result.Sessions) > 100 {
@@ -406,13 +300,9 @@ func (s *DesktopService) SearchWorkspaceConversation(query string) ([]SessionSea
 	}
 
 	s.mu.Lock()
-	localCore, store, workspace := s.localCore, s.activityStore, s.workspace
+	localCore, workspace := s.localCore, s.workspace
 	if localCore == nil {
 		localCore = s.activeCoreLocked()
-	}
-	contexts := make(map[string]*desktopSessionContext, len(s.sessionContexts))
-	for sessionID, sessionContext := range s.sessionContexts {
-		contexts[sessionID] = sessionContext
 	}
 	s.mu.Unlock()
 	if localCore == nil || workspace == "" {
@@ -427,34 +317,10 @@ func (s *DesktopService) SearchWorkspaceConversation(query string) ([]SessionSea
 			return nil, fmt.Errorf("读取本地会话历史: %w", err)
 		}
 		for _, saved := range page {
-			candidates = append(candidates, searchSession(saved, workspaceModeLocal, workspace, query)...)
+			candidates = append(candidates, searchSession(saved, workspace, query)...)
 		}
 		if len(page) < sessionSearchPageSize {
 			break
-		}
-	}
-
-	if store != nil {
-		records, err := store.DesktopSessions(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("读取 Worktree 会话列表: %w", err)
-		}
-		for _, record := range records {
-			sessionContext := contexts[record.ID]
-			if sessionContext == nil || sessionContext.core == nil {
-				continue
-			}
-			if _, err := os.Stat(record.Workspace); err != nil {
-				continue
-			}
-			saved, err := sessionContext.core.GetSession(ctx, record.ID)
-			if err != nil {
-				continue
-			}
-			if saved.Title == "" {
-				saved.Title = record.Title
-			}
-			candidates = append(candidates, searchSession(saved, workspaceModeWorktree, record.Workspace, query)...)
 		}
 	}
 
@@ -481,7 +347,7 @@ func (s *DesktopService) SearchWorkspaceConversation(query string) ([]SessionSea
 	return results, nil
 }
 
-func searchSession(saved core.Session, mode, workingDirectory, query string) []sessionSearchCandidate {
+func searchSession(saved core.Session, workingDirectory, query string) []sessionSearchCandidate {
 	title := strings.TrimSpace(saved.Title)
 	titleBefore, titleMatch, titleAfter, titleMatched := searchSnippet(title, query)
 	messages := transcriptMessages(saved.History)
@@ -494,7 +360,7 @@ func searchSession(saved core.Session, mode, workingDirectory, query string) []s
 		}
 		results = append(results, sessionSearchCandidate{
 			result: SessionSearchResult{
-				SessionID: saved.ID, SessionTitle: title, Mode: mode, WorkingDirectory: workingDirectory,
+				SessionID: saved.ID, SessionTitle: title, WorkingDirectory: workingDirectory,
 				UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), MatchKind: "message", MessageID: message.ID,
 				MessageIndex: index, Role: message.Role, SnippetBefore: before, SnippetMatch: match, SnippetAfter: after,
 				TitleMatched: titleMatched,
@@ -505,7 +371,7 @@ func searchSession(saved core.Session, mode, workingDirectory, query string) []s
 	if len(results) == 0 && titleMatched {
 		results = append(results, sessionSearchCandidate{
 			result: SessionSearchResult{
-				SessionID: saved.ID, SessionTitle: title, Mode: mode, WorkingDirectory: workingDirectory,
+				SessionID: saved.ID, SessionTitle: title, WorkingDirectory: workingDirectory,
 				UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), MatchKind: "title", MessageIndex: -1,
 				SnippetBefore: titleBefore, SnippetMatch: titleMatch, SnippetAfter: titleAfter,
 			},

@@ -32,7 +32,7 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 	if _, err := service.OpenWorkspace(workspace); err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.CreateSession(workspaceModeLocal)
+	created, err := service.CreateSession()
 	if err != nil {
 		t.Fatal(err)
 	}

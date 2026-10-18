@@ -1,52 +1,56 @@
 import { expect, test } from '@playwright/test';
 
-test('desktop workspace preview matches the approved baseline', async ({ page }) => {
-  await page.setViewportSize({ width: 1584, height: 1000 });
+test('desktop workspace uses the approved two-column shell', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?preview=1');
-  await expect(page.getByRole('main').getByText('重构桌面端提问流程')).toBeVisible();
+  await expect(page.getByRole('main').getByText('重构桌面端提问流程').first()).toBeVisible();
   await expect(page.getByText('帮我检查 Question 面板的交互，并把截图测试流程接入桌面端。')).toBeVisible();
   await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '会话' })).toHaveClass(/active/);
   await expect(page.locator('.sidebar')).toBeVisible();
-  const railBounds = await page.locator('.navigation-rail').boundingBox();
+  await expect(page.locator('.navigation-rail')).toHaveCount(0);
   const sidebarBounds = await page.locator('.sidebar').boundingBox();
-  expect(railBounds?.width).toBe(104);
-  expect(sidebarBounds?.width).toBe(328);
+  const topbarBounds = await page.locator('.topbar').boundingBox();
+  expect(sidebarBounds?.width).toBe(300);
+  expect(topbarBounds?.height).toBe(56);
   await expect(page.locator('.wallpaper-layer')).toHaveCount(0);
   await expect(page).toHaveScreenshot('desktop-workspace.png', { fullPage: true });
 });
 
-test('welcome state shares the three-column shell and lists recent workspaces', async ({ page }) => {
-  await page.setViewportSize({ width: 1584, height: 1000 });
+test('welcome state uses the two-column shell and lists recent workspaces', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?preview=welcome');
 
-  await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible();
+  await expect(page.locator('.sidebar')).toBeVisible();
   await expect(page.getByRole('main').getByRole('heading', { name: '把想法带进你的工作区' })).toBeVisible();
   await expect(page.locator('.sidebar')).toContainText('打开工作区');
   await expect(page.locator('.sidebar .recent-row')).toHaveCount(2);
   await expect(page).toHaveScreenshot('desktop-welcome.png', { fullPage: true });
 
   await page.locator('.sidebar .recent-row').nth(1).click();
-  await expect(page.getByRole('main').getByText('重构桌面端提问流程')).toBeVisible();
+  await expect(page.getByRole('main').getByText('重构桌面端提问流程').first()).toBeVisible();
 });
 
-test('navigation rail changes work surfaces and the context sidebar can collapse', async ({ page }) => {
+test('the sidebar collapses and switches between sessions and pending views', async ({ page }) => {
   await page.goto('/?preview=1');
-  const rail = page.getByRole('navigation', { name: '主导航' });
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  await nav.getByRole('button', { name: '待处理' }).click();
+  await expect(nav.getByRole('button', { name: /待处理/ })).toHaveClass(/active/);
+  await expect(page.locator('.pending-session-list')).toBeVisible();
+  await nav.getByRole('button', { name: '会话' }).click();
+  await expect(nav.getByRole('button', { name: '会话' })).toHaveClass(/active/);
 
-  await rail.getByRole('button', { name: '文件' }).click();
-  await expect(page.locator('.workspace-explorer')).toBeVisible();
   await page.getByRole('button', { name: '收起侧栏' }).click();
   await expect(page.locator('.sidebar')).toHaveClass(/sidebar-collapsed/);
   await page.getByRole('button', { name: '展开侧栏' }).click();
   await expect(page.locator('.sidebar')).not.toHaveClass(/sidebar-collapsed/);
 });
 
-test('narrow windows open the context sidebar as an overlay from the rail', async ({ page }) => {
+test('narrow windows open the context sidebar as an overlay', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 900 });
   await page.goto('/?preview=1');
   await expect(page.locator('.sidebar')).toBeHidden();
 
-  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '会话' }).click();
+  await page.getByRole('button', { name: '展开侧栏' }).click();
   await expect(page.locator('.sidebar')).toBeVisible();
   await page.getByRole('button', { name: '关闭侧栏' }).click();
   await expect(page.locator('.sidebar')).toBeHidden();
@@ -95,131 +99,14 @@ test('assistant responses expose copy and safe last-response regeneration action
   await expect(page.locator('.message-row').last()).toContainText('修改后的回复。');
 });
 
-test('workspace file sidebar browses folders and opens a read-only preview', async ({ page }) => {
-  await page.goto('/?preview=1');
-  await page.getByRole('button', { name: '文件' }).click();
-  await expect(page.getByRole('button', { name: 'README.md' })).toBeVisible();
-  await page.getByRole('button', { name: 'cmd' }).click();
-  await page.getByRole('button', { name: 'desktop' }).click();
-  await page.getByRole('button', { name: 'main.go' }).click();
-  await expect(page.getByRole('dialog', { name: 'cmd/desktop/main.go' })).toBeVisible();
-  await expect(page.locator('.workspace-file-preview')).toContainText('cmd/desktop/main.go');
-});
 
-test('workspace changes page lists files and shows a unified diff', async ({ page }) => {
-  await page.goto('/?preview=changes');
-  await page.getByRole('button', { name: '变更' }).click();
 
-  await expect(page.getByRole('heading', { name: '工作区变更' })).toBeVisible();
-  await expect(page.locator('.workspace-change-file-list')).toContainText('cmd/desktop/frontend/src/App.svelte');
-  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
-  await expect(page.locator('.workspace-diff-code')).toContainText("let sidebarView = $state<'sessions' | 'files' | 'changes'>('sessions');");
-  await expect(page).toHaveScreenshot('desktop-changes.png', { fullPage: true });
 
-  await page.getByRole('button', { name: /testdata\/sample\.bin/ }).click();
-  await expect(page.locator('.workspace-diff-state')).toContainText('二进制文件');
-});
 
-test('workspace changes page explains clean and unavailable Git states', async ({ page }) => {
-  await page.goto('/?preview=changes-empty');
-  await page.getByRole('button', { name: '变更' }).click();
-  await expect(page.getByText('工作区干净')).toBeVisible();
 
-  await page.goto('/?preview=changes-unavailable');
-  await page.getByRole('button', { name: '变更' }).click();
-  await expect(page.getByText('无法读取 Git 变更')).toBeVisible();
-  await expect(page.locator('.workspace-changes-page').getByText('当前会话目录不在可用的 Git 仓库中。')).toBeVisible();
-});
 
-test('Desktop Worktree manager shows managed paths, Git status, and confirms grouped cleanup', async ({ page }) => {
-  await page.goto('/?preview=worktrees');
-  await page.getByRole('button', { name: '工作树' }).click();
 
-  const manager = page.getByRole('region', { name: 'Desktop 工作树管理' });
-  await expect(page.getByRole('heading', { name: '工作树管理' })).toBeVisible();
-  await expect(manager).toContainText('thread-a');
-  await expect(manager).toContainText('thread-b');
-  await expect(manager).toContainText('thread-c');
-  await expect(manager).toContainText('2 项变更');
-  await expect(manager.locator('.desktop-worktree-card').filter({ hasText: 'thread-c' }).locator('.desktop-worktree-remove')).toBeDisabled();
-  await expect(page).toHaveScreenshot('desktop-worktrees.png', { fullPage: true });
 
-  await manager.getByRole('button', { name: /删除 1 个会话并清理/ }).first().click();
-  const sessionDialog = page.getByRole('dialog', { name: '删除关联会话并清理工作树？' });
-  await expect(sessionDialog).toContainText('修复任务队列');
-  await expect(sessionDialog).toContainText('执行历史');
-  await sessionDialog.getByRole('button', { name: /删除 1 个会话并清理工作树/ }).click();
-  await expect(manager).not.toContainText('修复任务队列');
-
-  await manager.getByRole('button', { name: '清理孤儿工作树' }).click();
-  const orphanDialog = page.getByRole('dialog', { name: '清理孤儿工作树？' });
-  await expect(orphanDialog).toContainText('只会调用 Git 清理此工作树目录');
-  await orphanDialog.getByRole('button', { name: '清理孤儿工作树' }).click();
-  await expect(manager).not.toContainText('thread-b');
-});
-
-test('cleaning the active Worktree switches to Local before removal', async ({ page }) => {
-  await page.goto('/?preview=worktrees-active');
-  await page.getByRole('button', { name: '工作树' }).click();
-  const manager = page.getByRole('region', { name: 'Desktop 工作树管理' });
-  const activeCard = manager.locator('.desktop-worktree-card').filter({ hasText: 'thread-a' });
-  await expect(activeCard).toContainText('确认后会先切换到 Local');
-  await activeCard.getByRole('button', { name: /删除 1 个会话并清理/ }).click();
-  const dialog = page.getByRole('dialog', { name: '删除关联会话并清理工作树？' });
-  await expect(dialog).toContainText('会先切换到已有 Local 会话，没有时会创建一个');
-  await dialog.getByRole('button', { name: /删除 1 个会话并清理工作树/ }).click();
-  await page.getByRole('button', { name: '会话', exact: true }).click();
-  await expect(page.locator('.crumb-mode')).toHaveText('LOCAL');
-});
-
-test('Worktree changes can be selected and applied to the original project', async ({ page }) => {
-  await page.goto('/?preview=changes');
-  await page.getByRole('button', { name: '变更' }).click();
-  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
-  await page.getByRole('checkbox', { name: '选择 internal/desktop/workspace_changes.go 应用到原项目' }).check();
-
-  const applyButton = page.getByRole('button', { name: /应用所选文件.*2/ });
-  await expect(applyButton).toBeEnabled();
-  await applyButton.click();
-  const dialog = page.getByRole('dialog', { name: '将所选改动应用到原项目？' });
-  await expect(dialog).toContainText('D:\\Git\\luneAgent');
-  await expect(dialog.locator('.worktree-apply-file-list')).toContainText('App.svelte');
-  await expect(dialog.locator('.worktree-apply-file-list')).toContainText('workspace_changes.go');
-  await dialog.getByRole('button', { name: '确认应用' }).click();
-  await expect(page.getByRole('status')).toContainText('已将 2 个文件应用到原项目');
-  await expect(dialog).toHaveCount(0);
-});
-
-test('Worktree apply reports conflicts without closing the confirmation', async ({ page }) => {
-  await page.goto('/?preview=changes-conflict');
-  await page.getByRole('button', { name: '变更' }).click();
-  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
-  await page.getByRole('button', { name: /应用所选文件/ }).click();
-  const dialog = page.getByRole('dialog', { name: '将所选改动应用到原项目？' });
-  await dialog.getByRole('button', { name: '确认应用' }).click();
-  await expect(dialog.getByRole('alert')).toContainText('未应用任何文件');
-  await expect(dialog).toBeVisible();
-});
-
-test('Worktree apply is disabled in read-only and waiting states', async ({ page }) => {
-  await page.goto('/?preview=changes-readonly');
-  await page.getByRole('button', { name: '变更' }).click();
-  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
-  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
-
-  await page.goto('/?preview=changes-waiting');
-  await page.getByRole('button', { name: '变更' }).click();
-  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
-  await expect(page.getByRole('button', { name: /应用所选文件/ })).toBeDisabled();
-});
-
-test('ask permission uses the apply confirmation as one-time authorization', async ({ page }) => {
-  await page.goto('/?preview=changes-ask');
-  await page.getByRole('button', { name: '变更' }).click();
-  await page.getByRole('checkbox', { name: '选择 cmd/desktop/frontend/src/App.svelte 应用到原项目' }).check();
-  await page.getByRole('button', { name: /应用所选文件/ }).click();
-  await expect(page.getByRole('dialog', { name: '将所选改动应用到原项目？' })).toContainText('确认即授权本次将以下改动写入原项目');
-});
 
 test('pending center counts background requests and opens the owning session', async ({ page }) => {
   await page.goto('/?preview=pending-center');
@@ -228,7 +115,7 @@ test('pending center counts background requests and opens the owning session', a
   await pendingTab.click();
 
   await expect(page.locator('.pending-session-list')).toContainText('后台会话需要你处理');
-  await expect(page.locator('.pending-session-list')).toContainText('Worktree 文档登录');
+  await expect(page.locator('.pending-session-list')).toContainText('文档登录与会话检查');
   await expect(page.locator('.pending-session-list')).toContainText('8 项待处理');
   await expect(page).toHaveScreenshot('desktop-pending-center.png', { fullPage: true });
 
@@ -245,37 +132,53 @@ test('pending center counts background requests and opens the owning session', a
   await expect(page.locator('.mcp-interaction-card')).toHaveCount(0);
 
   await pendingTab.click();
-  await page.getByRole('button', { name: /Worktree 文档登录，2 项待处理/ }).click();
+  await page.getByRole('button', { name: /文档登录与会话检查，2 项待处理/ }).click();
   await page.getByRole('button', { name: '打开验证链接' }).click();
   await expect(page.getByRole('button', { name: '验证完成，继续' })).toBeEnabled();
   await page.getByRole('button', { name: '验证完成，继续' }).click();
   await expect(page.locator('.mcp-interaction-card')).toHaveCount(0);
 });
 
-test('process center groups commands across sessions and shows selected output', async ({ page }) => {
+test('process popover groups commands across sessions and shows selected output', async ({ page }) => {
   await page.goto('/?preview=processes');
 
-  await expect(page.getByRole('heading', { name: '后台进程' })).toBeVisible();
-  await expect(page.locator('.desktop-process-sidebar-list')).toContainText('跨会话进程中心');
-  await expect(page.locator('.desktop-process-sidebar-list')).toContainText('文档更新');
-  await expect(page.getByRole('button', { name: /go test \.\/internal\/desktop/ })).toBeVisible();
-  await expect(page.locator('.desktop-process-detail-title')).toContainText('go test ./internal/desktop -run TestListDesktopProcesses');
-  await expect(page.locator('.desktop-process-output')).toContainText('ok  github.com/afterlune/lune/internal/desktop');
-  await expect(page.locator('.desktop-process-unavailable')).toContainText('工作树目录已不存在。');
-  await expect(page).toHaveScreenshot('desktop-process-center.png', { fullPage: true });
+  const popover = page.getByRole('dialog', { name: '后台进程' });
+  await expect(popover).toBeVisible();
+  await expect(popover.locator('.process-row')).toHaveCount(3);
+  await expect(popover).toContainText('重构桌面端提问流程');
+  await expect(popover).toContainText('文档更新');
+  await expect(popover.getByRole('button', { name: /go test \.\/internal\/desktop/ })).toBeVisible();
+  await expect(popover.locator('.process-detail')).toContainText('go test ./internal/desktop -run TestListDesktopProcesses');
+  await expect(popover.locator('.process-output')).toContainText('ok  github.com/afterlune/lune/internal/desktop');
+  await expect(popover.locator('.process-unavailable')).toContainText('无法打开的会话');
+  await expect(page).toHaveScreenshot('desktop-process-popover.png', { fullPage: true });
 
-  await page.getByRole('button', { name: /npm run check，失败/ }).click();
-  await expect(page.locator('.desktop-process-output')).toContainText('svelte-check --tsconfig');
-  await expect(page.locator('.desktop-process-status-label')).toHaveText('失败');
+  await popover.getByRole('button', { name: /npm run check，失败/ }).click();
+  await expect(popover.locator('.process-output')).toContainText('svelte-check --tsconfig');
+  await expect(popover.locator('.process-detail-heading')).toContainText('失败');
 });
 
-test('process center stops one active command without a confirmation dialog', async ({ page }) => {
+test('process popover stops one active command without a confirmation dialog', async ({ page }) => {
   await page.goto('/?preview=processes');
-  await expect(page.getByRole('button', { name: '停止进程' })).toBeVisible();
-  await page.getByRole('button', { name: '停止进程' }).click();
-  await expect(page.getByRole('button', { name: '停止进程' })).toHaveCount(0);
-  await expect(page.locator('.desktop-process-status-label')).toHaveText('已取消');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const popover = page.getByRole('dialog', { name: '后台进程' });
+  await expect(popover.getByRole('button', { name: '停止' })).toBeVisible();
+  await popover.getByRole('button', { name: '停止' }).click();
+  await expect(popover.getByRole('button', { name: '停止' })).toHaveCount(0);
+  await expect(popover.locator('.process-detail-heading')).toContainText('已取消');
+  await expect(popover).toBeVisible();
+});
+
+test('process popover closes on outside click and Escape', async ({ page }) => {
+  await page.goto('/?preview=processes');
+  const popover = page.getByRole('dialog', { name: '后台进程' });
+  await expect(popover).toBeVisible();
+  await page.locator('.conversation-content').click({ position: { x: 8, y: 8 } });
+  await expect(popover).toHaveCount(0);
+
+  await page.getByRole('button', { name: /后台进程/ }).click();
+  await expect(popover).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(popover).toHaveCount(0);
 });
 
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {
@@ -301,16 +204,16 @@ test('session sidebar supports renaming a conversation', async ({ page }) => {
   await session.getByRole('button', { name: /重命名会话/ }).click();
   await page.getByLabel('会话名称').fill('重命名后的会话');
   await page.getByRole('button', { name: '保存' }).click();
-  await expect(page.getByRole('button', { name: /重命名后的会话/ })).toBeVisible();
+  await expect(page.locator('.session-row').filter({ hasText: '重命名后的会话' })).toBeVisible();
 });
 
-test('new sessions can choose an isolated Worktree and show its path', async ({ page }) => {
+
+test('new chat creates a local session without a mode menu', async ({ page }) => {
   await page.goto('/?preview=1');
   await page.getByRole('button', { name: /新建会话/ }).first().click();
-  await expect(page.getByRole('menu', { name: '选择会话工作区模式' })).toBeVisible();
-  await page.getByRole('menuitem', { name: /隔离工作树/ }).click();
-  await expect(page.locator('.crumb-mode')).toHaveText('WORKTREE');
-  await expect(page.locator('.crumb-working-path')).toContainText('.worktrees');
+  await expect(page.locator('.session-mode-menu')).toHaveCount(0);
+  await expect(page.locator('.composer')).toBeVisible();
+  await expect(page.locator('.workspace-row')).toBeVisible();
 });
 
 test('question panel preview matches its baseline', async ({ page }) => {
@@ -401,7 +304,7 @@ test('waiting questions and Plan review stay inside their execution timeline', a
 test('interrupted activity stays in the transcript and accepts a follow-up message', async ({ page }) => {
   await page.goto('/?preview=interrupt');
   await expect(page.getByRole('status')).toHaveText('模型正在分析请求');
-  await page.getByRole('button', { name: '■ 中断' }).click();
+  await page.getByRole('button', { name: '中断任务' }).click();
   await expect(page.getByRole('status')).toHaveText('任务已中断');
   await expect(page.locator('.activity-list')).toHaveCount(0);
   await expect(page.getByText('我会先检查消息的乐观更新和会话刷新流程。')).toBeVisible();

@@ -55,12 +55,6 @@ export interface AppearanceView {
     "panelOpacity": number;
 }
 
-export interface ApplyWorktreeChangesResult {
-    "files": string[] | null;
-    "destination": string;
-    "alreadyPresent": boolean;
-}
-
 export interface Bootstrap {
     "theme": string;
     "appearance": AppearanceView;
@@ -111,7 +105,6 @@ export interface DesktopProcessOutputView {
 export interface DesktopProcessSessionView {
     "id": string;
     "title": string;
-    "mode": string;
     "workingDirectory": string;
     "status": string;
     "reason": string;
@@ -121,7 +114,6 @@ export interface DesktopProcessView {
     "id": string;
     "sessionId": string;
     "sessionTitle": string;
-    "mode": string;
     "workingDirectory": string;
     "executionId": string;
     "command": string;
@@ -129,25 +121,6 @@ export interface DesktopProcessView {
     "startedAt": string;
     "finishedAt"?: string | null;
     "exitCode"?: number | null;
-}
-
-export interface DesktopWorktreeSessionView {
-    "id": string;
-    "title": string;
-    "status": string;
-}
-
-export interface DesktopWorktreeView {
-    "path": string;
-    "gitRegistered": boolean;
-    "available": boolean;
-    "orphaned": boolean;
-    "gitStatus": string;
-    "changedFiles": number;
-    "sessions": DesktopWorktreeSessionView[] | null;
-    "requiresLocalSwitch": boolean;
-    "canRemove": boolean;
-    "blockReason"?: string;
 }
 
 /**
@@ -263,7 +236,6 @@ export interface PendingRequestView {
 export interface PendingSessionSummary {
     "id": string;
     "title": string;
-    "mode": string;
     "workingDirectory": string;
     "updatedAt": string;
     "requests": PendingRequestSummary[] | null;
@@ -307,7 +279,6 @@ export interface SessionControlsView {
 export interface SessionSearchResult {
     "sessionId": string;
     "sessionTitle": string;
-    "mode": string;
     "workingDirectory": string;
     "updatedAt": string;
     "matchKind": string;
@@ -324,9 +295,7 @@ export interface SessionSummary {
     "id": string;
     "title": string;
     "updatedAt": string;
-    "mode": string;
     "workingDirectory": string;
-    "worktreePath"?: string;
     "status": string;
 }
 
@@ -371,24 +340,6 @@ export interface WallpaperSelection {
     "url": string;
 }
 
-export interface WorkspaceChangeView {
-    "path": string;
-    "originalPath"?: string;
-    "status": string;
-    "added": number;
-    "removed": number;
-    "binary": boolean;
-}
-
-export interface WorkspaceChangesView {
-    "available": boolean;
-    "message": string;
-    "files": WorkspaceChangeView[] | null;
-    "added": number;
-    "removed": number;
-    "refreshedAt": string;
-}
-
 export interface WorkspaceConfigInput {
     "contextWindow": number;
     "autoCompact": boolean;
@@ -413,46 +364,17 @@ export interface WorkspaceConfigView {
     "mcpServers": MCPServerConfigView[] | null;
 }
 
-export interface WorkspaceDiffView {
-    "path": string;
-    "status": string;
-    "content": string;
-    "binary": boolean;
-    "truncated": boolean;
-}
-
-export interface WorkspaceFileEntry {
-    "name": string;
-    "path": string;
-    "directory": boolean;
-    "size": number;
-}
-
-export interface WorkspaceFilePreview {
-    "path": string;
-    "content": string;
-    "truncated": boolean;
-}
-
-export interface WorkspaceFileSearchResult {
-    "files": WorkspaceFileEntry[] | null;
-    "truncated": boolean;
-}
-
 export interface WorkspaceOpenResult {
     "workspace": string;
     "sessions": SessionSummary[] | null;
     "permissionMode": string;
     "models"?: ModelSettingsView | null;
-    "worktreeAvailable": boolean;
 }
 
 export interface WorkspaceState {
     "workspace": string;
     "projectRoot": string;
-    "workspaceMode": string;
     "workingDirectory": string;
-    "worktreePath"?: string;
     "session": SessionView;
     "sessions": SessionSummary[] | null;
     "controls": SessionControlsView;

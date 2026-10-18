@@ -40,20 +40,12 @@ type desktopSessionContext struct {
 	runtime        *core.SessionRuntime
 	sessionID      string
 	workspace      string
-	mode           string
-	stateDir       string
-	worktreePath   string
-	repositoryRoot string
 	eventCancel    context.CancelFunc
 	eventDone      chan struct{}
 	planMode       bool
 }
 
-const (
-	workspaceModeLocal    = "local"
-	workspaceModeWorktree = "worktree"
-	maxWallpaperBytes     = 100 << 20
-)
+const maxWallpaperBytes = 100 << 20
 
 func NewDesktopService() (*DesktopService, error) {
 	store, err := settings.OpenUser()

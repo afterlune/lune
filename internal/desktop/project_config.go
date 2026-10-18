@@ -166,8 +166,8 @@ func (s *DesktopService) GetWorkspaceConfig() (WorkspaceConfigView, error) {
 	return workspaceConfigView(s.projectConfig, s.commandToolchainPaths), nil
 }
 
-// SaveWorkspaceConfig persists Desktop-owned project settings and restarts all
-// Local and Worktree Cores while preserving the selected session.
+// SaveWorkspaceConfig persists Desktop-owned project settings and restarts the
+// workspace Core while preserving the selected session.
 func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (WorkspaceConfigView, error) {
 	s.workspaceMu.Lock()
 	defer s.workspaceMu.Unlock()

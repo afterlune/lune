@@ -157,7 +157,7 @@ func TestConcurrentRuntimeAttachmentAndCompletionClosesCleanly(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			if err := s.attachSessionRuntime(&desktopSessionContext{core: agent, sessionID: id, workspace: s.workspace, mode: workspaceModeLocal}); err != nil {
+			if err := s.attachSessionRuntime(&desktopSessionContext{core: agent, sessionID: id, workspace: s.workspace}); err != nil {
 				t.Error(err)
 				return
 			}

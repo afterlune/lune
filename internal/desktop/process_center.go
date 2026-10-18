@@ -20,7 +20,6 @@ type DesktopProcessView struct {
 	ID               string     `json:"id"`
 	SessionID        string     `json:"sessionId"`
 	SessionTitle     string     `json:"sessionTitle"`
-	Mode             string     `json:"mode"`
 	WorkingDirectory string     `json:"workingDirectory"`
 	ExecutionID      string     `json:"executionId"`
 	Command          string     `json:"command"`
@@ -33,7 +32,6 @@ type DesktopProcessView struct {
 type DesktopProcessSessionView struct {
 	ID               string `json:"id"`
 	Title            string `json:"title"`
-	Mode             string `json:"mode"`
 	WorkingDirectory string `json:"workingDirectory"`
 	Status           string `json:"status"`
 	Reason           string `json:"reason"`
@@ -76,12 +74,8 @@ func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) 
 			continue
 		}
 		seen[sessionID] = struct{}{}
-		mode := sessionContext.mode
-		if mode == "" {
-			mode = workspaceModeLocal
-		}
 		sessionView := DesktopProcessSessionView{
-			ID: sessionID, Mode: mode, WorkingDirectory: sessionContext.workspace,
+			ID: sessionID, WorkingDirectory: sessionContext.workspace,
 		}
 		if sessionContext.runtime == nil || sessionContext.core == nil {
 			sessionView.Status = "unavailable"
@@ -109,8 +103,8 @@ func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) 
 		for _, command := range commands {
 			view := DesktopProcessView{
 				ID: command.ID, SessionID: sessionID, SessionTitle: saved.Title,
-				Mode: mode, WorkingDirectory: sessionContext.workspace,
-				ExecutionID: command.ExecutionID, Command: command.Command,
+				WorkingDirectory: sessionContext.workspace,
+				ExecutionID:      command.ExecutionID, Command: command.Command,
 				Status: string(command.Status), StartedAt: command.StartedAt,
 				ExitCode: command.ExitCode,
 			}
@@ -137,30 +131,9 @@ func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) 
 			}
 			seen[saved.ID] = struct{}{}
 			result.UnavailableSessions = append(result.UnavailableSessions, DesktopProcessSessionView{
-				ID: saved.ID, Title: saved.Title, Mode: workspaceModeLocal,
+				ID: saved.ID, Title: saved.Title,
 				WorkingDirectory: s.workspace, Status: "unavailable",
 				Reason: "此会话的运行时未加载。",
-			})
-		}
-	}
-
-	if s.activityStore != nil {
-		records, err := s.activityStore.DesktopSessions(context.Background())
-		if err != nil {
-			return DesktopProcessListView{}, err
-		}
-		for _, record := range records {
-			if _, ok := seen[record.ID]; ok {
-				continue
-			}
-			status := record.Status
-			if status == "" || status == "idle" || status == "completed" || status == "failed" || status == "cancelled" {
-				status = "unavailable"
-			}
-			result.UnavailableSessions = append(result.UnavailableSessions, DesktopProcessSessionView{
-				ID: record.ID, Title: record.Title, Mode: workspaceModeWorktree,
-				WorkingDirectory: record.Workspace, Status: status,
-				Reason: unavailableWorktreeReason(record.Status),
 			})
 		}
 	}
@@ -180,19 +153,6 @@ func (s *DesktopService) ListDesktopProcesses() (DesktopProcessListView, error) 
 		return result.UnavailableSessions[i].ID < result.UnavailableSessions[j].ID
 	})
 	return result, nil
-}
-
-func unavailableWorktreeReason(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "missing":
-		return "工作树目录已不存在。"
-	case "in use":
-		return "此会话状态正在被另一个 Desktop 实例使用。"
-	case "unavailable":
-		return "无法打开此会话的运行时。"
-	default:
-		return "此会话的运行时当前不可用。"
-	}
 }
 
 func (s *DesktopService) processRuntime(sessionID string) (*core.SessionRuntime, error) {

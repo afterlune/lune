@@ -4,9 +4,9 @@ import { Events } from '@wailsio/runtime';
 import * as Desktop from './desktopApi';
 import { TaskStatus } from '../../bindings/github.com/afterlune/luneCore/internal/runtime/models';
 import type {
-    AppearanceView, Bootstrap, CommandToolchainCandidate, ConversationMessage, DesktopWorktreeView, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
+    AppearanceView, Bootstrap, CommandToolchainCandidate, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
     SessionControlsView, SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSearchResult, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
-    WorkspaceChangesView, WorkspaceDiffView, WorkspaceFilePreview, WorkspaceOpenResult, WorkspaceState,
+    WorkspaceOpenResult, WorkspaceState,
   } from '../../bindings/github.com/afterlune/lune/internal/desktop/models';
 
 export function createDesktopState() {
@@ -49,18 +49,15 @@ export function createDesktopState() {
   type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
   type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
   type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers' | 'commandToolchainPaths'> & { mcpServers: MCPServerForm[]; commandToolchainPaths: string[] };
-  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'delete-worktree' | 'mcp' | 'file-preview' | 'apply-worktree' | null;
+  type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
-  type WorkspaceChanges = Omit<WorkspaceChangesView, 'files'> & { files: NonNullable<WorkspaceChangesView['files']> };
-  type DesktopWorktree = Omit<DesktopWorktreeView, 'sessions'> & { sessions: NonNullable<DesktopWorktreeView['sessions']> };
-  type WorktreeApplyConfirmation = { sessionID: string; paths: string[]; files: NonNullable<WorkspaceChangesView['files']>; destination: string };
   type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
   type DesktopProcess = {
-    id: string; sessionId: string; sessionTitle: string; mode: string; workingDirectory: string;
+    id: string; sessionId: string; sessionTitle: string; workingDirectory: string;
     executionId: string; command: string; status: string; startedAt: string; finishedAt?: string | null; exitCode?: number | null;
   };
-  type DesktopProcessSession = { id: string; title: string; mode: string; workingDirectory: string; status: string; reason: string };
+  type DesktopProcessSession = { id: string; title: string; workingDirectory: string; status: string; reason: string };
   type DesktopProcessOutput = {
     sessionId: string; commandId: string; command: string; status: string; output: string;
     cursor: number; nextCursor: number; endCursor: number; truncated: boolean; error?: string; exitCode?: number | null;
@@ -91,11 +88,8 @@ export function createDesktopState() {
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
   let workspace = $state('');
   let workingDirectory = $state('');
-  let workspaceMode = $state('local');
-  let worktreeAvailable = $state(false);
-  let createSessionMenu = $state(false);
   let workspaceMenuOpen = $state(false);
-  let sidebarCollapsed = $state(window.matchMedia('(max-width: 760px)').matches);
+  let sidebarCollapsed = $state(window.matchMedia('(max-width: 960px)').matches);
   let sessions = $state<SessionSummary[]>([]);
   let sessionFilter = $state('');
   let sessionSearchResults = $state<SessionSearchResult[]>([]);
@@ -108,7 +102,7 @@ export function createDesktopState() {
   let sessionSearchHighlightTimer: number | undefined;
   let sessionActionTarget = $state<SessionSummary | null>(null);
   let sessionTitleDraft = $state('');
-  let sidebarView = $state<'sessions' | 'files' | 'changes' | 'worktrees' | 'pending' | 'processes'>('sessions');
+  let sidebarView = $state<'sessions' | 'pending'>('sessions');
   let session = $state<WorkspaceState['session'] | null>(null);
   let permissionMode = $state('workspace');
   let basePermissionMode = $state('workspace');
@@ -125,6 +119,7 @@ export function createDesktopState() {
   let desktopProcessesError = $state('');
   let desktopProcessesRequest = 0;
   let selectedDesktopProcessKey = $state('');
+  let processPopoverOpen = $state(false);
   let processOutput = $state('');
   let processOutputError = $state('');
   let processOutputLoading = $state(false);
@@ -185,30 +180,6 @@ export function createDesktopState() {
   let workspaceSettingsSaving = $state(false);
   let toolchainCandidates = $state<CommandToolchainCandidate[]>([]);
   let toolchainDetectionLoading = $state(false);
-  let filePreview = $state<WorkspaceFilePreview | null>(null);
-  let workspaceChanges = $state<WorkspaceChanges | null>(null);
-  let workspaceChangesLoading = $state(false);
-  let workspaceChangesError = $state('');
-  let selectedWorkspaceChange = $state('');
-  let workspaceDiff = $state<WorkspaceDiffView | null>(null);
-  let workspaceDiffLoading = $state(false);
-  let workspaceDiffError = $state('');
-  let selectedApplyPaths = $state<string[]>([]);
-  let worktreeApplyConfirmation = $state<WorktreeApplyConfirmation | null>(null);
-  let applyingWorktreeChanges = $state(false);
-  let worktreeApplyError = $state('');
-  let worktreeApplyMessage = $state('');
-  let workspaceChangesRequest = 0;
-  let workspaceDiffRequest = 0;
-  let workspaceChangesForSession = '';
-  let workspaceChangesForDirectory = '';
-  let desktopWorktrees = $state<DesktopWorktree[]>([]);
-  let desktopWorktreesLoading = $state(false);
-  let desktopWorktreesError = $state('');
-  let desktopWorktreesRequest = 0;
-  let selectedDesktopWorktreePath = $state('');
-  let worktreeRemovalTarget = $state<DesktopWorktree | null>(null);
-  let worktreeRemovalError = $state('');
   let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
 
@@ -219,7 +190,7 @@ export function createDesktopState() {
   const appearanceDirty = $derived(appearanceKey(appearanceDraft) !== appearanceKey(appearance));
   const modelSettingsDirty = $derived(serializeModelSettings() !== modelSettingsSnapshot);
   const effectiveDarkTheme = $derived(theme === 'dark' || (theme === 'system' && systemPrefersDark));
-  const pageTitle = $derived(!workspace ? '桌面工作区' : sidebarView === 'changes' ? '工作区变更' : sidebarView === 'worktrees' ? '工作树管理' : sidebarView === 'processes' ? '后台进程' : session?.title || '新会话');
+  const pageTitle = $derived(!workspace ? '桌面工作区' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话');
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
@@ -227,31 +198,6 @@ export function createDesktopState() {
   const pendingRequestCount = $derived(pendingSessions.reduce((count, item) => count + item.requests.length, 0));
   const activeDesktopProcessCount = $derived(desktopProcesses.filter((item) => processStatusActive(item.status)).length);
   const selectedDesktopProcess = $derived(desktopProcesses.find((item) => desktopProcessKey(item) === selectedDesktopProcessKey) ?? null);
-  const desktopProcessGroups = $derived.by(() => {
-    const groups = new Map<string, { id: string; title: string; mode: string; processes: DesktopProcess[] }>();
-    for (const item of desktopProcesses) {
-      let group = groups.get(item.sessionId);
-      if (!group) {
-        group = { id: item.sessionId, title: item.sessionTitle || '新会话', mode: item.mode, processes: [] };
-        groups.set(item.sessionId, group);
-      }
-      group.processes.push(item);
-    }
-    return [...groups.values()];
-  });
-  const activeWorkspaceChange = $derived(workspaceChanges?.files.find((file) => file.path === selectedWorkspaceChange) ?? null);
-  const selectedWorkspaceChanges = $derived(workspaceChanges?.files.filter((file) => selectedApplyPaths.includes(file.path)) ?? []);
-  const currentSessionSummary = $derived(sessions.find((item) => item.id === session?.id));
-  const worktreeApplyBlockedReason = $derived.by(() => {
-    if (workspaceMode !== 'worktree') return '当前会话不是 Worktree';
-    if (permissionMode === 'read-only') return '只读权限下不能写回原项目';
-    if (running || queuedMessageCount > 0 || pending.length > 0 || ['running', 'queued', 'waiting'].includes(currentSessionSummary?.status ?? '')) return '任务运行、排队或等待处理时不能应用';
-    if (!selectedApplyPaths.length) return '请先选择要应用的文件';
-    if (workspaceChangesLoading || applyingWorktreeChanges) return '正在读取或应用变更';
-    return '';
-  });
-  const canApplyWorktreeChanges = $derived(!worktreeApplyBlockedReason && (!previewMode || previewVariant.startsWith('changes')));
-  const workspaceDiffLines = $derived(workspaceDiff?.content ? workspaceDiff.content.replace(/\r\n/g, '\n').split('\n') : []);
   const executionTimeline = $derived.by(() => {
     const leadingMessages: LocalMessage[] = [];
     const blocks: ExecutionTimelineBlock[] = [];
@@ -714,260 +660,7 @@ export function createDesktopState() {
     activityHistory = activityHistory.map((run) => run.key === key ? { ...run, expanded: !run.expanded } : run);
   }
 
-  const { previewBootstrap, previewState, previewWorkspaceChanges, previewWorkspaceDiffs, previewPendingRequest, previewPendingSessions, previewPendingRequests, previewPendingWorkspaceState, previewChangesForVariant, previewDesktopWorktrees, previewChangesWorkspaceState } = createDesktopPreview(previewVariant, defaultAppearance);
-
-  function sameWorkspacePath(left: string, right: string) {
-    const normalizedLeft = left.replace(/[\\/]+$/, '').replace(/\\/g, '/');
-    const normalizedRight = right.replace(/[\\/]+$/, '').replace(/\\/g, '/');
-    return navigator.userAgent.includes('Windows')
-      ? normalizedLeft.toLocaleLowerCase() === normalizedRight.toLocaleLowerCase()
-      : normalizedLeft === normalizedRight;
-  }
-
-  function sessionSharesActiveDirectory(sessionId: string) {
-    if (sessionId === session?.id) return true;
-    const completedSession = sessions.find((item) => item.id === sessionId);
-    const directory = completedSession?.workingDirectory || completedSession?.worktreePath || '';
-    return !!directory && !!workingDirectory && sameWorkspacePath(directory, workingDirectory);
-  }
-
-  async function refreshWorkspaceChanges() {
-    const request = ++workspaceChangesRequest;
-    ++workspaceDiffRequest;
-    const requestSession = session?.id ?? '';
-    const requestDirectory = workingDirectory;
-    if (workspaceChangesForSession !== requestSession || workspaceChangesForDirectory !== requestDirectory) {
-      workspaceChanges = null;
-      selectedWorkspaceChange = '';
-      selectedApplyPaths = [];
-      worktreeApplyMessage = '';
-      workspaceChangesForSession = '';
-      workspaceChangesForDirectory = '';
-    }
-    workspaceChangesLoading = true;
-    workspaceChangesError = '';
-    workspaceDiffLoading = false;
-    workspaceDiffError = '';
-    workspaceDiff = null;
-    if (!requestSession || !requestDirectory) {
-      workspaceChanges = null;
-      selectedWorkspaceChange = '';
-      workspaceChangesLoading = false;
-      return;
-    }
-    try {
-      const rawResult = previewMode ? previewChangesForVariant() : await Desktop.ListWorkspaceChanges(session?.id || '');
-      const result: WorkspaceChanges = { ...rawResult, files: rawResult.files ?? [] };
-      if (request !== workspaceChangesRequest || session?.id !== requestSession || workingDirectory !== requestDirectory || sidebarView !== 'changes') return;
-      workspaceChanges = result;
-      workspaceChangesForSession = requestSession;
-      workspaceChangesForDirectory = requestDirectory;
-      selectedApplyPaths = selectedApplyPaths.filter((path) => result.files.some((file) => file.path === path));
-      const nextPath = result.available
-        ? result.files.find((file) => file.path === selectedWorkspaceChange)?.path ?? result.files[0]?.path ?? ''
-        : '';
-      selectedWorkspaceChange = nextPath;
-      if (nextPath) void loadWorkspaceDiff(nextPath);
-    } catch (error) {
-      if (request === workspaceChangesRequest && session?.id === requestSession && workingDirectory === requestDirectory) {
-        workspaceChangesError = String(error);
-        workspaceChanges = null;
-        selectedWorkspaceChange = '';
-      }
-    } finally {
-      if (request === workspaceChangesRequest) workspaceChangesLoading = false;
-    }
-  }
-
-  async function refreshDesktopWorktrees() {
-    const request = ++desktopWorktreesRequest;
-    const requestProject = workspace;
-    desktopWorktreesLoading = true;
-    desktopWorktreesError = '';
-    try {
-      const result = previewMode ? previewDesktopWorktrees() : await Desktop.ListDesktopWorktrees();
-      if (request !== desktopWorktreesRequest || workspace !== requestProject || sidebarView !== 'worktrees') return;
-      desktopWorktrees = (result ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
-      if (!desktopWorktrees.some((item) => item.path === selectedDesktopWorktreePath)) {
-        selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
-      }
-    } catch (error) {
-      if (request === desktopWorktreesRequest && workspace === requestProject) {
-        desktopWorktreesError = String(error);
-        desktopWorktrees = [];
-      }
-    } finally {
-      if (request === desktopWorktreesRequest) desktopWorktreesLoading = false;
-    }
-  }
-
-  function beginDesktopWorktreeRemoval(worktree: DesktopWorktree) {
-    if (!worktree.canRemove || busy) return;
-    worktreeRemovalTarget = worktree;
-    worktreeRemovalError = '';
-    modal = 'delete-worktree';
-  }
-
-  function desktopWorktreeName(worktree: DesktopWorktreeView) {
-    return worktree.path.split(/[\\/]/).at(-1) || worktree.path;
-  }
-
-  function desktopWorktreeStatusLabel(worktree: DesktopWorktreeView) {
-    if (!worktree.gitRegistered || !worktree.available || worktree.gitStatus === 'unavailable') return '不可用';
-    return worktree.gitStatus === 'dirty' ? `${worktree.changedFiles} 项变更` : 'Git 干净';
-  }
-
-  function desktopWorktreeSessionStatusLabel(status: string) {
-    return ({ idle: '空闲', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', running: '运行中', queued: '排队中', waiting: '等待处理', unavailable: '不可用', 'in use': '被其他实例占用', missing: '目录缺失' } as Record<string, string>)[status] ?? status;
-  }
-
-  async function confirmDesktopWorktreeRemoval() {
-    const target = worktreeRemovalTarget;
-    if (!target || busy) return;
-    busy = true;
-    worktreeRemovalError = '';
-    try {
-      if (target.sessions.some((item) => item.id === session?.id)) {
-        const localSession = sessions.find((item) => item.mode === 'local');
-        if (previewMode) {
-          await createSession('local');
-        } else if (localSession) {
-          installWorkspaceState(await Desktop.OpenSession(localSession.id));
-        } else {
-          installWorkspaceState(await Desktop.CreateSession('local'));
-        }
-      }
-      if (previewMode) {
-        desktopWorktrees = desktopWorktrees.filter((item) => item.path !== target.path);
-        selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
-      } else {
-        await Desktop.RemoveDesktopWorktree(target.path);
-        modal = null;
-        worktreeRemovalTarget = null;
-        try {
-          if (session) installWorkspaceState(await Desktop.RefreshSession(session?.id || ''));
-        } catch (error) {
-          showError(error);
-        }
-        try {
-          const refreshed = await Desktop.ListDesktopWorktrees();
-          desktopWorktrees = (refreshed ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
-          selectedDesktopWorktreePath = desktopWorktrees[0]?.path ?? '';
-        } catch (error) {
-          desktopWorktreesError = String(error);
-        }
-        return;
-      }
-      modal = null;
-      worktreeRemovalTarget = null;
-    } catch (error) {
-      worktreeRemovalError = error instanceof Error ? error.message : String(error);
-      if (!previewMode) {
-        try {
-          const refreshed = await Desktop.ListDesktopWorktrees();
-          desktopWorktrees = (refreshed ?? []).map((item) => ({ ...item, sessions: item.sessions ?? [] }));
-          const updatedTarget = desktopWorktrees.find((item) => sameWorkspacePath(item.path, target.path));
-          if (updatedTarget) worktreeRemovalTarget = updatedTarget;
-        } catch { /* Keep the original removal error visible in the confirmation. */ }
-      }
-    } finally {
-      busy = false;
-    }
-  }
-
-  function toggleApplyPath(path: string) {
-    selectedApplyPaths = selectedApplyPaths.includes(path)
-      ? selectedApplyPaths.filter((selected) => selected !== path)
-      : [...selectedApplyPaths, path];
-    worktreeApplyMessage = '';
-  }
-
-  function toggleAllApplyPaths() {
-    const availablePaths = workspaceChanges?.files.map((file) => file.path) ?? [];
-    selectedApplyPaths = availablePaths.length > 0 && availablePaths.every((path) => selectedApplyPaths.includes(path))
-      ? []
-      : availablePaths;
-    worktreeApplyMessage = '';
-  }
-
-  function beginWorktreeApply() {
-    if (!canApplyWorktreeChanges || !session) return;
-    worktreeApplyError = '';
-    worktreeApplyConfirmation = {
-      sessionID: session.id,
-      paths: selectedWorkspaceChanges.map((file) => file.path),
-      files: [...selectedWorkspaceChanges],
-      destination: workspace,
-    };
-    modal = 'apply-worktree';
-  }
-
-  async function confirmWorktreeApply() {
-    const confirmation = worktreeApplyConfirmation;
-    if (!confirmation || applyingWorktreeChanges) return;
-    applyingWorktreeChanges = true;
-    worktreeApplyError = '';
-    try {
-      let alreadyPresent = false;
-      if (previewMode) {
-        if (previewVariant === 'changes-conflict') throw new Error('原项目存在冲突，未应用任何文件: conflict.txt');
-      } else {
-        const result = await Desktop.ApplyWorktreeChanges(confirmation.sessionID, confirmation.paths);
-        alreadyPresent = result.alreadyPresent;
-      }
-      worktreeApplyMessage = alreadyPresent
-        ? `所选 ${confirmation.paths.length} 个文件已存在于原项目：${confirmation.destination}`
-        : `已将 ${confirmation.paths.length} 个文件应用到原项目：${confirmation.destination}`;
-      selectedApplyPaths = [];
-      worktreeApplyConfirmation = null;
-      modal = null;
-    } catch (error) {
-      worktreeApplyError = error instanceof Error ? error.message : String(error);
-    } finally {
-      applyingWorktreeChanges = false;
-    }
-  }
-
-  async function loadWorkspaceDiff(path: string) {
-    const request = ++workspaceDiffRequest;
-    const requestSession = session?.id ?? '';
-    const requestDirectory = workingDirectory;
-    selectedWorkspaceChange = path;
-    workspaceDiffLoading = true;
-    workspaceDiffError = '';
-    workspaceDiff = null;
-    try {
-      const result = previewMode
-        ? previewWorkspaceDiffs[path] ?? { path, status: activeWorkspaceChange?.status ?? '', content: '', binary: false, truncated: false }
-        : await Desktop.ReadWorkspaceDiff(session?.id || '', path);
-      if (request !== workspaceDiffRequest || session?.id !== requestSession || workingDirectory !== requestDirectory || selectedWorkspaceChange !== path) return;
-      workspaceDiff = result;
-    } catch (error) {
-      if (request === workspaceDiffRequest && session?.id === requestSession && selectedWorkspaceChange === path) workspaceDiffError = String(error);
-    } finally {
-      if (request === workspaceDiffRequest) workspaceDiffLoading = false;
-    }
-  }
-
-  function changeStatusLabel(status: string) {
-    if (status === '??' || status.includes('A')) return 'A';
-    if (status.includes('D')) return 'D';
-    if (status.includes('R')) return 'R';
-    if (status.includes('C')) return 'C';
-    if (status.includes('U')) return 'U';
-    return 'M';
-  }
-
-  function changeStatusDescription(status: string) {
-    if (status === '??') return '未跟踪';
-    const staged = status[0] !== ' ';
-    const unstaged = status[1] !== ' ';
-    if (status.includes('A')) return staged ? '已暂存新增' : '新增';
-    if (status.includes('D')) return staged ? '已暂存删除' : '删除';
-    if (status.includes('R')) return '重命名';
-    if (status.includes('U')) return '冲突';
-    return staged && unstaged ? '暂存及未暂存修改' : staged ? '已暂存修改' : '未暂存修改';
-  }
+  const { previewBootstrap, previewState, previewPendingRequest, previewPendingSessions, previewPendingRequests, previewPendingWorkspaceState } = createDesktopPreview(previewVariant, defaultAppearance);
 
   async function refreshPendingSessions() {
     const request = ++pendingSessionsRequest;
@@ -1046,12 +739,11 @@ export function createDesktopState() {
     const now = '2026-10-18T01:52:00+08:00';
     return {
       processes: desktopProcesses.length ? desktopProcesses : [
-        { id: 'process-active', sessionId: 'session-main', sessionTitle: '跨会话进程中心', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-active', command: 'go test ./internal/desktop -run TestListDesktopProcesses', status: 'running', startedAt: now },
-        { id: 'process-failed', sessionId: 'session-main', sessionTitle: '跨会话进程中心', mode: 'local', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-failed', command: 'npm run check', status: 'failed', startedAt: '2026-10-17T10:26:00+08:00', exitCode: 1 },
-        { id: 'process-done', sessionId: 'session-worktree', sessionTitle: '文档更新', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\docs', executionId: 'exec-done', command: 'git status --short', status: 'succeeded', startedAt: '2026-10-17T10:21:00+08:00', exitCode: 0 },
-        { id: 'process-cancelled', sessionId: 'session-worktree', sessionTitle: '文档更新', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\docs', executionId: 'exec-cancelled', command: 'npm run build', status: 'cancelled', startedAt: '2026-10-17T10:18:00+08:00' },
+        { id: 'process-active', sessionId: 'session-main', sessionTitle: '重构桌面端提问流程', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-active', command: 'go test ./internal/desktop -run TestListDesktopProcesses', status: 'running', startedAt: now },
+        { id: 'process-failed', sessionId: 'session-main', sessionTitle: '重构桌面端提问流程', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-failed', command: 'npm run check', status: 'failed', startedAt: '2026-10-17T10:26:00+08:00', exitCode: 1 },
+        { id: 'process-done', sessionId: 'session-docs', sessionTitle: '文档更新', workingDirectory: 'D:\\Git\\luneAgent\\docs', executionId: 'exec-done', command: 'git status --short', status: 'succeeded', startedAt: '2026-10-17T10:21:00+08:00', exitCode: 0 },
       ],
-      unavailableSessions: [{ id: 'session-unavailable', title: '无法打开的工作树会话', mode: 'worktree', workingDirectory: 'D:\\Git\\luneAgent\\.worktrees\\offline', status: 'missing', reason: '工作树目录已不存在。' }],
+      unavailableSessions: [{ id: 'session-unavailable', title: '无法打开的会话', workingDirectory: 'D:\\Git\\luneAgent\\offline', status: 'unavailable', reason: '此会话的运行时未加载。' }],
     };
   }
 
@@ -1098,7 +790,7 @@ export function createDesktopState() {
   }
 
   async function openProcessesPage() {
-    sidebarView = 'processes';
+    processPopoverOpen = true;
     await refreshDesktopProcesses();
     if (selectedDesktopProcess) void selectDesktopProcess(selectedDesktopProcess, true);
   }
@@ -1106,13 +798,9 @@ export function createDesktopState() {
   function selectSidebarView(view: typeof sidebarView) {
     if (!workspace && view !== 'sessions') return;
     sidebarView = view;
-    createSessionMenu = false;
     workspaceMenuOpen = false;
-    if (window.matchMedia('(max-width: 760px)').matches) sidebarCollapsed = false;
-    if (view === 'changes') void refreshWorkspaceChanges();
-    else if (view === 'worktrees') void refreshDesktopWorktrees();
-    else if (view === 'pending') void refreshPendingSessions();
-    else if (view === 'processes') void openProcessesPage();
+    if (window.matchMedia('(max-width: 960px)').matches) sidebarCollapsed = false;
+    if (view === 'pending') void refreshPendingSessions();
   }
 
   async function selectDesktopProcess(process: DesktopProcess, force = false) {
@@ -1141,7 +829,7 @@ export function createDesktopState() {
 
     let cursor = 0;
     try {
-      while (request === processOutputRequest && selectedDesktopProcessKey === key && sidebarView === 'processes') {
+      while (request === processOutputRequest && selectedDesktopProcessKey === key && processPopoverOpen) {
         const shouldWait = processStatusActive(processOutputStatus) && cursor >= processOutputEndCursor;
         const result = await Desktop.ReadDesktopProcessOutput(process.sessionId, process.id, cursor, shouldWait);
         if (request !== processOutputRequest || selectedDesktopProcessKey !== key) return;
@@ -1241,7 +929,7 @@ export function createDesktopState() {
 
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
     busy = false; interrupting = false; applyingEdit = false; controlsPending = false; interruptRequestedExecutionID = ""; cancellingQueuedExecution = "";
-    if (session?.id !== state.session.id) { if (editDraft) cancelEditingMessage(); if (modal === "file-preview") modal = null; filePreview = null; }
+    if (session?.id !== state.session.id) { if (editDraft) cancelEditingMessage(); }
     if (planReview && session && session.id !== state.session.id) {
       deferredPlanReviews = [...deferredPlanReviews, { sessionId: session.id, ...planReview }];
     }
@@ -1251,7 +939,6 @@ export function createDesktopState() {
     if (workspace && nextWorkspace && workspace.toLowerCase() !== nextWorkspace.toLowerCase()) clearSessionSearch();
     workspace = nextWorkspace;
     workingDirectory = state.workingDirectory || state.workspace;
-    workspaceMode = state.workspaceMode || 'local';
     session = state.session;
     sessions = state.sessions ?? [];
     installControls(state.controls);
@@ -1288,7 +975,6 @@ export function createDesktopState() {
     }
     presentDeferredPlanReview();
     if (!previewMode) void refreshPendingSessions();
-    if (sidebarView === 'changes' && !previewMode) void refreshWorkspaceChanges();
   }
 
   function applySessionRefresh(state: WorkspaceState) {
@@ -1365,21 +1051,12 @@ export function createDesktopState() {
       appearance = { ...previewBootstrap.appearance };
       appearanceDraft = { ...appearance };
       applyAppearanceState(appearance);
-      worktreeAvailable = true;
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       const variant = previewVariant;
-      const activeWorktreePreview: WorkspaceState = {
-        ...previewState,
-        workspaceMode: 'worktree', workingDirectory: `${previewState.workspace}\\.worktrees\\thread-a`,
-        worktreePath: `${previewState.workspace}\\.worktrees\\thread-a`,
-        session: { ...previewState.session, id: 'wt-session-a', title: '修复任务队列' },
-        sessions: [{ id: 'wt-session-a', title: '修复任务队列', updatedAt: previewState.session.updatedAt, mode: 'worktree', workingDirectory: `${previewState.workspace}\\.worktrees\\thread-a`, worktreePath: `${previewState.workspace}\\.worktrees\\thread-a`, status: 'completed' }],
-      };
       if (variant === 'welcome') {
         workspace = '';
         workingDirectory = '';
-        workspaceMode = 'local';
         session = null;
         sessions = [];
         messages = [];
@@ -1388,7 +1065,7 @@ export function createDesktopState() {
           { path: 'D:\\Git\\agent-dashboard', lastUsed: '2026-10-17T23:30:00Z' },
         ];
       } else {
-        installWorkspaceState(variant.startsWith('changes') ? previewChangesWorkspaceState() : variant === 'worktrees-active' ? activeWorktreePreview : previewState);
+        installWorkspaceState(previewState);
       }
       if (variant === 'pending-center') pendingSessions = previewPendingSessions;
       activities = [];
@@ -1501,7 +1178,7 @@ export function createDesktopState() {
         installWorkspaceState(refreshedState, true);
       }
       if (variant.startsWith('processes')) {
-        sidebarView = 'processes';
+        processPopoverOpen = true;
         void refreshDesktopProcesses();
       }
       loading = false;
@@ -1742,7 +1419,7 @@ export function createDesktopState() {
     if (previewMode && cancelledPreviewExecutions.has(result.executionId)) return;
     updateSessionStatus(result.sessionId, result.status === 'paused' ? 'waiting' : result.status || (result.error ? 'failed' : 'completed'));
     if (!previewMode) void refreshPendingSessions();
-    if (sidebarView === 'changes' && sessionSharesActiveDirectory(result.sessionId)) void refreshWorkspaceChanges();
+
     if (result.sessionId !== session?.id) {
       if (result.plan) deferredPlanReviews = [...deferredPlanReviews, { sessionId: result.sessionId, executionID: result.executionId, text: result.plan }];
       return;
@@ -2072,7 +1749,7 @@ export function createDesktopState() {
     }
     invalidateWorkspaceRequests();
     try {
-      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace', worktreeAvailable: true } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
+      const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace' } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
       await completeWorkspaceOpen(result);
     } catch (error) { showError(error); }
   }
@@ -2080,17 +1757,11 @@ export function createDesktopState() {
   async function completeWorkspaceOpen(result: WorkspaceOpenResult) {
     workspace = result.workspace;
     workingDirectory = result.workspace;
-    workspaceMode = 'local';
-    worktreeAvailable = result.worktreeAvailable ?? false;
-    desktopWorktrees = [];
-    desktopWorktreesError = '';
-    selectedDesktopWorktreePath = '';
-    createSessionMenu = false;
     if (result.models) models = result.models;
     sessions = result.sessions ?? [];
     permissionMode = result.permissionMode || 'workspace';
     if (sessions.length > 0) await openSession(sessions[0].id);
-    else if (!previewMode) installWorkspaceState(await Desktop.CreateSession('local'));
+    else if (!previewMode) installWorkspaceState(await Desktop.CreateSession());
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
     void refreshDesktopProcesses();
   }
@@ -2103,7 +1774,6 @@ export function createDesktopState() {
       workspace = '';
       clearDesktopProcesses();
       workingDirectory = '';
-      workspaceMode = 'local';
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -2126,7 +1796,6 @@ export function createDesktopState() {
     workspace = '';
     clearDesktopProcesses();
     workingDirectory = '';
-    workspaceMode = 'local';
     pendingSessions = [];
     pendingSessionsError = '';
     session = null;
@@ -2144,7 +1813,6 @@ export function createDesktopState() {
       workspace = '';
       clearDesktopProcesses();
       workingDirectory = '';
-      workspaceMode = 'local';
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -2219,7 +1887,7 @@ export function createDesktopState() {
           results = sessions
             .filter((item) => item.title.toLowerCase().includes(query.toLowerCase()))
             .map((item) => ({
-              sessionId: item.id, sessionTitle: item.title, mode: item.mode, workingDirectory: item.workingDirectory,
+              sessionId: item.id, sessionTitle: item.title, workingDirectory: item.workingDirectory,
               updatedAt: item.updatedAt, matchKind: 'title', messageIndex: -1,
               snippetBefore: '', snippetMatch: item.title, snippetAfter: '',
             }));
@@ -2264,29 +1932,13 @@ export function createDesktopState() {
     await openSession(id);
   }
 
-  async function createSession(mode: 'local' | 'worktree' = 'local') {
-    createSessionMenu = false;
+  async function createSession() {
     if (previewMode) {
-      const path = 'D:\\Git\\sample-project';
-      installWorkspaceState({
-        ...previewState,
-        projectRoot: previewState.workspace,
-        workspaceMode: mode,
-        workingDirectory: mode === 'worktree' ? `${path}\\.worktrees\\preview` : previewState.workspace,
-        worktreePath: mode === 'worktree' ? `${path}\\.worktrees\\preview` : undefined,
-      });
+      installWorkspaceState({ ...previewState, projectRoot: previewState.workspace });
       return;
     }
-    try { installWorkspaceState(await Desktop.CreateSession(mode)); }
+    try { installWorkspaceState(await Desktop.CreateSession()); }
     catch (error) { showError(error); }
-  }
-
-  function toggleCreateSessionMenu() {
-    if (!workspace) {
-      void openFolderPicker();
-      return;
-    }
-    createSessionMenu = !createSessionMenu;
   }
 
   function beginRenameSession(item: SessionSummary) {
@@ -2325,7 +1977,7 @@ export function createDesktopState() {
       } else {
         if (session?.id === target.id) {
           const fallback = sessions.find((item) => item.id !== target.id);
-          installWorkspaceState(fallback ? await Desktop.OpenSession(fallback.id) : await Desktop.CreateSession('local'));
+          installWorkspaceState(fallback ? await Desktop.OpenSession(fallback.id) : await Desktop.CreateSession());
         }
         await Desktop.DeleteSession(target.id);
         sessions = sessions.filter((item) => item.id !== target.id);
@@ -2381,29 +2033,6 @@ export function createDesktopState() {
       }
     } catch (error) { showError(error); }
     finally { mcpUpdatingServer = ''; }
-  }
-
-  async function openWorkspaceFile(path: string) {
-    const targetSessionID = session?.id || '';
-    const targetEpoch = workspaceEpoch;
-
-    if (previewMode) {
-      filePreview = { path, content: `// ${path}\n// 文件预览示例`, truncated: false };
-      modal = 'file-preview';
-      return;
-    }
-    try {
-      const preview = await Desktop.ReadWorkspaceFile(targetSessionID, path);
-      if (targetEpoch !== workspaceEpoch || session?.id !== targetSessionID) return;
-      filePreview = preview;
-      modal = 'file-preview';
-    } catch (error) { if (targetEpoch === workspaceEpoch && session?.id === targetSessionID) showError(error); }
-  }
-
-  async function openFileInDefaultApp() {
-    if (!filePreview || previewMode) return;
-    try { await Desktop.OpenWorkspaceFile(session?.id || '', filePreview.path); }
-    catch (error) { showError(error); }
   }
 
   function installControls(controls: SessionControlsView) {
@@ -2946,7 +2575,7 @@ export function createDesktopState() {
       planReview = null;
       planMode = false;
       if (result.sessionId !== session?.id) {
-        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString(), mode: workspaceMode, workingDirectory, status: 'running' }, ...sessions];
+        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString(), workingDirectory, status: 'running' }, ...sessions];
         await openSession(result.sessionId);
         if (workspaceEpoch !== targetEpoch || session?.id !== result.sessionId) return;
       }
@@ -3009,11 +2638,9 @@ get recent() { return recent; }, set recent(value: typeof recent) { recent = val
 get models() { return models; }, set models(value: typeof models) { models = value; },
 get workspace() { return workspace; }, set workspace(value: typeof workspace) { workspace = value; },
 get workingDirectory() { return workingDirectory; }, set workingDirectory(value: typeof workingDirectory) { workingDirectory = value; },
-get workspaceMode() { return workspaceMode; }, set workspaceMode(value: typeof workspaceMode) { workspaceMode = value; },
-get worktreeAvailable() { return worktreeAvailable; }, set worktreeAvailable(value: typeof worktreeAvailable) { worktreeAvailable = value; },
-get createSessionMenu() { return createSessionMenu; }, set createSessionMenu(value: typeof createSessionMenu) { createSessionMenu = value; },
 get workspaceMenuOpen() { return workspaceMenuOpen; }, set workspaceMenuOpen(value: typeof workspaceMenuOpen) { workspaceMenuOpen = value; },
 get sidebarCollapsed() { return sidebarCollapsed; }, set sidebarCollapsed(value: typeof sidebarCollapsed) { sidebarCollapsed = value; },
+get processPopoverOpen() { return processPopoverOpen; }, set processPopoverOpen(value: typeof processPopoverOpen) { processPopoverOpen = value; },
 get sessionFilter() { return sessionFilter; }, set sessionFilter(value: typeof sessionFilter) { sessionFilter = value; },
 get sessionSearchResults() { return sessionSearchResults; }, set sessionSearchResults(value: typeof sessionSearchResults) { sessionSearchResults = value; },
 get sessionSearchLoading() { return sessionSearchLoading; }, set sessionSearchLoading(value: typeof sessionSearchLoading) { sessionSearchLoading = value; },
@@ -3072,25 +2699,6 @@ get workspaceSettingsForm() { return workspaceSettingsForm; }, set workspaceSett
 get workspaceSettingsSaving() { return workspaceSettingsSaving; }, set workspaceSettingsSaving(value: typeof workspaceSettingsSaving) { workspaceSettingsSaving = value; },
 get toolchainCandidates() { return toolchainCandidates; }, set toolchainCandidates(value: typeof toolchainCandidates) { toolchainCandidates = value; },
 get toolchainDetectionLoading() { return toolchainDetectionLoading; }, set toolchainDetectionLoading(value: typeof toolchainDetectionLoading) { toolchainDetectionLoading = value; },
-get filePreview() { return filePreview; }, set filePreview(value: typeof filePreview) { filePreview = value; },
-get workspaceChanges() { return workspaceChanges; }, set workspaceChanges(value: typeof workspaceChanges) { workspaceChanges = value; },
-get workspaceChangesLoading() { return workspaceChangesLoading; }, set workspaceChangesLoading(value: typeof workspaceChangesLoading) { workspaceChangesLoading = value; },
-get workspaceChangesError() { return workspaceChangesError; }, set workspaceChangesError(value: typeof workspaceChangesError) { workspaceChangesError = value; },
-get selectedWorkspaceChange() { return selectedWorkspaceChange; }, set selectedWorkspaceChange(value: typeof selectedWorkspaceChange) { selectedWorkspaceChange = value; },
-get workspaceDiff() { return workspaceDiff; }, set workspaceDiff(value: typeof workspaceDiff) { workspaceDiff = value; },
-get workspaceDiffLoading() { return workspaceDiffLoading; }, set workspaceDiffLoading(value: typeof workspaceDiffLoading) { workspaceDiffLoading = value; },
-get workspaceDiffError() { return workspaceDiffError; }, set workspaceDiffError(value: typeof workspaceDiffError) { workspaceDiffError = value; },
-get selectedApplyPaths() { return selectedApplyPaths; }, set selectedApplyPaths(value: typeof selectedApplyPaths) { selectedApplyPaths = value; },
-get worktreeApplyConfirmation() { return worktreeApplyConfirmation; }, set worktreeApplyConfirmation(value: typeof worktreeApplyConfirmation) { worktreeApplyConfirmation = value; },
-get applyingWorktreeChanges() { return applyingWorktreeChanges; }, set applyingWorktreeChanges(value: typeof applyingWorktreeChanges) { applyingWorktreeChanges = value; },
-get worktreeApplyError() { return worktreeApplyError; }, set worktreeApplyError(value: typeof worktreeApplyError) { worktreeApplyError = value; },
-get worktreeApplyMessage() { return worktreeApplyMessage; }, set worktreeApplyMessage(value: typeof worktreeApplyMessage) { worktreeApplyMessage = value; },
-get desktopWorktrees() { return desktopWorktrees; }, set desktopWorktrees(value: typeof desktopWorktrees) { desktopWorktrees = value; },
-get desktopWorktreesLoading() { return desktopWorktreesLoading; }, set desktopWorktreesLoading(value: typeof desktopWorktreesLoading) { desktopWorktreesLoading = value; },
-get desktopWorktreesError() { return desktopWorktreesError; }, set desktopWorktreesError(value: typeof desktopWorktreesError) { desktopWorktreesError = value; },
-get selectedDesktopWorktreePath() { return selectedDesktopWorktreePath; }, set selectedDesktopWorktreePath(value: typeof selectedDesktopWorktreePath) { selectedDesktopWorktreePath = value; },
-get worktreeRemovalTarget() { return worktreeRemovalTarget; }, set worktreeRemovalTarget(value: typeof worktreeRemovalTarget) { worktreeRemovalTarget = value; },
-get worktreeRemovalError() { return worktreeRemovalError; }, set worktreeRemovalError(value: typeof worktreeRemovalError) { worktreeRemovalError = value; },
 get cancellingQueuedExecution() { return cancellingQueuedExecution; }, set cancellingQueuedExecution(value: typeof cancellingQueuedExecution) { cancellingQueuedExecution = value; },
 get canWrite() { return canWrite; },
 get canSend() { return canSend; },
@@ -3106,31 +2714,12 @@ get visibleSessions() { return visibleSessions; },
 get pendingRequestCount() { return pendingRequestCount; },
 get activeDesktopProcessCount() { return activeDesktopProcessCount; },
 get selectedDesktopProcess() { return selectedDesktopProcess; },
-get desktopProcessGroups() { return desktopProcessGroups; },
-get activeWorkspaceChange() { return activeWorkspaceChange; },
-get worktreeApplyBlockedReason() { return worktreeApplyBlockedReason; },
-get canApplyWorktreeChanges() { return canApplyWorktreeChanges; },
-get workspaceDiffLines() { return workspaceDiffLines; },
 get executionTimeline() { return executionTimeline; },
 executionBlockState,
 executionBlockLabel,
 executionBlockStateClass,
 previewAppearanceDraft,
 toggleActivityRun,
-refreshWorkspaceChanges,
-refreshDesktopWorktrees,
-beginDesktopWorktreeRemoval,
-desktopWorktreeName,
-desktopWorktreeStatusLabel,
-desktopWorktreeSessionStatusLabel,
-confirmDesktopWorktreeRemoval,
-toggleApplyPath,
-toggleAllApplyPaths,
-beginWorktreeApply,
-confirmWorktreeApply,
-loadWorkspaceDiff,
-changeStatusLabel,
-changeStatusDescription,
 refreshPendingSessions,
 desktopProcessKey,
 processStatusActive,
@@ -3173,7 +2762,6 @@ updateSessionSearch,
 openSessionSearchResult,
 openPendingSession,
 createSession,
-toggleCreateSessionMenu,
 beginRenameSession,
 beginDeleteSession,
 saveSessionTitle,
@@ -3181,8 +2769,6 @@ confirmDeleteSession,
 openMCPManager,
 setMCPServerEnabled,
 authenticateMCPServer,
-openWorkspaceFile,
-openFileInDefaultApp,
 setPermission,
 setSessionModel,
 setPlanMode,

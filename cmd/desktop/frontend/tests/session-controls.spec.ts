@@ -111,7 +111,7 @@ test('a late submission remains addressed to its original session', async ({ pag
 
 test('a late interrupt response cannot interrupt the selected session', async ({ page }) => {
   await openMockDesktop(page, { runningA: true });
-  await page.getByRole('button', { name: '■ 中断' }).click();
+  await page.getByRole('button', { name: '中断任务' }).click();
   await page.locator('.session-row').filter({ hasText: 'Session B' }).click();
   await expect(page.locator('.topbar')).toContainText('Session B');
   await page.evaluate(() => (window as any).releaseInterrupt());

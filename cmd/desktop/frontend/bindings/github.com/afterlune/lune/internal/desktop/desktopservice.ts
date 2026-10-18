@@ -17,14 +17,6 @@ export function AnswerQuestion(sessionID: string, input: $models.QuestionAnswerI
     return $Call.ByID(3818133423, sessionID, input);
 }
 
-/**
- * ApplyWorktreeChanges applies a selected set of changes from one stopped
- * Worktree session to the original project working tree without staging them.
- */
-export function ApplyWorktreeChanges(sessionID: string, paths: string[] | null): $CancellablePromise<$models.ApplyWorktreeChangesResult> {
-    return $Call.ByID(1085532051, sessionID, paths);
-}
-
 export function AuthenticateMCPServer(sessionID: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(385717039, sessionID, name);
 }
@@ -41,8 +33,8 @@ export function CloseWorkspace(interrupt: boolean): $CancellablePromise<void> {
     return $Call.ByID(4281136060, interrupt);
 }
 
-export function CreateSession(mode: string): $CancellablePromise<$models.WorkspaceState> {
-    return $Call.ByID(498841211, mode);
+export function CreateSession(): $CancellablePromise<$models.WorkspaceState> {
+    return $Call.ByID(498841211);
 }
 
 export function DeleteSession(sessionID: string): $CancellablePromise<void> {
@@ -82,10 +74,6 @@ export function ListDesktopProcesses(): $CancellablePromise<$models.DesktopProce
     return $Call.ByID(4175244156);
 }
 
-export function ListDesktopWorktrees(): $CancellablePromise<$models.DesktopWorktreeView[] | null> {
-    return $Call.ByID(3399958499);
-}
-
 export function ListMCPServers(sessionID: string): $CancellablePromise<$models.MCPServerView[] | null> {
     return $Call.ByID(2843607385, sessionID);
 }
@@ -98,14 +86,6 @@ export function ListPendingSessions(): $CancellablePromise<$models.PendingSessio
     return $Call.ByID(2139294369);
 }
 
-export function ListWorkspaceChanges(sessionID: string): $CancellablePromise<$models.WorkspaceChangesView> {
-    return $Call.ByID(1980103603, sessionID);
-}
-
-export function ListWorkspaceFiles(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceFileEntry[] | null> {
-    return $Call.ByID(2892581193, sessionID, relativePath);
-}
-
 export function OpenMCPURL(sessionID: string, serverName: string, target: string): $CancellablePromise<void> {
     return $Call.ByID(1687039940, sessionID, serverName, target);
 }
@@ -116,10 +96,6 @@ export function OpenSession(sessionID: string): $CancellablePromise<$models.Work
 
 export function OpenWorkspace(path: string): $CancellablePromise<$models.WorkspaceOpenResult> {
     return $Call.ByID(3069324422, path);
-}
-
-export function OpenWorkspaceFile(sessionID: string, relativePath: string): $CancellablePromise<void> {
-    return $Call.ByID(2369930560, sessionID, relativePath);
 }
 
 export function PickCommandToolchainFolder(): $CancellablePromise<string> {
@@ -142,24 +118,12 @@ export function ReadDesktopProcessOutput(sessionID: string, commandID: string, c
     return $Call.ByID(3868549089, sessionID, commandID, cursor, wait);
 }
 
-export function ReadWorkspaceDiff(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceDiffView> {
-    return $Call.ByID(3675187873, sessionID, relativePath);
-}
-
-export function ReadWorkspaceFile(sessionID: string, relativePath: string): $CancellablePromise<$models.WorkspaceFilePreview> {
-    return $Call.ByID(1571039100, sessionID, relativePath);
-}
-
 export function RecoverModel(sessionID: string): $CancellablePromise<void> {
     return $Call.ByID(3412255156, sessionID);
 }
 
 export function RefreshSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(3230290916, sessionID);
-}
-
-export function RemoveDesktopWorktree(path: string): $CancellablePromise<void> {
-    return $Call.ByID(2061114838, path);
 }
 
 export function ResolveApproval(sessionID: string, id: string, allowed: boolean): $CancellablePromise<void> {
@@ -187,8 +151,8 @@ export function SaveModelSettings(input: $models.ModelSettingsInput): $Cancellab
 }
 
 /**
- * SaveWorkspaceConfig persists Desktop-owned project settings and restarts all
- * Local and Worktree Cores while preserving the selected session.
+ * SaveWorkspaceConfig persists Desktop-owned project settings and restarts the
+ * workspace Core while preserving the selected session.
  */
 export function SaveWorkspaceConfig(input: $models.WorkspaceConfigInput): $CancellablePromise<$models.WorkspaceConfigView> {
     return $Call.ByID(26185835, input);
@@ -196,10 +160,6 @@ export function SaveWorkspaceConfig(input: $models.WorkspaceConfigInput): $Cance
 
 export function SearchWorkspaceConversation(query: string): $CancellablePromise<$models.SessionSearchResult[] | null> {
     return $Call.ByID(3053592493, query);
-}
-
-export function SearchWorkspaceFiles(sessionID: string, query: string): $CancellablePromise<$models.WorkspaceFileSearchResult> {
-    return $Call.ByID(178478345, sessionID, query);
 }
 
 export function SetMCPServerEnabled(sessionID: string, name: string, enabled: boolean): $CancellablePromise<void> {

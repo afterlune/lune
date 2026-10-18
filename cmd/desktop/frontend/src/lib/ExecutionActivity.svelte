@@ -32,12 +32,11 @@
   type ChangeGroup = { path: string; changes: { label: string; change: FileChange }[]; added: number; removed: number };
   type CommandSummary = { tool: ActivityTool; command: NonNullable<NonNullable<ActivityTool['details']>['command']> };
 
-  let { run, active = false, elapsedSeconds = 0, onToggle, onOpenFile }: {
+  let { run, active = false, elapsedSeconds = 0, onToggle }: {
     run: ActivityRun;
     active?: boolean;
     elapsedSeconds?: number;
     onToggle: () => void;
-    onOpenFile?: (path: string) => void;
   } = $props();
 
   const latestTool = $derived(run.tools.at(-1));
@@ -149,7 +148,7 @@ function toolStatus(status: ActivityTool['status']) {
         <div class="activity-review-list">
           {#each changedFiles as file (file.path)}
             <details class="activity-review-file" open>
-              <summary><code>{file.path}</code><span>+{file.added} / −{file.removed}</span>{#if onOpenFile}<button class="activity-open-file" onclick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenFile?.(file.path); }}>打开文件</button>{/if}</summary>
+              <summary><code>{file.path}</code><span>+{file.added} / −{file.removed}</span></summary>
               {#each file.changes as item, index (`${file.path}:${index}`)}
                 <div class="activity-review-source">{item.label}</div>
                 {#if item.change.lines?.length}

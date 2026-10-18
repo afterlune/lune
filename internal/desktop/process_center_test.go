@@ -1,9 +1,7 @@
 package desktop
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -23,15 +21,6 @@ func TestListDesktopProcessesReportsUnavailableSessions(t *testing.T) {
 	service, _, sessionID := newDesktopServiceForTest(t, pendingQuestionDesktopProvider{})
 	service.mu.Lock()
 	delete(service.sessionContexts, sessionID)
-	if err := service.activityStore.SaveDesktopSession(context.Background(), DesktopSessionRecord{
-		ID: "worktree-offline", Mode: workspaceModeWorktree,
-		Workspace: `D:\workspace\missing`, StateDir: `D:\state\missing`,
-		WorktreePath: `D:\workspace\.worktrees\missing`, RepositoryRoot: `D:\workspace`,
-		Title: "Offline worktree", Status: "missing", UpdatedAt: time.Now(),
-	}); err != nil {
-		service.mu.Unlock()
-		t.Fatal(err)
-	}
 	service.mu.Unlock()
 
 	result, err := service.ListDesktopProcesses()
@@ -41,18 +30,12 @@ func TestListDesktopProcessesReportsUnavailableSessions(t *testing.T) {
 	if len(result.Processes) != 0 {
 		t.Fatalf("processes = %#v, want no commands", result.Processes)
 	}
-	if len(result.UnavailableSessions) != 2 {
-		t.Fatalf("unavailable sessions = %#v, want missing local and Worktree sessions", result.UnavailableSessions)
+	if len(result.UnavailableSessions) != 1 {
+		t.Fatalf("unavailable sessions = %#v, want the missing local session", result.UnavailableSessions)
 	}
-	seen := map[string]DesktopProcessSessionView{}
-	for _, item := range result.UnavailableSessions {
-		seen[item.ID] = item
-	}
-	if item := seen[sessionID]; item.Status != "unavailable" || item.Mode != workspaceModeLocal {
-		t.Fatalf("local unavailable session = %#v", item)
-	}
-	if item := seen["worktree-offline"]; item.Status != "missing" || item.Reason != "工作树目录已不存在。" {
-		t.Fatalf("unavailable Worktree session = %#v", item)
+	item := result.UnavailableSessions[0]
+	if item.ID != sessionID || item.Status != "unavailable" || item.Reason != "此会话的运行时未加载。" {
+		t.Fatalf("unavailable local session = %#v", item)
 	}
 }
 

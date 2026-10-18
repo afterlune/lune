@@ -104,23 +104,8 @@ func (s *DesktopService) ImplementPlan(sessionID, executionID, mode string) (Pla
 		if sourceContext == nil {
 			return PlanResult{}, errors.New("无法关联方案实施会话")
 		}
-		saved, err := sourceContext.core.GetSession(context.Background(), implementation.SessionID)
-		if err != nil {
-			return PlanResult{}, err
-		}
 		targetContext = &desktopSessionContext{
 			permissionMode: core.PermissionMode(controls.PermissionMode), core: sourceContext.core, sessionID: implementation.SessionID, workspace: sourceContext.workspace,
-			mode: sourceContext.mode, stateDir: sourceContext.stateDir, worktreePath: sourceContext.worktreePath,
-			repositoryRoot: sourceContext.repositoryRoot,
-		}
-		if targetContext.mode == workspaceModeWorktree && s.activityStore != nil {
-			if err := s.activityStore.SaveDesktopSession(context.Background(), DesktopSessionRecord{
-				ID: saved.ID, Mode: workspaceModeWorktree, Workspace: targetContext.workspace, StateDir: targetContext.stateDir,
-				WorktreePath: targetContext.worktreePath, RepositoryRoot: targetContext.repositoryRoot,
-				Title: saved.Title, UpdatedAt: saved.UpdatedAt, Status: "running",
-			}); err != nil {
-				return PlanResult{}, err
-			}
 		}
 		if err := s.attachSessionRuntime(targetContext, true); err != nil {
 			return PlanResult{}, err

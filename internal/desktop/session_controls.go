@@ -3,7 +3,6 @@ package desktop
 import (
 	"context"
 	"errors"
-	"time"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -123,13 +122,7 @@ func (s *DesktopService) SetSessionTitle(sessionID, title string) error {
 	if sessionContext == nil || sessionContext.core == nil {
 		return errors.New("没有打开工作区")
 	}
-	if err := sessionContext.core.SetSessionTitle(context.Background(), sessionID, title); err != nil {
-		return err
-	}
-	if sessionContext.mode == workspaceModeWorktree && s.activityStore != nil {
-		return s.activityStore.UpdateDesktopSession(context.Background(), sessionID, title, sessionContextStatus(sessionContext), time.Now())
-	}
-	return nil
+	return sessionContext.core.SetSessionTitle(context.Background(), sessionID, title)
 }
 
 func (s *DesktopService) setActiveSessionContextLocked(sessionContext *desktopSessionContext) {

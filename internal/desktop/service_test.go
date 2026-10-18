@@ -96,7 +96,7 @@ func TestSearchSessionFindsBothRolesAndOmitsPlanBlock(t *testing.T) {
 			{"type":"message","id":"assistant-1","role":"assistant","content":[{"type":"output_text","text":"The cache is local.\n<proposed_plan>hidden cache details</proposed_plan>"}]}
 		]`),
 	}
-	results := searchSession(saved, workspaceModeLocal, `D:\\project`, "CACHE")
+	results := searchSession(saved, `D:\\project`, "CACHE")
 	if len(results) != 2 {
 		t.Fatalf("searchSession() returned %d results, want 2: %#v", len(results), results)
 	}
@@ -116,7 +116,7 @@ func TestSearchSessionCanReturnTitleOnlyMatch(t *testing.T) {
 		ID: "session-2", Title: "Deployment notes", UpdatedAt: time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC),
 		History: json.RawMessage(`[]`),
 	}
-	results := searchSession(saved, workspaceModeLocal, `D:\\project`, "DEPLOY")
+	results := searchSession(saved, `D:\\project`, "DEPLOY")
 	if len(results) != 1 || results[0].result.MatchKind != "title" || results[0].result.MessageID != "" {
 		t.Fatalf("searchSession() = %#v, want one title-only result", results)
 	}
