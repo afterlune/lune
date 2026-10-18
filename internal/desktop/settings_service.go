@@ -18,13 +18,15 @@ import (
 )
 
 type Bootstrap struct {
-	Theme      string                     `json:"theme"`
-	Appearance AppearanceView             `json:"appearance"`
-	Recent     []settings.RecentWorkspace `json:"recentWorkspaces"`
-	Models     ModelSettingsView          `json:"models"`
-	Workspace  string                     `json:"workspace"`
-	SessionID  string                     `json:"sessionId"`
-	Controls   SessionControlsView        `json:"controls"`
+	Theme         string                     `json:"theme"`
+	Appearance    AppearanceView             `json:"appearance"`
+	Recent        []settings.RecentWorkspace `json:"recentWorkspaces"`
+	Models        ModelSettingsView          `json:"models"`
+	Workspace     string                     `json:"workspace"`
+	SessionID     string                     `json:"sessionId"`
+	LastWorkspace string                     `json:"lastWorkspace,omitempty"`
+	LastSessionID string                     `json:"lastSessionId,omitempty"`
+	Controls      SessionControlsView        `json:"controls"`
 }
 
 type AppearanceView struct {
@@ -113,11 +115,18 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	if err != nil {
 		return Bootstrap{}, err
 	}
+	restore := settings.DesktopRestore{}
+	if s.store != nil {
+		if loaded, loadErr := s.store.DesktopRestore(); loadErr == nil {
+			restore = loaded
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := Bootstrap{
 		Theme: appearance.Theme, Appearance: appearanceView(appearance), Recent: recent,
 		Models: modelSettingsView(modelConfig), Workspace: s.workspace, SessionID: s.activeSessionIDLocked(),
+		LastWorkspace: restore.Workspace, LastSessionID: restore.SessionID,
 	}
 	if s.activeCoreLocked() != nil {
 		if s.activeContext != nil {

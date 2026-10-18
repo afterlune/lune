@@ -62,6 +62,8 @@ export interface Bootstrap {
     "models": ModelSettingsView;
     "workspace": string;
     "sessionId": string;
+    "lastWorkspace"?: string;
+    "lastSessionId"?: string;
     "controls": SessionControlsView;
 }
 

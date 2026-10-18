@@ -53,6 +53,14 @@ export function EditUserMessage(sessionID: string, messageID: string, input: $mo
     return $Call.ByID(376143777, sessionID, messageID, input);
 }
 
+/**
+ * ForgetDesktopLocation clears a stale workspace/session pair so the next
+ * launch starts from the welcome screen instead of retrying it forever.
+ */
+export function ForgetDesktopLocation(): $CancellablePromise<void> {
+    return $Call.ByID(1943943799);
+}
+
 export function GetWorkspaceConfig(): $CancellablePromise<$models.WorkspaceConfigView> {
     return $Call.ByID(2361918958);
 }
@@ -151,6 +159,13 @@ export function SaveModelSettings(input: $models.ModelSettingsInput): $Cancellab
 }
 
 /**
+ * SaveWindowSize persists the outer window size reported by the frontend.
+ */
+export function SaveWindowSize(width: number, height: number): $CancellablePromise<void> {
+    return $Call.ByID(3029980849, width, height);
+}
+
+/**
  * SaveWorkspaceConfig persists Desktop-owned project settings and restarts the
  * workspace Core while preserving the selected session.
  */
@@ -195,4 +210,12 @@ export function StopDesktopProcess(sessionID: string, commandID: string): $Cance
 
 export function Submit(sessionID: string, input: $models.SubmitInput): $CancellablePromise<core$0.TurnSubmission> {
     return $Call.ByID(1818956641, sessionID, input);
+}
+
+/**
+ * WindowSize returns a valid persisted window size, falling back to the
+ * default when no usable value has been stored yet.
+ */
+export function WindowSize(): $CancellablePromise<[number, number]> {
+    return $Call.ByID(2793613064);
 }

@@ -36,6 +36,71 @@ func TestStorePersistsThemeAndRecentWorkspace(t *testing.T) {
 	}
 }
 
+func TestStorePersistsDesktopRestoreState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLastWorkspace(`D:\project`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLastSession("session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWindowSize(1280, 800); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	restore, err := store.DesktopRestore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.Workspace != `D:\project` || restore.SessionID != "session-1" || restore.WindowWidth != 1280 || restore.WindowHeight != 800 {
+		t.Fatalf("DesktopRestore() = %#v", restore)
+	}
+	if err := store.ClearDesktopLocation(); err != nil {
+		t.Fatal(err)
+	}
+	restore, err = store.DesktopRestore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.Workspace != "" || restore.SessionID != "" || restore.WindowWidth != 1280 || restore.WindowHeight != 800 {
+		t.Fatalf("after ClearDesktopLocation() = %#v", restore)
+	}
+	if err := store.ClearDesktopRestore(); err != nil {
+		t.Fatal(err)
+	}
+	restore, err = store.DesktopRestore()
+	if err != nil || restore != (DesktopRestore{}) {
+		t.Fatalf("after ClearDesktopRestore() = %#v, %v", restore, err)
+	}
+	if err := store.SaveWindowSize(0, 800); err == nil {
+		t.Fatal("SaveWindowSize accepted an invalid width")
+	}
+}
+
+func TestStoreDesktopRestoreDefaultsToZero(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	restore, err := store.DesktopRestore()
+	if err != nil || restore != (DesktopRestore{}) {
+		t.Fatalf("DesktopRestore() = %#v, %v", restore, err)
+	}
+}
+
 func TestStorePersistsAppearanceAndReadsLegacyTheme(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {

@@ -1039,6 +1039,22 @@ export function createDesktopState() {
     }
   }
 
+  async function restoreLastWorkspace(path: string, sessionID: string) {
+    try {
+      const result = await Desktop.OpenWorkspace(path);
+      await completeWorkspaceOpen(result, sessionID);
+    } catch {
+      try { await Desktop.CloseWorkspace(false); } catch { /* workspace was not open */ }
+      workspace = '';
+      workingDirectory = '';
+      session = null;
+      sessions = [];
+      messages = [];
+      pending = [];
+      try { await Desktop.ForgetDesktopLocation(); } catch { /* best effort */ }
+    }
+  }
+
   async function initialize() {
     if (previewMode) {
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -1195,6 +1211,9 @@ export function createDesktopState() {
         if (event.data === session?.id) void refreshSession();
       }));
       unsubscribeEvents.push(Events.On('agent-error', (event: { data: { message: string } }) => showError(event.data.message)));
+      if (!workspace && data.lastWorkspace) {
+        await restoreLastWorkspace(data.lastWorkspace, data.lastSessionId || '');
+      }
       void refreshPendingSessions();
       void refreshDesktopProcesses();
     } catch (error) {
@@ -1735,7 +1754,7 @@ export function createDesktopState() {
     } catch (error) { showError(error); }
   }
 
-  async function openWorkspace(path: string) {
+  async function openWorkspace(path: string, preferredSessionID = '') {
     if (workspace && workspaceHasOutstanding) {
       switchTarget = path;
       modal = 'switch';
@@ -1744,17 +1763,18 @@ export function createDesktopState() {
     invalidateWorkspaceRequests();
     try {
       const result = previewMode ? { workspace: path, sessions: [], permissionMode: 'workspace' } as WorkspaceOpenResult : await Desktop.OpenWorkspace(path);
-      await completeWorkspaceOpen(result);
+      await completeWorkspaceOpen(result, preferredSessionID);
     } catch (error) { showError(error); }
   }
 
-  async function completeWorkspaceOpen(result: WorkspaceOpenResult) {
+  async function completeWorkspaceOpen(result: WorkspaceOpenResult, preferredSessionID = '') {
     workspace = result.workspace;
     workingDirectory = result.workspace;
     if (result.models) models = result.models;
     sessions = result.sessions ?? [];
     permissionMode = result.permissionMode || 'workspace';
-    if (sessions.length > 0) await openSession(sessions[0].id);
+    const preferred = sessions.find((item) => item.id === preferredSessionID) ?? sessions[0];
+    if (preferred) await openSession(preferred.id);
     else if (!previewMode) installWorkspaceState(await Desktop.CreateSession());
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
     void refreshDesktopProcesses();

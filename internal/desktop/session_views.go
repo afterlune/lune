@@ -119,6 +119,7 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	controls := sessionControls(sessionContext)
 	s.watchTurnLocked(runtime, sessionID, state.Task.ExecutionID)
 	s.mu.Unlock()
+	s.rememberSession(sessionID)
 	return WorkspaceState{
 		Workspace: sessionContext.workspace, ProjectRoot: projectRoot,
 		WorkingDirectory: sessionContext.workspace, Session: view, Sessions: list.Sessions,

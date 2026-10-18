@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,22 @@ type Appearance struct {
 }
 
 type Store struct{ db *sql.DB }
+
+const (
+	desktopLastWorkspaceKey = "desktop.lastWorkspace"
+	desktopLastSessionKey   = "desktop.lastSession"
+	desktopWindowWidthKey   = "desktop.windowWidth"
+	desktopWindowHeightKey  = "desktop.windowHeight"
+)
+
+// DesktopRestore is the small amount of UI state needed to make the next
+// launch continue where the previous one stopped.
+type DesktopRestore struct {
+	Workspace    string
+	SessionID    string
+	WindowWidth  int
+	WindowHeight int
+}
 
 func UserSettingsPath() (string, error) {
 	root, err := os.UserConfigDir()
@@ -527,6 +544,94 @@ func (s *Store) RecentWorkspaces() ([]RecentWorkspace, error) {
 		}
 	}
 	return result, rows.Err()
+}
+
+func (s *Store) DesktopRestore() (DesktopRestore, error) {
+	var restore DesktopRestore
+	workspace, found, err := s.setting(desktopLastWorkspaceKey)
+	if err != nil {
+		return DesktopRestore{}, err
+	}
+	if found {
+		restore.Workspace = workspace
+	}
+	sessionID, found, err := s.setting(desktopLastSessionKey)
+	if err != nil {
+		return DesktopRestore{}, err
+	}
+	if found {
+		restore.SessionID = sessionID
+	}
+	width, found, err := s.setting(desktopWindowWidthKey)
+	if err != nil {
+		return DesktopRestore{}, err
+	}
+	if found {
+		restore.WindowWidth, _ = strconv.Atoi(width)
+	}
+	height, found, err := s.setting(desktopWindowHeightKey)
+	if err != nil {
+		return DesktopRestore{}, err
+	}
+	if found {
+		restore.WindowHeight, _ = strconv.Atoi(height)
+	}
+	return restore, nil
+}
+
+func (s *Store) SaveLastWorkspace(workspace string) error {
+	return s.saveSetting(desktopLastWorkspaceKey, strings.TrimSpace(workspace))
+}
+
+func (s *Store) SaveLastSession(sessionID string) error {
+	return s.saveSetting(desktopLastSessionKey, strings.TrimSpace(sessionID))
+}
+
+func (s *Store) SaveWindowSize(width, height int) error {
+	if width <= 0 || height <= 0 {
+		return errors.New("window size must be positive")
+	}
+	if err := s.saveSetting(desktopWindowWidthKey, strconv.Itoa(width)); err != nil {
+		return err
+	}
+	return s.saveSetting(desktopWindowHeightKey, strconv.Itoa(height))
+}
+
+func (s *Store) ClearDesktopLocation() error {
+	_, err := s.db.Exec(`DELETE FROM app_settings WHERE key IN (?, ?)`,
+		desktopLastWorkspaceKey, desktopLastSessionKey)
+	if err != nil {
+		return fmt.Errorf("clear desktop location state: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ClearDesktopRestore() error {
+	_, err := s.db.Exec(`DELETE FROM app_settings WHERE key IN (?, ?, ?, ?)`,
+		desktopLastWorkspaceKey, desktopLastSessionKey, desktopWindowWidthKey, desktopWindowHeightKey)
+	if err != nil {
+		return fmt.Errorf("clear desktop restore state: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) setting(key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read %s setting: %w", key, err)
+	}
+	return value, true, nil
+}
+
+func (s *Store) saveSetting(key, value string) error {
+	if _, err := s.db.Exec(`INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
+		return fmt.Errorf("save %s setting: %w", key, err)
+	}
+	return nil
 }
 
 func (s *Store) TouchWorkspace(path string) error {

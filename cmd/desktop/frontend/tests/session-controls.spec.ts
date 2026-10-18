@@ -16,8 +16,13 @@ async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) 
       const sessions = ['a','b','c'].map(id => ({id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',mode:'local',workingDirectory:workspace,status:'idle'}));
       const snapshot = id => ({workspace,projectRoot:workspace,workspaceMode:'local',workingDirectory:workspace,session:{id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',settings:{model_profile:'test'},messages:[]},sessions,controls:{...policies[id]},models,pending:[],executionHistory:[],runtimeState:{Task:{Status:flags.runningA && id==='a'?'running':'idle',ExecutionID:flags.runningA && id==='a'?'exec-a':''},Queue:[]}});
       installDesktopApi({
-        Bootstrap: async () => ({theme:'light',appearance,recentWorkspaces:[{path:workspace,lastUsed:''}],models,workspace:'',sessionId:'',controls:policies.a}),
-        OpenWorkspace: async () => ({workspace,sessions,permissionMode:'workspace',worktreeAvailable:false}),
+        Bootstrap: async () => ({theme:'light',appearance,recentWorkspaces:[{path:workspace,lastUsed:''}],models,workspace:'',sessionId:'',lastWorkspace:(flags.restore || flags.staleRestore) ? workspace : '',lastSessionId:flags.restore||flags.staleRestore?'b':'',controls:policies.a}),
+        OpenWorkspace: async () => {
+          if (flags.staleRestore) throw new Error('workspace missing');
+          return {workspace,sessions,permissionMode:'workspace',worktreeAvailable:false};
+        },
+        CloseWorkspace: async () => {},
+        ForgetDesktopLocation: async () => {},
         OpenSession: async id => {
           calls.push(['open',id]);
           if (flags.delayB && id==='b') await new Promise(resolve => window.releaseSessionB=resolve);
@@ -49,6 +54,14 @@ async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) 
     ` });
   });
   await page.goto('/');
+  if (flags.restore) {
+    await expect(page.locator('.topbar')).toContainText('Session B');
+    return;
+  }
+  if (flags.staleRestore) {
+    await expect(page.getByRole('main').getByRole('heading', { name: '把想法带进你的工作区' })).toBeVisible();
+    return;
+  }
   await page.locator('.recent-row').click();
   await expect(page.locator('.topbar')).toContainText('Session A');
 }
@@ -118,4 +131,17 @@ test('a late interrupt response cannot interrupt the selected session', async ({
   await expect(page.getByRole('textbox', { name: '消息输入' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '■ 中断' })).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).desktopCalls.filter((c: any[]) => c[0] === 'interrupt'))).toEqual([['interrupt','a','exec-a']]);
+});
+
+test('startup restores the last workspace and session', async ({ page }) => {
+  await openMockDesktop(page, { restore: true });
+  await expect(page.locator('.topbar')).toContainText('Session B');
+  await expect(page.locator('.session-entry.chosen').filter({ hasText: 'Session B' })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).desktopCalls.filter((c: any[]) => c[0] === 'open'))).toEqual([['open', 'b']]);
+});
+
+test('startup falls back to welcome when the last workspace is unavailable', async ({ page }) => {
+  await openMockDesktop(page, { staleRestore: true });
+  await expect(page.getByRole('main').getByRole('heading', { name: '把想法带进你的工作区' })).toBeVisible();
+  await expect(page.locator('.composer')).toHaveCount(0);
 });

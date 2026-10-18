@@ -83,13 +83,21 @@ func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error)
 	if s.localCore != nil && samePath(s.workspace, absolute) {
 		result, resultErr := s.workspaceResultLocked()
 		s.mu.Unlock()
+		if resultErr == nil {
+			s.rememberWorkspace(result.Workspace)
+		}
 		return result, resultErr
 	}
 	s.mu.Unlock()
 	if err := s.startWorkspace(absolute); err != nil {
 		return WorkspaceOpenResult{}, err
 	}
-	return s.workspaceResult()
+	result, err := s.workspaceResult()
+	if err != nil {
+		return WorkspaceOpenResult{}, err
+	}
+	s.rememberWorkspace(result.Workspace)
+	return result, nil
 }
 
 func (s *DesktopService) startWorkspace(path string) error {
@@ -504,6 +512,7 @@ func (s *DesktopService) closeWorkspaceLocked(interrupt bool) error {
 	s.workspaceContext, s.workspaceCancel = nil, nil
 	s.waiting = map[string]bool{}
 	s.suppressedActivity = nil
+	s.clearRememberedLocation()
 	return closeErr
 }
 

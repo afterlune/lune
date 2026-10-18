@@ -24,14 +24,18 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("打开 luneAgent 设置数据库失败: %w", err)
 	}
+	windowWidth, windowHeight := service.WindowSize()
 	app := application.New(application.Options{
 		Name:        "luneAgent",
 		Description: "本地 Agent 桌面端",
 		Services:    []application.Service{application.NewService(service)},
 		Assets:      application.AssetOptions{Handler: desktop.WallpaperAssetHandler(application.AssetFileServerFS(frontend))},
+		Windows: application.WindowsOptions{
+			WndProcInterceptor: desktopWindowSizeInterceptor(service),
+		},
 	})
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "luneAgent", Width: 1440, Height: 920, MinWidth: 980, MinHeight: 640,
+		Title: "luneAgent", Width: windowWidth, Height: windowHeight, MinWidth: 980, MinHeight: 640,
 		BackgroundColour: application.NewRGB(248, 249, 251),
 		InitialPosition:  application.WindowCentered,
 		URL:              "/",
