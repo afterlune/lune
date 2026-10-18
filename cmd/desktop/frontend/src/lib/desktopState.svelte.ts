@@ -1064,6 +1064,11 @@ export function createDesktopState() {
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       const variant = previewVariant;
+      if (variant === 'anime') {
+        appearance = { ...appearance, theme: 'anime' };
+        appearanceDraft = { ...appearance };
+        applyAppearanceState(appearance);
+      }
       if (variant === 'welcome') {
         workspace = '';
         workingDirectory = '';

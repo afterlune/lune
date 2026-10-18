@@ -5,13 +5,16 @@ import Markdown from './Markdown.svelte';
 import ExecutionActivity from './ExecutionActivity.svelte';
 import MCPInteractionCard from './MCPInteractionCard.svelte';
 import Composer from './Composer.svelte';
+import EmptyConversation from './EmptyConversation.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
 </script>
 {#if desktop.session}
 
         <div class="conversation-scroll" id="conversation-scroll">
           <div class="conversation-content">
-            {#if desktop.messages.length === 0}
+            {#if desktop.messages.length === 0 && desktop.activities.length === 0 && !desktop.running && desktop.pending.length === 0 && !desktop.planReview}
+              <EmptyConversation />
+            {:else if desktop.messages.length === 0}
               <div class="conversation-intro"><p>可以在 <b>{desktop.workspace.split(/[\\/]/).at(-1)}</b> 中阅读、修改和运行代码。</p></div>
             {/if}
             {#each desktop.executionTimeline.leadingMessages as message (message.id)}

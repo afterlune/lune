@@ -42,6 +42,29 @@ test('welcome state uses the two-column shell and lists recent workspaces', asyn
   await expect(page.getByRole('main').getByText('重构桌面端提问流程').first()).toBeVisible();
 });
 
+test('welcome keeps its composition on narrow windows', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.goto('/?preview=welcome');
+  await expect(page.getByRole('main').getByRole('heading', { name: '把想法带进你的工作区' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开工作区' })).toBeVisible();
+  await expect(page).toHaveScreenshot('desktop-welcome-compact.png', { fullPage: true });
+});
+
+test('empty conversation uses the illustrated opening state', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?preview=empty');
+  await expect(page.locator('.conversation-empty')).toBeVisible();
+  await expect(page).toHaveScreenshot('desktop-empty.png', { fullPage: true });
+});
+
+test('anime theme keeps the workspace readable over the wallpaper layer', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?preview=anime');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'anime');
+  await expect(page.locator('.composer')).toBeVisible();
+  await expect(page).toHaveScreenshot('desktop-anime.png', { fullPage: true });
+});
+
 test('the sidebar collapses and switches between sessions and pending views', async ({ page }) => {
   await page.goto('/?preview=1');
   const nav = page.getByRole('navigation', { name: '主导航' });
@@ -468,7 +491,8 @@ test('conversation messages do not show speaker names or avatars', async ({ page
   await page.goto('/?preview=empty');
   await expect(page.locator('.message-author')).toHaveCount(0);
   await expect(page.locator('.message-avatar')).toHaveCount(0);
-  await expect(page.locator('.conversation-intro')).not.toContainText('luneAgent');
+  await expect(page.locator('.conversation-empty')).toBeVisible();
+  await expect(page.locator('.conversation-empty')).not.toContainText('luneAgent');
   await expect(page.getByRole('textbox', { name: '消息输入' })).toHaveAttribute('placeholder', '发送消息…');
 });
 

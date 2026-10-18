@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount } from 'svelte';
+import BrandMark from './BrandMark.svelte';
 import Icon from './Icon.svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
@@ -19,7 +20,7 @@ onMount(() => {
 </script>
 <aside class="sidebar" class:sidebar-collapsed={desktop.sidebarCollapsed} aria-label="工作区内容侧栏">
   <div class="brand-row">
-    <span class="brand-mark" aria-hidden="true">l</span>
+    <span class="brand-mark" aria-hidden="true"><BrandMark size={18} /></span>
     <div class="brand-copy"><strong>luneAgent</strong><span>本地 Agent 工作台</span></div>
     <button class="icon-button sidebar-collapse-button" aria-label="收起侧栏" title="收起侧栏" onclick={() => desktop.sidebarCollapsed = true}>
       <Icon name="sidebar-collapse" size={18} />

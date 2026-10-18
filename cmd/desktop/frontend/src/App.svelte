@@ -1,7 +1,9 @@
 <script lang="ts">
 import DesktopDialogs from './lib/DesktopDialogs.svelte';
 import ConversationPane from './lib/ConversationPane.svelte';
+import BrandMark from './lib/BrandMark.svelte';
 import Icon from './lib/Icon.svelte';
+import WelcomeArt from './lib/WelcomeArt.svelte';
 import ProcessesPopover from './lib/ProcessesPopover.svelte';
 import WorkspaceSidebar from './lib/WorkspaceSidebar.svelte';
 import { createDesktopState } from './lib/desktopState.svelte';
@@ -13,7 +15,7 @@ const desktop = createDesktopState();
 </svelte:head>
 
 {#if desktop.loading}
-  <div class="boot"><span class="brand-mark">l</span><span>正在启动 luneAgent…</span></div>
+  <div class="boot"><span class="brand-mark boot-brand"><BrandMark size={18} /></span><span>正在启动 luneAgent…</span></div>
 {:else}
   <div class="app-shell" role="region" aria-label="桌面工作区拖放区域" ondragover={(event) => event.preventDefault()} ondrop={desktop.onDrop}>
     {#if desktop.theme === 'anime'}
@@ -87,11 +89,16 @@ const desktop = createDesktopState();
 
       {#if !desktop.workspace}
         <section class="welcome">
-          <div class="welcome-icon"><span>l</span></div>
-          <h1>把想法带进你的工作区</h1>
-          <p class="welcome-copy">选择一个本地项目文件夹，与 Agent 一起阅读代码、讨论方案并完成修改。</p>
-          <button class="primary-button open-workspace" onclick={desktop.openFolderPicker}><span class="button-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></span> 打开工作区</button>
-          {#if !desktop.models.configured}<button class="inline-link welcome-config" onclick={desktop.setSettingsForm}>先配置模型以开始对话</button>{/if}
+          <WelcomeArt class="welcome-art" />
+          <div class="welcome-content">
+            <div class="welcome-mark"><BrandMark size={30} /></div>
+            <span class="welcome-eyebrow">PRIVATE AGENT WORKSPACE</span>
+            <h1>把想法带进你的工作区</h1>
+            <p class="welcome-copy">选择一个本地项目文件夹，与 Agent 一起阅读代码、讨论方案并完成修改。</p>
+            <button class="primary-button open-workspace" onclick={desktop.openFolderPicker}><span class="button-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></span> 打开工作区</button>
+            {#if !desktop.models.configured}<button class="inline-link welcome-config" onclick={desktop.setSettingsForm}>先配置模型以开始对话</button>{/if}
+            <span class="welcome-note">会话、文件与运行记录只留在这台电脑</span>
+          </div>
         </section>
       {:else if !desktop.session}
         <section class="workspace-loading"><div class="spinner"></div><span>正在载入会话…</span></section>
