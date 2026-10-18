@@ -186,10 +186,11 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		composer:           comp,
 		viewport:           vp,
 		entries:            entries,
-		promptHistory:      historyPrompts,
-		historyIndex:       len(historyPrompts),
-		fileScanner:        NewWorkspaceFileScanner(workspace),
-		transcriptDirty:    true,
+		promptHistory:          historyPrompts,
+		historyIndex:           len(historyPrompts),
+		fileScanner:            NewWorkspaceFileScanner(workspace),
+		reasoningLiveCollapsed: true,
+		transcriptDirty:        true,
 	}
 
 	m.applyThemeStyles()

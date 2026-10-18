@@ -65,6 +65,22 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindQuestionAnswered:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
+		if len(entry.AnsweredQuestions) > 0 {
+			total := entry.QuestionsTotal
+			if total < len(entry.AnsweredQuestions) {
+				total = len(entry.AnsweredQuestions)
+			}
+			title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("Questions %d/%d answered", len(entry.AnsweredQuestions), total))
+			var rows []string
+			rows = append(rows, bullet+title)
+			for _, qa := range entry.AnsweredQuestions {
+				qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(qa.Question))
+				ansLabel := styleTextMuted().Render("    answer: ")
+				ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(qa.Answer)
+				rows = append(rows, qLine, ansLabel+ansVal)
+			}
+			return strings.Join(rows, "\n")
+		}
 		title := styleTextPrimary().Bold(true).Render("Question answered")
 		qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(entry.QuestionText))
 		ansLabel := styleTextMuted().Render("    answer: ")
@@ -205,21 +221,24 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 		}
 	}
 
+	bodyText := strings.TrimSpace(entry.Text)
+	lineCount := 0
+	if bodyText != "" {
+		lineCount = strings.Count(bodyText, "\n") + 1
+	}
+
 	hint := "(ctrl+r to expand)"
 	if entry.ReasoningExpanded {
 		hint = "(ctrl+r to collapse)"
+	} else if lineCount > 1 {
+		hint = fmt.Sprintf("+ %d lines (ctrl+r to expand)", lineCount)
 	}
 
 	titleText := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true).Render(action)
 	hintText := styleTextMuted().Render(" " + hint)
 	header := bullet + titleText + hintText
 
-	if !entry.ReasoningExpanded {
-		return header
-	}
-
-	bodyText := strings.TrimSpace(entry.Text)
-	if bodyText == "" {
+	if !entry.ReasoningExpanded || bodyText == "" {
 		return header
 	}
 
@@ -294,11 +313,112 @@ func isExploreTool(toolName string) bool {
 	}
 }
 
-// renderToolEntry renders tool executions (Running, Ran, Failed, Explored).
+// renderFileChangesCard renders Codex-style Added/Edited/Deleted cards with inline diff line previews.
+func renderFileChangesCard(entry TranscriptEntry, width int) string {
+	th := activeTheme()
+	var blocks []string
+	rowWidth := max(20, width-2)
+
+	for _, ch := range entry.ToolChanges {
+		adds, dels := ch.Added, ch.Removed
+		if adds == 0 && dels == 0 {
+			for _, dl := range ch.Lines {
+				switch dl.Kind {
+				case "add", "+":
+					adds++
+				case "delete", "remove", "-":
+					dels++
+				}
+			}
+		}
+
+		actionWord := "Edited"
+		if strings.EqualFold(entry.ToolName, "write_file") || (adds > 0 && dels == 0 && len(ch.Lines) > 0 && ch.Lines[0].OldLine == 0) {
+			actionWord = "Added"
+		} else if adds == 0 && dels > 0 {
+			actionWord = "Deleted"
+		}
+
+		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render("• ")
+		actionStyled := styleTextPrimary().Bold(true).Render(actionWord)
+		pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Underline(true).Render(ch.Path)
+		addStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(fmt.Sprintf("+%d", adds))
+		delStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render(fmt.Sprintf("-%d", dels))
+		header := fmt.Sprintf("%s%s %s (%s %s)", bullet, actionStyled, pathStyled, addStyled, delStyled)
+
+		var lines []string
+		lines = append(lines, header)
+
+		previewCount := 3
+		if entry.ToolExpanded || len(ch.Lines) <= previewCount {
+			previewCount = len(ch.Lines)
+		}
+
+		maxLineNo := 1
+		for i := 0; i < previewCount; i++ {
+			ln := ch.Lines[i].NewLine
+			if ln <= 0 {
+				ln = ch.Lines[i].OldLine
+			}
+			if ln > maxLineNo {
+				maxLineNo = ln
+			}
+		}
+		numWidth := len(strconv.Itoa(maxLineNo))
+
+		for i := 0; i < previewCount; i++ {
+			dl := ch.Lines[i]
+			ln := dl.NewLine
+			if ln <= 0 {
+				ln = dl.OldLine
+			}
+			if ln <= 0 {
+				ln = i + 1
+			}
+			prefix := " "
+			bgHex := th.CardBg
+			fgHex := th.TextPrimary
+			switch dl.Kind {
+			case "add", "+":
+				prefix = "+"
+				bgHex = th.DiffAddBg
+				fgHex = th.SuccessGreen
+			case "delete", "remove", "-":
+				prefix = "-"
+				bgHex = th.DiffDelBg
+				fgHex = th.FailureRed
+			}
+			rawRow := fmt.Sprintf(" %*d %s%s", numWidth, ln, prefix, dl.Text)
+			truncated := sanitizeAndTruncateLine(rawRow, rowWidth)
+			pad := max(0, rowWidth-lipgloss.Width(truncated))
+			rowStyle := lipgloss.NewStyle().
+				Background(lipgloss.Color(bgHex)).
+				Foreground(lipgloss.Color(fgHex))
+			lines = append(lines, "  "+rowStyle.Render(truncated+strings.Repeat(" ", pad)))
+		}
+
+		if len(ch.Lines) > 0 {
+			if entry.ToolExpanded && len(ch.Lines) > 3 {
+				lines = append(lines, styleTextMuted().Render("  - Hide details"))
+			} else {
+				lines = append(lines, styleTextMuted().Render("  + Show details"))
+			}
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(blocks, "\n\n")
+}
+
+// renderToolEntry renders tool executions (Running, Ran, Failed, Explored, Added/Edited).
 func renderToolEntry(entry TranscriptEntry, width int) string {
 	th := activeTheme()
 	hasNonZeroExit := entry.ToolExitCode != nil && *entry.ToolExitCode != 0
 	isFail := entry.ToolFailed || hasNonZeroExit
+
+	if !entry.ToolRunning && !isFail && len(entry.ToolChanges) > 0 {
+		return renderFileChangesCard(entry, width)
+	}
 
 	var bullet, action string
 	if entry.ToolRunning {
@@ -336,52 +456,37 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 	// Branch indicator
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
 
-	// File changes preview if present
 	var bodyLines []string
 	maxLineLen := max(20, width-8)
-	if len(entry.ToolChanges) > 0 {
-		for idx, ch := range entry.ToolChanges {
-			adds, dels := ch.Added, ch.Removed
-			if adds == 0 && dels == 0 {
-				for _, dl := range ch.Lines {
-					switch dl.Kind {
-					case "add", "+":
-						adds++
-					case "delete", "remove", "-":
-						dels++
-					}
-				}
-			}
-			statLine := fmt.Sprintf("%s (+%d -%d)", ch.Path, adds, dels)
-			prefix := "    "
-			if idx == 0 {
-				prefix = "  " + branch
-			}
-			bodyLines = append(bodyLines, prefix+lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(statLine))
-		}
-		if strings.TrimSpace(entry.ToolOutput) == "" {
-			return header + "\n" + strings.Join(bodyLines, "\n")
-		}
-	}
 
 	// Output preview
 	output := strings.TrimSpace(entry.ToolOutput)
 	if output == "" {
 		if entry.ToolRunning {
-			output = "Running..."
+			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render("Running..."))
 		} else {
-			output = "(no output)"
+			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render("(no output)"))
+			bodyLines = append(bodyLines, styleTextMuted().Render("  + Show details"))
 		}
+		return header + "\n" + strings.Join(bodyLines, "\n")
 	}
+
 	outLines := strings.Split(output, "\n")
 	previewCount := 3
 	if entry.ToolExpanded || len(outLines) <= previewCount {
 		previewCount = len(outLines)
 	}
 
+	// Show the tail (last 3 lines) when collapsed so error summaries, tracebacks,
+	// and final results are immediately visible just like Codex.
+	startIdx := 0
+	if !entry.ToolExpanded && len(outLines) > previewCount {
+		startIdx = len(outLines) - previewCount
+	}
+
 	for i := 0; i < previewCount; i++ {
-		line := sanitizeAndTruncateLine(outLines[i], maxLineLen)
-		if i == 0 && len(bodyLines) == 0 {
+		line := sanitizeAndTruncateLine(outLines[startIdx+i], maxLineLen)
+		if i == 0 {
 			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render(line))
 		} else {
 			bodyLines = append(bodyLines, "    "+styleTextMuted().Render(line))
@@ -1366,7 +1471,7 @@ func renderShortcutsPanel(width int) string {
 
 // renderScrollPill renders the floating hint pill when scrolled away from bottom.
 func renderScrollPill(width int) string {
-	text := "New activity · ↓ Back to bottom · esc"
+	text := "↓ Back to bottom · esc"
 	styled := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(activeTheme().AccentBlue)).
 		Background(lipgloss.Color(activeTheme().CardBg)).

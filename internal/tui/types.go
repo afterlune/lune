@@ -69,8 +69,11 @@ type TranscriptEntry struct {
 	SubagentExpanded bool
 
 	// Question answered specific fields
-	QuestionText string
-	AnswerText   string
+	QuestionBatchID   string
+	QuestionsTotal    int
+	QuestionText      string
+	AnswerText        string
+	AnsweredQuestions []AnsweredQuestionItem
 
 	// Reasoning specific fields
 	ReasoningDuration time.Duration
@@ -79,6 +82,12 @@ type TranscriptEntry struct {
 
 	// File mentions attachments
 	AttachedFiles []string
+}
+
+// AnsweredQuestionItem represents a single question-answer pair in a resolved question batch.
+type AnsweredQuestionItem struct {
+	Question string
+	Answer   string
 }
 
 // AutocompleteItem represents a slash command suggestion.

@@ -1489,11 +1489,37 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.entries = append(m.entries, TranscriptEntry{
-		Kind:         KindQuestionAnswered,
-		QuestionText: qItem.Question,
-		AnswerText:   answerText,
-	})
+	batchID := q.Request.ID
+	if batchID == "" {
+		batchID = q.Request.CallID
+	}
+	if batchID == "" {
+		batchID = "question-batch"
+	}
+	totalQuestions := len(q.Request.Questions)
+	qaItem := AnsweredQuestionItem{
+		Question: qItem.Question,
+		Answer:   answerText,
+	}
+	if len(m.entries) > 0 &&
+		m.entries[len(m.entries)-1].Kind == KindQuestionAnswered &&
+		m.entries[len(m.entries)-1].QuestionBatchID == batchID &&
+		len(m.entries[len(m.entries)-1].AnsweredQuestions) < totalQuestions {
+		last := &m.entries[len(m.entries)-1]
+		last.QuestionText = qItem.Question
+		last.AnswerText = answerText
+		last.QuestionsTotal = totalQuestions
+		last.AnsweredQuestions = append(last.AnsweredQuestions, qaItem)
+	} else {
+		m.entries = append(m.entries, TranscriptEntry{
+			Kind:              KindQuestionAnswered,
+			QuestionBatchID:   batchID,
+			QuestionsTotal:    totalQuestions,
+			QuestionText:      qItem.Question,
+			AnswerText:        answerText,
+			AnsweredQuestions: []AnsweredQuestionItem{qaItem},
+		})
+	}
 	m.invalidateEntryCache()
 
 	q.Answers = append(q.Answers, core.UserQuestionResponse{

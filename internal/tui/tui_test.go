@@ -15,6 +15,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -797,8 +798,8 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	// Press Enter to submit choice 2A for question 2
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if len(m.entries) != 2 || m.entries[1].AnswerText != "Choice 2A" {
-		t.Fatalf("expected Question 2 answered with Choice 2A, got %+v", m.entries)
+	if len(m.entries) != 1 || m.entries[0].AnswerText != "Choice 2A" || len(m.entries[0].AnsweredQuestions) != 2 {
+		t.Fatalf("expected Question 2 merged into batch entry with Choice 2A, got %+v", m.entries)
 	}
 
 	// Active question should now be at Question 3/3 (1 unanswered)
@@ -818,8 +819,15 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	if m.activeQuestion != nil {
 		t.Fatalf("expected activeQuestion to be nil after all questions answered")
 	}
-	if len(m.entries) != 3 {
-		t.Fatalf("expected 3 entries in transcript, got %d", len(m.entries))
+	if len(m.entries) != 1 || len(m.entries[0].AnsweredQuestions) != 3 {
+		t.Fatalf("expected 1 grouped question batch entry with 3 answers, got %+v", m.entries)
+	}
+	renderedAnswered := ansi.Strip(renderEntry(m.entries[0], 100))
+	if !strings.Contains(renderedAnswered, "Questions 3/3 answered") ||
+		!strings.Contains(renderedAnswered, "Choice 1B") ||
+		!strings.Contains(renderedAnswered, "Choice 2A") ||
+		!strings.Contains(renderedAnswered, "Choice 3A") {
+		t.Fatalf("expected grouped Questions 3/3 answered card, got:\n%s", renderedAnswered)
 	}
 }
 
@@ -3469,3 +3477,60 @@ func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
 		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.NoteText)
 	}
 }
+
+func TestCodexExecutionTimelineAlignment(t *testing.T) {
+	// 1. File change card: "• Added .desktop_rework.py (+3 -0)" with line-numbered diff preview and "+ Show details"
+	addedEntry := TranscriptEntry{
+		Kind:     KindTool,
+		ToolName: "write_file",
+		ToolChanges: []publictool.FileChange{
+			{
+				Path:  ".desktop_rework.py",
+				Added: 3,
+				Lines: []publictool.DiffLine{
+					{Kind: "add", NewLine: 1, Text: "from pathlib import Path"},
+					{Kind: "add", NewLine: 2, Text: "import re"},
+					{Kind: "add", NewLine: 3, Text: "p=Path('internal/desktop/service.go')"},
+				},
+			},
+		},
+	}
+	renderedAdded := ansi.Strip(renderEntry(addedEntry, 100))
+	if !strings.Contains(renderedAdded, "• Added .desktop_rework.py (+3 -0)") {
+		t.Fatalf("expected Codex Added file header, got:\n%s", renderedAdded)
+	}
+	if !strings.Contains(renderedAdded, "1 +from pathlib import Path") || !strings.Contains(renderedAdded, "+ Show details") {
+		t.Fatalf("expected inline diff preview and + Show details, got:\n%s", renderedAdded)
+	}
+
+	// 2. Command tail preview: shows the LAST 3 lines of output (e.g. FAIL summary / traceback)
+	exitOne := 1
+	failedEntry := TranscriptEntry{
+		Kind:         KindTool,
+		ToolName:     "run_command",
+		ToolCommand:  "go test ./internal/desktop",
+		ToolOutput:   "line 1 setup\nline 2 compile\nline 3 check\ninternal\\desktop\\service.go:83:6: too many errors\nFAIL\tgithub.com/afterlune/lune/internal/desktop [build failed]\nFAIL",
+		ToolExitCode: &exitOne,
+	}
+	renderedFailed := ansi.Strip(renderEntry(failedEntry, 100))
+	if !strings.Contains(renderedFailed, "Failed (exit 1)") {
+		t.Fatalf("expected Failed (exit 1), got:\n%s", renderedFailed)
+	}
+	if strings.Contains(renderedFailed, "line 1 setup") {
+		t.Fatalf("expected collapsed preview to show tail lines rather than line 1, got:\n%s", renderedFailed)
+	}
+	if !strings.Contains(renderedFailed, "[build failed]") || !strings.Contains(renderedFailed, "+ 3 lines (ctrl+t to expand)") {
+		t.Fatalf("expected tail error lines and expand hint, got:\n%s", renderedFailed)
+	}
+
+	// 3. Borderless horizontal-rule Markdown table
+	mdTable := "| 领域 | 功能 |\n| --- | --- |\n| 会话 | 多会话并行、历史搜索 |\n| 对话 | 流式回复、消息排队 |"
+	renderedTable := ansi.Strip(RenderMarkdown(mdTable, 80))
+	if strings.Contains(renderedTable, "╭") || strings.Contains(renderedTable, "│") {
+		t.Fatalf("expected borderless horizontal-rule table without vertical box borders, got:\n%s", renderedTable)
+	}
+	if !strings.Contains(renderedTable, "领域") || !strings.Contains(renderedTable, "────") || !strings.Contains(renderedTable, "多会话并行") {
+		t.Fatalf("expected table headers, horizontal dividers, and cell text, got:\n%s", renderedTable)
+	}
+}
+

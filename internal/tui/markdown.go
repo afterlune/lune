@@ -5,14 +5,13 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
 )
 
 var (
 	reBold       = regexp.MustCompile(`\*\*(.*?)\*\*`)
 	reInlineCode = regexp.MustCompile("`([^`]+)`")
-	reFileRef    = regexp.MustCompile(`\b([a-zA-Z0-9_\-\.\/\\]+\.(?:go|rs|py|ts|js|json|md|html|css|toml|ya?ml)(?::\d+)?)\b`)
+	reFileRef    = regexp.MustCompile(`\b([a-zA-Z0-9_\-\.\/\\]+\.(?:go|rs|py|ts|js|json|md|html|css|toml|ya?ml|svelte)(?::\d+)?)\b`)
 	reBullet     = regexp.MustCompile(`^(\s*)[-*+]\s+`)
 	reNumbered   = regexp.MustCompile(`^(\s*\d+\.)\s+`)
 )
@@ -21,6 +20,16 @@ const (
 	escapedPipePlaceholder = "\x00PIPE\x00"
 	wrapBreakpoints        = " ,.:;!?、。，；！？"
 )
+
+func isBoxDrawingLine(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '┌', '┐', '└', '┘', '│', '─', '┬', '┴', '├', '┤', '┼', '▲', '▼', '╭', '╮', '╯', '╰':
+			return true
+		}
+	}
+	return false
+}
 
 // RenderMarkdown renders markdown text using terminal styles, wrapping lines to fit width.
 func RenderMarkdown(text string, width int) string {
@@ -39,9 +48,7 @@ func RenderMarkdown(text string, width int) string {
 	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	h3Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextMuted))
 
-	inlineCodeStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary))
+	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
 	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
 
@@ -69,6 +76,14 @@ func RenderMarkdown(text string, width int) string {
 
 		if inCodeBlock {
 			expanded := strings.ReplaceAll(line, "\t", "    ")
+			if isBoxDrawingLine(expanded) {
+				if lipgloss.Width(expanded) > width-2 {
+					expanded = ansi.Truncate(expanded, max(10, width-2), "…")
+				}
+				pad := max(0, width-lipgloss.Width(expanded)-2)
+				result = append(result, codeBlockStyle.Render("  "+expanded+strings.Repeat(" ", pad)))
+				continue
+			}
 			if lipgloss.Width(expanded) > width-4 {
 				wrapped := ansi.Wrap(expanded, max(10, width-4), " .,()[]{}<>;=+-*/\\\"'")
 				for _, wl := range strings.Split(wrapped, "\n") {
@@ -156,11 +171,22 @@ func RenderMarkdown(text string, width int) string {
 
 		// Bullet list (- item, * item, + item)
 		expandedLine := strings.ReplaceAll(line, "\t", "    ")
+		if isBoxDrawingLine(expandedLine) {
+			if lipgloss.Width(expandedLine) > width {
+				expandedLine = ansi.Truncate(expandedLine, width, "…")
+			}
+			result = append(result, expandedLine)
+			continue
+		}
+
 		bulletMatch := reBullet.FindStringSubmatch(expandedLine)
 		if len(bulletMatch) > 0 {
 			indentSpaces := bulletMatch[1]
 			bulletPart := expandedLine[len(indentSpaces):len(bulletMatch[0])]
 			bulletChar := strings.TrimSpace(bulletPart)
+			if bulletChar == "-" || bulletChar == "*" || bulletChar == "+" {
+				bulletChar = "•"
+			}
 			rest := expandedLine[len(bulletMatch[0]):]
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 
@@ -219,9 +245,7 @@ func RenderMarkdown(text string, width int) string {
 
 func formatInline(line string) string {
 	th := activeTheme()
-	inlineCodeStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary))
+	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
 	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
 	return formatInlineWithStyles(line, inlineCodeStyle, boldStyle, fileRefStyle)
@@ -243,7 +267,7 @@ func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipglos
 		line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
 			content := strings.Trim(m, "`")
 			idx := len(renderedCodeSpans)
-			renderedCodeSpans = append(renderedCodeSpans, codeStyle.Render(" "+content+" "))
+			renderedCodeSpans = append(renderedCodeSpans, codeStyle.Render(content))
 			return "\x00INLINECODE_" + itoaByte(idx) + "\x00"
 		})
 	}
@@ -313,19 +337,25 @@ func isTableDelimiterRow(line string) bool {
 	return true
 }
 
+// renderMarkdownTable renders a clean, borderless horizontal-divider table (Codex style).
 func renderMarkdownTable(headerLine string, rowLines []string, width int) []string {
 	headers := splitTableRow(headerLine)
+	numCols := len(headers)
+	if numCols == 0 {
+		return nil
+	}
 	for i := range headers {
 		headers[i] = formatInline(headers[i])
 	}
+
 	var rows [][]string
 	for _, rLine := range rowLines {
 		rowCells := splitTableRow(rLine)
-		for len(rowCells) < len(headers) {
+		for len(rowCells) < numCols {
 			rowCells = append(rowCells, "")
 		}
-		if len(rowCells) > len(headers) {
-			rowCells = rowCells[:len(headers)]
+		if len(rowCells) > numCols {
+			rowCells = rowCells[:numCols]
 		}
 		for i := range rowCells {
 			rowCells[i] = formatInline(rowCells[i])
@@ -333,27 +363,107 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int) []stri
 		rows = append(rows, rowCells)
 	}
 
-	th := activeTheme()
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border))).
-		Headers(headers...).
-		Rows(rows...).
-		Wrap(true)
-
-	t.StyleFunc(func(row, col int) lipgloss.Style {
-		if row == table.HeaderRow {
-			return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	colWidths := make([]int, numCols)
+	for c := 0; c < numCols; c++ {
+		w := lipgloss.Width(headers[c])
+		if w < 4 {
+			w = 4
 		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
-	})
-
-	if width > 20 {
-		t.Width(width)
+		colWidths[c] = w
+	}
+	for _, r := range rows {
+		for c := 0; c < numCols; c++ {
+			if w := lipgloss.Width(r[c]); w > colWidths[c] {
+				colWidths[c] = w
+			}
+		}
 	}
 
-	rendered := t.Render()
-	return strings.Split(rendered, "\n")
+	const colGap = 2
+	totalGap := max(0, (numCols-1)*colGap)
+	availCols := max(numCols*4, width-totalGap)
+
+	totalNatural := 0
+	for _, w := range colWidths {
+		totalNatural += w
+	}
+	if totalNatural > availCols {
+		// Preserve compact label columns (<= 16 chars) and shrink wider columns proportionally.
+		fixedSum := 0
+		flexSum := 0
+		for _, w := range colWidths {
+			if w <= 16 {
+				fixedSum += w
+			} else {
+				flexSum += w
+			}
+		}
+		if fixedSum < availCols/2 && flexSum > 0 {
+			rem := availCols - fixedSum
+			for c, w := range colWidths {
+				if w > 16 {
+					colWidths[c] = max(6, w*rem/flexSum)
+				}
+			}
+		} else {
+			for c, w := range colWidths {
+				colWidths[c] = max(4, w*availCols/totalNatural)
+			}
+		}
+	}
+
+	th := activeTheme()
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border))
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	cellStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
+
+	divParts := make([]string, numCols)
+	for c := 0; c < numCols; c++ {
+		divParts[c] = borderStyle.Render(strings.Repeat("─", colWidths[c]))
+	}
+	dividerLine := strings.Join(divParts, strings.Repeat(" ", colGap))
+
+	renderRow := func(cells []string, isHeader bool) []string {
+		wrappedCols := make([][]string, numCols)
+		maxLines := 1
+		for c := 0; c < numCols; c++ {
+			wrapped := ansi.Wrap(cells[c], colWidths[c], wrapBreakpoints)
+			lines := strings.Split(wrapped, "\n")
+			wrappedCols[c] = lines
+			if len(lines) > maxLines {
+				maxLines = len(lines)
+			}
+		}
+		out := make([]string, 0, maxLines)
+		for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+			lineParts := make([]string, numCols)
+			for c := 0; c < numCols; c++ {
+				cellText := ""
+				if lineIdx < len(wrappedCols[c]) {
+					cellText = wrappedCols[c][lineIdx]
+				}
+				pad := max(0, colWidths[c]-lipgloss.Width(cellText))
+				if isHeader {
+					lineParts[c] = headerStyle.Render(cellText) + strings.Repeat(" ", pad)
+				} else {
+					lineParts[c] = cellStyle.Render(cellText) + strings.Repeat(" ", pad)
+				}
+			}
+			out = append(out, strings.Join(lineParts, strings.Repeat(" ", colGap)))
+		}
+		return out
+	}
+
+	var out []string
+	out = append(out, renderRow(headers, true)...)
+	out = append(out, dividerLine)
+	for rIdx, r := range rows {
+		out = append(out, renderRow(r, false)...)
+		if rIdx < len(rows)-1 {
+			out = append(out, dividerLine)
+		}
+	}
+	return out
 }
 
 // stripProposedPlan removes <proposed_plan>...</proposed_plan> tags and content from raw streamed text.

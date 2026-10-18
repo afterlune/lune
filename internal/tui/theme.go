@@ -34,6 +34,9 @@ type Theme struct {
 	FailureRed   string
 	WarningAmber string
 	ExploredGray string
+	// Diff row background colors
+	DiffAddBg string
+	DiffDelBg string
 }
 
 // LightTheme returns the light theme palette.
@@ -51,6 +54,8 @@ var LightTheme = Theme{
 	FailureRed:   "#CF222E",
 	WarningAmber: "#9A6700",
 	ExploredGray: "#57606A",
+	DiffAddBg:    "#DAFBE1",
+	DiffDelBg:    "#FFEBE9",
 }
 
 // DarkTheme returns the dark equivalent for terminals with dark backgrounds.
@@ -68,6 +73,8 @@ var DarkTheme = Theme{
 	FailureRed:   "#F85149",
 	WarningAmber: "#D29922",
 	ExploredGray: "#8B949E",
+	DiffAddBg:    "#12261E",
+	DiffDelBg:    "#2D1619",
 }
 
 // ThemeMode specifies the theme preference.
