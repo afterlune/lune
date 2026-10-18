@@ -789,12 +789,6 @@ export function createDesktopState() {
     }
   }
 
-  async function openProcessesPage() {
-    processPopoverOpen = true;
-    await refreshDesktopProcesses();
-    if (selectedDesktopProcess) void selectDesktopProcess(selectedDesktopProcess, true);
-  }
-
   function selectSidebarView(view: typeof sidebarView) {
     if (!workspace && view !== 'sessions') return;
     sidebarView = view;

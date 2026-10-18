@@ -132,7 +132,8 @@ button { transition: background-color .14s ease, border-color .14s ease, color .
 .new-chat kbd { margin-left: auto; color: var(--muted); font-family: inherit; font-size: 10px; font-weight: 500; }
 .workspace-row { width: 100%; height: 34px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 8px; padding: 0 8px; color: var(--muted-strong); background: transparent; font-size: 12.5px; text-align: left; }
 .workspace-row:hover { background: var(--hover); color: var(--text); }
-.folder-icon { color: #c28a2a; font-size: 12px; }
+.folder-icon { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+.folder-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-menu { margin-left: auto; color: var(--muted); }
 .sidebar-nav { display: flex; flex-direction: column; gap: 1px; margin: 6px 0 8px; padding: 6px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -188,7 +189,8 @@ button { transition: background-color .14s ease, border-color .14s ease, color .
 .welcome-icon { width: 46px; height: 46px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 14px; color: #fff; background: var(--blue); font-size: 22px; font-weight: 700; }
 .welcome h1 { margin: 0 0 10px; font-size: 28px; font-weight: 650; letter-spacing: -.025em; }
 .welcome-copy { max-width: 440px; margin: 0 0 26px; color: var(--muted); font-size: 14px; line-height: 1.65; }
-.open-workspace { height: 40px; padding: 0 18px; border: 0; border-radius: 10px; color: var(--accent-contrast); background: var(--accent); font-size: 13px; font-weight: 600; }
+.open-workspace { height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 0 18px; border: 0; border-radius: 10px; color: var(--accent-contrast); background: var(--accent); font-size: 13px; font-weight: 600; }
+.open-workspace .button-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; vertical-align: -2px; }
 .welcome-config { margin-top: 12px; }
 .boot { display: flex; align-items: center; justify-content: center; gap: 10px; height: 100%; color: var(--muted); font-size: 13px; }
 .workspace-loading { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 13px; }

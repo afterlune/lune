@@ -90,6 +90,19 @@ test('anime appearance preview is editable only in settings and Cancel restores 
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
+test('dialogs move focus inside, close with Escape, and restore focus', async ({ page }) => {
+  await page.goto('/?preview=1');
+  const settingsButton = page.locator('.nav-settings');
+  await settingsButton.focus();
+  await settingsButton.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('input, textarea, select').first()).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(settingsButton).toBeFocused();
+});
+
 test('assistant responses expose copy and safe last-response regeneration actions', async ({ page }) => {
   await page.goto('/?preview=1');
   const actions = page.locator('.assistant-message-actions');
@@ -177,8 +190,10 @@ test('process popover closes on outside click and Escape', async ({ page }) => {
 
   await page.getByRole('button', { name: /后台进程/ }).click();
   await expect(popover).toBeVisible();
+  await expect(popover).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(popover).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /后台进程/ })).toBeFocused();
 });
 
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {

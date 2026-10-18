@@ -1,9 +1,12 @@
 <script lang="ts">
-import { onMount } from 'svelte';
+import { onMount, tick } from 'svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
+let popoverRoot = $state<HTMLElement | null>(null);
 
 onMount(() => {
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  void tick().then(() => popoverRoot?.focus());
   const closeOnOutsidePointer = (event: PointerEvent) => {
     const target = event.target as Element | null;
     if (target?.closest('.process-popover, .process-chip')) return;
@@ -17,11 +20,12 @@ onMount(() => {
   return () => {
     window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
     window.removeEventListener('keydown', closeOnEscape);
+    if (previousFocus?.isConnected) previousFocus.focus();
   };
 });
 </script>
 
-<div class="process-popover" role="dialog" aria-modal="true" aria-label="后台进程">
+<div class="process-popover" role="dialog" aria-label="后台进程" tabindex="-1" bind:this={popoverRoot}>
   <header class="process-popover-heading">
     <div>
       <strong>后台进程</strong>

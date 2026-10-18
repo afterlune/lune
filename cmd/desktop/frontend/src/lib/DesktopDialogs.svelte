@@ -1,14 +1,72 @@
 <script lang="ts">
+import { tick } from 'svelte';
 import ProjectSettingsDialog from './ProjectSettingsDialog.svelte';
 import ModelSettingsDialog from './ModelSettingsDialog.svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
+let modalRoot = $state<HTMLElement | null>(null);
+let wasOpen = false;
+let previousFocus: HTMLElement | null = null;
+
+function closeDialog() {
+  if (desktop.modal === 'settings') {
+    desktop.cancelSettings();
+    return;
+  }
+  desktop.modal = null;
+  desktop.editConfirmation = null;
+  desktop.sessionActionTarget = null;
+}
+
+function focusableElements() {
+  if (!modalRoot) return [];
+  return [...modalRoot.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => element.getClientRects().length > 0);
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeDialog();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusables = focusableElements();
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables.at(-1)!;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+$effect(() => {
+  const open = desktop.modal !== null;
+  if (open === wasOpen) return;
+  wasOpen = open;
+  if (open) {
+    previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    void tick().then(() => {
+      if (!modalRoot) return;
+      const target = modalRoot.querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled]), select:not([disabled])')
+        ?? modalRoot.querySelector<HTMLElement>('.modal-footer .quiet-button:not([disabled])')
+        ?? modalRoot.querySelector<HTMLElement>('button:not([disabled])');
+      target?.focus();
+    });
+  } else {
+    previousFocus?.focus();
+    previousFocus = null;
+  }
+});
 </script>
 {#if desktop.modal}
-  <div class="modal-backdrop" role="presentation" onclick={(event) => {
+  <div class="modal-backdrop" role="presentation" bind:this={modalRoot} onkeydown={handleKeydown} onclick={(event) => {
     if (event.target !== event.currentTarget) return;
-    if (desktop.modal === 'settings') desktop.cancelSettings();
-    else { desktop.modal = null; desktop.editConfirmation = null; }
+    closeDialog();
   }}>
     {#if desktop.modal === 'settings'}<ModelSettingsDialog {desktop} />{:else if desktop.modal === 'rename-session' && desktop.sessionActionTarget}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title" tabindex="-1">

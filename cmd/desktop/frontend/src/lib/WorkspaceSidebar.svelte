@@ -30,7 +30,7 @@ onMount(() => {
 
   {#if desktop.workspace}
     <button class="workspace-row active" title={`切换工作区 · ${desktop.workspace}`} aria-label={`切换工作区 ${desktop.workspace}`} onclick={desktop.openFolderPicker}>
-      <span class="folder-icon">▰</span><span class="workspace-name">{desktop.workspace.split(/[\\/]/).at(-1) || desktop.workspace}</span><span class="workspace-menu">⌄</span>
+      <span class="folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></span><span class="workspace-name">{desktop.workspace.split(/[\\/]/).at(-1) || desktop.workspace}</span><span class="workspace-menu">⌄</span>
     </button>
 
     <nav class="sidebar-nav" aria-label="主导航">
@@ -109,7 +109,7 @@ onMount(() => {
       <div class="sidebar-section"><span>最近打开</span></div>
       {#each desktop.recent as item (item.path)}
         <button class="recent-row" title={item.path} onclick={() => void desktop.openWorkspace(item.path)}>
-          <span class="folder-icon">▰</span><span>{item.path.split(/[\\/]/).at(-1)}</span>
+          <span class="folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></span><span>{item.path.split(/[\\/]/).at(-1)}</span>
         </button>
       {/each}
     {/if}

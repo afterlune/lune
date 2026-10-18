@@ -89,7 +89,7 @@ const desktop = createDesktopState();
           <div class="welcome-icon"><span>l</span></div>
           <h1>把想法带进你的工作区</h1>
           <p class="welcome-copy">选择一个本地项目文件夹，与 Agent 一起阅读代码、讨论方案并完成修改。</p>
-          <button class="primary-button open-workspace" onclick={desktop.openFolderPicker}><span>▧</span> 打开工作区</button>
+          <button class="primary-button open-workspace" onclick={desktop.openFolderPicker}><span class="button-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h5l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></svg></span> 打开工作区</button>
           {#if !desktop.models.configured}<button class="inline-link welcome-config" onclick={desktop.setSettingsForm}>先配置模型以开始对话</button>{/if}
         </section>
       {:else if !desktop.session}
