@@ -25,6 +25,8 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/model", Description: "choose an active model profile"},
 	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
 	{Command: "/memory", Description: "view and manage workspace long-term memories"},
+	{Command: "/agents", Description: "list and inspect subagents in this session: /agents [id]"},
+	{Command: "/subagents", Description: "alias for /agents"},
 	{Command: "/ps", Description: "list background processes and daemon commands in session"},
 	{Command: "/stop", Description: "stop running background process: /stop <id|all>"},
 	{Command: "/logs", Description: "view output logs of a background process: /logs <id>"},
@@ -499,6 +501,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/logs":
 		return m.handleLogsCommand(parts)
 
+	case "/agents", "/subagents":
+		return m.handleAgentsCommand(parts)
+
 	case "/context":
 		contextText := m.renderContextDiagnostics()
 		m.addSystemEntry(contextText)
@@ -620,6 +625,11 @@ func (m *tuiModel) renderStatusTable() string {
 			}
 			lines = append(lines, fmt.Sprintf("Background Ps:  %d active (%d total)", active, len(cmds)))
 		}
+	}
+
+	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
+		activeSubs := m.activeSubagentsCount()
+		lines = append(lines, fmt.Sprintf("Subagents:      %d active (%d total)", activeSubs, totalSubs))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1392,6 +1402,10 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 	lines = append(lines, fmt.Sprintf("- Conversation turns: %d total (%d user, %d assistant, %d tool calls)",
 		len(m.entries), userTurns, asstTurns, toolTurns))
+	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
+		activeSubs := m.activeSubagentsCount()
+		lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session, use `/agents` to inspect)", activeSubs, totalSubs))
+	}
 
 	// 6. Workspace Memory
 	lines = append(lines, "\n**Workspace Memory:**")
@@ -1863,6 +1877,99 @@ func (m *tuiModel) handleLogsCommand(parts []string) (tea.Model, tea.Cmd) {
 
 	logBlock := "```\n" + strings.Join(rawLines, "\n") + "\n```"
 	m.addSystemEntry(header + "\n" + logBlock)
+	return m, nil
+}
+
+func (m *tuiModel) handleAgentsCommand(parts []string) (tea.Model, tea.Cmd) {
+	subs := m.getSubagentEntries()
+	if len(subs) == 0 {
+		m.addSystemEntry("No subagents have been invoked in this session yet.")
+		return m, nil
+	}
+
+	if len(parts) > 1 {
+		target := strings.TrimSpace(parts[1])
+		var targetEntry *TranscriptEntry
+		// Try parsing as 1-based index
+		if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(subs) {
+			targetEntry = &subs[idx-1]
+		} else {
+			// Search by AgentID or AgentName
+			for i := range subs {
+				if strings.EqualFold(subs[i].AgentID, target) || strings.EqualFold(subs[i].AgentName, target) {
+					targetEntry = &subs[i]
+					break
+				}
+			}
+		}
+
+		if targetEntry == nil {
+			m.addSystemEntry(fmt.Sprintf("Subagent `%s` not found. Use `/agents` to list all subagents.", target))
+			return m, nil
+		}
+
+		status := "Completed"
+		if targetEntry.SubagentRunning {
+			status = "Running"
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("**Subagent Details: %s**", targetEntry.AgentName))
+		lines = append(lines, fmt.Sprintf("- ID: `%s`", targetEntry.AgentID))
+		if targetEntry.AgentRole != "" {
+			lines = append(lines, fmt.Sprintf("- Role: `%s`", targetEntry.AgentRole))
+		}
+		lines = append(lines, fmt.Sprintf("- Status: %s", status))
+		if targetEntry.SubagentTools > 0 {
+			lines = append(lines, fmt.Sprintf("- Tools Executed: %d", targetEntry.SubagentTools))
+		}
+		if targetEntry.SubagentDuration > 0 {
+			lines = append(lines, fmt.Sprintf("- Duration: %s", formatDuration(targetEntry.SubagentDuration)))
+		}
+		if targetEntry.SubagentPreview != "" {
+			lines = append(lines, fmt.Sprintf("- Latest Activity: %s", targetEntry.SubagentPreview))
+		}
+		if strings.TrimSpace(targetEntry.Text) != "" {
+			lines = append(lines, "\n**Transcript / Output:**\n")
+			lines = append(lines, strings.TrimSpace(targetEntry.Text))
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+	}
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("**Subagents in Session (%d total):**\n", len(subs)))
+	lines = append(lines, "| # | Name / ID | Role | Status | Tools | Duration | Latest Activity |")
+	lines = append(lines, "|---|-----------|------|--------|-------|----------|-----------------|")
+	for i, sub := range subs {
+		name := sub.AgentName
+		if name == "" {
+			name = sub.AgentID
+		}
+		role := sub.AgentRole
+		if role == "" {
+			role = "-"
+		}
+		status := "Completed"
+		if sub.SubagentRunning {
+			status = "Running"
+		}
+		dur := "-"
+		if sub.SubagentDuration > 0 {
+			dur = formatDuration(sub.SubagentDuration)
+		}
+		tools := fmt.Sprintf("%d", sub.SubagentTools)
+		prev := strings.ReplaceAll(sub.SubagentPreview, "|", "/")
+		if prev == "" {
+			prev = "-"
+		}
+		if len(prev) > 40 {
+			prev = prev[:37] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("| %d | %s | %s | %s | %s | %s | %s |",
+			i+1, name, role, status, tools, dur, prev))
+	}
+	lines = append(lines, "\nUse `/agents <#|id>` to view full details and transcript of a subagent.")
+	m.addSystemEntry(strings.Join(lines, "\n"))
 	return m, nil
 }
 

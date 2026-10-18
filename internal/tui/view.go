@@ -92,15 +92,17 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		return bullet + title + "\n" + qLine + "\n" + ansLabel + ansVal
 
 	case KindPlan:
-		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		title := styleTextPrimary().Bold(true).Render("Proposed Plan")
-		cardStyle := lipgloss.NewStyle().
-			Background(lipgloss.Color(activeTheme().CardBg)).
-			Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-			Padding(1, 2).
-			Width(max(20, width-4))
-		body := renderCardSurface(cardStyle, RenderMarkdown(entry.Text, width-8))
-		return bullet + title + "\n\n" + body
+		th := activeTheme()
+		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("• ")
+		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
+		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
+		rendered := RenderMarkdown(entry.Text, max(20, width-6))
+		var outLines []string
+		outLines = append(outLines, bullet+title)
+		for _, line := range strings.Split(rendered, "\n") {
+			outLines = append(outLines, "  "+bar+line)
+		}
+		return strings.Join(outLines, "\n")
 
 	case KindSystem:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
@@ -166,12 +168,20 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 	if entry.AgentRole != "" {
 		roleStyled = styleTextMuted().Render(" (" + entry.AgentRole + ")")
 	}
+	toolsStyled := ""
+	if entry.SubagentTools > 0 {
+		toolsWord := "tools"
+		if entry.SubagentTools == 1 {
+			toolsWord = "tool"
+		}
+		toolsStyled = styleTextMuted().Render(fmt.Sprintf(" · %d %s", entry.SubagentTools, toolsWord))
+	}
 	durStyled := ""
 	if !entry.SubagentRunning && entry.SubagentDuration > 0 {
 		durStyled = styleTextMuted().Render(" · " + formatDuration(entry.SubagentDuration))
 	}
 
-	header := bullet + action + " " + nameStyled + roleStyled + durStyled
+	header := bullet + action + " " + nameStyled + roleStyled + toolsStyled + durStyled
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
 
 	if entry.SubagentExpanded && strings.TrimSpace(entry.Text) != "" {
@@ -188,13 +198,21 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 	preview := strings.TrimSpace(entry.SubagentPreview)
 	if preview == "" {
 		if entry.SubagentRunning {
-			preview = "Working..."
+			if entry.SubagentLastTool != "" {
+				preview = fmt.Sprintf("Running %s...", entry.SubagentLastTool)
+			} else {
+				preview = "Working..."
+			}
 		} else {
 			preview = "Completed"
 		}
 	}
 	preview = sanitizeAndTruncateLine(preview, max(20, width-8))
-	return header + "\n  " + branch + styleTextMuted().Render(preview)
+	collapseHint := ""
+	if strings.TrimSpace(entry.Text) != "" {
+		collapseHint = styleTextMuted().Render(" (click to expand)")
+	}
+	return header + "\n  " + branch + styleTextMuted().Render(preview) + collapseHint
 }
 
 // renderReasoningEntry renders a model thinking / chain-of-thought block.
@@ -511,9 +529,9 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 	return header + "\n" + strings.Join(bodyLines, "\n")
 }
 
-// isCoreRoundKind returns true for primary execution step kinds (Tool, Reasoning, Subagent).
+// isCoreRoundKind returns true for primary execution step kinds (Tool, Reasoning).
 func isCoreRoundKind(kind EntryKind) bool {
-	return kind == KindTool || kind == KindReasoning || kind == KindSubagent
+	return kind == KindTool || kind == KindReasoning
 }
 
 // isRoundCandidateKind returns true for kinds that can belong to a tool round.
@@ -1053,14 +1071,18 @@ func formatDuration(d time.Duration) string {
 }
 
 // renderWorking renders the active working indicator.
-func renderWorking(elapsed time.Duration, thinking bool) string {
+func renderWorking(elapsed time.Duration, thinking bool, subagentsSummary ...string) string {
 	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
 	timeStr := formatDuration(elapsed)
 	action := "Working"
 	if thinking {
 		action = "Thinking"
 	}
-	title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%s (%s • esc to interrupt)", action, timeStr))
+	titleText := fmt.Sprintf("%s (%s • esc to interrupt)", action, timeStr)
+	if len(subagentsSummary) > 0 && subagentsSummary[0] != "" {
+		titleText = fmt.Sprintf("%s (%s · %s • esc to interrupt)", action, timeStr, subagentsSummary[0])
+	}
+	title := styleTextPrimary().Bold(true).Render(titleText)
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("└ ")
 	tip := styleTextMuted().Render("Tip: Use Up/Down to navigate prompt history; Esc to interrupt.")
 	return bullet + title + "\n  " + branch + tip
@@ -2058,6 +2080,14 @@ func renderFooter(m *tuiModel, width int) string {
 	if title != "" {
 		leftItems = append(leftItems, title)
 	}
+	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
+		activeSubs := m.activeSubagentsCount()
+		if activeSubs > 0 {
+			leftItems = append(leftItems, fmt.Sprintf("🤖 %d/%d subagents", activeSubs, totalSubs))
+		} else {
+			leftItems = append(leftItems, fmt.Sprintf("🤖 %d subagents", totalSubs))
+		}
+	}
 	rawLeft := strings.Join(leftItems, " · ")
 	maxLeftWidth := max(10, width-rightLen-2)
 	if lipgloss.Width(rawLeft) > maxLeftWidth {
@@ -2071,6 +2101,9 @@ func renderFooter(m *tuiModel, width int) string {
 
 	// Line 2: ? for shortcuts (left) + contextual hint (right)
 	line2Left := styleTextMuted().Render("? for shortcuts")
+	if m.totalSubagentsCount() > 0 {
+		line2Left = styleTextMuted().Render("? for shortcuts · /agents to inspect")
+	}
 	var line2RightText string
 	if m.running {
 		if m.hasActivePlan() {

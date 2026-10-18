@@ -436,6 +436,115 @@ func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, run
 	m.invalidateEntryCache()
 }
 
+func (m *tuiModel) activeSubagentsCount() int {
+	count := 0
+	for i := range m.entries {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].SubagentRunning {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *tuiModel) totalSubagentsCount() int {
+	count := 0
+	for i := range m.entries {
+		if m.entries[i].Kind == KindSubagent {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *tuiModel) getSubagentEntries() []TranscriptEntry {
+	var subs []TranscriptEntry
+	for _, e := range m.entries {
+		if e.Kind == KindSubagent {
+			subs = append(subs, e)
+		}
+	}
+	return subs
+}
+
+func (m *tuiModel) subagentsStatusSummary() string {
+	active := m.activeSubagentsCount()
+	total := m.totalSubagentsCount()
+	if total == 0 {
+		return ""
+	}
+	if active > 0 {
+		if active == 1 {
+			return "1 subagent running"
+		}
+		return fmt.Sprintf("%d subagents running", active)
+	}
+	if total == 1 {
+		return "1 subagent"
+	}
+	return fmt.Sprintf("%d subagents", total)
+}
+
+func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, toolName, toolArgs string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || agentID == "lead" {
+		return
+	}
+	displayName := strings.TrimSpace(agentName)
+	if displayName == "" {
+		displayName = agentID
+	}
+	preview := fmt.Sprintf("Running %s...", toolName)
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			m.entries[i].SubagentRunning = true
+			m.entries[i].SubagentTools++
+			m.entries[i].SubagentLastTool = toolName
+			m.entries[i].SubagentPreview = preview
+			if displayName != "" && displayName != agentID {
+				m.entries[i].AgentName = displayName
+			}
+			if agentRole != "" {
+				m.entries[i].AgentRole = agentRole
+			}
+			m.transcriptDirty = true
+			m.invalidateEntryCache()
+			return
+		}
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:               "subagent-" + agentID,
+		Kind:             KindSubagent,
+		AgentID:          agentID,
+		AgentName:        displayName,
+		AgentRole:        agentRole,
+		SubagentRunning:  true,
+		SubagentTools:    1,
+		SubagentLastTool: toolName,
+		SubagentPreview:  preview,
+		Timestamp:        time.Now(),
+	})
+	m.transcriptDirty = true
+	m.invalidateEntryCache()
+}
+
+func (m *tuiModel) recordSubagentToolFinished(agentID, toolName string, dur time.Duration) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || agentID == "lead" {
+		return
+	}
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			if dur > 0 {
+				m.entries[i].SubagentDuration += dur
+			}
+			m.entries[i].SubagentPreview = fmt.Sprintf("Finished %s", toolName)
+			m.transcriptDirty = true
+			m.invalidateEntryCache()
+			return
+		}
+	}
+}
+
 func (m *tuiModel) upsertSubagentStream(event core.Event) {
 	agentID := strings.TrimSpace(event.AgentID)
 	if agentID == "" || agentID == "lead" || event.Stream == nil {
@@ -575,6 +684,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
+		agentID := strings.TrimSpace(event.AgentID)
+		if agentID != "" && agentID != "lead" {
+			m.recordSubagentToolStarted(agentID, event.AgentName, event.AgentRole, event.Tool.Name, string(event.Tool.Arguments))
+			return m, nil
+		}
 		m.flushReasoningEntry()
 		m.flushStreamTextEntry()
 		m.thinking = false
@@ -638,6 +752,10 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
+		agentID := strings.TrimSpace(event.AgentID)
+		if agentID != "" && agentID != "lead" {
+			return m, nil
+		}
 		if event.Tool.Details != nil {
 			outText := event.Tool.Details.Output
 			cmdOverride := ""
@@ -694,6 +812,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 
 	case core.EventToolFinished:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
+			return m, nil
+		}
+		agentID := strings.TrimSpace(event.AgentID)
+		if agentID != "" && agentID != "lead" {
+			m.recordSubagentToolFinished(agentID, event.Tool.Name, event.Tool.Duration)
 			return m, nil
 		}
 		isFailed := event.Tool.Failed ||

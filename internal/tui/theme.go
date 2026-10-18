@@ -37,14 +37,18 @@ type Theme struct {
 	// Diff row background colors
 	DiffAddBg string
 	DiffDelBg string
+	// Inline code & code block tokens
+	InlineCodeBg string
+	InlineCodeFg string
+	CodeBlockBg  string
 }
 
 // LightTheme returns the light theme palette.
 var LightTheme = Theme{
 	Canvas:       "#FFFFFF",
-	CardBg:       "#F6F8FA",
-	TextPrimary:  "#1F2328",
-	TextMuted:    "#656D76",
+	CardBg:       "#F4F6F8",
+	TextPrimary:  "#24292F",
+	TextMuted:    "#6E7781",
 	AccentBlue:   "#0969DA",
 	SelectBg:     "#A4CDFB",
 	SelectFg:     "#0550AE",
@@ -56,6 +60,9 @@ var LightTheme = Theme{
 	ExploredGray: "#57606A",
 	DiffAddBg:    "#DAFBE1",
 	DiffDelBg:    "#FFEBE9",
+	InlineCodeBg: "",
+	InlineCodeFg: "#0550AE",
+	CodeBlockBg:  "",
 }
 
 // DarkTheme returns the dark equivalent for terminals with dark backgrounds.
@@ -75,6 +82,9 @@ var DarkTheme = Theme{
 	ExploredGray: "#8B949E",
 	DiffAddBg:    "#12261E",
 	DiffDelBg:    "#2D1619",
+	InlineCodeBg: "",
+	InlineCodeFg: "#79C0FF",
+	CodeBlockBg:  "",
 }
 
 // ThemeMode specifies the theme preference.

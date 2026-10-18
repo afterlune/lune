@@ -31,26 +31,87 @@ func isBoxDrawingLine(s string) bool {
 	return false
 }
 
+// splitCodeComment separates a code line into its active command/code part and trailing # or // comment.
+func splitCodeComment(line string) (string, string) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+		return "", line
+	}
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if ch == '\\' && (inSingle || inDouble) {
+			i++
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if !inSingle && !inDouble && i > 0 && (line[i-1] == ' ' || line[i-1] == '\t') {
+			if ch == '#' {
+				return line[:i], line[i:]
+			}
+			if ch == '/' && i+1 < len(line) && line[i+1] == '/' {
+				return line[:i], line[i:]
+			}
+		}
+	}
+	return line, ""
+}
+
+func renderCodeBlockRow(line string, blockWidth int, th Theme) string {
+	codeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(th.TextPrimary))
+	if th.CodeBlockBg != "" {
+		codeStyle = codeStyle.Background(lipgloss.Color(th.CodeBlockBg))
+	}
+	commentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(th.TextMuted)).
+		Italic(true)
+	if th.CodeBlockBg != "" {
+		commentStyle = commentStyle.Background(lipgloss.Color(th.CodeBlockBg))
+	}
+
+	codePart, commentPart := splitCodeComment(line)
+
+	var b strings.Builder
+	b.WriteString("  ")
+	if codePart != "" {
+		b.WriteString(codeStyle.Render(codePart))
+	}
+	if commentPart != "" {
+		b.WriteString(commentStyle.Render(commentPart))
+	}
+	return b.String()
+}
+
 // RenderMarkdown renders markdown text using terminal styles, wrapping lines to fit width.
 func RenderMarkdown(text string, width int) string {
 	if width <= 0 {
 		width = 80
 	}
+	proseWidth := width
+	codeWidth := width
+
 	lines := strings.Split(text, "\n")
 	result := make([]string, 0, len(lines))
 	inCodeBlock := false
 
 	th := activeTheme()
-	codeBlockStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary))
-	h1Style := lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(th.TextPrimary))
+	h1Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	h3Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextMuted))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
 
-	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
+	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.InlineCodeFg))
 	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
-	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
+	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
 
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSuffix(lines[i], "\r")
@@ -60,13 +121,10 @@ func RenderMarkdown(text string, width int) string {
 				inCodeBlock = true
 				lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
 				if lang != "" {
-					headerText := "  " + lang
-					pad := max(0, width-lipgloss.Width(headerText))
 					headerStyle := lipgloss.NewStyle().
-						Background(lipgloss.Color(th.CardBg)).
 						Foreground(lipgloss.Color(th.TextMuted)).
 						Bold(true)
-					result = append(result, headerStyle.Render(headerText+strings.Repeat(" ", pad)))
+					result = append(result, "  "+headerStyle.Render(lang))
 				}
 			} else {
 				inCodeBlock = false
@@ -77,22 +135,19 @@ func RenderMarkdown(text string, width int) string {
 		if inCodeBlock {
 			expanded := strings.ReplaceAll(line, "\t", "    ")
 			if isBoxDrawingLine(expanded) {
-				if lipgloss.Width(expanded) > width-2 {
-					expanded = ansi.Truncate(expanded, max(10, width-2), "…")
+				if lipgloss.Width(expanded) > codeWidth-2 {
+					expanded = ansi.Truncate(expanded, max(10, codeWidth-2), "…")
 				}
-				pad := max(0, width-lipgloss.Width(expanded)-2)
-				result = append(result, codeBlockStyle.Render("  "+expanded+strings.Repeat(" ", pad)))
+				result = append(result, renderCodeBlockRow(expanded, codeWidth, th))
 				continue
 			}
-			if lipgloss.Width(expanded) > width-4 {
-				wrapped := ansi.Wrap(expanded, max(10, width-4), " .,()[]{}<>;=+-*/\\\"'")
+			if lipgloss.Width(expanded) > codeWidth-4 {
+				wrapped := ansi.Wrap(expanded, max(10, codeWidth-4), " .,()[]{}<>;=+-*/\\\"'")
 				for _, wl := range strings.Split(wrapped, "\n") {
-					pad := max(0, width-lipgloss.Width(wl)-2)
-					result = append(result, codeBlockStyle.Render("  "+wl+strings.Repeat(" ", pad)))
+					result = append(result, renderCodeBlockRow(wl, codeWidth, th))
 				}
 			} else {
-				pad := max(0, width-lipgloss.Width(expanded)-2)
-				result = append(result, codeBlockStyle.Render("  "+expanded+strings.Repeat(" ", pad)))
+				result = append(result, renderCodeBlockRow(expanded, codeWidth, th))
 			}
 			continue
 		}
@@ -106,7 +161,7 @@ func RenderMarkdown(text string, width int) string {
 		// Horizontal rule
 		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
 			hr := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).
-				Render(strings.Repeat("─", min(width, 40)))
+				Render(strings.Repeat("─", min(proseWidth, 48)))
 			result = append(result, hr)
 			continue
 		}
@@ -118,8 +173,11 @@ func RenderMarkdown(text string, width int) string {
 				hashes++
 			}
 			if hashes >= 1 && hashes <= 6 && hashes < len(trimmed) && trimmed[hashes] == ' ' {
+				if len(result) > 0 && result[len(result)-1] != "" {
+					result = append(result, "")
+				}
 				title := formatInlineWithStyles(strings.TrimSpace(trimmed[hashes+1:]), inlineCodeStyle, boldStyle, fileRefStyle)
-				wrapped := ansi.Wrap(title, width, wrapBreakpoints)
+				wrapped := ansi.Wrap(title, proseWidth, wrapBreakpoints)
 				var style lipgloss.Style
 				switch hashes {
 				case 1:
@@ -161,7 +219,7 @@ func RenderMarkdown(text string, width int) string {
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 			bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render("│ ")
 			barWidth := 2
-			wrapWidth := max(10, width-barWidth)
+			wrapWidth := max(10, proseWidth-barWidth)
 			wrapped := ansi.Wrap(formatted, wrapWidth, wrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				result = append(result, bar+wl)
@@ -190,15 +248,16 @@ func RenderMarkdown(text string, width int) string {
 			rest := expandedLine[len(bulletMatch[0]):]
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 
-			prefix := indentSpaces + bulletChar + " "
-			prefixWidth := lipgloss.Width(prefix)
-			wrapWidth := max(10, width-prefixWidth)
+			rawPrefix := indentSpaces + bulletChar + " "
+			styledPrefix := indentSpaces + mutedStyle.Render(bulletChar) + " "
+			prefixWidth := lipgloss.Width(rawPrefix)
+			wrapWidth := max(10, proseWidth-prefixWidth)
 			indent := strings.Repeat(" ", prefixWidth)
 
 			wrapped := ansi.Wrap(formatted, wrapWidth, wrapBreakpoints)
 			for j, wl := range strings.Split(wrapped, "\n") {
 				if j == 0 {
-					result = append(result, prefix+wl)
+					result = append(result, styledPrefix+wl)
 				} else {
 					result = append(result, indent+wl)
 				}
@@ -209,18 +268,22 @@ func RenderMarkdown(text string, width int) string {
 		// Numbered list (1. item, 2. item)
 		numMatch := reNumbered.FindStringSubmatch(expandedLine)
 		if len(numMatch) > 0 {
-			prefix := numMatch[0]
-			rest := expandedLine[len(prefix):]
+			rawPrefix := numMatch[0]
+			numToken := numMatch[1]
+			leadSpaces := numToken[:len(numToken)-len(strings.TrimLeft(numToken, " "))]
+			numStr := strings.TrimSpace(numToken)
+			styledPrefix := leadSpaces + mutedStyle.Render(numStr) + " "
+			rest := expandedLine[len(rawPrefix):]
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 
-			prefixWidth := lipgloss.Width(prefix)
-			wrapWidth := max(10, width-prefixWidth)
+			prefixWidth := lipgloss.Width(rawPrefix)
+			wrapWidth := max(10, proseWidth-prefixWidth)
 			indent := strings.Repeat(" ", prefixWidth)
 
 			wrapped := ansi.Wrap(formatted, wrapWidth, wrapBreakpoints)
 			for j, wl := range strings.Split(wrapped, "\n") {
 				if j == 0 {
-					result = append(result, prefix+wl)
+					result = append(result, styledPrefix+wl)
 				} else {
 					result = append(result, indent+wl)
 				}
@@ -230,8 +293,8 @@ func RenderMarkdown(text string, width int) string {
 
 		// Normal paragraph with inline formatting and word wrap
 		formatted := formatInlineWithStyles(expandedLine, inlineCodeStyle, boldStyle, fileRefStyle)
-		if lipgloss.Width(formatted) > width {
-			wrapped := ansi.Wrap(formatted, width, wrapBreakpoints)
+		if lipgloss.Width(formatted) > proseWidth {
+			wrapped := ansi.Wrap(formatted, proseWidth, wrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				result = append(result, wl)
 			}
@@ -245,9 +308,9 @@ func RenderMarkdown(text string, width int) string {
 
 func formatInline(line string) string {
 	th := activeTheme()
-	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
+	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.InlineCodeFg))
 	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
-	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
+	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
 	return formatInlineWithStyles(line, inlineCodeStyle, boldStyle, fileRefStyle)
 }
 
@@ -260,38 +323,40 @@ func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipglos
 		return line
 	}
 
-	// Tokenize inline code spans first so file-reference or bold regexes never
-	// match inside inline code or corrupt its ANSI escape sequences.
-	var renderedCodeSpans []string
+	var renderedTokens []string
+
+	// 1. Tokenize inline code spans first: `code`
 	if hasBacktick {
 		line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
 			content := strings.Trim(m, "`")
-			idx := len(renderedCodeSpans)
-			renderedCodeSpans = append(renderedCodeSpans, codeStyle.Render(content))
-			return "\x00INLINECODE_" + itoaByte(idx) + "\x00"
+			idx := len(renderedTokens)
+			renderedTokens = append(renderedTokens, codeStyle.Render(content))
+			return "\x00TOKEN_" + itoaByte(idx) + "\x00"
 		})
 	}
 
+	// 2. Tokenize bold spans: **bold**
 	if hasAsterisk {
 		line = reBold.ReplaceAllStringFunc(line, func(m string) string {
 			content := strings.Trim(m, "*")
-			if hasDot {
-				content = reFileRef.ReplaceAllStringFunc(content, func(fm string) string {
-					return fileStyle.Bold(true).Render(fm)
-				})
-			}
-			return boldStyle.Render(content)
+			idx := len(renderedTokens)
+			renderedTokens = append(renderedTokens, boldStyle.Render(content))
+			return "\x00TOKEN_" + itoaByte(idx) + "\x00"
 		})
 	}
 
+	// 3. For any remaining plain text, if hasDot, match file references on un-tokenized words
 	if hasDot {
 		line = reFileRef.ReplaceAllStringFunc(line, func(m string) string {
-			return fileStyle.Render(m)
+			idx := len(renderedTokens)
+			renderedTokens = append(renderedTokens, fileStyle.Render(m))
+			return "\x00TOKEN_" + itoaByte(idx) + "\x00"
 		})
 	}
 
-	for idx, rendered := range renderedCodeSpans {
-		placeholder := "\x00INLINECODE_" + itoaByte(idx) + "\x00"
+	// 4. Restore tokens in a single pass so ANSI escape codes are never scanned by downstream regexes
+	for idx, rendered := range renderedTokens {
+		placeholder := "\x00TOKEN_" + itoaByte(idx) + "\x00"
 		line = strings.ReplaceAll(line, placeholder, rendered)
 	}
 

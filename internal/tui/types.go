@@ -72,6 +72,8 @@ type TranscriptEntry struct {
 	SubagentPreview  string
 	SubagentDuration time.Duration
 	SubagentExpanded bool
+	SubagentTools    int
+	SubagentLastTool string
 
 	// Question answered specific fields
 	QuestionBatchID   string

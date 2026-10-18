@@ -3672,4 +3672,134 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	}
 }
 
+func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
+	// 1. splitCodeComment separates trailing # and // comments while respecting quotes
+	code, comment := splitCodeComment("gofmt -l internal/desktop # 期望无输出")
+	if code != "gofmt -l internal/desktop " || comment != "# 期望无输出" {
+		t.Fatalf("unexpected splitCodeComment result: code=%q, comment=%q", code, comment)
+	}
+	quotedCode, quotedComment := splitCodeComment(`git commit -m "fix #123 issue" # trailing comment`)
+	if quotedCode != `git commit -m "fix #123 issue" ` || quotedComment != "# trailing comment" {
+		t.Fatalf("expected # inside quotes to be preserved, got code=%q, comment=%q", quotedCode, quotedComment)
+	}
+
+	// 2. Wide terminal prose wraps to fit the terminal width naturally without artificial cutoff
+	longProse := strings.Repeat("这是一段非常长的技术方案说明文字，用于测试在超宽两百列终端下自动根据宽度自然排版换行。", 4)
+	renderedProse := RenderMarkdown(longProse, 220)
+	for _, line := range strings.Split(renderedProse, "\n") {
+		if w := ansi.StringWidth(line); w > 220 {
+			t.Fatalf("expected prose line width <= 220 on 220-col terminal, got %d: %q", w, ansi.Strip(line))
+		}
+	}
+
+	// 3. KindPlan renders with single left rail │ and clean code block indent (no double │ │ rail)
+	planEntry := TranscriptEntry{
+		Kind: KindPlan,
+		Text: "5. **验证**\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
+	}
+	renderedPlan := ansi.Strip(renderEntry(planEntry, 160))
+	if !strings.Contains(renderedPlan, "• Proposed Plan") {
+		t.Fatalf("expected Proposed Plan header, got:\n%s", renderedPlan)
+	}
+	if strings.Contains(renderedPlan, "│ │") {
+		t.Fatalf("expected no double rail '│ │' in KindPlan code block, got:\n%s", renderedPlan)
+	}
+	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
+		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)
+	}
+}
+
+func TestInlineMarkdownTokenizationSafety(t *testing.T) {
+	// Verify that bold file names like **TUI.md** do not corrupt ANSI escape codes (no '218mTUI.md')
+	input := "请检查 **TUI.md** 以及 `go test -v ./...` 的输出。"
+	formatted := formatInline(input)
+	stripped := ansi.Strip(formatted)
+	if strings.Contains(stripped, "218m") {
+		t.Fatalf("corrupted ANSI sequence leaked into text: %q", stripped)
+	}
+	if !strings.Contains(stripped, "TUI.md") {
+		t.Fatalf("expected stripped output to contain TUI.md, got %q", stripped)
+	}
+}
+
+func TestSubagentTrackingAndCommands(t *testing.T) {
+	m := &tuiModel{
+		running:       true,
+		taskStartedAt: time.Now().Add(-10 * time.Second),
+	}
+
+	// 1. Subagent tool event routing: subagent tools do not mix into lead agent tools
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentStarted,
+		AgentID:   "researcher-1",
+		AgentName: "code_researcher",
+		AgentRole: "Codebase Analyst",
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventToolStarted,
+		AgentID:   "researcher-1",
+		AgentName: "code_researcher",
+		Tool: core.ToolCall{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: []byte(`{"path":"internal/tui/theme.go"}`),
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventToolFinished,
+		AgentID: "researcher-1",
+		Tool: core.ToolCall{
+			ID:       "call-1",
+			Name:     "read_file",
+			Duration: 250 * time.Millisecond,
+		},
+	})
+
+	// Check that no KindTool entries were added to lead entries
+	for _, e := range m.entries {
+		if e.Kind == KindTool {
+			t.Fatalf("expected no KindTool in lead entries from subagent event, found: %+v", e)
+		}
+	}
+
+	// Check subagent entry updated properly
+	subs := m.getSubagentEntries()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subagent entry, got %d", len(subs))
+	}
+	if subs[0].SubagentTools != 1 || subs[0].SubagentLastTool != "read_file" {
+		t.Fatalf("unexpected subagent tools: count=%d, last=%s", subs[0].SubagentTools, subs[0].SubagentLastTool)
+	}
+
+	// 2. Subagent summary in Working indicator
+	summary := m.subagentsStatusSummary()
+	if !strings.Contains(summary, "1 subagent running") {
+		t.Fatalf("expected '1 subagent running', got %q", summary)
+	}
+	workingBlock := renderWorking(10*time.Second, false, summary)
+	if !strings.Contains(workingBlock, "1 subagent running") {
+		t.Fatalf("expected workingBlock to contain subagent summary, got:\n%s", workingBlock)
+	}
+
+	// 3. Subagent badge in footer
+	footer := ansi.Strip(renderFooter(m, 120))
+	if !strings.Contains(footer, "subagent") || !strings.Contains(footer, "/agents") {
+		t.Fatalf("expected footer to show subagent count and /agents hint, got:\n%s", footer)
+	}
+
+	// 4. /agents command table view
+	m.handleSlashCommand("/agents")
+	lastEntry := m.entries[len(m.entries)-1]
+	if lastEntry.Kind != KindSystem || !strings.Contains(lastEntry.Text, "Subagents in Session (1 total)") {
+		t.Fatalf("expected /agents table in system entry, got:\n%s", lastEntry.Text)
+	}
+
+	// 5. /agents 1 detail view
+	m.handleSlashCommand("/agents 1")
+	lastDetail := m.entries[len(m.entries)-1]
+	if !strings.Contains(lastDetail.Text, "Subagent Details: code_researcher") || !strings.Contains(lastDetail.Text, "Tools Executed: 1") {
+		t.Fatalf("expected /agents detail view, got:\n%s", lastDetail.Text)
+	}
+}
+
 

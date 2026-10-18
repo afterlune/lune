@@ -458,7 +458,7 @@ func (m *tuiModel) refreshViewportContent() {
 		}
 		if m.running {
 			elapsed := time.Since(m.taskStartedAt)
-			blocks = append(blocks, renderWorking(elapsed, m.thinking))
+			blocks = append(blocks, renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()))
 		}
 	}
 
