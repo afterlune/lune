@@ -360,13 +360,23 @@ func TestLuneExeTUIWithConPTY(t *testing.T) {
 		t.Errorf("detected UTF-8 replacement character (\\ufffd) in ConPTY TUI output")
 	}
 
-	// 5. Send Ctrl+C to exit TUI cleanly
-	_, _ = inFile.WriteString("\x03")
-
-	waitRes, err := windows.WaitForSingleObject(pi.Process, 8000)
+	// 5. Send Ctrl+C to exit TUI cleanly. If the mock turn is still
+	// finishing, the first Ctrl+C interrupts it instead of quitting; retry so
+	// the test is not sensitive to that race.
+	var waitRes uint32
+	for attempt := 0; attempt < 3; attempt++ {
+		_, _ = inFile.WriteString("\x03")
+		waitRes, err = windows.WaitForSingleObject(pi.Process, 2500)
+		if err == nil && waitRes == windows.WAIT_OBJECT_0 {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
 	if err != nil || waitRes != windows.WAIT_OBJECT_0 {
 		_ = windows.TerminateProcess(pi.Process, 1)
-		t.Fatalf("lune.exe did not exit cleanly after Ctrl+C (waitRes=%v, err=%v)", waitRes, err)
+		t.Fatalf("lune.exe did not exit cleanly after Ctrl+C retries (waitRes=%v, err=%v)", waitRes, err)
 	}
 
 	var exitCode uint32
