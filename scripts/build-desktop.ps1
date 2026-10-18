@@ -14,6 +14,13 @@ try {
 	& $wails.Source build GOOS=windows
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build luneAgent desktop.' }
 	if (-not (Test-Path -LiteralPath $outputPath)) { throw "Desktop build did not produce $outputPath" }
+	# DSH's Windows sandbox marks workspace files with a Low integrity label.
+	# WebView2 cannot create its controller from a Low-labelled host image, so
+	# restore the normal Medium level on the produced executable.
+	& icacls $outputPath /setintegritylevel Medium *> $null
+	if ($LASTEXITCODE -ne 0) {
+		Write-Warning "Could not set the integrity level of $outputPath; WebView2 may fail to start from this workspace."
+	}
 	Write-Output "Built $outputPath"
 }
 finally {
