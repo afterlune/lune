@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -17,6 +18,8 @@ type LaunchOptions struct {
 	ModelProfile   string
 	PermissionMode core.PermissionMode
 	PlanMode       bool
+	Input          io.Reader
+	Output         io.Writer
 }
 
 // Run starts the LuneAgent Bubble Tea TUI with default options.
@@ -110,17 +113,28 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	runtime.SetUserInteractionAvailable(true)
 	defer runtime.SetUserInteractionAvailable(false)
 
+	in := opts.Input
+	if in == nil {
+		in = os.Stdin
+	}
+	out := opts.Output
+	if out == nil {
+		out = os.Stdout
+	}
+
 	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)
 	// even if an unexpected panic or error occurs during execution.
 	defer func() {
-		_, _ = os.Stdout.WriteString("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m")
+		_, _ = io.WriteString(out, "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m")
 	}()
 
-	// Run Bubble Tea v2 program
+	// Run Bubble Tea v2 program (WithWindowSize provides a fallback size when launched
+	// with non-TTY pipes; real TTYs automatically override it via term.GetSize).
 	program := tea.NewProgram(
 		model,
-		tea.WithInput(os.Stdin),
-		tea.WithOutput(os.Stdout),
+		tea.WithInput(in),
+		tea.WithOutput(out),
+		tea.WithWindowSize(120, 36),
 	)
 
 	if _, err := program.Run(); err != nil {

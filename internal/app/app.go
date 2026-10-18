@@ -55,10 +55,15 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		workspace = cwd
 	}
 
-	// Read standard input if piped (non-terminal)
-	pipedInput, err := readPipedStdin(stdin)
-	if err != nil {
-		return err
+	// Read standard input if piped (non-terminal), unless interactive --cli or --tui
+	// was explicitly requested without a positional prompt.
+	var pipedInput string
+	if (!flags.ForceCLI && !flags.ForceTUI) || flags.Prompt != "" {
+		var err error
+		pipedInput, err = readPipedStdin(stdin)
+		if err != nil {
+			return err
+		}
 	}
 
 	if flags.Prompt == "-" {
@@ -116,6 +121,8 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 			ModelProfile:   flags.ModelProfile,
 			PermissionMode: flags.PermissionMode,
 			PlanMode:       flags.PlanMode,
+			Input:          stdin,
+			Output:         stdout,
 		})
 	}
 
@@ -124,6 +131,9 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		ModelProfile:   flags.ModelProfile,
 		PermissionMode: flags.PermissionMode,
 		PlanMode:       flags.PlanMode,
+		Stdin:          stdin,
+		Stdout:         stdout,
+		Stderr:         stderr,
 	})
 }
 

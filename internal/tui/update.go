@@ -1028,10 +1028,15 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.autocompleteItems[m.autocompleteIndex].Command
-			m.composer.SetValue(selected + " ")
-			m.autocompleteOpen = false
-			m.updateLayout()
-			return m, nil
+			if keyStr == "enter" && strings.EqualFold(strings.TrimSpace(m.composer.Value()), selected) {
+				m.autocompleteOpen = false
+				m.composer.SetValue(selected)
+			} else {
+				m.composer.SetValue(selected + " ")
+				m.autocompleteOpen = false
+				m.updateLayout()
+				return m, nil
+			}
 		}
 	}
 
