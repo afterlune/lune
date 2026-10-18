@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
+
   type ActivityTool = {
     id: string;
     invocationId: string;
@@ -124,7 +126,7 @@ function toolStatus(status: ActivityTool['status']) {
     {#if active && elapsedSeconds > 0}<span class="turn-elapsed">{formatElapsed(elapsedSeconds)}</span>{/if}
     {#if run.tools.length}
       <button class="activity-toggle" aria-expanded={run.expanded} onclick={onToggle}>
-        {run.tools.length} 步骤 <span aria-hidden="true">{run.expanded ? '⌃' : '⌄'}</span>
+        {run.tools.length} 步骤 <Icon name="chevron-down" size={13} class={run.expanded ? 'activity-chevron-open' : ''} />
       </button>
     {/if}
   </div>

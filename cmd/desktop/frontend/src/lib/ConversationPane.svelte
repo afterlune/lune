@@ -1,4 +1,5 @@
 <script lang="ts">
+import Icon from './Icon.svelte';
 import type { DesktopState } from './desktopState.svelte';
 import Markdown from './Markdown.svelte';
 import ExecutionActivity from './ExecutionActivity.svelte';
@@ -68,8 +69,8 @@ let { desktop }: { desktop: DesktopState } = $props();
                       {#if message.interrupted}<span class="interrupted-message-state">本轮已中断</span>{/if}
                       {#if message.text}
                         <div class="message-actions assistant-message-actions">
-                          <button class="message-edit-button" aria-label="复制回复" title={desktop.copiedMessageID === message.id ? '已复制' : '复制回复'} onclick={() => void desktop.copyAssistantMessage(message)}>{desktop.copiedMessageID === message.id ? '✓' : '⧉'}</button>
-                          {#if desktop.canRegenerateAssistant(message)}<button class="message-edit-button" aria-label="重新生成回复" title="重新生成回复" onclick={() => void desktop.regenerateAssistantMessage(message)}>↻</button>{/if}
+                          <button class="message-edit-button" aria-label="复制回复" title={desktop.copiedMessageID === message.id ? '已复制' : '复制回复'} onclick={() => void desktop.copyAssistantMessage(message)}><Icon name={desktop.copiedMessageID === message.id ? 'check' : 'copy'} size={14} /></button>
+                          {#if desktop.canRegenerateAssistant(message)}<button class="message-edit-button" aria-label="重新生成回复" title="重新生成回复" onclick={() => void desktop.regenerateAssistantMessage(message)}><Icon name="refresh" size={14} /></button>{/if}
                         </div>
                       {/if}
                     </div>

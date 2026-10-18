@@ -1,5 +1,6 @@
 <script lang="ts">
 import { tick } from 'svelte';
+import Icon from './Icon.svelte';
 import ProjectSettingsDialog from './ProjectSettingsDialog.svelte';
 import ModelSettingsDialog from './ModelSettingsDialog.svelte';
 import type { DesktopState } from './desktopState.svelte';
@@ -70,25 +71,25 @@ $effect(() => {
   }}>
     {#if desktop.modal === 'settings'}<ModelSettingsDialog {desktop} />{:else if desktop.modal === 'rename-session' && desktop.sessionActionTarget}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="rename-session-title">重命名会话</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="rename-session-title">重命名会话</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}><Icon name="close" size={16} /></button></div>
         <div class="modal-body"><label class="session-title-field">会话名称<input bind:value={desktop.sessionTitleDraft} maxlength="120" onkeydown={(event) => { if (event.key === 'Enter') void desktop.saveSessionTitle(); }} /></label></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}>取消</button><button class="primary-button" disabled={desktop.busy} onclick={() => void desktop.saveSessionTitle()}>{desktop.busy ? '正在保存…' : '保存'}</button></div>
       </div>
     {:else if desktop.modal === 'delete-session' && desktop.sessionActionTarget}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="delete-session-title">删除会话？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">SESSION</span><h2 id="delete-session-title">删除会话？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}><Icon name="close" size={16} /></button></div>
         <div class="modal-body"><p>“{desktop.sessionActionTarget.title || '新会话'}”的对话、执行记录和待运行消息将被删除。此操作无法撤销。删除当前会话时会自动切换到其他会话；若这是最后一个会话，会先创建一个新会话。</p></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => { desktop.modal = null; desktop.sessionActionTarget = null; }}>取消</button><button class="danger-button" disabled={desktop.busy} onclick={() => void desktop.confirmDeleteSession()}>{desktop.busy ? '正在删除…' : '删除会话'}</button></div>
       </div>
     {:else if desktop.modal === 'mcp'}<ProjectSettingsDialog {desktop} />{:else if desktop.modal === 'switch' || desktop.modal === 'close'}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">TASK IN PROGRESS</span><h2>{desktop.modal === 'switch' ? '中断当前任务并切换？' : '中断当前任务并关闭？'}</h2></div><button class="icon-button" aria-label="关闭" onclick={() => desktop.modal = null}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">TASK IN PROGRESS</span><h2>{desktop.modal === 'switch' ? '中断当前任务并切换？' : '中断当前任务并关闭？'}</h2></div><button class="icon-button" aria-label="关闭" onclick={() => desktop.modal = null}><Icon name="close" size={16} /></button></div>
         <div class="modal-body"><p>当前任务还在运行。确认后会请求中断，并等待 Core 完成清理后再{desktop.modal === 'switch' ? '打开另一个工作区' : '关闭工作区'}。</p></div>
         <div class="modal-footer"><button class="quiet-button" onclick={() => desktop.modal = null}>继续等待</button><button class="danger-button" disabled={desktop.busy} onclick={() => desktop.modal === 'switch' ? void desktop.confirmWorkspaceSwitch() : void desktop.confirmCloseWorkspace()}>{desktop.busy ? '正在停止…' : '中断并继续'}</button></div>
       </div>
     {:else if desktop.modal === 'edit' && desktop.editConfirmation}
       <div class="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="edit-confirm-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">EDIT CONVERSATION</span><h2 id="edit-confirm-title">确认编辑这条消息？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.editConfirmation = null; }}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">EDIT CONVERSATION</span><h2 id="edit-confirm-title">确认编辑这条消息？</h2></div><button class="icon-button" aria-label="关闭" onclick={() => { desktop.modal = null; desktop.editConfirmation = null; }}><Icon name="close" size={16} /></button></div>
         <div class="modal-body"><p>{desktop.editConfirmation.draft.wasQueued
           ? '如果这条消息仍在队列中，会保留当前任务和它之前的队列项，在原位置替换，并取消它之后的排队消息；如果它已开始，系统会中断当前任务并从此消息重跑。'
           : desktop.editConfirmation.pendingAtConfirm

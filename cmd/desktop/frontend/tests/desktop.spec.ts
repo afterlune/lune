@@ -16,6 +16,18 @@ test('desktop workspace uses the approved two-column shell', async ({ page }) =>
   await expect(page).toHaveScreenshot('desktop-workspace.png', { fullPage: true });
 });
 
+test('compact workspace keeps the chat column balanced', async ({ page }) => {
+  await page.setViewportSize({ width: 1152, height: 736 });
+  await page.goto('/?preview=1');
+  const sidebarBounds = await page.locator('.sidebar').boundingBox();
+  const contentBounds = await page.locator('.conversation-content').boundingBox();
+  expect(sidebarBounds?.width).toBe(300);
+  expect(contentBounds?.width).toBeLessThanOrEqual(820);
+  expect(contentBounds?.width).toBeGreaterThan(700);
+  await expect(page.locator('.composer')).toBeVisible();
+  await expect(page).toHaveScreenshot('desktop-workspace-compact.png', { fullPage: true });
+});
+
 test('welcome state uses the two-column shell and lists recent workspaces', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/?preview=welcome');
@@ -88,6 +100,17 @@ test('anime appearance preview is editable only in settings and Cancel restores 
   await page.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('narrow settings uses a full-height sheet with horizontal tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.goto('/?preview=1');
+  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await page.locator('.nav-settings').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  const tabsBounds = await page.locator('.settings-tabs').boundingBox();
+  expect(tabsBounds?.width).toBeGreaterThan(tabsBounds?.height ?? 0);
+  await expect(page).toHaveScreenshot('desktop-settings-compact.png', { fullPage: true });
 });
 
 test('dialogs move focus inside, close with Escape, and restore focus', async ({ page }) => {
@@ -194,6 +217,18 @@ test('process popover closes on outside click and Escape', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(popover).toHaveCount(0);
   await expect(page.getByRole('button', { name: /后台进程/ })).toBeFocused();
+});
+
+test('narrow process popover uses a bottom sheet', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.goto('/?preview=processes');
+  const popover = page.getByRole('dialog', { name: '后台进程' });
+  await expect(popover).toBeVisible();
+  const bounds = await popover.boundingBox();
+  expect(bounds?.x).toBeLessThan(16);
+  expect(bounds?.width).toBeGreaterThan(680);
+  expect((bounds?.y ?? 0) + (bounds?.height ?? 0)).toBeGreaterThan(870);
+  await expect(page).toHaveScreenshot('desktop-process-compact.png', { fullPage: true });
 });
 
 test('project settings edits runtime limits and MCP definitions', async ({ page }) => {

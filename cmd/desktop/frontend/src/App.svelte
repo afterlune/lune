@@ -1,6 +1,7 @@
 <script lang="ts">
 import DesktopDialogs from './lib/DesktopDialogs.svelte';
 import ConversationPane from './lib/ConversationPane.svelte';
+import Icon from './lib/Icon.svelte';
 import ProcessesPopover from './lib/ProcessesPopover.svelte';
 import WorkspaceSidebar from './lib/WorkspaceSidebar.svelte';
 import { createDesktopState } from './lib/desktopState.svelte';
@@ -34,22 +35,22 @@ const desktop = createDesktopState();
         <div class="topbar-leading">
           {#if desktop.sidebarCollapsed}
             <button class="icon-button sidebar-expand-button" aria-label="展开侧栏" title="展开侧栏" onclick={() => desktop.sidebarCollapsed = false}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/><path d="m13 9 3 3-3 3"/></svg>
+              <Icon name="sidebar-expand" size={18} />
             </button>
           {/if}
           <div class="topbar-heading">
             <div class="topbar-title-line">
               <strong class="topbar-title">{desktop.pageTitle}</strong>
+              {#if desktop.running || desktop.pending.length > 0 || desktop.queuedMessageCount > 0}
+                <span class="workspace-run-status" class:waiting={!desktop.running}>
+                  <span class:active={desktop.running} class:waiting={!desktop.running} class="topbar-state-dot"></span>
+                  <span>{desktop.running ? '执行中' : desktop.pending.length > 0 ? '等待用户操作' : '任务排队中'}</span>
+                  {#if desktop.running && desktop.activities.length}<span class="run-tool-count">· {desktop.activities.length} 个工具</span>{/if}
+                </span>
+              {/if}
             </div>
             {#if desktop.workspace}
               <div class="topbar-subtitle" title={desktop.workspace}>{desktop.workspace.split(/[\\/]/).at(-1) || desktop.workspace}</div>
-            {/if}
-            {#if desktop.running || desktop.pending.length > 0 || desktop.queuedMessageCount > 0}
-              <div class="workspace-run-status" class:waiting={!desktop.running}>
-                <span class:active={desktop.running} class:waiting={!desktop.running} class="topbar-state-dot"></span>
-                <span>{desktop.running ? '执行中' : desktop.pending.length > 0 ? '等待用户操作' : '任务排队中'}</span>
-                {#if desktop.running && desktop.activities.length}<span class="run-tool-count">· 已使用 {desktop.activities.length} 个工具</span>{/if}
-              </div>
             {/if}
           </div>
         </div>
@@ -62,14 +63,14 @@ const desktop = createDesktopState();
           {/if}
           <div class="theme-switch" role="group" aria-label="主题快捷切换">
             <button class:active={!desktop.effectiveDarkTheme} aria-label="切换到浅色主题" aria-pressed={!desktop.effectiveDarkTheme} onclick={() => void desktop.changeTheme('light')} title="切换到浅色主题">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4"/></svg>
+              <Icon name="sun" size={17} />
             </button>
             <button class:active={desktop.effectiveDarkTheme} aria-label="切换到深色主题" aria-pressed={desktop.effectiveDarkTheme} onclick={() => void desktop.changeTheme('dark')} title="切换到深色主题">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/></svg>
+              <Icon name="moon" size={17} />
             </button>
           </div>
           <div class="workspace-menu-anchor">
-            <button class="icon-button top-overflow" aria-label="更多工作区操作" aria-expanded={desktop.workspaceMenuOpen} title="更多操作" onclick={() => desktop.workspaceMenuOpen = !desktop.workspaceMenuOpen}>⋮</button>
+            <button class="icon-button top-overflow" aria-label="更多工作区操作" aria-expanded={desktop.workspaceMenuOpen} title="更多操作" onclick={() => desktop.workspaceMenuOpen = !desktop.workspaceMenuOpen}><Icon name="more" size={18} /></button>
             {#if desktop.workspaceMenuOpen}
               <div class="topbar-menu" role="menu">
                 {#if desktop.workspace}
@@ -103,6 +104,6 @@ const desktop = createDesktopState();
   </div>
 {/if}
 
-{#if desktop.errorMessage}<div class="toast-error" role="status">{desktop.errorMessage}<button onclick={() => desktop.errorMessage = ''}>×</button></div>{/if}
+{#if desktop.errorMessage}<div class="toast-error" role="status">{desktop.errorMessage}<button aria-label="关闭错误提示" onclick={() => desktop.errorMessage = ''}><Icon name="close" size={16} /></button></div>{/if}
 
 <DesktopDialogs {desktop} />

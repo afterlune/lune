@@ -1,10 +1,11 @@
 <script lang="ts">
+import Icon from './Icon.svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop:DesktopState } = $props();
 </script>
 
       <div class="modal mcp-modal" role="dialog" aria-modal="true" aria-labelledby="mcp-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">PROJECT SETTINGS</span><h2 id="mcp-title">项目设置与 MCP</h2></div><button class="icon-button" aria-label="关闭" onclick={() => desktop.modal = null}>×</button></div>
+        <div class="modal-header"><div><span class="eyebrow">PROJECT SETTINGS</span><h2 id="mcp-title">项目设置与 MCP</h2></div><button class="icon-button" aria-label="关闭" onclick={() => desktop.modal = null}><Icon name="close" size={16} /></button></div>
         <div class="modal-body mcp-body">
           <p class="mcp-description">Desktop 按项目路径将这些运行设置保存在用户数据库中。TUI/CLI 继续读取 config.json；两边互不导入或改写配置。</p>
           <section class="settings-section project-runtime-section">
@@ -24,7 +25,7 @@ let { desktop }: { desktop:DesktopState } = $props();
               <div><h3>命令工具链</h3><p>检测只查询当前 PATH，不会运行程序或自动授权。获准目录只提供读取与执行权限，命令仍受项目沙箱和网络策略约束。</p></div>
               <div class="mcp-server-actions">
                 <button class="small-button" disabled={desktop.previewMode || desktop.toolchainDetectionLoading || desktop.workspaceSettingsSaving} onclick={() => void desktop.detectCommandToolchains()}>{desktop.toolchainDetectionLoading ? '正在检测…' : '重新检测 PATH'}</button>
-                <button class="small-button" disabled={desktop.previewMode || desktop.workspaceSettingsSaving} onclick={() => void desktop.pickCommandToolchainFolder()}>＋ 选择目录</button>
+                <button class="small-button" disabled={desktop.previewMode || desktop.workspaceSettingsSaving} onclick={() => void desktop.pickCommandToolchainFolder()}><Icon name="plus" size={13} /> 选择目录</button>
               </div>
             </div>
             {#if desktop.workspaceSettingsForm.commandToolchainPaths.length}
@@ -55,7 +56,7 @@ let { desktop }: { desktop:DesktopState } = $props();
             {/if}
           </section>
           <section class="settings-section">
-            <div class="settings-section-heading"><div><h3>MCP 服务</h3><p>本地环境变量仅显示名称，留空保留已保存的值；移除变量行即可清除。</p></div><button class="small-button" onclick={desktop.addMCPServer}>＋ 添加服务</button></div>
+            <div class="settings-section-heading"><div><h3>MCP 服务</h3><p>本地环境变量仅显示名称，留空保留已保存的值；移除变量行即可清除。</p></div><button class="small-button" onclick={desktop.addMCPServer}><Icon name="plus" size={13} /> 添加服务</button></div>
             {#if desktop.workspaceSettingsForm.mcpServers.length}
               <div class="mcp-server-list">
                 {#each desktop.workspaceSettingsForm.mcpServers as server, index (index)}
@@ -72,9 +73,9 @@ let { desktop }: { desktop:DesktopState } = $props();
                         <label class="wide-field">可执行程序<input bind:value={server.command} placeholder="例如 npx" /></label>
                         <label class="wide-field">参数（每行一个）<textarea bind:value={server.argsText} rows="3" placeholder="每行填写一个参数，例如 -y"></textarea></label>
                         <div class="wide-field mcp-env-list">
-                          <div class="settings-section-heading"><strong>环境变量</strong><button class="small-button" onclick={() => desktop.addMCPEnvironment(server)}>＋ 添加变量</button></div>
+                          <div class="settings-section-heading"><strong>环境变量</strong><button class="small-button" onclick={() => desktop.addMCPEnvironment(server)}><Icon name="plus" size={13} /> 添加变量</button></div>
                           {#each server.env as item, envIndex (envIndex)}
-                            <div class="mcp-env-row"><input aria-label="变量名称" bind:value={item.name} placeholder="变量名" /><input aria-label="变量值" type="password" bind:value={item.value} placeholder={item.hasValue ? '留空保留已保存的值' : '变量值'} autocomplete="new-password" /><button class="remove-env" aria-label="删除环境变量" onclick={() => server.env = server.env.filter((_, i) => i !== envIndex)}>×</button></div>
+                            <div class="mcp-env-row"><input aria-label="变量名称" bind:value={item.name} placeholder="变量名" /><input aria-label="变量值" type="password" bind:value={item.value} placeholder={item.hasValue ? '留空保留已保存的值' : '变量值'} autocomplete="new-password" /><button class="remove-env" aria-label="删除环境变量" onclick={() => server.env = server.env.filter((_, i) => i !== envIndex)}><Icon name="close" size={13} /></button></div>
                           {/each}
                         </div>
                       {:else}

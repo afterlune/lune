@@ -93,7 +93,7 @@ npm install
 npm run dev
 ```
 
-39 个 Playwright 测试覆盖两栏工作区、欢迎页、侧栏折叠与窄窗抽屉、浅色/深色/二次元外观、待处理视图、进程浮层、弹窗焦点、项目设置、Question、Plan、Markdown、执行活动以及会话权限状态回归；截图基线覆盖主要界面：
+42 个 Playwright 测试覆盖两栏工作区、1152×736 紧凑窗口、欢迎页、侧栏折叠与窄窗抽屉、窄窗全屏设置与进程底部浮层、浅色/深色/二次元外观、待处理视图、弹窗焦点、项目设置、Question、Plan、Markdown、执行活动以及会话权限状态回归；截图基线覆盖主要界面：
 
 ```powershell
 npx playwright install chromium

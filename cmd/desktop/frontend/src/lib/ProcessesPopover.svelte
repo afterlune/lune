@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from 'svelte';
+import Icon from './Icon.svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
 let popoverRoot = $state<HTMLElement | null>(null);
@@ -32,8 +33,8 @@ onMount(() => {
       <span>{desktop.desktopProcesses.length} 个进程 · {desktop.activeDesktopProcessCount} 个运行中</span>
     </div>
     <div class="process-popover-actions">
-      <button class="icon-button" aria-label="刷新进程列表" title="刷新" disabled={desktop.desktopProcessesLoading} onclick={() => void desktop.refreshDesktopProcesses()}>{#if desktop.desktopProcessesLoading}<span class="spinner"></span>{:else}↻{/if}</button>
-      <button class="icon-button" aria-label="关闭后台进程" title="关闭" onclick={() => (desktop.processPopoverOpen = false)}>×</button>
+      <button class="icon-button" aria-label="刷新进程列表" title="刷新" disabled={desktop.desktopProcessesLoading} onclick={() => void desktop.refreshDesktopProcesses()}>{#if desktop.desktopProcessesLoading}<span class="spinner"></span>{:else}<Icon name="refresh" size={17} />{/if}</button>
+      <button class="icon-button" aria-label="关闭后台进程" title="关闭" onclick={() => (desktop.processPopoverOpen = false)}><Icon name="close" size={17} /></button>
     </div>
   </header>
 
@@ -64,7 +65,7 @@ onMount(() => {
           <header class="process-detail-heading">
             <div><strong title={desktop.selectedDesktopProcess.command}>{desktop.selectedDesktopProcess.command}</strong><small>{desktop.processStatusLabel(desktop.selectedDesktopProcess.status)} · {desktop.selectedDesktopProcess.sessionTitle}</small></div>
             <div class="process-detail-actions">
-              <button class="icon-button" aria-label="刷新输出" title="刷新输出" onclick={() => { const process = desktop.selectedDesktopProcess; if (process) void desktop.selectDesktopProcess(process, true); }}>{#if desktop.processOutputLoading}<span class="spinner"></span>{:else}↻{/if}</button>
+              <button class="icon-button" aria-label="刷新输出" title="刷新输出" onclick={() => { const process = desktop.selectedDesktopProcess; if (process) void desktop.selectDesktopProcess(process, true); }}>{#if desktop.processOutputLoading}<span class="spinner"></span>{:else}<Icon name="refresh" size={16} />{/if}</button>
               {#if desktop.processStatusActive(desktop.selectedDesktopProcess.status)}<button class="danger-button" disabled={desktop.stoppingDesktopProcessKey === desktop.desktopProcessKey(desktop.selectedDesktopProcess)} onclick={() => { const process = desktop.selectedDesktopProcess; if (process) void desktop.stopDesktopProcess(process); }}>{desktop.stoppingDesktopProcessKey === desktop.desktopProcessKey(desktop.selectedDesktopProcess) ? '停止中…' : '停止'}</button>{/if}
             </div>
           </header>

@@ -1,18 +1,19 @@
 <script lang="ts">
+import Icon from './Icon.svelte';
 import type { DesktopState } from './desktopState.svelte';
 let { desktop }: { desktop:DesktopState } = $props();
 </script>
 
       <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
-        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">设置</h2></div><div class="modal-header-actions">{#if desktop.workspace}<button class="small-button" onclick={() => void desktop.openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={desktop.cancelSettings}>×</button></div></div>
+        <div class="modal-header"><div><span class="eyebrow">PREFERENCES</span><h2 id="settings-title">设置</h2></div><div class="modal-header-actions">{#if desktop.workspace}<button class="small-button" onclick={() => void desktop.openMCPManager()}>项目设置</button>{/if}<button class="icon-button" aria-label="关闭" onclick={desktop.cancelSettings}><Icon name="close" size={16} /></button></div></div>
         <div class="modal-body settings-body">
           <div class="settings-tabs" role="tablist" aria-label="设置分类">
-            <button role="tab" aria-selected={desktop.settingsTab === 'models'} class:active={desktop.settingsTab === 'models'} onclick={() => desktop.settingsTab = 'models'}><span>⚙</span> 模型与提供方</button>
-            <button role="tab" aria-selected={desktop.settingsTab === 'appearance'} class:active={desktop.settingsTab === 'appearance'} onclick={() => desktop.settingsTab = 'appearance'}><span>◐</span> 外观与主题</button>
+            <button role="tab" aria-selected={desktop.settingsTab === 'models'} class:active={desktop.settingsTab === 'models'} onclick={() => desktop.settingsTab = 'models'}><Icon name="settings" size={16} /> 模型与提供方</button>
+            <button role="tab" aria-selected={desktop.settingsTab === 'appearance'} class:active={desktop.settingsTab === 'appearance'} onclick={() => desktop.settingsTab = 'appearance'}><Icon name="sun" size={16} /> 外观与主题</button>
           </div>
           <div class="settings-content">
             {#if desktop.settingsTab === 'models'}
-              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型提供方</h3><p>API 密钥使用当前 Windows 用户 DPAPI 加密保存。</p></div><button class="small-button" onclick={desktop.addProvider}>＋ 添加提供方</button></div>
+              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型提供方</h3><p>API 密钥使用当前 Windows 用户 DPAPI 加密保存。</p></div><button class="small-button" onclick={desktop.addProvider}><Icon name="plus" size={13} /> 添加提供方</button></div>
                 {#each desktop.providerForms as provider, index (index)}
                   <div class="provider-form">
                     <div class="form-grid">
@@ -26,7 +27,7 @@ let { desktop }: { desktop:DesktopState } = $props();
                   </div>
                 {/each}
               </section>
-              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型档案</h3><p>档案名称会显示在会话的模型选择器中。</p></div><button class="small-button" onclick={desktop.addProfile}>＋ 添加模型</button></div>
+              <section class="settings-section"><div class="settings-section-heading"><div><h3>模型档案</h3><p>档案名称会显示在会话的模型选择器中。</p></div><button class="small-button" onclick={desktop.addProfile}><Icon name="plus" size={13} /> 添加模型</button></div>
                 {#each desktop.profileForms as profile, index (index)}
                   <div class="profile-form">
                     <label>档案名称<input bind:value={profile.name} /></label>
@@ -42,17 +43,17 @@ let { desktop }: { desktop:DesktopState } = $props();
               <section class="appearance-settings">
                 <div class="settings-section-heading"><div><h3>应用主题</h3><p>二次元主题只在此处启用；顶部快捷切换仅包含浅色和深色。</p></div></div>
                 <div class="theme-cards" role="group" aria-label="应用主题">
-                  <button class:chosen={desktop.appearanceDraft.theme === 'system'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'system' })}><span class="theme-card-icon">◐</span><strong>跟随系统</strong></button>
-                  <button class:chosen={desktop.appearanceDraft.theme === 'light'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'light' })}><span class="theme-card-icon">☼</span><strong>浅色</strong></button>
-                  <button class:chosen={desktop.appearanceDraft.theme === 'dark'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'dark' })}><span class="theme-card-icon">☾</span><strong>深色</strong></button>
-                  <button class:chosen={desktop.appearanceDraft.theme === 'anime'} class="theme-card anime-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'anime' })}><span class="theme-card-icon">✿</span><strong>二次元</strong></button>
+                  <button class:chosen={desktop.appearanceDraft.theme === 'system'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'system' })}><span class="theme-card-icon"><Icon name="monitor" size={18} /></span><strong>跟随系统</strong></button>
+                  <button class:chosen={desktop.appearanceDraft.theme === 'light'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'light' })}><span class="theme-card-icon"><Icon name="sun" size={18} /></span><strong>浅色</strong></button>
+                  <button class:chosen={desktop.appearanceDraft.theme === 'dark'} class="theme-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'dark' })}><span class="theme-card-icon"><Icon name="moon" size={18} /></span><strong>深色</strong></button>
+                  <button class:chosen={desktop.appearanceDraft.theme === 'anime'} class="theme-card anime-card" onclick={() => desktop.previewAppearanceDraft({ ...desktop.appearanceDraft, theme: 'anime' })}><span class="theme-card-icon"><Icon name="flower" size={18} /></span><strong>二次元</strong></button>
                 </div>
 
                 <div class="appearance-subsection">
                   <div class="settings-section-heading"><div><h3>二次元背景</h3><p>壁纸保存在本机，不会上传或同步。</p></div></div>
                   <div class="wallpaper-mode-switch" role="group" aria-label="壁纸类型">
-                    <button class:selected={desktop.appearanceDraft.wallpaperType === 'static'} aria-pressed={desktop.appearanceDraft.wallpaperType === 'static'} onclick={() => desktop.setWallpaperType('static')}>▧ 静态壁纸</button>
-                    <button class:selected={desktop.appearanceDraft.wallpaperType === 'dynamic'} aria-pressed={desktop.appearanceDraft.wallpaperType === 'dynamic'} onclick={() => desktop.setWallpaperType('dynamic')}>▷ 动态壁纸</button>
+                    <button class:selected={desktop.appearanceDraft.wallpaperType === 'static'} aria-pressed={desktop.appearanceDraft.wallpaperType === 'static'} onclick={() => desktop.setWallpaperType('static')}><Icon name="image" size={14} /> 静态壁纸</button>
+                    <button class:selected={desktop.appearanceDraft.wallpaperType === 'dynamic'} aria-pressed={desktop.appearanceDraft.wallpaperType === 'dynamic'} onclick={() => desktop.setWallpaperType('dynamic')}><Icon name="process" size={14} /> 动态壁纸</button>
                   </div>
                   <input id="wallpaper-picker" type="file" accept={desktop.appearanceDraft.wallpaperType === 'static' ? 'image/png,image/jpeg,image/webp' : 'image/gif,video/mp4,video/webm'} hidden onchange={(event) => { const file = event.currentTarget.files?.[0]; if (file) desktop.previewBrowserWallpaper(file); event.currentTarget.value = ''; }} />
                   <div class="wallpaper-editor">
@@ -66,11 +67,11 @@ let { desktop }: { desktop:DesktopState } = $props();
                       {:else if desktop.appearanceDraft.wallpaperFile}
                         <div class="wallpaper-empty-preview"><span>!</span><strong>找不到本地壁纸，请重新选择</strong></div>
                       {:else}
-                        <div class="wallpaper-empty-preview"><span>✿</span><strong>本地壁纸预览</strong></div>
+                        <div class="wallpaper-empty-preview"><Icon name="flower" size={22} /><strong>本地壁纸预览</strong></div>
                       {/if}
                     </div>
                     <div class="wallpaper-controls">
-                      <button class="small-button" onclick={() => void desktop.chooseWallpaper()}>▰ 更换壁纸</button>
+                      <button class="small-button" onclick={() => void desktop.chooseWallpaper()}><Icon name="image" size={13} /> 更换壁纸</button>
                       <strong class="wallpaper-filename" title={desktop.appearanceDraft.wallpaperName || desktop.appearanceDraft.wallpaperFile || '未选择壁纸'}>{desktop.appearanceDraft.wallpaperName || desktop.appearanceDraft.wallpaperFile || '未选择壁纸'}</strong>
                       <p>静态图：PNG / JPG / WebP<br />动态壁纸：GIF / MP4 / WebM</p>
                       <button class="quiet-button reset-wallpaper" onclick={desktop.resetWallpaper}>恢复默认背景</button>
