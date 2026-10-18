@@ -1,5 +1,5 @@
-/* luneAgent desktop — ChatGPT-inspired visual layer.
-   Loaded after style.css so the shell and chat surfaces use the neutral palette. */
+/* Archived visual layer. Its rules were merged into style.css; this file is not loaded.
+   Kept on disk as a reference so no historical styling is deleted. */
 
 :root {
   --page: #ffffff;
