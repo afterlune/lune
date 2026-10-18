@@ -20,7 +20,15 @@ const (
 	KindQueued           EntryKind = "queued"
 	KindDiff             EntryKind = "diff"
 	KindReasoning        EntryKind = "reasoning"
+	KindSubagent         EntryKind = "subagent"
 )
+
+// entryLineRange tracks the rendered line range of a TranscriptEntry in the viewport.
+type entryLineRange struct {
+	EntryIndex int
+	StartLine  int
+	EndLine    int
+}
 
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.
 type QueuedItem struct {
@@ -44,8 +52,21 @@ type TranscriptEntry struct {
 	ToolCommand  string
 	ToolStatus   publictool.CommandStatus
 	ToolExitCode *int
+	ToolRunning  bool
+	ToolFailed   bool
+	ToolDuration time.Duration
+	ToolChanges  []publictool.FileChange
 	ToolOutput   string
 	ToolExpanded bool
+
+	// Subagent specific fields
+	AgentID          string
+	AgentName        string
+	AgentRole        string
+	SubagentRunning  bool
+	SubagentPreview  string
+	SubagentDuration time.Duration
+	SubagentExpanded bool
 
 	// Question answered specific fields
 	QuestionText string

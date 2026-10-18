@@ -73,6 +73,7 @@ type tuiModel struct {
 	cachedThemeBg    string
 	cachedDirty      bool
 	transcriptDirty  bool
+	entryLineRanges  []entryLineRange
 
 	// Token usage and context window statistics
 	totalInputTokens     int64
@@ -81,6 +82,7 @@ type tuiModel struct {
 	reasoningTokens      int64
 	contextWindow        int64
 	estimatedInputTokens int64
+	seededSessionUsage   bool
 
 	// Mouse text selection and copy feedback
 	isSelecting           bool
@@ -156,6 +158,9 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	if entries == nil {
 		entries = []TranscriptEntry{}
 	}
+	if strings.TrimSpace(title) == "" {
+		title = deriveSessionTitleFromEntries(entries)
+	}
 
 	var historyPrompts []string
 	for _, entry := range entries {
@@ -165,25 +170,26 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	}
 
 	m := &tuiModel{
-		client:            client,
-		runtime:           runtime,
-		workspace:         workspace,
-		sessionID:         sessionID,
-		sessionTitle:      title,
-		currentModel:      currentModel,
-		permissionMode:    permMode,
-		savedMode:         permMode,
-		totalInputTokens:  totalIn,
-		totalOutputTokens: totalOut,
-		cachedTokens:      cached,
-		reasoningTokens:   reasoning,
-		composer:          comp,
-		viewport:          vp,
-		entries:           entries,
-		promptHistory:     historyPrompts,
-		historyIndex:      len(historyPrompts),
-		fileScanner:       NewWorkspaceFileScanner(workspace),
-		transcriptDirty:   true,
+		client:             client,
+		runtime:            runtime,
+		workspace:          workspace,
+		sessionID:          sessionID,
+		sessionTitle:       title,
+		currentModel:       currentModel,
+		permissionMode:     permMode,
+		savedMode:          permMode,
+		totalInputTokens:   totalIn,
+		totalOutputTokens:  totalOut,
+		cachedTokens:       cached,
+		reasoningTokens:    reasoning,
+		seededSessionUsage: totalIn > 0 || totalOut > 0 || cached > 0 || reasoning > 0,
+		composer:           comp,
+		viewport:           vp,
+		entries:            entries,
+		promptHistory:      historyPrompts,
+		historyIndex:       len(historyPrompts),
+		fileScanner:        NewWorkspaceFileScanner(workspace),
+		transcriptDirty:    true,
 	}
 
 	m.applyThemeStyles()
@@ -319,18 +325,16 @@ func (m *tuiModel) refreshViewportContent() {
 		m.cachedEntryCount = 0
 		m.cachedDirty = false
 		m.transcriptDirty = false
+		m.entryLineRanges = nil
 		m.viewport.SetContent("")
 		return
 	}
 
 	curThemeBg := activeTheme().CardBg
 	if m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount {
-		m.cachedBlocks = make([]string, 0, len(m.entries))
-		for _, entry := range m.entries {
-			block := renderEntry(entry, contentWidth)
-			if block != "" {
-				m.cachedBlocks = append(m.cachedBlocks, block)
-			}
+		m.cachedBlocks = make([]string, len(m.entries))
+		for i, entry := range m.entries {
+			m.cachedBlocks[i] = renderEntry(entry, contentWidth)
 		}
 		m.cachedEntryCount = len(m.entries)
 		m.cachedWidth = contentWidth
@@ -338,18 +342,32 @@ func (m *tuiModel) refreshViewportContent() {
 		m.cachedDirty = false
 	} else if len(m.entries) > m.cachedEntryCount {
 		for i := m.cachedEntryCount; i < len(m.entries); i++ {
-			block := renderEntry(m.entries[i], contentWidth)
-			if block != "" {
-				m.cachedBlocks = append(m.cachedBlocks, block)
-			}
+			m.cachedBlocks = append(m.cachedBlocks, renderEntry(m.entries[i], contentWidth))
 		}
 		m.cachedEntryCount = len(m.entries)
 	}
 
-	var blocks []string
+	m.entryLineRanges = make([]entryLineRange, 0, len(m.entries))
+	blocks := make([]string, 0, len(m.cachedBlocks)+3)
+	currentLine := 0
+	for i, block := range m.cachedBlocks {
+		if block == "" {
+			continue
+		}
+		if len(blocks) > 0 {
+			currentLine += 2 // "\n\n" separator adds 1 blank line + moves to next line
+		}
+		lineCount := strings.Count(block, "\n") + 1
+		m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+			EntryIndex: i,
+			StartLine:  currentLine,
+			EndLine:    currentLine + lineCount - 1,
+		})
+		currentLine += lineCount - 1
+		blocks = append(blocks, block)
+	}
+
 	if m.currentReasoningText != "" || m.currentStreamText != "" || m.running {
-		blocks = make([]string, len(m.cachedBlocks), len(m.cachedBlocks)+3)
-		copy(blocks, m.cachedBlocks)
 		if m.currentReasoningText != "" {
 			elapsed := time.Since(m.reasoningStartTime)
 			liveReasoning := TranscriptEntry{
@@ -364,16 +382,16 @@ func (m *tuiModel) refreshViewportContent() {
 		if m.currentStreamText != "" {
 			streamEntry := TranscriptEntry{
 				Kind: KindAssistant,
-				Text: m.currentStreamText,
+				Text: stripProposedPlan(m.currentStreamText),
 			}
-			blocks = append(blocks, renderEntry(streamEntry, contentWidth))
+			if strings.TrimSpace(streamEntry.Text) != "" {
+				blocks = append(blocks, renderEntry(streamEntry, contentWidth))
+			}
 		}
 		if m.running {
 			elapsed := time.Since(m.taskStartedAt)
 			blocks = append(blocks, renderWorking(elapsed, m.thinking))
 		}
-	} else {
-		blocks = m.cachedBlocks
 	}
 
 	fullText := strings.Join(blocks, "\n\n")
@@ -581,9 +599,13 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 			m.totalOutputTokens = saved.SessionUsage.Output
 			m.cachedTokens = saved.SessionUsage.Cached
 			m.reasoningTokens = saved.SessionUsage.Reasoning
+			m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 			m.entries = transcriptFromHistory(saved.History)
 			if m.entries == nil {
 				m.entries = []TranscriptEntry{}
+			}
+			if strings.TrimSpace(m.sessionTitle) == "" {
+				m.sessionTitle = deriveSessionTitleFromEntries(m.entries)
 			}
 			m.promptHistory = nil
 			for _, entry := range m.entries {
@@ -752,15 +774,7 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				kind = KindUser
 			}
 			if kind == KindAssistant && strings.Contains(text, "<proposed_plan>") {
-				openIdx := strings.Index(text, "<proposed_plan>")
-				closeIdx := strings.Index(text, "</proposed_plan>")
-				var planText string
-				if closeIdx > openIdx {
-					planText = strings.TrimSpace(text[openIdx+len("<proposed_plan>"):closeIdx])
-				} else {
-					planText = strings.TrimSpace(text[openIdx+len("<proposed_plan>"):])
-				}
-				surrounding := stripProposedPlan(text)
+				planText, surrounding := extractProposedPlan(text)
 				if surrounding != "" {
 					entries = append(entries, TranscriptEntry{
 						ID:        fmt.Sprintf("hist-%d", i),
@@ -786,6 +800,9 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				Timestamp: time.Now(),
 			})
 		case "function_call", "custom_tool_call":
+			if strings.EqualFold(value.Name, "select_tool_category") {
+				continue
+			}
 			args := string(value.Arguments)
 			if len(args) > 0 && args[0] == '"' {
 				var unquoted string
@@ -803,7 +820,7 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				ToolCallID:  callID,
 				ToolName:    value.Name,
 				ToolArgs:    args,
-				ToolCommand: value.Name + " " + args,
+				ToolCommand: formatToolSummary(value.Name, args, ""),
 				Timestamp:   time.Now(),
 			})
 		case "function_call_output", "custom_tool_call_output":
@@ -829,6 +846,67 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 		}
 	}
 	return entries
+}
+
+func deriveSessionTitleFromEntries(entries []TranscriptEntry) string {
+	for _, entry := range entries {
+		if entry.Kind == KindUser && strings.TrimSpace(entry.Text) != "" {
+			return deriveSessionTitleText(entry.Text)
+		}
+	}
+	return ""
+}
+
+func deriveSessionTitleText(text string) string {
+	line := strings.TrimSpace(text)
+	if idx := strings.IndexAny(line, "\r\n"); idx >= 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	if line == "" {
+		return ""
+	}
+	return truncateString(line, 40)
+}
+
+func sessionDisplayTitle(s core.Session) string {
+	if t := strings.TrimSpace(s.Title); t != "" {
+		return t
+	}
+	if len(s.History) > 0 && string(s.History) != "null" {
+		if t := deriveSessionTitleFromEntries(transcriptFromHistory(s.History)); t != "" {
+			return t
+		}
+	}
+	return "<untitled>"
+}
+
+func extractResponseText(response json.RawMessage) string {
+	if len(response) == 0 || string(response) == "null" {
+		return ""
+	}
+	var envelope struct {
+		Output []json.RawMessage `json:"output"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, item := range envelope.Output {
+		var value struct {
+			Type    string          `json:"type"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(item, &value); err != nil {
+			continue
+		}
+		if value.Type == "message" && (value.Role == "" || value.Role == "assistant") {
+			if text := strings.TrimSpace(messageContentText(value.Content)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func extractToolOutputString(raw json.RawMessage) string {

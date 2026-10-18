@@ -42,6 +42,20 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
+		if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 {
+			currIdx := min(m.activeQuestion.CurrentIndex, len(m.activeQuestion.Request.Questions)-1)
+			currQ := m.activeQuestion.Request.Questions[currIdx]
+			if m.activeQuestion.NotesOpen {
+				m.activeQuestion.NoteText += cleanToolInline(msg.Content)
+				m.updateLayout()
+				return m, nil
+			}
+			if m.activeQuestion.Selected >= len(currQ.Options) {
+				m.activeQuestion.Custom += cleanToolInline(msg.Content)
+				m.updateLayout()
+				return m, nil
+			}
+		}
 		m.composer.InsertString(msg.Content)
 		m.updateLayout()
 		return m, nil
@@ -75,12 +89,22 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.events == nil {
 			return m, nil
 		}
-		var cmd tea.Cmd
 		var mod tea.Model
-		mod, cmd = m.handleRuntimeEvent(msg.event)
+		var cmd tea.Cmd
+		mod, cmd = m.processRuntimeEventNoRefresh(msg.event)
 		m = mod.(*tuiModel)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		for _, batchEv := range msg.batch {
+			mod, cmd = m.processRuntimeEventNoRefresh(batchEv)
+			m = mod.(*tuiModel)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if m.transcriptDirty || m.cachedDirty {
+			m.refreshViewportContent()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
 		return m, tea.Batch(cmds...)
@@ -129,19 +153,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = false
 		m.thinking = false
 		m.streamActive = false
-		if m.currentReasoningText != "" {
-			dur := time.Since(m.reasoningStartTime)
-			m.entries = append(m.entries, TranscriptEntry{
-				Kind:              KindReasoning,
-				Text:              m.currentReasoningText,
-				ReasoningDuration: dur,
-				ReasoningExpanded: false,
-				Timestamp:         time.Now(),
-			})
-			m.currentReasoningText = ""
-			m.reasoningStartTime = time.Time{}
-			m.invalidateEntryCache()
+		m.statusMessage = ""
+
+		var planText string
+		if msg.result.ProposedPlan != nil {
+			planText = msg.result.ProposedPlan.Text
 		}
+		m.finalizeTurnOutput(planText, msg.result.Response, msg.result.ExecutionID)
+
 		if msg.err != nil {
 			m.addSystemEntry("Task failed: " + msg.err.Error())
 		} else {
@@ -157,30 +176,21 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.pausedCheckpoint = nil
 			}
-			if msg.result.ProposedPlan != nil && msg.result.ProposedPlan.Text != "" {
-				cleaned := stripProposedPlan(m.currentStreamText)
-				if cleaned != "" {
-					m.entries = append(m.entries, TranscriptEntry{
-						Kind: KindAssistant,
-						Text: cleaned,
-					})
+			if msg.result.Status == core.TaskFailed {
+				if msg.result.ModelFailure != nil {
+					reason := string(msg.result.ModelFailure.Category)
+					if msg.result.ModelFailure.Code != "" {
+						reason += " (" + msg.result.ModelFailure.Code + ")"
+					} else if msg.result.ModelFailure.StatusCode > 0 {
+						reason += fmt.Sprintf(" (HTTP %d)", msg.result.ModelFailure.StatusCode)
+					}
+					if reason == "" {
+						reason = "model request failed"
+					}
+					m.addSystemEntry("Task failed: " + reason)
+				} else if msg.result.BudgetReason != "" {
+					m.addSystemEntry(fmt.Sprintf("Task stopped: execution budget limit reached (`%s`).", msg.result.BudgetReason))
 				}
-				m.currentStreamText = ""
-				m.entries = append(m.entries, TranscriptEntry{
-					Kind: KindPlan,
-					Text: msg.result.ProposedPlan.Text,
-				})
-				m.activePlanReview = &ActivePlanReview{
-					Text:        msg.result.ProposedPlan.Text,
-					ExecutionID: msg.result.ExecutionID,
-					Selected:    0,
-				}
-			} else if m.currentStreamText != "" {
-				m.entries = append(m.entries, TranscriptEntry{
-					Kind: KindAssistant,
-					Text: m.currentStreamText,
-				})
-				m.currentStreamText = ""
 			}
 			if msg.result.Status == core.TaskCompleted || msg.result.Status == "" {
 				if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
@@ -383,20 +393,43 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.X == m.selectStartX && msg.Y == m.selectStartY {
 				headerHeight := 3
-				clickedLineIdx := m.viewport.YOffset() + (msg.Y - headerHeight)
-				lines := strings.Split(m.viewport.View(), "\n")
-				if clickedLineIdx >= 0 && clickedLineIdx < len(lines) {
-					lineText := lines[clickedLineIdx]
-					if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") {
-						for i := len(m.entries) - 1; i >= 0; i-- {
-							if m.entries[i].Kind == KindTool {
-								m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
-								m.invalidateEntryCache()
-								m.refreshViewportContent()
-								break
+				vpRow := msg.Y - headerHeight
+				absLine := m.viewport.YOffset() + vpRow
+				toggled := false
+				for _, rng := range m.entryLineRanges {
+					if absLine >= rng.StartLine && absLine <= rng.EndLine && rng.EntryIndex >= 0 && rng.EntryIndex < len(m.entries) {
+						switch m.entries[rng.EntryIndex].Kind {
+						case KindTool:
+							m.entries[rng.EntryIndex].ToolExpanded = !m.entries[rng.EntryIndex].ToolExpanded
+							toggled = true
+						case KindReasoning:
+							m.entries[rng.EntryIndex].ReasoningExpanded = !m.entries[rng.EntryIndex].ReasoningExpanded
+							toggled = true
+						case KindSubagent:
+							m.entries[rng.EntryIndex].SubagentExpanded = !m.entries[rng.EntryIndex].SubagentExpanded
+							toggled = true
+						}
+						break
+					}
+				}
+				if !toggled {
+					lines := strings.Split(m.viewport.View(), "\n")
+					if vpRow >= 0 && vpRow < len(lines) {
+						lineText := lines[vpRow]
+						if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "Running") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") {
+							for i := len(m.entries) - 1; i >= 0; i-- {
+								if m.entries[i].Kind == KindTool {
+									m.entries[i].ToolExpanded = !m.entries[i].ToolExpanded
+									toggled = true
+									break
+								}
 							}
 						}
 					}
+				}
+				if toggled {
+					m.invalidateEntryCache()
+					m.refreshViewportContent()
 				}
 			}
 			m.selectedText = ""
@@ -1104,6 +1137,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.updateLayout()
 			}
 			return m, nil
+		case "1", "y", "Y":
+			m.activeApproval.Selected = 0
+			return m.resolveActiveApproval()
+		case "2", "n", "N":
+			m.activeApproval.Selected = 1
+			return m.resolveActiveApproval()
 		case "enter":
 			return m.resolveActiveApproval()
 		}
@@ -1116,7 +1155,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			currIdx = len(m.activeQuestion.Request.Questions) - 1
 		}
 		currQ := m.activeQuestion.Request.Questions[currIdx]
-		maxOpt := len(currQ.Options) // including "None of the above"
+		maxOpt := len(currQ.Options) // index of "None of the above"
+		inCustomInput := m.activeQuestion.Selected == maxOpt
+		inNotesInput := m.activeQuestion.NotesOpen
+
 		switch keyStr {
 		case "up":
 			if m.activeQuestion.Selected > 0 {
@@ -1136,29 +1178,94 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "tab":
 			m.activeQuestion.NotesOpen = !m.activeQuestion.NotesOpen
+			m.updateLayout()
 			return m, nil
 		case "enter":
 			return m.resolveActiveQuestion()
+		case "backspace":
+			if inNotesInput {
+				if len(m.activeQuestion.NoteText) > 0 {
+					runes := []rune(m.activeQuestion.NoteText)
+					m.activeQuestion.NoteText = string(runes[:len(runes)-1])
+					m.updateLayout()
+				}
+				return m, nil
+			}
+			if inCustomInput {
+				if len(m.activeQuestion.Custom) > 0 {
+					runes := []rune(m.activeQuestion.Custom)
+					m.activeQuestion.Custom = string(runes[:len(runes)-1])
+					m.updateLayout()
+				}
+				return m, nil
+			}
+			return m, nil
+		case "space":
+			if inNotesInput {
+				m.activeQuestion.NoteText += " "
+				m.updateLayout()
+				return m, nil
+			}
+			if inCustomInput {
+				m.activeQuestion.Custom += " "
+				m.updateLayout()
+				return m, nil
+			}
+		default:
+			text := msg.Key().Text
+			if text == "" && msg.Key().Code >= ' ' && msg.Key().Code <= '~' && msg.Key().Mod == 0 {
+				text = string(msg.Key().Code)
+			}
+			if inNotesInput && text != "" {
+				m.activeQuestion.NoteText += text
+				m.updateLayout()
+				return m, nil
+			}
+			if inCustomInput && text != "" {
+				m.activeQuestion.Custom += text
+				m.updateLayout()
+				return m, nil
+			}
+			// Quick numeric option selection when not typing in custom/notes input
+			if len(keyStr) == 1 && keyStr[0] >= '1' && keyStr[0] <= '9' {
+				idx := int(keyStr[0] - '1')
+				if idx <= maxOpt {
+					m.activeQuestion.Selected = idx
+					m.updateLayout()
+					return m, nil
+				}
+			}
 		}
+		return m, nil
 	}
 
 	if m.activePlanReview != nil {
 		switch keyStr {
-		case "up":
+		case "up", "k":
 			if m.activePlanReview.Selected > 0 {
 				m.activePlanReview.Selected--
 			}
 			m.updateLayout()
 			return m, nil
-		case "down":
+		case "down", "j":
 			if m.activePlanReview.Selected < 2 {
 				m.activePlanReview.Selected++
 			}
 			m.updateLayout()
 			return m, nil
+		case "1":
+			m.activePlanReview.Selected = 0
+			return m.resolveActivePlanReview()
+		case "2":
+			m.activePlanReview.Selected = 1
+			return m.resolveActivePlanReview()
+		case "3":
+			m.activePlanReview.Selected = 2
+			return m.resolveActivePlanReview()
 		case "enter":
 			return m.resolveActivePlanReview()
 		}
+		return m, nil
 	}
 
 	// 2.5 Prompt History Navigation (Up / Down)
@@ -1365,8 +1472,15 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		answerText = opt.Label
 	} else {
 		answerText = "None of the above"
-		if q.Custom != "" {
-			answerText = q.Custom
+		if strings.TrimSpace(q.Custom) != "" {
+			answerText = strings.TrimSpace(q.Custom)
+		}
+	}
+	if note := strings.TrimSpace(q.NoteText); note != "" {
+		if answerText == "None of the above" {
+			answerText = note
+		} else {
+			answerText += " (" + note + ")"
 		}
 	}
 
@@ -1375,6 +1489,7 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		QuestionText: qItem.Question,
 		AnswerText:   answerText,
 	})
+	m.invalidateEntryCache()
 
 	q.Answers = append(q.Answers, core.UserQuestionResponse{
 		QuestionID: qItem.ID,
@@ -1471,7 +1586,7 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 
 	runtime := m.runtime
 	return m, func() tea.Msg {
-		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, mode)
+		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, core.PlanImplementationOptions{Mode: mode})
 		return planImplementedMsg{impl: impl, err: err}
 	}
 }

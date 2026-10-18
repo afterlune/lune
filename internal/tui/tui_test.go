@@ -3284,13 +3284,188 @@ func TestCommitAndPushCommands(t *testing.T) {
 	}
 }
 
+func TestMultiAgentStreamIsolation(t *testing.T) {
+	m := newTUIModel(nil, nil, "multi-agent-sess")
+	m.running = true
 
+	// 1. Subagent starts and streams reasoning + text
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentStarted,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		AgentRole: "TUI Auditor",
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventModelStream,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Subagent secret thought",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventModelStream,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Subagent report line 1\nSubagent report line 2",
+		},
+	})
 
+	// Lead buffers must remain untouched by subagent events
+	if m.currentReasoningText != "" {
+		t.Fatalf("expected lead currentReasoningText to be empty, got %q", m.currentReasoningText)
+	}
+	if m.currentStreamText != "" {
+		t.Fatalf("expected lead currentStreamText to be empty, got %q", m.currentStreamText)
+	}
 
+	// 2. Background memory stream is also ignored by lead stream
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Purpose: string(core.UsagePurposeMemory),
+			Type:    "text_delta",
+			Delta:   "internal memory json",
+		},
+	})
+	if m.currentStreamText != "" {
+		t.Fatalf("expected memory purpose delta to be ignored, got %q", m.currentStreamText)
+	}
 
+	// 3. Lead agent streams its own reasoning and text
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Lead thought part 1. ",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Lead thought part 2.",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Final lead response.",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentFinished,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+	})
+	m.finalizeTurnOutput("", nil, "exec-1")
 
+	var subagentEntries, reasoningEntries, assistantEntries []TranscriptEntry
+	for _, e := range m.entries {
+		switch e.Kind {
+		case KindSubagent:
+			subagentEntries = append(subagentEntries, e)
+		case KindReasoning:
+			reasoningEntries = append(reasoningEntries, e)
+		case KindAssistant:
+			assistantEntries = append(assistantEntries, e)
+		}
+	}
 
+	if len(subagentEntries) != 1 {
+		t.Fatalf("expected 1 subagent entry, got %d", len(subagentEntries))
+	}
+	if subagentEntries[0].SubagentRunning {
+		t.Errorf("expected subagent entry to be marked finished")
+	}
+	if subagentEntries[0].SubagentPreview != "Subagent report line 2" {
+		t.Errorf("unexpected subagent preview: %q", subagentEntries[0].SubagentPreview)
+	}
+	if len(reasoningEntries) != 1 || reasoningEntries[0].Text != "Lead thought part 1. Lead thought part 2." {
+		t.Errorf("expected 1 merged lead reasoning entry, got %+v", reasoningEntries)
+	}
+	if len(assistantEntries) != 1 || assistantEntries[0].Text != "Final lead response." {
+		t.Errorf("expected 1 clean lead assistant entry, got %+v", assistantEntries)
+	}
+}
 
+func TestRenderCardSurfacePreservesBackground(t *testing.T) {
+	inner := "Before " + styleTextMuted().Render("code.go") + " After"
+	rendered := renderCardSurface(styleCard().Width(50), inner)
+	if strings.Contains(rendered, "\x1b[0m After") || strings.Contains(rendered, "\x1b[m After") {
+		t.Errorf("expected card background SGR to be re-asserted after inner reset, got %q", rendered)
+	}
+}
 
+func TestMarkdownInlineCodeProtectsFileRefsAndBold(t *testing.T) {
+	md := "Check `internal/tui/view.go:100` and `__init__.py` in `cmd/main.go`."
+	rendered := RenderMarkdown(md, 80)
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, "internal/tui/view.go:100") {
+		t.Errorf("expected inline code file path to remain intact, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "__init__.py") {
+		t.Errorf("expected underscores inside inline code not to be stripped as bold, got %q", stripped)
+	}
+}
 
+func TestSanitizeAndTruncateLineUTF8(t *testing.T) {
+	cjk := "这是一段包含中文字符和\t制表符的很长文本，用于测试按显示宽度安全截断不会产生乱码"
+	truncated := sanitizeAndTruncateLine(cjk, 24)
+	if strings.Contains(truncated, "\t") {
+		t.Errorf("expected tabs to be expanded, got %q", truncated)
+	}
+	if strings.ContainsRune(truncated, '\ufffd') {
+		t.Errorf("expected valid UTF-8 without replacement char, got %q", truncated)
+	}
+	if ansi.StringWidth(truncated) > 24 {
+		t.Errorf("expected display width <= 24, got %d (%q)", ansi.StringWidth(truncated), truncated)
+	}
+}
 
+func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
+	m := newTUIModel(nil, nil, "q-sess")
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{
+			ID: "q-req-1",
+			Questions: []core.UserQuestionItem{
+				{
+					ID:       "q1",
+					Question: "Choose an option",
+					Options: []core.UserQuestionOption{
+						{Label: "Opt A"},
+					},
+				},
+			},
+		},
+		Selected: 1, // "None of the above"
+	}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'i', Text: "i"}))
+	m = mod.(*tuiModel)
+	if m.activeQuestion.Custom != "hi" {
+		t.Fatalf("expected Custom answer 'hi', got %q", m.activeQuestion.Custom)
+	}
+
+	// Toggle notes with Tab and type into NoteText
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = mod.(*tuiModel)
+	if !m.activeQuestion.NotesOpen {
+		t.Fatalf("expected NotesOpen to be true after Tab")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	m = mod.(*tuiModel)
+	if m.activeQuestion.NoteText != "n" {
+		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.NoteText)
+	}
+}

@@ -11,8 +11,10 @@ import (
 	"strings"
 
 	"github.com/afterlune/lune/internal/cli"
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/tui"
 	core "github.com/afterlune/luneCore"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 // maxPipedStdinBytes limits the maximum data read from standard input pipe (10 MB).
@@ -189,5 +191,35 @@ func newCore(workspace string) (*core.Core, error) {
 	if _, err := os.Stat(helperPath); err != nil {
 		helperPath = ""
 	}
-	return core.New(core.Config{Workspace: workspace, Logger: slog.Default(), SandboxHelperPath: helperPath})
+	baseCfg := core.Config{Workspace: workspace, Logger: slog.Default(), SandboxHelperPath: helperPath}
+
+	var storeModelCfg *publicmodel.Config
+	var storeProjectCfg *core.ProjectConfig
+	if store, err := settings.OpenUser(); err == nil {
+		defer store.Close()
+		_ = store.TouchWorkspace(workspace)
+		if wsCfg, ok, err := store.LoadWorkspaceConfig(workspace); err == nil && ok {
+			storeProjectCfg = &wsCfg
+		}
+		if modelCfg, err := store.LoadModelConfig(); err == nil && (len(modelCfg.Providers) > 0 || len(modelCfg.Models) > 0) {
+			storeModelCfg = &modelCfg
+		}
+	}
+
+	configPath := filepath.Join(workspace, "config.json")
+	if _, err := os.Stat(configPath); err == nil {
+		// Prefer explicit workspace config.json when present; fall back to overlaying user settings if needed.
+		client, err := core.New(baseCfg)
+		if err == nil || storeModelCfg == nil {
+			return client, err
+		}
+	}
+
+	if storeProjectCfg != nil {
+		baseCfg.ProjectConfig = storeProjectCfg
+	}
+	if storeModelCfg != nil {
+		baseCfg.ModelConfig = storeModelCfg
+	}
+	return core.New(baseCfg)
 }

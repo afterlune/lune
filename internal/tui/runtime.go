@@ -2,12 +2,16 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type runtimeStreamReadyMsg struct {
@@ -19,6 +23,7 @@ type runtimeStreamReadyMsg struct {
 type runtimeEventMsg struct {
 	sessionID string
 	event     core.Event
+	batch     []core.Event
 	events    <-chan core.Event
 }
 
@@ -48,8 +53,32 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 	runtime := m.runtime
 	sessionID := m.sessionID
 	return func() tea.Msg {
-		events, err := runtime.SubscribeEvents(ctx, 0)
-		return runtimeStreamReadyMsg{sessionID: sessionID, events: events, err: err}
+		rawEvents, err := runtime.SubscribeEvents(ctx, 0)
+		if err != nil {
+			return runtimeStreamReadyMsg{sessionID: sessionID, err: err}
+		}
+		// Relay events through a large 2048-buffer channel so luneCore's 64-element
+		// non-blocking live channel never overflows while Bubble Tea renders a frame.
+		buffered := make(chan core.Event, 2048)
+		go func() {
+			defer close(buffered)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev, ok := <-rawEvents:
+					if !ok {
+						return
+					}
+					select {
+					case buffered <- ev:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+		return runtimeStreamReadyMsg{sessionID: sessionID, events: buffered}
 	}
 }
 
@@ -62,7 +91,26 @@ func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
 		if !ok {
 			return runtimeEventMsg{sessionID: sessionID, events: nil}
 		}
-		return runtimeEventMsg{sessionID: sessionID, event: event, events: events}
+		// Coalesce queued stream events so Bubble Tea renders once per batch
+		// instead of re-rendering the full Markdown transcript on every token.
+		var batch []core.Event
+		if event.Kind == core.EventModelStream {
+			for len(batch) < 128 {
+				select {
+				case nextEv, ok := <-events:
+					if !ok {
+						return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+					}
+					batch = append(batch, nextEv)
+					if nextEv.Kind != core.EventModelStream {
+						return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+					}
+				default:
+					return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+				}
+			}
+		}
+		return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
 	}
 }
 
@@ -94,6 +142,19 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.historyDraft = ""
 	m.shortcutsOpen = false
 	m.autocompleteOpen = false
+
+	if strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" {
+		if autoTitle := deriveSessionTitleText(text); autoTitle != "" {
+			m.sessionTitle = autoTitle
+			if m.client != nil && m.sessionID != "" {
+				client := m.client
+				sid := m.sessionID
+				go func() {
+					_ = client.SetSessionTitle(context.Background(), sid, autoTitle)
+				}()
+			}
+		}
+	}
 
 	attachments, augmentedText := ExpandFileMentions(text, m.workspace)
 	var attachedLabels []string
@@ -147,6 +208,8 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.thinking = false
 	m.taskStartedAt = time.Now()
 	m.currentStreamText = ""
+	m.currentReasoningText = ""
+	m.reasoningStartTime = time.Time{}
 	m.streamActive = true
 	m.scrolledUp = false
 	m.activeQuestion = nil
@@ -172,8 +235,262 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	)
 }
 
+func (m *tuiModel) flushReasoningEntry() {
+	if m.currentReasoningText == "" {
+		return
+	}
+	trimmed := strings.TrimSpace(m.currentReasoningText)
+	dur := time.Since(m.reasoningStartTime)
+	m.currentReasoningText = ""
+	m.reasoningStartTime = time.Time{}
+	if trimmed == "" {
+		return
+	}
+	// Merge into the trailing reasoning entry if no assistant/tool entry intervened,
+	// avoiding fragmented micro-duration "Thought for 8ms" blocks.
+	if len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindReasoning {
+		last := &m.entries[len(m.entries)-1]
+		if last.Text != "" && !strings.HasSuffix(last.Text, "\n") {
+			last.Text += "\n"
+		}
+		last.Text += trimmed
+		last.ReasoningDuration += dur
+		m.invalidateEntryCache()
+		return
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		Kind:              KindReasoning,
+		Text:              trimmed,
+		ReasoningDuration: dur,
+		ReasoningExpanded: false,
+		Timestamp:         time.Now(),
+	})
+	m.invalidateEntryCache()
+}
+
+func (m *tuiModel) flushStreamTextEntry() {
+	if m.currentStreamText == "" {
+		return
+	}
+	text := m.currentStreamText
+	m.currentStreamText = ""
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
+		Kind:      KindAssistant,
+		Text:      text,
+		Timestamp: time.Now(),
+	})
+	m.invalidateEntryCache()
+}
+
+func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json.RawMessage, executionID string) {
+	m.flushReasoningEntry()
+	m.markRunningSubagentsAndToolsDone()
+
+	text := m.currentStreamText
+	m.currentStreamText = ""
+
+	if strings.TrimSpace(text) == "" && len(fallbackResponse) > 0 {
+		// Check whether an assistant message was already appended at the tail of m.entries
+		alreadyHasAssistant := false
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].Kind == KindUser {
+				break
+			}
+			if m.entries[i].Kind == KindAssistant || m.entries[i].Kind == KindPlan {
+				alreadyHasAssistant = true
+				break
+			}
+		}
+		if !alreadyHasAssistant {
+			text = extractResponseText(fallbackResponse)
+		}
+	}
+
+	// If an earlier EventTaskFinished already flushed raw <proposed_plan> into the last KindAssistant entry,
+	// clean it up and extract the plan text.
+	if len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && strings.Contains(m.entries[len(m.entries)-1].Text, "<proposed_plan>") {
+		extracted, cleaned := extractProposedPlan(m.entries[len(m.entries)-1].Text)
+		if proposedPlan == "" && extracted != "" {
+			proposedPlan = extracted
+		}
+		if cleaned == "" {
+			m.entries = m.entries[:len(m.entries)-1]
+		} else {
+			m.entries[len(m.entries)-1].Text = cleaned
+		}
+		m.invalidateEntryCache()
+	}
+
+	if strings.Contains(text, "<proposed_plan>") {
+		extracted, cleaned := extractProposedPlan(text)
+		if proposedPlan == "" && extracted != "" {
+			proposedPlan = extracted
+		}
+		text = cleaned
+	} else if proposedPlan != "" {
+		text = stripProposedPlan(text)
+	}
+
+	if strings.TrimSpace(text) != "" {
+		m.entries = append(m.entries, TranscriptEntry{
+			ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
+			Kind:      KindAssistant,
+			Text:      text,
+			Timestamp: time.Now(),
+		})
+		m.invalidateEntryCache()
+	}
+
+	if strings.TrimSpace(proposedPlan) != "" {
+		hasPlanEntry := len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindPlan && m.entries[len(m.entries)-1].Text == proposedPlan
+		if !hasPlanEntry {
+			m.entries = append(m.entries, TranscriptEntry{
+				ID:        fmt.Sprintf("plan-%d", time.Now().UnixNano()),
+				Kind:      KindPlan,
+				Text:      proposedPlan,
+				Timestamp: time.Now(),
+			})
+			m.invalidateEntryCache()
+		}
+		m.activePlanReview = &ActivePlanReview{
+			Text:        proposedPlan,
+			ExecutionID: executionID,
+			Selected:    0,
+		}
+	}
+}
+
+func (m *tuiModel) markRunningSubagentsAndToolsDone() {
+	changed := false
+	for i := range m.entries {
+		if m.entries[i].Kind == KindTool && m.entries[i].ToolRunning {
+			m.entries[i].ToolRunning = false
+			changed = true
+		}
+		if m.entries[i].Kind == KindSubagent && m.entries[i].SubagentRunning {
+			m.entries[i].SubagentRunning = false
+			changed = true
+		}
+	}
+	if changed {
+		m.invalidateEntryCache()
+	}
+}
+
+func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, running bool, duration time.Duration) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || agentID == "lead" {
+		return
+	}
+	displayName := strings.TrimSpace(agentName)
+	if displayName == "" {
+		displayName = agentID
+	}
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			m.entries[i].AgentName = displayName
+			if agentRole != "" {
+				m.entries[i].AgentRole = agentRole
+			}
+			m.entries[i].SubagentRunning = running
+			if duration > 0 {
+				m.entries[i].SubagentDuration = duration
+			} else if !running && m.entries[i].SubagentDuration == 0 && !m.entries[i].Timestamp.IsZero() {
+				m.entries[i].SubagentDuration = time.Since(m.entries[i].Timestamp)
+			}
+			if !running && m.entries[i].SubagentPreview == "" {
+				m.entries[i].SubagentPreview = "Completed"
+			}
+			m.invalidateEntryCache()
+			return
+		}
+	}
+	preview := "Working..."
+	if !running {
+		preview = "Completed"
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		ID:               "subagent-" + agentID,
+		Kind:             KindSubagent,
+		AgentID:          agentID,
+		AgentName:        displayName,
+		AgentRole:        agentRole,
+		SubagentRunning:  running,
+		SubagentPreview:  preview,
+		SubagentDuration: duration,
+		Timestamp:        time.Now(),
+	})
+	m.invalidateEntryCache()
+}
+
+func (m *tuiModel) upsertSubagentStream(event core.Event) {
+	agentID := strings.TrimSpace(event.AgentID)
+	if agentID == "" || agentID == "lead" || event.Stream == nil {
+		return
+	}
+	delta := event.Stream.Delta
+	if delta == "" {
+		return
+	}
+	displayName := strings.TrimSpace(event.AgentName)
+	if displayName == "" {
+		displayName = agentID
+	}
+	idx := -1
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		m.entries = append(m.entries, TranscriptEntry{
+			ID:              "subagent-" + agentID,
+			Kind:            KindSubagent,
+			AgentID:         agentID,
+			AgentName:       displayName,
+			AgentRole:       event.AgentRole,
+			SubagentRunning: true,
+			Timestamp:       time.Now(),
+		})
+		idx = len(m.entries) - 1
+	}
+	entry := &m.entries[idx]
+	entry.SubagentRunning = true
+	if event.AgentName != "" {
+		entry.AgentName = event.AgentName
+	}
+	if event.AgentRole != "" {
+		entry.AgentRole = event.AgentRole
+	}
+	entry.Text += delta
+	// Extract the latest non-empty line from entry.Text as a clean single-line status preview
+	lines := strings.Split(strings.TrimSpace(entry.Text), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" && !strings.HasPrefix(line, "```") {
+			entry.SubagentPreview = line
+			break
+		}
+	}
+	m.invalidateEntryCache()
+}
+
 // handleRuntimeEvent processes incoming runtime events from Core.
 func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
+	mod, cmd := m.processRuntimeEventNoRefresh(event)
+	m = mod.(*tuiModel)
+	if m.transcriptDirty || m.cachedDirty {
+		m.refreshViewportContent()
+	}
+	return m, cmd
+}
+
+func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
 	switch event.Kind {
 	case core.EventTaskStarted:
 		if len(m.queuedTurns) > 0 {
@@ -194,156 +511,242 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			m.taskStartedAt = time.Now()
 			m.thinking = false
 			m.currentStreamText = ""
-			m.refreshViewportContent()
+			m.currentReasoningText = ""
+			m.transcriptDirty = true
 			m.updateLayout()
 			return m, waitForTurn(m.runtime, m.sessionID, execID)
 		}
 
 	case core.EventModelStream:
-		if event.Stream != nil {
-			switch event.Stream.Type {
-			case "reasoning_delta":
-				if m.reasoningStartTime.IsZero() {
-					m.reasoningStartTime = time.Now()
-				}
-				m.thinking = true
-				m.currentReasoningText += event.Stream.Delta
-				m.refreshViewportContent()
+		if event.Stream == nil {
+			return m, nil
+		}
+		// Ignore internal background stream purposes (e.g. memory extraction, compaction summary).
+		purpose := strings.TrimSpace(event.Stream.Purpose)
+		if purpose != "" && purpose != string(core.UsagePurposeMain) && purpose != string(core.UsagePurposeTeam) {
+			return m, nil
+		}
+		// Isolate concurrent subagent streams from the lead assistant stream!
+		agentID := strings.TrimSpace(event.AgentID)
+		if agentID != "" && agentID != "lead" {
+			m.upsertSubagentStream(event)
+			return m, nil
+		}
 
-			case "text_delta", "":
-				if m.currentReasoningText != "" {
-					dur := time.Since(m.reasoningStartTime)
-					m.entries = append(m.entries, TranscriptEntry{
-						Kind:              KindReasoning,
-						Text:              m.currentReasoningText,
-						ReasoningDuration: dur,
-						ReasoningExpanded: false,
-						Timestamp:         time.Now(),
-					})
-					m.currentReasoningText = ""
-					m.reasoningStartTime = time.Time{}
-					m.invalidateEntryCache()
+		switch event.Stream.Type {
+		case "reasoning_delta":
+			if m.reasoningStartTime.IsZero() {
+				m.reasoningStartTime = time.Now()
+			}
+			m.thinking = true
+			m.currentReasoningText += event.Stream.Delta
+			m.transcriptDirty = true
+
+		case "text_delta", "":
+			if m.currentReasoningText != "" {
+				m.flushReasoningEntry()
+			}
+			if event.Stream.Delta != "" {
+				m.thinking = false
+				m.currentStreamText += event.Stream.Delta
+				if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
+					m.activePlanExecution.CheckTextForAdvance(m.currentStreamText)
 				}
-				if event.Stream.Delta != "" {
-					m.thinking = false
-					m.currentStreamText += event.Stream.Delta
-					if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
-						m.activePlanExecution.CheckTextForAdvance(m.currentStreamText)
-					}
-					m.refreshViewportContent()
-				}
+				m.transcriptDirty = true
 			}
 		}
+
+	case core.EventAgentStarted:
+		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, true, 0)
+
+	case core.EventAgentFinished:
+		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, false, 0)
 
 	case core.EventToolStarted:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
-		if m.currentReasoningText != "" {
-			dur := time.Since(m.reasoningStartTime)
-			m.entries = append(m.entries, TranscriptEntry{
-				Kind:              KindReasoning,
-				Text:              m.currentReasoningText,
-				ReasoningDuration: dur,
-				ReasoningExpanded: false,
-				Timestamp:         time.Now(),
-			})
-			m.currentReasoningText = ""
-			m.reasoningStartTime = time.Time{}
-			m.invalidateEntryCache()
-		}
-		if m.currentStreamText != "" {
-			m.entries = append(m.entries, TranscriptEntry{
-				Kind:      KindAssistant,
-				Text:      m.currentStreamText,
-				Timestamp: time.Now(),
-			})
-			m.currentStreamText = ""
-		}
+		m.flushReasoningEntry()
+		m.flushStreamTextEntry()
 		m.thinking = false
-		cmdText := event.Tool.Name
+
+		rawArgs := string(event.Tool.Arguments)
+		cmdText := formatToolSummary(event.Tool.Name, rawArgs, m.workspace)
 		outText := ""
+		var changes []publictool.FileChange
 		if event.Tool.Details != nil {
 			outText = event.Tool.Details.Output
-			if event.Tool.Details.Command != nil {
+			changes = event.Tool.Details.Changes
+			if event.Tool.Details.Command != nil && strings.TrimSpace(event.Tool.Details.Command.Command.Command) != "" {
 				cmdText = event.Tool.Details.Command.Command.Command
 				if outText == "" {
 					outText = event.Tool.Details.Command.Output
 				}
 			}
 		}
+		callID := event.Tool.ID
+		// Deduplicate if this tool call is already present in m.entries (e.g., from session history replay).
+		if callID != "" {
+			for i := len(m.entries) - 1; i >= 0; i-- {
+				if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == callID {
+					m.entries[i].ToolName = event.Tool.Name
+					if rawArgs != "" {
+						m.entries[i].ToolArgs = rawArgs
+					}
+					if cmdText != "" {
+						m.entries[i].ToolCommand = cmdText
+					}
+					if outText != "" {
+						m.entries[i].ToolOutput = outText
+					}
+					if len(changes) > 0 {
+						m.entries[i].ToolChanges = changes
+					}
+					if m.running {
+						m.entries[i].ToolRunning = true
+					}
+					m.invalidateEntryCache()
+					return m, nil
+				}
+			}
+		}
 		entry := TranscriptEntry{
-			ID:          event.Tool.ID,
+			ID:          callID,
 			Kind:        KindTool,
-			ToolCallID:  event.Tool.ID,
+			ToolCallID:  callID,
 			ToolName:    event.Tool.Name,
-			ToolArgs:    string(event.Tool.Arguments),
+			ToolArgs:    rawArgs,
 			Timestamp:   time.Now(),
 			ToolCommand: cmdText,
+			ToolRunning: m.running,
+			ToolChanges: changes,
 			ToolOutput:  outText,
 		}
 		m.entries = append(m.entries, entry)
-		m.refreshViewportContent()
+		m.invalidateEntryCache()
 
 	case core.EventToolDetails:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
 		if event.Tool.Details != nil {
-			cmdText := event.Tool.Name
 			outText := event.Tool.Details.Output
+			cmdOverride := ""
 			if event.Tool.Details.Command != nil {
-				cmdText = event.Tool.Details.Command.Command.Command
+				cmdOverride = strings.TrimSpace(event.Tool.Details.Command.Command.Command)
 				if outText == "" {
 					outText = event.Tool.Details.Command.Output
 				}
 			}
+			targetID := event.Tool.ID
+			if targetID == "" {
+				targetID = event.CommandID
+			}
 			found := false
 			for i := len(m.entries) - 1; i >= 0; i-- {
-				if m.entries[i].Kind == KindTool && (m.entries[i].ToolCallID == event.CommandID || m.entries[i].ToolName == event.Tool.Name) {
-					m.entries[i].ToolCommand = cmdText
-					m.entries[i].ToolOutput = outText
-					m.entries[i].ToolExitCode = event.CommandExitCode
+				if m.entries[i].Kind == KindTool && ((targetID != "" && m.entries[i].ToolCallID == targetID) || (targetID == "" && m.entries[i].ToolName == event.Tool.Name)) {
+					if cmdOverride != "" {
+						m.entries[i].ToolCommand = cmdOverride
+					}
+					if outText != "" {
+						m.entries[i].ToolOutput = outText
+					}
+					if len(event.Tool.Details.Changes) > 0 {
+						m.entries[i].ToolChanges = event.Tool.Details.Changes
+					}
+					if event.CommandExitCode != nil {
+						m.entries[i].ToolExitCode = event.CommandExitCode
+					}
 					m.invalidateEntryCache()
 					found = true
 					break
 				}
 			}
 			if !found {
+				cmdText := cmdOverride
+				if cmdText == "" {
+					cmdText = formatToolSummary(event.Tool.Name, string(event.Tool.Arguments), m.workspace)
+				}
 				m.entries = append(m.entries, TranscriptEntry{
-					ID:           event.CommandID,
+					ID:           targetID,
 					Kind:         KindTool,
+					ToolCallID:   targetID,
+					ToolName:     event.Tool.Name,
 					ToolCommand:  cmdText,
 					ToolOutput:   outText,
+					ToolChanges:  event.Tool.Details.Changes,
 					ToolExitCode: event.CommandExitCode,
+					ToolRunning:  m.running,
 					Timestamp:    time.Now(),
 				})
+				m.invalidateEntryCache()
 			}
-			m.refreshViewportContent()
 		}
 
 	case core.EventToolFinished:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
+		isFailed := event.Tool.Failed ||
+			event.Tool.Canceled ||
+			event.CommandStatus == core.CommandFailed ||
+			event.CommandStatus == core.CommandTimedOut ||
+			(event.CommandExitCode != nil && *event.CommandExitCode != 0)
 		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == event.Tool.ID {
+			if m.entries[i].Kind == KindTool && (m.entries[i].ToolCallID == event.Tool.ID || (event.Tool.ID == "" && m.entries[i].ToolName == event.Tool.Name)) {
+				m.entries[i].ToolRunning = false
+				m.entries[i].ToolFailed = isFailed
 				m.entries[i].ToolStatus = event.CommandStatus
-				m.entries[i].ToolExitCode = event.CommandExitCode
-				if event.Tool.Details != nil && event.Tool.Details.Output != "" {
-					m.entries[i].ToolOutput = event.Tool.Details.Output
+				if event.CommandExitCode != nil {
+					m.entries[i].ToolExitCode = event.CommandExitCode
+				}
+				if event.Tool.Duration > 0 {
+					m.entries[i].ToolDuration = event.Tool.Duration
+				}
+				if event.Tool.Details != nil {
+					if event.Tool.Details.Output != "" {
+						m.entries[i].ToolOutput = event.Tool.Details.Output
+					} else if event.Tool.Details.Command != nil && event.Tool.Details.Command.Output != "" {
+						m.entries[i].ToolOutput = event.Tool.Details.Command.Output
+					}
+					if len(event.Tool.Details.Changes) > 0 {
+						m.entries[i].ToolChanges = event.Tool.Details.Changes
+					}
 				}
 				m.invalidateEntryCache()
 				break
 			}
 		}
-		m.refreshViewportContent()
 
-	case core.EventUserQuestionRequired:
+	case core.EventContextCompaction:
+		if event.Compaction != nil && m.running {
+			switch event.Compaction.Stage {
+			case "completed":
+				if event.Compaction.BeforeTokens > 0 && event.Compaction.AfterTokens > 0 {
+					m.addSystemEntry(fmt.Sprintf("Context compacted: %d → %d tokens.", event.Compaction.BeforeTokens, event.Compaction.AfterTokens))
+				}
+			case "failed":
+				if event.Compaction.Err != "" {
+					m.addSystemEntry("Context compaction failed: " + event.Compaction.Err)
+				}
+			}
+		}
+
+	case core.EventModelRetry:
+		if m.running {
+			attempt := 1
+			if event.ModelFailure != nil && event.ModelFailure.Attempts > 0 {
+				attempt = event.ModelFailure.Attempts
+			}
+			m.statusMessage = fmt.Sprintf("Retrying model (attempt %d)...", attempt)
+			m.transcriptDirty = true
+		}
+
+	case core.EventUserQuestionRequired, core.EventUserInteractionRequired:
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.refreshViewportContent()
+		m.transcriptDirty = true
 		m.updateLayout()
 
 	case core.EventApprovalRequired:
@@ -352,7 +755,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			_ = m.runtime.ResolveApproval(event.Approval.ID, true)
 		} else {
 			m.checkPendingState(context.Background())
-			m.refreshViewportContent()
+			m.transcriptDirty = true
 			m.updateLayout()
 		}
 
@@ -363,10 +766,12 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		}
 
 	case core.EventUsage:
-		m.totalInputTokens += event.Usage.InputTokens
-		m.totalOutputTokens += event.Usage.OutputTokens
-		m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
-		m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
+		if m.running || !m.seededSessionUsage {
+			m.totalInputTokens += event.Usage.InputTokens
+			m.totalOutputTokens += event.Usage.OutputTokens
+			m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
+			m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
+		}
 		if event.ContextWindow > 0 {
 			m.contextWindow = event.ContextWindow
 		}
@@ -378,24 +783,33 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.refreshViewportContent()
+		m.transcriptDirty = true
 		m.updateLayout()
 		if m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero() {
 			return m, tickClock()
 		}
 
-	case core.EventToolRecoveryRequired:
+	case core.EventToolRecoveryRequired, core.EventExecutionBlocked:
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.refreshViewportContent()
+		m.transcriptDirty = true
+		m.updateLayout()
+
+	case core.EventRuntimeStreamFailed:
+		m.thinking = false
+		m.running = false
+		if event.Err != "" {
+			m.addSystemEntry("Runtime stream error: " + event.Err)
+		}
+		m.transcriptDirty = true
 		m.updateLayout()
 
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil
 		m.pausedCheckpoint = nil
 		m.running = true
-		m.refreshViewportContent()
+		m.transcriptDirty = true
 		m.updateLayout()
 
 	case core.EventTaskFinished:
@@ -403,15 +817,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.thinking = false
-		if m.currentStreamText != "" {
-			m.entries = append(m.entries, TranscriptEntry{
-				ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
-				Kind:      KindAssistant,
-				Text:      m.currentStreamText,
-				Timestamp: time.Now(),
-			})
-			m.currentStreamText = ""
-		}
+		m.finalizeTurnOutput("", nil, event.ExecutionID)
 		m.running = false
 		if event.Status == core.TaskPaused {
 			if m.pausedCheckpoint == nil {
@@ -442,7 +848,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 			m.activeRecovery = nil
 			m.activeToolRecovery = nil
 		}
-		m.refreshViewportContent()
+		m.transcriptDirty = true
 		m.updateLayout()
 
 	case core.EventTaskDiscarded:
@@ -452,9 +858,139 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
 		m.currentStreamText = ""
-		m.refreshViewportContent()
+		m.currentReasoningText = ""
+		m.markRunningSubagentsAndToolsDone()
+		m.transcriptDirty = true
 		m.updateLayout()
 	}
 
 	return m, nil
+}
+
+// formatToolSummary parses raw JSON tool arguments into a concise human-readable command summary.
+func formatToolSummary(toolName, rawArgs, workspace string) string {
+	name := strings.TrimSpace(toolName)
+	argsText := strings.TrimSpace(rawArgs)
+	if argsText == "" || argsText == "{}" || argsText == "null" {
+		return name
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsText), &args); err != nil {
+		return cleanToolInline(name + " " + argsText)
+	}
+
+	strField := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := args[k]; ok {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+		return ""
+	}
+	intField := func(keys ...string) (int, bool) {
+		for _, k := range keys {
+			if v, ok := args[k]; ok {
+				switch n := v.(type) {
+				case float64:
+					return int(n), true
+				case int:
+					return n, true
+				}
+			}
+		}
+		return 0, false
+	}
+
+	relPath := func(p string) string {
+		if p == "" {
+			return ""
+		}
+		if workspace != "" && filepath.IsAbs(p) {
+			if rel, err := filepath.Rel(workspace, p); err == nil && !strings.HasPrefix(rel, "..") {
+				return filepath.ToSlash(rel)
+			}
+		}
+		return filepath.ToSlash(p)
+	}
+
+	switch strings.ToLower(name) {
+	case "command", "run_command":
+		if cmd := strField("command", "cmd"); cmd != "" {
+			return cleanToolInline(cmd)
+		}
+	case "read_file":
+		if p := relPath(strField("path", "file_path", "file")); p != "" {
+			start, okStart := intField("start_line", "offset", "startLine")
+			end, okEnd := intField("end_line", "endLine")
+			limit, okLimit := intField("limit")
+			if okStart && okEnd && end >= start && start > 0 {
+				return fmt.Sprintf("Read %s (L%d-%d)", p, start, end)
+			}
+			if okStart && okLimit && limit > 0 && start > 0 {
+				return fmt.Sprintf("Read %s (L%d-%d)", p, start, start+limit-1)
+			}
+			return "Read " + p
+		}
+	case "write_file":
+		if p := relPath(strField("path", "file_path", "file")); p != "" {
+			return "Write " + p
+		}
+	case "edit_file", "replace_file_content":
+		if p := relPath(strField("path", "file_path", "file")); p != "" {
+			return "Edit " + p
+		}
+	case "list_dir":
+		p := relPath(strField("path", "dir", "directory"))
+		if p == "" {
+			p = "."
+		}
+		return "List " + p
+	case "glob", "find_files":
+		pat := strField("pattern", "glob", "query")
+		p := relPath(strField("path", "dir"))
+		if pat != "" && p != "" && p != "." {
+			return fmt.Sprintf("Find %s in %s", pat, p)
+		}
+		if pat != "" {
+			return "Find " + pat
+		}
+	case "grep", "search_files":
+		pat := strField("pattern", "query", "regex")
+		p := relPath(strField("path", "dir", "include"))
+		if pat != "" && p != "" && p != "." {
+			return fmt.Sprintf("Search %q in %s", pat, p)
+		}
+		if pat != "" {
+			return fmt.Sprintf("Search %q", pat)
+		}
+	case "web_search":
+		if q := strField("query", "q"); q != "" {
+			return fmt.Sprintf("Web search %q", q)
+		}
+	case "web_fetch":
+		if rawURL := strField("url"); rawURL != "" {
+			if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+				return "Fetch " + u.Host + u.Path
+			}
+			return "Fetch " + rawURL
+		}
+	case "delegate_team":
+		if tasks, ok := args["tasks"].([]any); ok && len(tasks) > 0 {
+			return fmt.Sprintf("Delegate %d subagent(s)", len(tasks))
+		}
+		return "Delegate subagent team"
+	}
+
+	return cleanToolInline(name + " " + argsText)
+}
+
+func cleanToolInline(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.TrimSpace(s)
 }

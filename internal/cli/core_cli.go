@@ -1587,11 +1587,30 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 		done <- waitResult{result: result, err: waitErr}
 	}()
 	interrupted := false
+	var pendingKey *cliInputEvent
 	for {
 		select {
 		case result := <-done:
+			pendingKey = nil
 			if result.result.Status == core.TaskPaused && result.err == nil {
 				result.err = core.ErrTaskPaused
+			} else if result.result.Status == core.TaskFailed && result.err == nil {
+				if result.result.ModelFailure != nil {
+					reason := string(result.result.ModelFailure.Category)
+					if result.result.ModelFailure.Code != "" {
+						reason += " (" + result.result.ModelFailure.Code + ")"
+					} else if result.result.ModelFailure.StatusCode > 0 {
+						reason += fmt.Sprintf(" (HTTP %d)", result.result.ModelFailure.StatusCode)
+					}
+					if reason == "" {
+						reason = "model request failed"
+					}
+					result.err = fmt.Errorf("task failed: %s", reason)
+				} else if result.result.BudgetReason != "" {
+					result.err = fmt.Errorf("task stopped: budget limit reached (%s)", result.result.BudgetReason)
+				} else {
+					result.err = errors.New("task failed")
+				}
 			}
 			return result.result, result.err, interrupted
 		case event, ok := <-events:
@@ -1601,10 +1620,51 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 			if event.ExecutionID != "" && event.ExecutionID != submission.ExecutionID {
 				continue
 			}
+			if event.Kind != core.EventApprovalRequired {
+				pendingKey = nil
+			}
 			switch event.Kind {
 			case core.EventContextCompaction:
 				if event.Compaction != nil {
 					writeCLICompactionStatus(stderr, *event.Compaction)
+				}
+			case core.EventToolStarted:
+				if strings.TrimSpace(event.Tool.Name) != "" && !strings.EqualFold(event.Tool.Name, "select_tool_category") {
+					summary := cliApprovalSummary(core.ApprovalRequest{
+						Tool:      event.Tool.Name,
+						Arguments: event.Tool.Arguments,
+					}, workspace)
+					_, _ = fmt.Fprintf(stderr, "• %s\n", summary)
+				}
+			case core.EventModelRetry:
+				attempt := 1
+				if event.ModelFailure != nil && event.ModelFailure.Attempts > 0 {
+					attempt = event.ModelFailure.Attempts
+				}
+				reason := cleanCLIInlineText(event.Err)
+				if reason == "" && event.ModelFailure != nil {
+					reason = string(event.ModelFailure.Category)
+				}
+				if reason != "" {
+					_, _ = fmt.Fprintf(stderr, "Retrying model request (attempt %d): %s\n", attempt, reason)
+				} else {
+					_, _ = fmt.Fprintf(stderr, "Retrying model request (attempt %d)...\n", attempt)
+				}
+			case core.EventAgentStarted:
+				name := strings.TrimSpace(event.AgentName)
+				if name == "" {
+					name = strings.TrimSpace(event.AgentID)
+				}
+				if name != "" && name != "lead" {
+					_, _ = fmt.Fprintf(stderr, "• Subagent started: %s\n", cleanCLIInlineText(name))
+				}
+			case core.EventAgentFinished:
+				name := strings.TrimSpace(event.AgentName)
+				if name == "" {
+					name = strings.TrimSpace(event.AgentID)
+				}
+				if name != "" && name != "lead" {
+					_, _ = fmt.Fprintf(stderr, "• Subagent finished: %s\n", cleanCLIInlineText(name))
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
@@ -1615,7 +1675,24 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 						} else {
 							fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(*event.Approval, workspace))
 						}
-					} else if err := resolveCLIApproval(runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
+						continue
+					}
+					if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(*event.Approval, workspace)); err != nil {
+						runtime.Interrupt(submission.ExecutionID)
+						continue
+					}
+					if pendingKey != nil {
+						handled, err := handleCLIApprovalKey(runtime, *event.Approval, workspace, *pendingKey, stderr)
+						pendingKey = nil
+						if err != nil {
+							runtime.Interrupt(submission.ExecutionID)
+							continue
+						}
+						if handled {
+							continue
+						}
+					}
+					if err := resolveCLIApprovalKeys(runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
 						runtime.Interrupt(submission.ExecutionID)
 					}
 				}
@@ -1634,7 +1711,14 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 				if interrupted {
 					slog.Warn("task interrupted by user", "source", "escape")
 				}
+				pendingKey = nil
+				continue
 			}
+			// The approval event and a fast Y/N key can become ready together.
+			// Hold the key so the approval handler can consume it instead of
+			// letting one side of the select wait forever.
+			buffered := key
+			pendingKey = &buffered
 		}
 	}
 }
@@ -1671,38 +1755,18 @@ func resolveCLIApproval(runtime cliRuntime, request core.ApprovalRequest, worksp
 	if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(request, workspace)); err != nil {
 		return err
 	}
+	return resolveCLIApprovalKeys(runtime, request, workspace, keys, stderr)
+}
+
+func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
 	for key := range keys {
-		if key.err != nil {
-			err := runtime.ResolveApproval(request.ID, false)
-			if err == nil {
-				fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(request, workspace))
-			} else {
-				fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
-			}
+		handled, err := handleCLIApprovalKey(runtime, request, workspace, key, stderr)
+		if err != nil {
 			return err
 		}
-		if key.escape {
-			return errors.New("approval interrupted")
+		if handled {
+			return nil
 		}
-		var allowed bool
-		switch unicode.ToLower(key.rune) {
-		case 'y':
-			allowed = true
-		case 'n':
-			allowed = false
-		default:
-			continue
-		}
-		if err := runtime.ResolveApproval(request.ID, allowed); err != nil {
-			fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
-			return fmt.Errorf("resolve approval: %w", err)
-		}
-		if allowed {
-			_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
-		} else {
-			_, _ = fmt.Fprintln(stderr, "Denied this tool call.")
-		}
-		return nil
 	}
 	err := runtime.ResolveApproval(request.ID, false)
 	if err == nil {
@@ -1711,6 +1775,40 @@ func resolveCLIApproval(runtime cliRuntime, request core.ApprovalRequest, worksp
 		fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
 	}
 	return err
+}
+
+func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, workspace string, key cliInputEvent, stderr io.Writer) (bool, error) {
+	if key.err != nil {
+		err := runtime.ResolveApproval(request.ID, false)
+		if err == nil {
+			fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(request, workspace))
+		} else {
+			fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
+		}
+		return true, err
+	}
+	if key.escape {
+		return false, errors.New("approval interrupted")
+	}
+	var allowed bool
+	switch unicode.ToLower(key.rune) {
+	case 'y':
+		allowed = true
+	case 'n':
+		allowed = false
+	default:
+		return false, nil
+	}
+	if err := runtime.ResolveApproval(request.ID, allowed); err != nil {
+		fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
+		return true, fmt.Errorf("resolve approval: %w", err)
+	}
+	if allowed {
+		_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
+	} else {
+		_, _ = fmt.Fprintln(stderr, "Denied this tool call.")
+	}
+	return true, nil
 }
 
 func formatCLIToolApproval(request core.ApprovalRequest, workspace string) string {

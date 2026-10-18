@@ -46,23 +46,38 @@ func RenderMarkdown(text string, width int) string {
 	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Underline(true)
 
 	for i := 0; i < len(lines); i++ {
-		line := lines[i]
+		line := strings.TrimSuffix(lines[i], "\r")
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
-			inCodeBlock = !inCodeBlock
+			if !inCodeBlock {
+				inCodeBlock = true
+				lang := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				if lang != "" {
+					headerText := "  " + lang
+					pad := max(0, width-lipgloss.Width(headerText))
+					headerStyle := lipgloss.NewStyle().
+						Background(lipgloss.Color(th.CardBg)).
+						Foreground(lipgloss.Color(th.TextMuted)).
+						Bold(true)
+					result = append(result, headerStyle.Render(headerText+strings.Repeat(" ", pad)))
+				}
+			} else {
+				inCodeBlock = false
+			}
 			continue
 		}
 
 		if inCodeBlock {
-			if lipgloss.Width(line) > width-4 {
-				wrapped := ansi.Wrap(line, max(10, width-4), " .,()[]{}<>;=+-*/\\\"'")
+			expanded := strings.ReplaceAll(line, "\t", "    ")
+			if lipgloss.Width(expanded) > width-4 {
+				wrapped := ansi.Wrap(expanded, max(10, width-4), " .,()[]{}<>;=+-*/\\\"'")
 				for _, wl := range strings.Split(wrapped, "\n") {
 					pad := max(0, width-lipgloss.Width(wl)-2)
 					result = append(result, codeBlockStyle.Render("  "+wl+strings.Repeat(" ", pad)))
 				}
 			} else {
-				pad := max(0, width-lipgloss.Width(line)-2)
-				result = append(result, codeBlockStyle.Render("  "+line+strings.Repeat(" ", pad)))
+				pad := max(0, width-lipgloss.Width(expanded)-2)
+				result = append(result, codeBlockStyle.Render("  "+expanded+strings.Repeat(" ", pad)))
 			}
 			continue
 		}
@@ -81,30 +96,29 @@ func RenderMarkdown(text string, width int) string {
 			continue
 		}
 
-		// Headings
-		if strings.HasPrefix(trimmed, "# ") {
-			title := strings.TrimPrefix(trimmed, "# ")
-			wrapped := ansi.Wrap(title, width, wrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				result = append(result, h1Style.Render(wl))
+		// Headings (# through ######)
+		if strings.HasPrefix(trimmed, "#") {
+			hashes := 0
+			for hashes < len(trimmed) && trimmed[hashes] == '#' {
+				hashes++
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
-			title := strings.TrimPrefix(trimmed, "## ")
-			wrapped := ansi.Wrap(title, width, wrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				result = append(result, h2Style.Render(wl))
+			if hashes >= 1 && hashes <= 6 && hashes < len(trimmed) && trimmed[hashes] == ' ' {
+				title := formatInlineWithStyles(strings.TrimSpace(trimmed[hashes+1:]), inlineCodeStyle, boldStyle, fileRefStyle)
+				wrapped := ansi.Wrap(title, width, wrapBreakpoints)
+				var style lipgloss.Style
+				switch hashes {
+				case 1:
+					style = h1Style
+				case 2:
+					style = h2Style
+				default:
+					style = h3Style
+				}
+				for _, wl := range strings.Split(wrapped, "\n") {
+					result = append(result, style.Render(wl))
+				}
+				continue
 			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "### ") {
-			title := strings.TrimPrefix(trimmed, "### ")
-			wrapped := ansi.Wrap(title, width, wrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				result = append(result, h3Style.Render(wl))
-			}
-			continue
 		}
 
 		// Markdown Table: header line followed by delimiter line
@@ -141,12 +155,13 @@ func RenderMarkdown(text string, width int) string {
 		}
 
 		// Bullet list (- item, * item, + item)
-		bulletMatch := reBullet.FindStringSubmatch(line)
+		expandedLine := strings.ReplaceAll(line, "\t", "    ")
+		bulletMatch := reBullet.FindStringSubmatch(expandedLine)
 		if len(bulletMatch) > 0 {
 			indentSpaces := bulletMatch[1]
-			bulletPart := line[len(indentSpaces):len(bulletMatch[0])]
+			bulletPart := expandedLine[len(indentSpaces):len(bulletMatch[0])]
 			bulletChar := strings.TrimSpace(bulletPart)
-			rest := line[len(bulletMatch[0]):]
+			rest := expandedLine[len(bulletMatch[0]):]
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 
 			prefix := indentSpaces + bulletChar + " "
@@ -166,10 +181,10 @@ func RenderMarkdown(text string, width int) string {
 		}
 
 		// Numbered list (1. item, 2. item)
-		numMatch := reNumbered.FindStringSubmatch(line)
+		numMatch := reNumbered.FindStringSubmatch(expandedLine)
 		if len(numMatch) > 0 {
 			prefix := numMatch[0]
-			rest := line[len(prefix):]
+			rest := expandedLine[len(prefix):]
 			formatted := formatInlineWithStyles(rest, inlineCodeStyle, boldStyle, fileRefStyle)
 
 			prefixWidth := lipgloss.Width(prefix)
@@ -188,7 +203,7 @@ func RenderMarkdown(text string, width int) string {
 		}
 
 		// Normal paragraph with inline formatting and word wrap
-		formatted := formatInlineWithStyles(line, inlineCodeStyle, boldStyle, fileRefStyle)
+		formatted := formatInlineWithStyles(expandedLine, inlineCodeStyle, boldStyle, fileRefStyle)
 		if lipgloss.Width(formatted) > width {
 			wrapped := ansi.Wrap(formatted, width, wrapBreakpoints)
 			for _, wl := range strings.Split(wrapped, "\n") {
@@ -221,16 +236,26 @@ func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipglos
 		return line
 	}
 
+	// Tokenize inline code spans first so file-reference or bold regexes never
+	// match inside inline code or corrupt its ANSI escape sequences.
+	var renderedCodeSpans []string
 	if hasBacktick {
 		line = reInlineCode.ReplaceAllStringFunc(line, func(m string) string {
 			content := strings.Trim(m, "`")
-			return codeStyle.Render(" " + content + " ")
+			idx := len(renderedCodeSpans)
+			renderedCodeSpans = append(renderedCodeSpans, codeStyle.Render(" "+content+" "))
+			return "\x00INLINECODE_" + itoaByte(idx) + "\x00"
 		})
 	}
 
 	if hasAsterisk {
 		line = reBold.ReplaceAllStringFunc(line, func(m string) string {
 			content := strings.Trim(m, "*")
+			if hasDot {
+				content = reFileRef.ReplaceAllStringFunc(content, func(fm string) string {
+					return fileStyle.Bold(true).Render(fm)
+				})
+			}
 			return boldStyle.Render(content)
 		})
 	}
@@ -239,6 +264,11 @@ func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipglos
 		line = reFileRef.ReplaceAllStringFunc(line, func(m string) string {
 			return fileStyle.Render(m)
 		})
+	}
+
+	for idx, rendered := range renderedCodeSpans {
+		placeholder := "\x00INLINECODE_" + itoaByte(idx) + "\x00"
+		line = strings.ReplaceAll(line, placeholder, rendered)
 	}
 
 	return line
@@ -328,16 +358,25 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int) []stri
 
 // stripProposedPlan removes <proposed_plan>...</proposed_plan> tags and content from raw streamed text.
 func stripProposedPlan(text string) string {
+	_, cleaned := extractProposedPlan(text)
+	return cleaned
+}
+
+// extractProposedPlan extracts the inner plan text and the remaining assistant text outside <proposed_plan>...</proposed_plan>.
+func extractProposedPlan(text string) (string, string) {
 	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
 	start := strings.Index(text, openTag)
 	if start < 0 {
-		return text
+		return "", text
 	}
-	end := strings.Index(text[start+len(openTag):], closeTag)
-	if end < 0 {
-		return strings.TrimSpace(text[:start])
+	innerStart := start + len(openTag)
+	relEnd := strings.Index(text[innerStart:], closeTag)
+	if relEnd < 0 {
+		return strings.TrimSpace(text[innerStart:]), strings.TrimSpace(text[:start])
 	}
-	end += start + len(openTag) + len(closeTag)
-	return strings.TrimSpace(text[:start] + text[end:])
+	planText := strings.TrimSpace(text[innerStart : innerStart+relEnd])
+	end := innerStart + relEnd + len(closeTag)
+	cleaned := strings.TrimSpace(text[:start] + text[end:])
+	return planText, cleaned
 }
 

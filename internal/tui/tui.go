@@ -110,6 +110,12 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	runtime.SetUserInteractionAvailable(true)
 	defer runtime.SetUserInteractionAvailable(false)
 
+	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)
+	// even if an unexpected panic or error occurs during execution.
+	defer func() {
+		_, _ = os.Stdout.WriteString("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m")
+	}()
+
 	// Run Bubble Tea v2 program
 	program := tea.NewProgram(
 		model,

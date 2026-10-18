@@ -31,9 +31,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("› ")
 		content := prefix + styleTextPrimary().Render(text)
 		pad := max(0, width-lipgloss.Width(content))
-		box := lipgloss.NewStyle().
-			Background(lipgloss.Color(activeTheme().CardBg)).
-			Render(content + strings.Repeat(" ", pad))
+		cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
+		box := renderCardSurface(cardStyle, content+strings.Repeat(" ", pad))
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
@@ -61,6 +60,9 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	case KindTool:
 		return renderToolEntry(entry, width)
 
+	case KindSubagent:
+		return renderSubagentEntry(entry, width)
+
 	case KindQuestionAnswered:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
 		title := styleTextPrimary().Bold(true).Render("Question answered")
@@ -75,8 +77,9 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		cardStyle := lipgloss.NewStyle().
 			Background(lipgloss.Color(activeTheme().CardBg)).
 			Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-			Padding(1, 2)
-		body := cardStyle.Width(max(20, width-4)).Render(RenderMarkdown(entry.Text, width-8))
+			Padding(1, 2).
+			Width(max(20, width-4))
+		body := renderCardSurface(cardStyle, RenderMarkdown(entry.Text, width-8))
 		return bullet + title + "\n\n" + body
 
 	case KindSystem:
@@ -100,9 +103,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		hint := styleTextMuted().Render(" (/cancel-queue to cancel)")
 		row := icon + label + content + hint
 		pad := max(0, width-lipgloss.Width(row))
-		box := lipgloss.NewStyle().
-			Background(lipgloss.Color(activeTheme().CardBg)).
-			Render(row + strings.Repeat(" ", pad))
+		cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
+		box := renderCardSurface(cardStyle, row+strings.Repeat(" ", pad))
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
@@ -121,6 +123,58 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	}
 
 	return ""
+}
+
+// renderSubagentEntry renders a concurrent subagent status card without polluting the lead stream.
+func renderSubagentEntry(entry TranscriptEntry, width int) string {
+	th := activeTheme()
+	var bullet, action string
+	if entry.SubagentRunning {
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("⠋ ")
+		action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("Subagent")
+	} else {
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render("• ")
+		action = styleTextPrimary().Bold(true).Render("Subagent")
+	}
+
+	name := entry.AgentName
+	if name == "" {
+		name = entry.AgentID
+	}
+	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render(name)
+	roleStyled := ""
+	if entry.AgentRole != "" {
+		roleStyled = styleTextMuted().Render(" (" + entry.AgentRole + ")")
+	}
+	durStyled := ""
+	if !entry.SubagentRunning && entry.SubagentDuration > 0 {
+		durStyled = styleTextMuted().Render(" · " + formatDuration(entry.SubagentDuration))
+	}
+
+	header := bullet + action + " " + nameStyled + roleStyled + durStyled
+	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
+
+	if entry.SubagentExpanded && strings.TrimSpace(entry.Text) != "" {
+		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
+		rendered := RenderMarkdown(strings.TrimSpace(entry.Text), max(20, width-6))
+		var outLines []string
+		outLines = append(outLines, header+styleTextMuted().Render(" (click to collapse)"))
+		for _, l := range strings.Split(rendered, "\n") {
+			outLines = append(outLines, "  "+bar+l)
+		}
+		return strings.Join(outLines, "\n")
+	}
+
+	preview := strings.TrimSpace(entry.SubagentPreview)
+	if preview == "" {
+		if entry.SubagentRunning {
+			preview = "Working..."
+		} else {
+			preview = "Completed"
+		}
+	}
+	preview = sanitizeAndTruncateLine(preview, max(20, width-8))
+	return header + "\n  " + branch + styleTextMuted().Render(preview)
 }
 
 // renderReasoningEntry renders a model thinking / chain-of-thought block.
@@ -218,41 +272,106 @@ func renderDiffEntry(entry TranscriptEntry, width int) string {
 	return bullet + title + "\n" + strings.Join(formatted, "\n")
 }
 
-// renderToolEntry renders tool executions (Ran, Failed, Explored).
+// sanitizeAndTruncateLine expands tabs, strips carriage returns, and truncates safely by display width.
+func sanitizeAndTruncateLine(line string, maxWidth int) string {
+	line = strings.ReplaceAll(line, "\r", "")
+	line = strings.ReplaceAll(line, "\t", "    ")
+	if maxWidth <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(line) > maxWidth {
+		return ansi.Truncate(line, maxWidth, "…")
+	}
+	return line
+}
+
+func isExploreTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "read_file", "list_dir", "grep", "glob", "find_files", "search_files":
+		return true
+	default:
+		return false
+	}
+}
+
+// renderToolEntry renders tool executions (Running, Ran, Failed, Explored).
 func renderToolEntry(entry TranscriptEntry, width int) string {
-	isFail := entry.ToolExitCode != nil && *entry.ToolExitCode != 0
+	th := activeTheme()
+	hasNonZeroExit := entry.ToolExitCode != nil && *entry.ToolExitCode != 0
+	isFail := entry.ToolFailed || hasNonZeroExit
 
 	var bullet, action string
-	if isFail {
-		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed)).Render("• ")
-		action = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed)).Bold(true).
-			Render(fmt.Sprintf("Failed (exit %d)", *entry.ToolExitCode))
-	} else if strings.EqualFold(entry.ToolName, "read_file") ||
-		strings.EqualFold(entry.ToolName, "list_dir") ||
-		strings.EqualFold(entry.ToolName, "grep") ||
-		strings.EqualFold(entry.ToolName, "glob") ||
-		strings.EqualFold(entry.ToolName, "find_files") {
-		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		action = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("Explored")
+	if entry.ToolRunning {
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("⠋ ")
+		action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("Running")
+	} else if isFail {
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Render("• ")
+		if hasNonZeroExit {
+			action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).
+				Render(fmt.Sprintf("Failed (exit %d)", *entry.ToolExitCode))
+		} else {
+			action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).
+				Render("Failed")
+		}
+	} else if isExploreTool(entry.ToolName) {
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("• ")
+		action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Explored")
 	} else {
-		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().SuccessGreen)).Render("• ")
-		action = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("Ran")
+		bullet = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render("• ")
+		action = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Ran")
 	}
 
-	commandStr := entry.ToolCommand
-	if commandStr == "" {
-		commandStr = entry.ToolName + " " + entry.ToolArgs
+	commandStr := strings.TrimSpace(entry.ToolCommand)
+	if commandStr == "" || commandStr == entry.ToolName || commandStr == entry.ToolName+" "+entry.ToolArgs {
+		commandStr = formatToolSummary(entry.ToolName, entry.ToolArgs, "")
 	}
-	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue))
-	header := bullet + action + " " + cmdStyle.Render(commandStr)
+	commandStr = sanitizeAndTruncateLine(commandStr, max(20, width-18))
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
+	durBadge := ""
+	if !entry.ToolRunning && entry.ToolDuration >= 500*time.Millisecond {
+		durBadge = styleTextMuted().Render(" (" + formatDuration(entry.ToolDuration) + ")")
+	}
+	header := bullet + action + " " + cmdStyle.Render(commandStr) + durBadge
 
 	// Branch indicator
-	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("└ ")
+	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
+
+	// File changes preview if present
+	var bodyLines []string
+	maxLineLen := max(20, width-8)
+	if len(entry.ToolChanges) > 0 {
+		for idx, ch := range entry.ToolChanges {
+			adds, dels := ch.Added, ch.Removed
+			if adds == 0 && dels == 0 {
+				for _, dl := range ch.Lines {
+					switch dl.Kind {
+					case "add", "+":
+						adds++
+					case "delete", "remove", "-":
+						dels++
+					}
+				}
+			}
+			statLine := fmt.Sprintf("%s (+%d -%d)", ch.Path, adds, dels)
+			prefix := "    "
+			if idx == 0 {
+				prefix = "  " + branch
+			}
+			bodyLines = append(bodyLines, prefix+lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(statLine))
+		}
+		if strings.TrimSpace(entry.ToolOutput) == "" {
+			return header + "\n" + strings.Join(bodyLines, "\n")
+		}
+	}
 
 	// Output preview
 	output := strings.TrimSpace(entry.ToolOutput)
 	if output == "" {
-		output = "(no output)"
+		if entry.ToolRunning {
+			output = "Running..."
+		} else {
+			output = "(no output)"
+		}
 	}
 	outLines := strings.Split(output, "\n")
 	previewCount := 3
@@ -260,14 +379,9 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		previewCount = len(outLines)
 	}
 
-	maxLineLen := max(20, width-8)
-	var bodyLines []string
 	for i := 0; i < previewCount; i++ {
-		line := outLines[i]
-		if len(line) > maxLineLen {
-			line = line[:maxLineLen] + "…"
-		}
-		if i == 0 {
+		line := sanitizeAndTruncateLine(outLines[i], maxLineLen)
+		if i == 0 && len(bodyLines) == 0 {
 			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render(line))
 		} else {
 			bodyLines = append(bodyLines, "    "+styleTextMuted().Render(line))
@@ -276,11 +390,11 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 
 	if len(outLines) > previewCount && !entry.ToolExpanded {
 		remaining := len(outLines) - previewCount
-		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).
+		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
 			Render(fmt.Sprintf("  + %d lines (ctrl+t to expand)", remaining))
 		bodyLines = append(bodyLines, expandHint)
 	} else if entry.ToolExpanded && len(outLines) > 3 {
-		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).
+		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
 			Render(fmt.Sprintf("  - collapse %d lines (ctrl+t)", len(outLines)))
 		bodyLines = append(bodyLines, collapseHint)
 	}
@@ -446,12 +560,24 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if q.Selected == noneIdx {
 		noneMarker = "› "
 	}
-	noneRaw := fmt.Sprintf("%s%d. None of the above     Optionally, add details in notes (tab)", noneMarker, noneIdx+1)
+	noneRaw := fmt.Sprintf("%s%d. None of the above     Type custom answer or press tab for notes", noneMarker, noneIdx+1)
 	if q.Selected == noneIdx {
 		pad := max(0, width-lipgloss.Width(noneRaw)-4)
 		optionsRows = append(optionsRows, styleSelectedRow().Render(noneRaw+strings.Repeat(" ", pad)))
+		customPrompt := "    Custom answer: " + q.Custom + "█"
+		optionsRows = append(optionsRows, lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(customPrompt))
 	} else {
 		optionsRows = append(optionsRows, styleTextMuted().Render(noneRaw))
+	}
+
+	if q.NotesOpen || q.NoteText != "" {
+		cursor := ""
+		if q.NotesOpen {
+			cursor = "█"
+		}
+		notesLine := "  Notes: " + q.NoteText + cursor
+		optionsRows = append(optionsRows, "")
+		optionsRows = append(optionsRows, lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(notesLine))
 	}
 
 	hint := styleTextMuted().Render("tab to add notes | enter to submit answer | esc to interrupt")
@@ -460,9 +586,10 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	cardStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(activeTheme().CardBg)).
 		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2)
+		Padding(1, 2).
+		Width(max(20, width))
 
-	return cardStyle.Width(max(20, width)).Render(panelContent)
+	return renderCardSurface(cardStyle, panelContent)
 }
 
 // renderPlanReviewPanel renders the plan implementation options.
@@ -495,14 +622,15 @@ func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 		}
 	}
 
-	footer := styleTextMuted().Render("enter select · esc back")
+	footer := styleTextMuted().Render("1-3 / enter select · esc stay in Plan mode")
 	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
 
 	cardStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(activeTheme().CardBg)).
 		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2)
-	return cardStyle.Width(max(20, width)).Render(content)
+		Padding(1, 2).
+		Width(max(20, width))
+	return renderCardSurface(cardStyle, content)
 }
 
 // renderCountdownProgressBar draws an ASCII progress bar representing cool-down completion.
@@ -653,7 +781,7 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	lines = append(lines, "")
 	lines = append(lines, styleTextMuted().Render("enter select · esc / 2 discard · 1 retry · r / d quick action"))
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 // renderToolRecoveryPanel renders the tool recovery modal when a tool fails and needs retry or skip.
@@ -677,10 +805,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 	lines = append(lines, toolLine)
 
 	if recovery.Arguments != "" && recovery.Arguments != "null" {
-		argsStr := recovery.Arguments
-		if len(argsStr) > 100 {
-			argsStr = argsStr[:97] + "..."
-		}
+		argsStr := sanitizeAndTruncateLine(recovery.Arguments, max(20, width-16))
 		lines = append(lines, styleTextMuted().Render("Arguments: "+argsStr))
 	}
 
@@ -694,7 +819,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 				lines = append(lines, styleTextMuted().Render(fmt.Sprintf("  ... (+%d more lines)", len(errLines)-maxErrLines)))
 				break
 			}
-			lines = append(lines, styleTextPrimary().Render("  "+truncateString(el, max(20, width-8))))
+			lines = append(lines, styleTextPrimary().Render("  "+sanitizeAndTruncateLine(el, max(20, width-8))))
 		}
 	}
 
@@ -727,7 +852,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 	lines = append(lines, "")
 	lines = append(lines, styleTextMuted().Render("enter select · esc / 2 skip · 1 retry · r / s quick action"))
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 // renderApprovalPanel renders a permission approval modal.
@@ -747,8 +872,13 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(approval.Request.Tool))
 	lines = append(lines, toolLine)
 
-	if len(approval.Request.Arguments) > 0 {
-		argsStr := string(approval.Request.Arguments)
+	summary := formatToolSummary(approval.Request.Tool, string(approval.Request.Arguments), "")
+	if summary != "" && summary != approval.Request.Tool {
+		lines = append(lines, fmt.Sprintf("Action: %s", styleTextPrimary().Render(summary)))
+	}
+
+	if len(approval.Request.Arguments) > 0 && string(approval.Request.Arguments) != "{}" {
+		argsStr := sanitizeAndTruncateLine(string(approval.Request.Arguments), max(20, width-16))
 		lines = append(lines, styleTextMuted().Render("Arguments: "+argsStr))
 	}
 
@@ -767,10 +897,10 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		}
 	}
 
-	hint := styleTextMuted().Render("\nenter confirm · esc deny")
+	hint := styleTextMuted().Render("\n1/y/enter allow · 2/n/esc deny")
 	lines = append(lines, hint)
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 func truncateString(s string, maxLen int) string {
@@ -857,7 +987,8 @@ func renderSessionsModal(m *tuiModel, width int) string {
 		endIdx := min(filteredCount, startIdx+maxVisible)
 
 		availWidth := max(20, width-4)
-		titleWidth := max(10, availWidth-38)
+		// marker (2) + shortID (12) + 2 spaces + titleWidth + 2 spaces + time (10) = 28 + titleWidth
+		baseTitleWidth := max(10, availWidth-28)
 
 		for i := startIdx; i < endIdx; i++ {
 			s := m.sessionsFiltered[i]
@@ -873,27 +1004,27 @@ func renderSessionsModal(m *tuiModel, width int) string {
 			if s.ID == m.sessionID {
 				currentBadge = " • active"
 			}
-			title := s.Title
-			if title == "" {
-				title = "<untitled>"
-			}
+			title := sessionDisplayTitle(s)
 			timeStr := formatRelativeTime(s.UpdatedAt)
 
-			truncTitle := truncateString(title, titleWidth)
+			rowTitleWidth := max(8, baseTitleWidth-lipgloss.Width(currentBadge))
+			truncTitle := sanitizeAndTruncateLine(title, rowTitleWidth)
+			titlePad := max(0, rowTitleWidth-lipgloss.Width(truncTitle))
+			paddedTitle := truncTitle + strings.Repeat(" ", titlePad)
 
 			if i == m.sessionsIndex {
-				raw := fmt.Sprintf("%s%-12s  %-*s  %-10s%s", marker, shortID, titleWidth, truncTitle, timeStr, currentBadge)
+				raw := fmt.Sprintf("%s%-12s  %s%s  %-10s", marker, shortID, paddedTitle, currentBadge, timeStr)
 				pad := max(0, availWidth-lipgloss.Width(raw))
 				lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
 			} else {
 				idStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%-12s", shortID))
-				titleStyled := styleTextPrimary().Render(fmt.Sprintf("%-*s", titleWidth, truncTitle))
+				titleStyled := styleTextPrimary().Render(paddedTitle)
 				timeStyled := styleTextMuted().Render(fmt.Sprintf("%-10s", timeStr))
 				badgeStyled := ""
 				if currentBadge != "" {
 					badgeStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(currentBadge)
 				}
-				lines = append(lines, fmt.Sprintf("%s%s  %s  %s%s", marker, idStyled, titleStyled, timeStyled, badgeStyled))
+				lines = append(lines, fmt.Sprintf("%s%s  %s%s  %s", marker, idStyled, titleStyled, badgeStyled, timeStyled))
 			}
 		}
 	}
@@ -908,7 +1039,7 @@ func renderSessionsModal(m *tuiModel, width int) string {
 	lines = append(lines, "")
 	lines = append(lines, styleTextMuted().Render("↑/↓ navigate · enter select · ctrl+d/del delete · esc close"))
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 // renderToolPagerModal renders the dedicated floating pager modal for inspecting full tool output.
@@ -922,7 +1053,7 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 
 	indices := m.getToolEntryIndices()
 	if len(indices) == 0 {
-		return cardStyle.Render(styleTextMuted().Render("No tool executions in current session."))
+		return renderCardSurface(cardStyle, styleTextMuted().Render("No tool executions in current session."))
 	}
 
 	idx := m.toolPagerIndex
@@ -938,14 +1069,16 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 
 	// Status badge
 	var statusBadge string
-	if entry.ToolExitCode != nil && *entry.ToolExitCode != 0 {
-		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).
-			Render(fmt.Sprintf("[Failed (exit %d)]", *entry.ToolExitCode))
-	} else if strings.EqualFold(entry.ToolName, "read_file") ||
-		strings.EqualFold(entry.ToolName, "list_dir") ||
-		strings.EqualFold(entry.ToolName, "grep") ||
-		strings.EqualFold(entry.ToolName, "glob") ||
-		strings.EqualFold(entry.ToolName, "find_files") {
+	if entry.ToolRunning {
+		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("[Running]")
+	} else if entry.ToolFailed || (entry.ToolExitCode != nil && *entry.ToolExitCode != 0) {
+		if entry.ToolExitCode != nil && *entry.ToolExitCode != 0 {
+			statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).
+				Render(fmt.Sprintf("[Failed (exit %d)]", *entry.ToolExitCode))
+		} else {
+			statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render("[Failed]")
+		}
+	} else if isExploreTool(entry.ToolName) {
 		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Bold(true).Render("[Explored]")
 	} else {
 		statusBadge = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("[Ran]")
@@ -954,13 +1087,10 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 	// Tool command text
 	cmdStr := entry.ToolCommand
 	if cmdStr == "" {
-		cmdStr = entry.ToolName
-		if entry.ToolArgs != "" {
-			cmdStr += " " + entry.ToolArgs
-		}
+		cmdStr = formatToolSummary(entry.ToolName, entry.ToolArgs, m.workspace)
 	}
 	availWidth := max(20, width-4)
-	truncCmd := truncateString(cmdStr, max(10, availWidth-lipgloss.Width(statusBadge)-3))
+	truncCmd := sanitizeAndTruncateLine(cmdStr, max(10, availWidth-lipgloss.Width(statusBadge)-3))
 	cmdStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(truncCmd)
 
 	output := entry.ToolOutput
@@ -1017,11 +1147,8 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 		for i := scrollY; i < endIdx; i++ {
 			lineNumStr := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
 				Render(fmt.Sprintf("%*d │ ", numWidth, i+1))
-			lineContent := rawLines[i]
 			maxContentWidth := max(10, availWidth-numWidth-4)
-			if len(lineContent) > maxContentWidth {
-				lineContent = lineContent[:maxContentWidth-1] + "…"
-			}
+			lineContent := sanitizeAndTruncateLine(rawLines[i], maxContentWidth)
 			contentStyled := styleTextPrimary().Render(lineContent)
 			lines = append(lines, lineNumStr+contentStyled)
 		}
@@ -1037,7 +1164,7 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 		lines = append(lines, hint)
 	}
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 // renderDiffModal renders the floating workspace diff viewer modal.
@@ -1045,6 +1172,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	th := activeTheme()
 	cardStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(th.Border)).
 		Padding(1, 2).
@@ -1053,7 +1181,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	if len(m.diffFiles) == 0 {
 		emptyLine := styleTextMuted().Italic(true).Render("No git changes detected in workspace.")
 		hint := styleTextMuted().Render("esc/q/ctrl+d close")
-		return cardStyle.Render(emptyLine + "\n\n" + hint)
+		return renderCardSurface(cardStyle, emptyLine+"\n\n"+hint)
 	}
 
 	idx := m.diffFileIndex
@@ -1129,24 +1257,22 @@ func renderDiffModal(m *tuiModel, width int) string {
 		for i := scrollY; i < endIdx; i++ {
 			lineNumStr := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
 				Render(fmt.Sprintf("%*d │ ", numWidth, i+1))
-			lineContent := file.Lines[i]
+			rawLine := file.Lines[i]
 			maxContentWidth := max(10, availWidth-numWidth-4)
-			if len(lineContent) > maxContentWidth {
-				lineContent = lineContent[:maxContentWidth-1] + "…"
-			}
+			lineContent := sanitizeAndTruncateLine(rawLine, maxContentWidth)
 
 			var contentStyled string
-			if strings.HasPrefix(lineContent, "diff --git") || strings.HasPrefix(lineContent, "index ") {
+			if strings.HasPrefix(rawLine, "diff --git") || strings.HasPrefix(rawLine, "index ") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(lineContent)
-			} else if strings.HasPrefix(lineContent, "---") {
+			} else if strings.HasPrefix(rawLine, "---") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render(lineContent)
-			} else if strings.HasPrefix(lineContent, "+++") {
+			} else if strings.HasPrefix(rawLine, "+++") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(lineContent)
-			} else if strings.HasPrefix(lineContent, "@@") {
+			} else if strings.HasPrefix(rawLine, "@@") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render(lineContent)
-			} else if strings.HasPrefix(lineContent, "+") {
+			} else if strings.HasPrefix(rawLine, "+") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(lineContent)
-			} else if strings.HasPrefix(lineContent, "-") {
+			} else if strings.HasPrefix(rawLine, "-") {
 				contentStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Render(lineContent)
 			} else {
 				contentStyled = styleTextPrimary().Render(lineContent)
@@ -1166,7 +1292,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 		lines = append(lines, hint)
 	}
 
-	return cardStyle.Render(strings.Join(lines, "\n"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
 // renderShortcutsPanel renders the keyboard shortcut cheat sheet in a 3-column layout.
@@ -1232,9 +1358,10 @@ func renderShortcutsPanel(width int) string {
 	cardStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(activeTheme().CardBg)).
 		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2)
+		Padding(1, 2).
+		Width(max(20, width))
 
-	return cardStyle.Width(max(20, width)).Render(panelContent)
+	return renderCardSurface(cardStyle, panelContent)
 }
 
 // renderScrollPill renders the floating hint pill when scrolled away from bottom.
@@ -1251,9 +1378,12 @@ func renderScrollPill(width int) string {
 
 // renderComposerBand renders the input box with a soft gray card background covering at least 3 rows.
 func renderComposerBand(inputView string, width int) string {
+	th := activeTheme()
 	lines := strings.Split(inputView, "\n")
 	var padded []string
-	cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary))
 
 	// Top padding line
 	emptyRow := cardStyle.Render(strings.Repeat(" ", width))
@@ -1263,7 +1393,7 @@ func renderComposerBand(inputView string, width int) string {
 	for _, l := range lines {
 		content := " " + l
 		pad := max(0, width-lipgloss.Width(content))
-		padded = append(padded, cardStyle.Render(content+strings.Repeat(" ", pad)))
+		padded = append(padded, renderCardSurface(cardStyle, content+strings.Repeat(" ", pad)))
 	}
 
 	// Bottom padding line
@@ -1274,23 +1404,6 @@ func renderComposerBand(inputView string, width int) string {
 
 // renderFooter renders the bottom two-line status bar.
 func renderFooter(m *tuiModel, width int) string {
-	// Left side: Model · Workspace · Title
-	var leftItems []string
-	modelName := m.currentModel
-	if modelName == "" && m.client != nil {
-		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
-	}
-	if modelName != "" {
-		leftItems = append(leftItems, modelName)
-	}
-	if m.workspace != "" {
-		leftItems = append(leftItems, m.workspace)
-	}
-	if m.sessionTitle != "" {
-		leftItems = append(leftItems, m.sessionTitle)
-	}
-	leftStr := styleTextMuted().Render(strings.Join(leftItems, " · "))
-
 	// Right side: Permission / Plan mode
 	var rightStr string
 	if m.planMode {
@@ -1302,9 +1415,35 @@ func renderFooter(m *tuiModel, width int) string {
 		cycleHint := styleTextMuted().Render("(shift+tab to cycle)")
 		rightStr = permLabel + " " + cycleHint
 	}
+	rightLen := lipgloss.Width(rightStr)
+
+	// Left side: Model · Workspace · Title (truncated so line1 never wraps)
+	var leftItems []string
+	modelName := m.currentModel
+	if modelName == "" && m.client != nil {
+		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
+	if modelName != "" {
+		leftItems = append(leftItems, modelName)
+	}
+	if m.workspace != "" {
+		leftItems = append(leftItems, m.workspace)
+	}
+	title := m.sessionTitle
+	if title == "" {
+		title = deriveSessionTitleFromEntries(m.entries)
+	}
+	if title != "" {
+		leftItems = append(leftItems, title)
+	}
+	rawLeft := strings.Join(leftItems, " · ")
+	maxLeftWidth := max(10, width-rightLen-2)
+	if lipgloss.Width(rawLeft) > maxLeftWidth {
+		rawLeft = ansi.Truncate(rawLeft, maxLeftWidth, "…")
+	}
+	leftStr := styleTextMuted().Render(rawLeft)
 
 	leftLen := lipgloss.Width(leftStr)
-	rightLen := lipgloss.Width(rightStr)
 	gap := max(1, width-leftLen-rightLen)
 	line1 := leftStr + strings.Repeat(" ", gap) + rightStr
 
