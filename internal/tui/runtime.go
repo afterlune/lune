@@ -166,16 +166,18 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.shortcutsOpen = false
 	m.autocompleteOpen = false
 
-	if strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" {
+	if strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" || isTrivialGreeting(m.sessionTitle) {
 		if autoTitle := deriveSessionTitleText(text); autoTitle != "" {
-			m.sessionTitle = autoTitle
-			m.syncTerminalTitle()
-			if m.client != nil && m.sessionID != "" {
-				client := m.client
-				sid := m.sessionID
-				go func() {
-					_ = client.SetSessionTitle(context.Background(), sid, autoTitle)
-				}()
+			if !isTrivialGreeting(text) || strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" {
+				m.sessionTitle = autoTitle
+				m.syncTerminalTitle()
+				if m.client != nil && m.sessionID != "" {
+					client := m.client
+					sid := m.sessionID
+					go func() {
+						_ = client.SetSessionTitle(context.Background(), sid, autoTitle)
+					}()
+				}
 			}
 		}
 	}

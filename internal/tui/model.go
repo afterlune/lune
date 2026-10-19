@@ -1206,13 +1206,35 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 	return entries
 }
 
+func isTrivialGreeting(text string) bool {
+	s := strings.ToLower(strings.TrimSpace(text))
+	s = strings.Trim(s, " \t\r\n!?.。,，~`'\"！？；：、～…")
+	switch s {
+	case "你好", "您好", "hi", "hello", "hey", "halo", "hola", "hi there", "hello there",
+		"早上好", "中午好", "下午好", "晚上好", "早", "早安", "午安", "晚安",
+		"在吗", "在不在", "hi lune", "hello lune", "你好lune", "你好 lune":
+		return true
+	}
+	return false
+}
+
 func deriveSessionTitleFromEntries(entries []TranscriptEntry) string {
+	var fallback string
 	for _, entry := range entries {
 		if entry.Kind == KindUser && strings.TrimSpace(entry.Text) != "" {
-			return deriveSessionTitleText(entry.Text)
+			title := deriveSessionTitleText(entry.Text)
+			if title == "" {
+				continue
+			}
+			if !isTrivialGreeting(entry.Text) {
+				return title
+			}
+			if fallback == "" {
+				fallback = title
+			}
 		}
 	}
-	return ""
+	return fallback
 }
 
 func deriveSessionTitleText(text string) string {
@@ -1227,13 +1249,16 @@ func deriveSessionTitleText(text string) string {
 }
 
 func sessionDisplayTitle(s core.Session) string {
-	if t := strings.TrimSpace(s.Title); t != "" {
+	if t := strings.TrimSpace(s.Title); t != "" && !isTrivialGreeting(t) {
 		return t
 	}
 	if len(s.History) > 0 && string(s.History) != "null" {
 		if t := deriveSessionTitleFromEntries(transcriptFromHistory(s.History)); t != "" {
 			return t
 		}
+	}
+	if t := strings.TrimSpace(s.Title); t != "" {
+		return t
 	}
 	return "<untitled>"
 }

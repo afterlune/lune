@@ -4243,3 +4243,33 @@ func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
 		t.Fatalf("latest lead estimate should replace prior measured input: input=%d estimated=%d", m.lastInputTokens, m.estimatedInputTokens)
 	}
 }
+
+func TestDeriveSessionTitleSkipsGreeting(t *testing.T) {
+	// Single greeting entry
+	entries1 := []TranscriptEntry{
+		{Kind: KindUser, Text: "你好"},
+	}
+	if got := deriveSessionTitleFromEntries(entries1); got != "你好" {
+		t.Fatalf("expected greeting fallback '你好', got: %q", got)
+	}
+
+	// Greeting followed by substantive prompt
+	entries2 := []TranscriptEntry{
+		{Kind: KindUser, Text: "你好！"},
+		{Kind: KindAssistant, Text: "你好！有什么我可以帮你的？"},
+		{Kind: KindUser, Text: "修复编译错误"},
+	}
+	if got := deriveSessionTitleFromEntries(entries2); got != "修复编译错误" {
+		t.Fatalf("expected substantive prompt '修复编译错误', got: %q", got)
+	}
+
+	// Multiple greetings
+	entries3 := []TranscriptEntry{
+		{Kind: KindUser, Text: "hello"},
+		{Kind: KindUser, Text: "hi there"},
+		{Kind: KindUser, Text: "实现新的用户权限模块"},
+	}
+	if got := deriveSessionTitleFromEntries(entries3); got != "实现新的用户权限模块" {
+		t.Fatalf("expected substantive prompt '实现新的用户权限模块', got: %q", got)
+	}
+}
