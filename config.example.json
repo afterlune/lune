@@ -22,18 +22,24 @@
       "deepseek-flash": {
         "provider": "deepseek",
         "model": "deepseek-chat",
-        "displayName": "DeepSeek V3"
+        "displayName": "DeepSeek V3",
+        "contextWindow": 0,
+        "supportsInputAudio": false
       },
       "openai-model": {
         "provider": "openai-responses",
         "model": "gpt-5",
-        "displayName": "GPT-5"
+        "displayName": "GPT-5",
+        "contextWindow": 0,
+        "supportsInputAudio": false
       },
       "anthropic-model": {
         "provider": "anthropic",
         "model": "claude-3-7-sonnet-20250219",
         "displayName": "Claude 3.7 Sonnet",
-        "maxOutputTokens": 8192
+        "contextWindow": 0,
+        "maxOutputTokens": 8192,
+        "supportsInputAudio": false
       }
     },
     "defaultProfile": "deepseek-flash"
@@ -52,5 +58,19 @@
     "maxFileBytes": 0,
     "maxTotalBytes": 0
   },
-  "mcpServers": {}
+  "mcpServers": {
+    "example-stdio-server": {
+      "transport": "stdio",
+      "command": "replace-with-your-mcp-server-command",
+      "args": [],
+      "env": {
+        "EXAMPLE_TOKEN": "replace-me"
+      }
+    },
+    "example-http-server": {
+      "transport": "streamable-http",
+      "url": "https://mcp.invalid/mcp",
+      "clientMetadataURL": "https://client.invalid/oauth/lune.json"
+    }
+  }
 }
