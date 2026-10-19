@@ -195,11 +195,24 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.reasoningTokens = saved.SessionUsage.Reasoning
 	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 	m.lastInputTokens = 0
+	m.estimatedInputTokens = 0
 	m.contextWindow = 0
-	if len(saved.UsageRequests) > 0 {
-		last := saved.UsageRequests[len(saved.UsageRequests)-1]
+	contextWindowConfigured := false
+	if saved.Settings.ContextWindow != nil {
+		m.contextWindow = *saved.Settings.ContextWindow
+		contextWindowConfigured = true
+	} else if m.client != nil {
+		if projectContext := m.client.ProjectContextDefaults().ContextWindow; projectContext > 0 {
+			m.contextWindow = projectContext
+			contextWindowConfigured = true
+		}
+	}
+	if last, ok := latestLeadUsageRecord(saved.UsageRequests); ok {
 		m.lastInputTokens = last.Usage.InputTokens
-		m.contextWindow = last.ContextWindow
+		m.estimatedInputTokens = last.EstimatedInputTokens
+		if !contextWindowConfigured {
+			m.contextWindow = last.ContextWindow
+		}
 	}
 	m.entries = transcriptFromHistory(saved.History)
 	if m.entries == nil {
@@ -213,7 +226,6 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	}
 	m.historyIndex = len(m.promptHistory)
 	m.historyDraft = ""
-	m.estimatedInputTokens = 0
 	m.invalidateEntryCache()
 	m.refreshViewportContent()
 }
@@ -879,13 +891,20 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 
 func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
 	m.runningExecution = ""
+	contextWindowKnown := state.Task.ContextWindow > 0 || state.Task.TaskID != ""
 	switch state.Task.Status {
 	case core.TaskRunning, core.TaskQueued:
 		m.running = true
 		m.runningExecution = state.Task.ExecutionID
+		if contextWindowKnown {
+			m.contextWindow = state.Task.ContextWindow
+		}
 		m.taskStartedAt = time.Now()
 	case core.TaskPaused:
 		m.runningExecution = state.Task.ExecutionID
+		if contextWindowKnown {
+			m.contextWindow = state.Task.ContextWindow
+		}
 		m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: state.Task.ExecutionID}
 	}
 }

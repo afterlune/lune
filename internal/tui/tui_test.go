@@ -1786,6 +1786,108 @@ func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.
 	}
 }
 
+func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary","contextWindow":1000000}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	session, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUIModel(client, nil, session.ID)
+	saved, err := client.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved.UsageRequests = []core.UsageRecord{{ContextWindow: 200000}}
+	m.loadSessionSnapshot(saved)
+	if m.contextWindow != 1000000 {
+		t.Fatalf("project context default must override stale usage history, got %d", m.contextWindow)
+	}
+	if summary := formatContextAndTokenSummary(m, 120); !strings.Contains(summary, "/1M") {
+		t.Fatalf("footer should show the configured context window before usage events, got %q", summary)
+	}
+
+	sessionOverride := int64(1200000)
+	saved.Settings.ContextWindow = &sessionOverride
+	m.loadSessionSnapshot(saved)
+	if m.contextWindow != sessionOverride {
+		t.Fatalf("session context override must win over the project default, got %d", m.contextWindow)
+	}
+	m.loadSessionSnapshot(saved)
+	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{
+		Status:      core.TaskPaused,
+		ExecutionID: "queued-paused-execution",
+		QueueID:     "queue-id",
+	}})
+	if m.contextWindow != sessionOverride {
+		t.Fatalf("queued paused state without a task snapshot must keep session settings, got %d", m.contextWindow)
+	}
+	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{
+		Status:        core.TaskRunning,
+		TaskID:        "task-id",
+		ExecutionID:   "active-execution",
+		ContextWindow: 900000,
+	}})
+	if m.contextWindow != 900000 {
+		t.Fatalf("active execution must retain its pinned context window, got %d", m.contextWindow)
+	}
+}
+
+func TestSessionSnapshotRestoresLeadContextUsage(t *testing.T) {
+	tests := []struct {
+		name              string
+		records           []core.UsageRecord
+		wantInput         int64
+		wantEstimated     int64
+		wantContextWindow int64
+	}{
+		{
+			name: "latest team request does not replace lead context",
+			records: []core.UsageRecord{
+				{AgentID: "lead", Purpose: core.UsagePurposeMain, Usage: core.Usage{InputTokens: 42000}, ContextWindow: 1000000},
+				{AgentID: "lead/researcher", Purpose: core.UsagePurposeTeam, Usage: core.Usage{InputTokens: 180000}, EstimatedInputTokens: 180000},
+			},
+			wantInput: 42000, wantContextWindow: 1000000,
+		},
+		{
+			name: "lead estimate is restored when measured input is absent",
+			records: []core.UsageRecord{
+				{AgentID: "lead", Purpose: core.UsagePurposeMain, EstimatedInputTokens: 55000, ContextWindow: 800000},
+				{AgentID: "lead/reviewer", Purpose: core.UsagePurposeTeam, EstimatedInputTokens: 90000},
+			},
+			wantEstimated: 55000, wantContextWindow: 800000,
+		},
+		{
+			name: "legacy record without agent metadata",
+			records: []core.UsageRecord{
+				{Usage: core.Usage{InputTokens: 30000}, ContextWindow: 500000},
+			},
+			wantInput: 30000, wantContextWindow: 500000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTUIModel(nil, nil, "test-sess")
+			m.loadSessionSnapshot(core.Session{UsageRequests: tt.records})
+			if m.lastInputTokens != tt.wantInput || m.estimatedInputTokens != tt.wantEstimated || m.contextWindow != tt.wantContextWindow {
+				t.Fatalf("restored usage input=%d estimated=%d context=%d, want input=%d estimated=%d context=%d",
+					m.lastInputTokens, m.estimatedInputTokens, m.contextWindow, tt.wantInput, tt.wantEstimated, tt.wantContextWindow)
+			}
+		})
+	}
+}
+
 func TestSessionsModalInteractions(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
@@ -3593,8 +3695,8 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 
 	// 3. Subagent badge in footer
 	footer := ansi.Strip(renderFooter(m, 120))
-	if !strings.Contains(footer, "subagent") || !strings.Contains(footer, "/agents") {
-		t.Fatalf("expected footer to show subagent count and /agents hint, got:\n%s", footer)
+	if !strings.Contains(footer, "1 active") || !strings.Contains(footer, "/agents") {
+		t.Fatalf("expected footer to show active subagent count and /agents hint, got:\n%s", footer)
 	}
 
 	// 4. /agents command table view
@@ -3802,10 +3904,10 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 		t.Fatalf("expected persisted effort high, got %q", saved.Settings.ReasoningEffort)
 	}
 	footer := ansi.Strip(renderFooter(m, 300))
-	if !strings.Contains(footer, "Beta [effort: high]") {
+	if !strings.Contains(footer, "Beta . high") {
 		t.Fatalf("expected footer to show model and effort, got:\n%s", footer)
 	}
-	if !strings.Contains(footer, "🤖 0 used · 8 max subagents") {
+	if !strings.Contains(footer, "🤖 0 active · 8 max") {
 		t.Fatalf("expected footer to show configured subagent limit, got:\n%s", footer)
 	}
 }
@@ -3825,12 +3927,12 @@ func TestEffortPickerRendering(t *testing.T) {
 func TestFooterSubagentsAlwaysVisible(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	footer := ansi.Strip(renderFooter(m, 120))
-	if !strings.Contains(footer, "🤖 0 used · 4 max subagents") {
-		t.Fatalf("expected footer to show 🤖 0 used · 4 max subagents when idle, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 0 active · 4 max") {
+		t.Fatalf("expected footer to show 🤖 0 active · 4 max when idle, got:\n%s", footer)
 	}
 }
 
-func TestFooterSubagentCountReportsSessionUsage(t *testing.T) {
+func TestFooterSubagentCountReportsActiveAgents(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.entries = []TranscriptEntry{
 		{Kind: KindSubagent, AgentID: "a", AgentName: "researcher", SubagentRunning: false},
@@ -3838,8 +3940,30 @@ func TestFooterSubagentCountReportsSessionUsage(t *testing.T) {
 	}
 	m.width = 140
 	footer := ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "🤖 2 used · 4 max subagents") {
-		t.Fatalf("expected footer to show 2 used · 4 max subagents, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 1 active · 4 max") {
+		t.Fatalf("expected footer to show one active agent and the limit, got:\n%s", footer)
+	}
+	if strings.Contains(footer, "2 active") {
+		t.Fatalf("completed agents must not be counted as active, got:\n%s", footer)
+	}
+}
+
+func TestFooterKeepsSubagentCountVisibleWhenCrowded(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.currentModel = strings.Repeat("LongModelName", 5)
+	m.currentModelProfile = m.currentModel
+	m.reasoningEffort = "high"
+	m.workspace = strings.Repeat("long/workspace/path/", 5)
+	m.sessionTitle = strings.Repeat("long session title ", 5)
+	m.entries = []TranscriptEntry{{Kind: KindSubagent, AgentID: "active", SubagentRunning: true}}
+
+	footer := ansi.Strip(renderFooter(m, 80))
+	if !strings.Contains(footer, "🤖 1/4") {
+		t.Fatalf("crowded footer should preserve the compact active/max count, got:\n%s", footer)
+	}
+	firstLine := strings.Split(footer, "\n")[0]
+	if width := ansi.StringWidth(firstLine); width > 80 {
+		t.Fatalf("footer first line wrapped past terminal width: %d > 80: %q", width, firstLine)
 	}
 }
 
@@ -3850,13 +3974,13 @@ func TestFooterShowsReasoningEffortBesideModel(t *testing.T) {
 	m.reasoningEffort = "high"
 	m.width = 140
 	footer := ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "deepseek-flash [effort: high]") {
+	if !strings.Contains(footer, "deepseek-flash . high") {
 		t.Fatalf("expected reasoning effort beside the model name, got:\n%s", footer)
 	}
 
 	m.reasoningEffort = ""
 	footer = ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "deepseek-flash [effort: default]") {
+	if !strings.Contains(footer, "deepseek-flash . default") {
 		t.Fatalf("expected default effort label, got:\n%s", footer)
 	}
 }
@@ -4052,5 +4176,39 @@ func TestStreamingGenerationSpeedCalculation(t *testing.T) {
 	// 100 tokens / 0.4s = 250 tok/s! Should NOT be 100 / 5.4s = 18 tok/s!
 	if updated.lastTokensPerSec < 200.0 || updated.lastTokensPerSec > 300.0 {
 		t.Fatalf("expected generation speed ~250 tok/s, got %.1f tok/s", updated.lastTokensPerSec)
+	}
+}
+
+func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.contextWindow = 1000000
+
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
+		Usage: core.Usage{InputTokens: 42000, OutputTokens: 200},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead/researcher", UsagePurpose: core.UsagePurposeTeam,
+		EstimatedInputTokens: 180000, Usage: core.Usage{InputTokens: 180000, OutputTokens: 1000},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "memory", UsagePurpose: core.UsagePurposeMemory,
+		EstimatedInputTokens: 9000, Usage: core.Usage{InputTokens: 9000},
+	})
+
+	if m.lastInputTokens != 42000 || m.estimatedInputTokens != 0 || m.contextWindow != 1000000 {
+		t.Fatalf("subagent usage changed lead context metrics: input=%d estimated=%d context=%d", m.lastInputTokens, m.estimatedInputTokens, m.contextWindow)
+	}
+	if m.totalInputTokens != 231000 || m.totalOutputTokens != 1200 {
+		t.Fatalf("session totals should include all agent usage: input=%d output=%d", m.totalInputTokens, m.totalOutputTokens)
+	}
+
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
+		EstimatedInputTokens: 55000,
+	})
+	if m.lastInputTokens != 0 || m.estimatedInputTokens != 55000 {
+		t.Fatalf("latest lead estimate should replace prior measured input: input=%d estimated=%d", m.lastInputTokens, m.estimatedInputTokens)
 	}
 }

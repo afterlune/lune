@@ -973,13 +973,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.streamFirstTokenTime = time.Time{}
 			}
 		}
-		if event.ContextWindow > 0 {
-			m.contextWindow = event.ContextWindow
-		}
-		if event.Usage.InputTokens > 0 {
+		if isLeadMainUsage(event.AgentID, event.UsagePurpose) {
+			if event.ContextWindow > 0 {
+				m.contextWindow = event.ContextWindow
+			}
 			m.lastInputTokens = event.Usage.InputTokens
-		}
-		if event.EstimatedInputTokens > 0 {
 			m.estimatedInputTokens = event.EstimatedInputTokens
 		}
 
@@ -1034,6 +1032,24 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	}
 
 	return m, nil
+}
+
+func isLeadMainUsage(agentID string, purpose core.UsagePurpose) bool {
+	agentID = strings.TrimSpace(agentID)
+	if agentID != "" && agentID != "lead" {
+		return false
+	}
+	return purpose == "" || purpose == core.UsagePurposeMain
+}
+
+func latestLeadUsageRecord(records []core.UsageRecord) (core.UsageRecord, bool) {
+	for i := len(records) - 1; i >= 0; i-- {
+		record := records[i]
+		if isLeadMainUsage(record.AgentID, record.Purpose) {
+			return record, true
+		}
+	}
+	return core.UsageRecord{}, false
 }
 
 // formatToolSummary parses raw JSON tool arguments into a concise human-readable command summary.

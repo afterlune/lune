@@ -2110,35 +2110,55 @@ func renderFooter(m *tuiModel, width int) string {
 	}
 	rightLen := lipgloss.Width(rightStr)
 
-	// Left side: Model DisplayName · Workspace · Title (truncated so line1 never wraps)
-	var leftItems []string
+	// Keep the model and active subagent count visible; workspace and title are secondary.
 	modelName := m.currentModelDisplayName()
+	modelLabel := ""
 	if modelName != "" {
-		leftItems = append(leftItems, fmt.Sprintf("%s [effort: %s]", modelName, m.currentReasoningEffortLabel()))
+		modelLabel = fmt.Sprintf("%s . %s", modelName, m.currentReasoningEffortLabel())
 	}
-	if m.workspace != "" {
-		leftItems = append(leftItems, m.workspace)
+	maxSubs := m.maxParallelAgents()
+	activeSubs := m.activeSubagentsCount()
+	subagentLabel := fmt.Sprintf("🤖 %d active · %d max", activeSubs, maxSubs)
+	maxLeftWidth := max(1, width-rightLen-2)
+	primaryItems := []string{subagentLabel}
+	if modelLabel != "" {
+		primaryItems = []string{modelLabel, subagentLabel}
 	}
+	rawLeft := strings.Join(primaryItems, " · ")
+	if lipgloss.Width(rawLeft) > maxLeftWidth {
+		compactSubagentLabel := fmt.Sprintf("🤖 %d/%d", activeSubs, maxSubs)
+		modelWidth := maxLeftWidth - lipgloss.Width(compactSubagentLabel) - lipgloss.Width(" · ")
+		if modelLabel != "" && modelWidth > 0 {
+			modelLabel = ansi.Truncate(modelLabel, modelWidth, "…")
+			rawLeft = modelLabel + " · " + compactSubagentLabel
+		} else {
+			rawLeft = compactSubagentLabel
+			if lipgloss.Width(rawLeft) > maxLeftWidth {
+				rawLeft = fmt.Sprintf("🤖 %d", activeSubs)
+			}
+			if lipgloss.Width(rawLeft) > maxLeftWidth {
+				rawLeft = ansi.Truncate(fmt.Sprintf("%d", activeSubs), maxLeftWidth, "…")
+			}
+		}
+	}
+	remainingWidth := maxLeftWidth - lipgloss.Width(rawLeft)
+	optionalItems := []string{m.workspace}
 	title := m.sessionTitle
 	if title == "" {
 		title = deriveSessionTitleFromEntries(m.entries)
 	}
-	if title != "" {
-		leftItems = append(leftItems, title)
-	}
-	maxSubs := m.maxParallelAgents()
-	totalSubs := m.totalSubagentsCount()
-	if maxSubs > 0 {
-		// Explicit "used" wording avoids the old active/max ambiguity: 0 clearly
-		// means no subagent was spawned in this session.
-		leftItems = append(leftItems, fmt.Sprintf("🤖 %d used · %d max subagents", totalSubs, maxSubs))
-	} else {
-		leftItems = append(leftItems, fmt.Sprintf("🤖 %d subagents used", totalSubs))
-	}
-	rawLeft := strings.Join(leftItems, " · ")
-	maxLeftWidth := max(10, width-rightLen-2)
-	if lipgloss.Width(rawLeft) > maxLeftWidth {
-		rawLeft = ansi.Truncate(rawLeft, maxLeftWidth, "…")
+	optionalItems = append(optionalItems, title)
+	for _, item := range optionalItems {
+		if item == "" || remainingWidth <= lipgloss.Width(" · ") {
+			continue
+		}
+		itemWidth := min(lipgloss.Width(item), remainingWidth-lipgloss.Width(" · "))
+		if itemWidth <= 0 {
+			continue
+		}
+		shown := ansi.Truncate(item, itemWidth, "…")
+		rawLeft += " · " + shown
+		remainingWidth -= lipgloss.Width(" · ") + lipgloss.Width(shown)
 	}
 	leftStr := styleTextMuted().Render(rawLeft)
 
