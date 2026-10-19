@@ -1709,13 +1709,14 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 
 	m.activePlanReview = nil
 	m.planMode = false
+	permissionMode := m.savedMode
 	_ = m.client.SetPermissionMode(m.savedMode)
 	m.permissionMode = m.savedMode
 	m.updateLayout()
 
 	runtime := m.runtime
 	return m, func() tea.Msg {
-		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, core.PlanImplementationOptions{Mode: mode})
+		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, core.PlanImplementationOptions{Mode: mode, PermissionMode: permissionMode})
 		return planImplementedMsg{impl: impl, planText: review.Text, err: err}
 	}
 }
