@@ -138,7 +138,7 @@ func (s *Store) RestoreWorkspaceSettings(workspace string, config core.ProjectCo
 }
 
 func encodeWorkspaceConfig(config core.ProjectConfig) ([]byte, error) {
-	config.ModelConfig = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Models: map[string]publicmodel.ModelProfile{}}
+	config.Models = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Profiles: map[string]publicmodel.ModelProfile{}}
 	plaintext, err := json.Marshal(config)
 	if err != nil {
 		return nil, fmt.Errorf("encode Desktop project configuration: %w", err)

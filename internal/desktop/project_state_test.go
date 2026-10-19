@@ -50,7 +50,7 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 	t.Setenv("APPDATA", configRoot)
 	t.Setenv("LOCALAPPDATA", cacheRoot)
 	workspace := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 	if !samePath(opened.Workspace, workspace) {
 		t.Fatalf("opened workspace = %q, want %q", opened.Workspace, workspace)
 	}
-	if len(service.projectConfig.MCPServers) != 0 || service.projectConfig.ModelConfig.DefaultModel != "main" {
+	if len(service.projectConfig.MCPServers) != 0 || service.projectConfig.Models.DefaultProfile != "main" {
 		t.Fatalf("Desktop loaded project config.json instead of SQLite settings: %#v", service.projectConfig)
 	}
 	unchanged, err := os.ReadFile(configPath)
@@ -104,14 +104,14 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 
 func saveDesktopTestModels(t *testing.T, store *settings.Store) {
 	t.Helper()
-	config := publicmodel.Config{
+	settings := settings.SharedModelSettings{Catalog: publicmodel.Config{
 		Providers: map[string]publicmodel.ProviderConfig{"host": {
 			Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "test-key",
 		}},
-		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
-		DefaultModel: "main",
-	}
-	if err := store.SaveModelConfig(config); err != nil {
+		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultProfile: "main",
+	}}
+	if err := store.SaveModelSettings(settings); err != nil {
 		t.Fatal(err)
 	}
 }

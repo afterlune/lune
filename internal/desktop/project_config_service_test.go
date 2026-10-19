@@ -83,7 +83,7 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 		t.Fatalf("rebuild lost controls: %+v", state.Controls)
 	}
 	stored, found, err := store.LoadWorkspaceConfig(workspace)
-	if err != nil || !found || stored.ContextWindow != input.ContextWindow || stored.ReserveOutputTokens != input.ReserveOutputTokens {
+	if err != nil || !found || stored.Runtime.ContextWindow != input.ContextWindow || stored.Runtime.ReserveOutputTokens != input.ReserveOutputTokens {
 		t.Fatalf("stored settings = %#v, found=%v, error=%v", stored, found, err)
 	}
 	storedPaths, pathsFound, err := store.LoadWorkspaceCommandToolchainPaths(workspace)

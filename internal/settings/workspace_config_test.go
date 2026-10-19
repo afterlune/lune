@@ -23,17 +23,17 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	firstWorkspace, secondWorkspace := t.TempDir(), t.TempDir()
 	toolchainPath := t.TempDir()
 	config := core.DefaultProjectConfig()
-	config.ContextWindow = 48000
+	config.Runtime.ContextWindow = 48000
 	config.MCPServers = map[string]core.MCPServerConfig{
 		"private-api": {
 			Transport: core.MCPTransportStdio, Command: "mcp-client",
 			Env: map[string]string{"TOKEN": "never-store-this-in-plaintext"},
 		},
 	}
-	config.ModelConfig = publicmodel.Config{
-		Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-secret"}},
-		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "example"}},
-		DefaultModel: "main",
+	config.Models = publicmodel.Config{
+		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-secret"}},
+		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "example"}},
+		DefaultProfile: "main",
 	}
 	if err := store.SaveWorkspaceSettings(firstWorkspace, config, []string{toolchainPath}); err != nil {
 		t.Fatal(err)
@@ -43,11 +43,11 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("LoadWorkspaceConfig found=%v, error=%v", found, err)
 	}
-	if loaded.ContextWindow != 48000 || loaded.MCPServers["private-api"].Env["TOKEN"] != "never-store-this-in-plaintext" {
+	if loaded.Runtime.ContextWindow != 48000 || loaded.MCPServers["private-api"].Env["TOKEN"] != "never-store-this-in-plaintext" {
 		t.Fatalf("loaded config lost runtime fields: %#v", loaded)
 	}
-	if len(loaded.ModelConfig.Providers) != 0 || len(loaded.ModelConfig.Models) != 0 || loaded.ModelConfig.DefaultModel != "" {
-		t.Fatalf("model settings leaked into the project-scoped config: %#v", loaded.ModelConfig)
+	if len(loaded.Models.Providers) != 0 || len(loaded.Models.Profiles) != 0 || loaded.Models.DefaultProfile != "" {
+		t.Fatalf("model settings leaked into the project-scoped config: %#v", loaded.Models)
 	}
 	if _, found, err := store.LoadWorkspaceConfig(secondWorkspace); err != nil || found {
 		t.Fatalf("second project config found=%v, error=%v", found, err)
@@ -80,6 +80,42 @@ func TestWorkspaceConfigEncryptsAndScopesRuntimeSettings(t *testing.T) {
 	}
 	if _, found, err := store.LoadWorkspaceCommandToolchainPaths(firstWorkspace); err != nil || found {
 		t.Fatalf("deleted project toolchain paths found=%v, error=%v", found, err)
+	}
+}
+
+func TestLegacyWorkspaceConfigPayloadResetsToDefaults(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Desktop project configuration is encrypted with Windows DPAPI")
+	}
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	workspace := t.TempDir()
+	key, err := workspaceConfigKey(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"contextWindow":48000,"autoCompact":false,"models":{"main":{"provider":"host","model":"legacy-model"}},"defaultModel":"main"}`
+	encrypted, err := protectSecret(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO desktop_project_configs(workspace_key, encrypted_config, updated_at) VALUES (?, ?, ?)`, key, encrypted, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, found, err := store.LoadWorkspaceConfig(workspace)
+	if err != nil || !found {
+		t.Fatalf("LoadWorkspaceConfig found=%v, error=%v", found, err)
+	}
+	if loaded.Runtime.ContextWindow != 0 || !loaded.Runtime.AutoCompact || loaded.Runtime.AutoCompactThreshold != core.DefaultAutoCompactThreshold {
+		t.Fatalf("legacy workspace settings were not reset to defaults: %#v", loaded.Runtime)
+	}
+	if len(loaded.Models.Providers) != 0 || len(loaded.Models.Profiles) != 0 || loaded.Models.DefaultProfile != "" {
+		t.Fatalf("legacy model settings leaked into reset config: %#v", loaded.Models)
 	}
 }
 

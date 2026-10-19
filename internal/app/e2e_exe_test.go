@@ -137,20 +137,23 @@ func createMockWorkspaceWithServer(t *testing.T, serverURL string) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	cfg := fmt.Sprintf(`{
-  "providers": {
-    "mock": {
-      "protocol": "responses",
-      "baseURL": %q,
-      "apiKey": "test-api-key"
-    }
-  },
   "models": {
-    "mock-fast": {
-      "provider": "mock",
-      "model": "gpt-test"
-    }
+    "providers": {
+      "mock": {
+        "protocol": "responses",
+        "baseURL": %q,
+        "apiKey": "test-api-key"
+      }
+    },
+    "profiles": {
+      "mock-fast": {
+        "provider": "mock",
+        "model": "gpt-test"
+      }
+    },
+    "defaultProfile": "mock-fast"
   },
-  "defaultModel": "mock-fast"
+  "runtime": {}
 }`, serverURL)
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(cfg), 0600); err != nil {
 		t.Fatalf("write config.json: %v", err)

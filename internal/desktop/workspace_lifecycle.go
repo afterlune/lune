@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 	_ "golang.org/x/image/webp"
 )
@@ -101,7 +102,7 @@ func (s *DesktopService) OpenWorkspace(path string) (WorkspaceOpenResult, error)
 }
 
 func (s *DesktopService) startWorkspace(path string) error {
-	modelConfig, err := s.store.LoadModelConfig()
+	modelSettings, err := s.store.LoadModelSettings()
 	if err != nil {
 		return err
 	}
@@ -113,7 +114,8 @@ func (s *DesktopService) startWorkspace(path string) error {
 	if err != nil {
 		return err
 	}
-	projectConfig.ModelConfig = modelConfig
+	projectConfig.Models = modelSettings.Catalog
+	projectConfig.Runtime.MaxParallelAgents = modelSettings.MaxParallelAgents
 	if err := projectConfig.Validate(); err != nil {
 		return fmt.Errorf("Desktop 项目配置无效: %w", err)
 	}
@@ -270,7 +272,7 @@ func (s *DesktopService) workspaceResultLocked() (WorkspaceOpenResult, error) {
 	if err != nil {
 		return WorkspaceOpenResult{}, err
 	}
-	models := modelSettingsView(s.projectConfig.ModelConfig)
+	models := modelSettingsView(settings.SharedModelSettings{Catalog: s.projectConfig.Models, MaxParallelAgents: s.projectConfig.Runtime.MaxParallelAgents})
 	result := WorkspaceOpenResult{Workspace: s.workspace, Permission: string(core.PermissionWorkspace), Models: &models}
 	for _, session := range sessions {
 		workingDirectory, status := s.workspace, "idle"

@@ -211,8 +211,11 @@ func newCore(workspace string) (*core.Core, error) {
 		if wsCfg, ok, err := store.LoadWorkspaceConfig(workspace); err == nil && ok {
 			storeProjectCfg = &wsCfg
 		}
-		if modelCfg, err := store.LoadModelConfig(); err == nil && (len(modelCfg.Providers) > 0 || len(modelCfg.Models) > 0) {
-			storeModelCfg = &modelCfg
+		if modelSettings, err := store.LoadModelSettings(); err == nil {
+			baseCfg.MaxParallelAgents = modelSettings.MaxParallelAgents
+			if len(modelSettings.Catalog.Providers) > 0 || len(modelSettings.Catalog.Profiles) > 0 {
+				storeModelCfg = &modelSettings.Catalog
+			}
 		}
 	}
 

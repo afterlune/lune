@@ -49,6 +49,38 @@ func (m *tuiModel) modelProfileContextWindow(profileID string) int64 {
 	return 0
 }
 
+func (m *tuiModel) resolvedAgentContextWindow(profileID string, reported int64) int64 {
+	if reported > 0 {
+		return reported
+	}
+	if strings.TrimSpace(profileID) == "" {
+		profileID = m.currentModelProfile
+	}
+	if window := m.modelProfileContextWindow(profileID); window > 0 {
+		return window
+	}
+	if m.contextWindow > 0 {
+		return m.contextWindow
+	}
+	if m.client != nil {
+		return m.client.ProjectContextDefaults().ContextWindow
+	}
+	return 0
+}
+
+func (m *tuiModel) applyAgentModelContext(stats *agentRuntimeMetrics, profileID string, reported int64) {
+	if profileID != "" && !strings.EqualFold(stats.ModelProfile, profileID) {
+		stats.ModelProfile = profileID
+		stats.ContextWindow = 0
+	}
+	if reported > 0 {
+		stats.ContextWindow = reported
+	}
+	if stats.ContextWindow <= 0 {
+		stats.ContextWindow = m.resolvedAgentContextWindow(stats.ModelProfile, 0)
+	}
+}
+
 func (m *tuiModel) seedAgentMetrics(saved core.Session) {
 	m.agentMetrics = make(map[string]*agentRuntimeMetrics, len(saved.AgentUsage)+1)
 	for agentID, totals := range saved.AgentUsage {
@@ -68,12 +100,7 @@ func (m *tuiModel) seedAgentMetrics(saved core.Session) {
 	}
 	for _, record := range saved.UsageRequests {
 		stats := m.ensureAgentMetrics(record.AgentID)
-		if record.ContextWindow > 0 {
-			stats.ContextWindow = record.ContextWindow
-		}
-		if record.ModelProfile != "" {
-			stats.ModelProfile = record.ModelProfile
-		}
+		m.applyAgentModelContext(stats, record.ModelProfile, record.ContextWindow)
 		if record.Provider != "" {
 			stats.Provider = record.Provider
 		}
@@ -140,20 +167,12 @@ func (m *tuiModel) updateAgentEvent(event core.Event, started bool) {
 	if event.AgentTask != "" {
 		stats.Task = compactAgentTask(event.AgentTask)
 	}
-	if event.ModelProfile != "" {
-		stats.ModelProfile = event.ModelProfile
-	}
+	m.applyAgentModelContext(stats, event.ModelProfile, event.ContextWindow)
 	if event.Provider != "" {
 		stats.Provider = event.Provider
 	}
 	if event.Model != "" {
 		stats.Model = event.Model
-	}
-	if event.ContextWindow > 0 {
-		stats.ContextWindow = event.ContextWindow
-	}
-	if stats.ContextWindow <= 0 {
-		stats.ContextWindow = m.modelProfileContextWindow(stats.ModelProfile)
 	}
 	if started {
 		stats.Status = "Running"
@@ -197,20 +216,12 @@ func (m *tuiModel) recordAgentUsage(event core.Event) {
 	if stats.ContextInputTokens <= 0 {
 		stats.ContextInputTokens = event.EstimatedInputTokens
 	}
-	if event.ContextWindow > 0 {
-		stats.ContextWindow = event.ContextWindow
-	}
-	if event.ModelProfile != "" {
-		stats.ModelProfile = event.ModelProfile
-	}
+	m.applyAgentModelContext(stats, event.ModelProfile, event.ContextWindow)
 	if event.Provider != "" {
 		stats.Provider = event.Provider
 	}
 	if event.Model != "" {
 		stats.Model = event.Model
-	}
-	if stats.ContextWindow <= 0 {
-		stats.ContextWindow = m.modelProfileContextWindow(stats.ModelProfile)
 	}
 }
 
@@ -222,17 +233,12 @@ func (m *tuiModel) recordAgentStream(event core.Event) {
 	if event.AgentName != "" && stats.ID != "lead" {
 		stats.Name = event.AgentName
 	}
-	if event.ModelProfile != "" {
-		stats.ModelProfile = event.ModelProfile
-	}
+	m.applyAgentModelContext(stats, event.ModelProfile, 0)
 	if event.Provider != "" {
 		stats.Provider = event.Provider
 	}
 	if event.Model != "" {
 		stats.Model = event.Model
-	}
-	if stats.ContextWindow <= 0 {
-		stats.ContextWindow = m.modelProfileContextWindow(stats.ModelProfile)
 	}
 	if event.Stream.Type == "reasoning_delta" {
 		stats.Activity = "Thinking"

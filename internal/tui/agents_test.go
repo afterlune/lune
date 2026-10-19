@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publicmodel "github.com/afterlune/luneCore/model"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -81,6 +82,82 @@ func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *test
 	for _, command := range builtinCommands {
 		if command.Command == "/subagents" {
 			t.Fatal("/subagents still duplicates /agents")
+		}
+	}
+}
+
+func TestAgentContextWindowUsesProfileAndInheritedProjectCapacity(t *testing.T) {
+	project := core.DefaultProjectConfig()
+	project.Models = publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{
+			"host": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://example.invalid", APIKey: "test"},
+		},
+		Profiles: map[string]publicmodel.ModelProfile{
+			"lead":      {Provider: "host", Model: "lead-model"},
+			"inherited": {Provider: "host", Model: "worker-model"},
+			"small":     {Provider: "host", Model: "small-model", ContextWindow: 128000},
+		},
+		DefaultProfile: "lead",
+	}
+	project.Runtime.ContextWindow = 1_000_000
+	workspace := t.TempDir()
+	client, err := core.New(core.Config{Workspace: workspace, ProjectConfig: &project, Memory: core.MemoryConfig{Disabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	})
+
+	m := newTUIModel(client, nil, "")
+	m.currentModelProfile = "lead"
+	m.updateAgentEvent(core.Event{AgentID: "lead/inherited", ModelProfile: "inherited"}, true)
+	if got := m.agentMetric("lead/inherited").ContextWindow; got != 1_000_000 {
+		t.Fatalf("inherited worker context window = %d, want project capacity 1000000", got)
+	}
+	m.updateAgentEvent(core.Event{AgentID: "lead/profile", ModelProfile: "small"}, true)
+	if got := m.agentMetric("lead/profile").ContextWindow; got != 128000 {
+		t.Fatalf("profile context window = %d, want 128000", got)
+	}
+	m.updateAgentEvent(core.Event{AgentID: "lead/reported", ModelProfile: "inherited", ContextWindow: 256000}, true)
+	if got := m.agentMetric("lead/reported").ContextWindow; got != 256000 {
+		t.Fatalf("reported context window = %d, want 256000", got)
+	}
+
+	m.updateAgentEvent(core.Event{AgentID: "lead/reprofiled", ModelProfile: "small"}, true)
+	m.updateAgentEvent(core.Event{AgentID: "lead/reprofiled", ModelProfile: "inherited"}, true)
+	if got := m.agentMetric("lead/reprofiled").ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window after profile change = %d, want inherited project capacity 1000000", got)
+	}
+}
+
+func TestRemovedSlashAliasesAreUnknown(t *testing.T) {
+	removed := []string{"/reasoning", "/delete", "/quit", "/process"}
+	for _, alias := range removed {
+		for _, item := range builtinCommands {
+			if item.Command == alias {
+				t.Fatalf("removed alias %q remains in command help/autocomplete", alias)
+			}
+		}
+	}
+	for _, canonical := range []string{"/effort", "/drop", "/exit", "/ps"} {
+		found := false
+		for _, item := range builtinCommands {
+			found = found || item.Command == canonical
+		}
+		if !found {
+			t.Fatalf("canonical command %q is missing", canonical)
+		}
+	}
+
+	m := newTUIModel(nil, nil, "session")
+	for _, alias := range removed {
+		before := len(m.entries)
+		m.handleSlashCommand(alias)
+		if len(m.entries) <= before || !strings.Contains(m.entries[len(m.entries)-1].Text, "Unknown command") {
+			t.Errorf("alias %q did not produce an unknown-command response", alias)
 		}
 	}
 }

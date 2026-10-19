@@ -67,8 +67,8 @@ type MCPEnvironmentInput struct {
 
 func workspaceConfigView(config core.ProjectConfig, commandToolchainPaths []string) WorkspaceConfigView {
 	view := WorkspaceConfigView{
-		ContextWindow: config.ContextWindow, AutoCompact: config.AutoCompact,
-		AutoCompactThreshold: config.AutoCompactThreshold, ReserveOutputTokens: config.ReserveOutputTokens,
+		ContextWindow: config.Runtime.ContextWindow, AutoCompact: config.Runtime.AutoCompact,
+		AutoCompactThreshold: config.Runtime.AutoCompactThreshold, ReserveOutputTokens: config.Runtime.ReserveOutputTokens,
 		MaxAttachmentFiles: config.Attachments.MaxFiles, MaxAttachmentBytes: config.Attachments.MaxFileBytes,
 		MaxTotalBytes: config.Attachments.MaxTotalBytes, CommandToolchainPaths: append([]string(nil), commandToolchainPaths...),
 	}
@@ -98,13 +98,13 @@ func workspaceConfigView(config core.ProjectConfig, commandToolchainPaths []stri
 
 func mergeWorkspaceConfig(current core.ProjectConfig, input WorkspaceConfigInput) (core.ProjectConfig, error) {
 	config := current
-	config.ContextWindow = input.ContextWindow
-	config.AutoCompact = input.AutoCompact
-	config.AutoCompactThreshold = input.AutoCompactThreshold
-	if config.AutoCompact && config.AutoCompactThreshold == 0 {
-		config.AutoCompactThreshold = core.DefaultAutoCompactThreshold
+	config.Runtime.ContextWindow = input.ContextWindow
+	config.Runtime.AutoCompact = input.AutoCompact
+	config.Runtime.AutoCompactThreshold = input.AutoCompactThreshold
+	if config.Runtime.AutoCompact && config.Runtime.AutoCompactThreshold == 0 {
+		config.Runtime.AutoCompactThreshold = core.DefaultAutoCompactThreshold
 	}
-	config.ReserveOutputTokens = input.ReserveOutputTokens
+	config.Runtime.ReserveOutputTokens = input.ReserveOutputTokens
 	config.Attachments.MaxFiles = input.MaxAttachmentFiles
 	config.Attachments.MaxFileBytes = input.MaxAttachmentBytes
 	config.Attachments.MaxTotalBytes = input.MaxTotalBytes
@@ -202,7 +202,7 @@ func (s *DesktopService) SaveWorkspaceConfig(input WorkspaceConfigInput) (Worksp
 		s.mu.Unlock()
 		return WorkspaceConfigView{}, err
 	}
-	oldStoredConfig.ModelConfig = current.ModelConfig
+	oldStoredConfig.Models = current.Models
 	oldStoredPaths, pathsFound, err := s.store.LoadWorkspaceCommandToolchainPaths(workspace)
 	if err != nil {
 		s.mu.Unlock()

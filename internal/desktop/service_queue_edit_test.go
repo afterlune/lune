@@ -178,9 +178,9 @@ func newDesktopServiceForTest(t *testing.T, provider publicmodel.Provider) (*Des
 		StateDir:  stateDir,
 		Memory:    core.MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
-			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
-			Models:       map[string]publicmodel.ModelProfile{"primary": {Provider: "host", Model: "test-model"}},
-			DefaultModel: "primary",
+			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Profiles:       map[string]publicmodel.ModelProfile{"primary": {Provider: "host", Model: "test-model"}},
+			DefaultProfile: "primary",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 	})

@@ -98,11 +98,11 @@
 | **`/plan`** | 切换进入/退出 Plan 规划模式（进入时锁定为 `read-only`，退出时恢复之前档位） |
 | **`/permissions [mode]`** | 查看或直接设置权限模式（`read-only`、`workspace`、`ask`、`full-access`） |
 | **`/model [name]`** | 查看或切换会话绑定的模型名称配置 |
-| **`/effort [level]`** | **交互式选择思考等级**（`/reasoning` 为别名）：无参数时唤起选择器，`↑`/`↓`（或 `j`/`k`、`1`-`8`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |
+| **`/effort [level]`** | **交互式选择思考等级**：无参数时唤起选择器，`↑`/`↓`（或 `j`/`k`、`1`-`8`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |
 | **`/theme [dark\|light\|auto]`** | 查看或切换界面主题模式（自适应终端背景色、高对比度深色、明亮浅色） |
 | **`/sessions [query]`** | 查看或关键词模糊检索当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
 | **`/open [id\|prefix]`** | 打开交互式会话切换浮层（无参数时），或直接切换至指定会话（支持唯一前缀模糊匹配，如前 6~8 位 ID；任务运行中受安全互锁保护禁止切换） |
-| **`/drop [id\|prefix]`** | 删除指定的历史会话（支持短 ID 前缀匹配与安全确认；别名 `/delete`；严禁删除当前激活会话） |
+| **`/drop [id\|prefix]`** | 删除指定的历史会话（支持短 ID 前缀匹配与安全确认；严禁删除当前激活会话） |
 | **`/title [name]`** | 查看或自定义重命名当前会话标题，Header、Footer 与 `/sessions` 实时同步持久化 |
 | **`/memory [subcmd]`** | 管理工作区长期记忆库（`/memory list [query]` 查看与关键词检索、`/memory add [category] <text>` 沉淀技术偏好/约定/决策、`/memory remove <id\|prefix>` 精确或前缀删除、`/memory clear [--force]` 清空记忆） |
 | **`/ps`** | 查看当前会话中运行或已结束的后台守护进程与长命令（状态、耗时、退出码） |
@@ -122,7 +122,7 @@
 | **`/fork`** | 分叉当前会话状态至独立新会话 |
 | **`/resume`** | 恢复当前会话中暂停的任务 |
 | **`/discard`** | 丢弃当前会话中暂停的任务 |
-| **`/exit`** / **`/quit`** | 安全退出 TUI 界面 |
+| **`/exit`** | 安全退出 TUI 界面 |
 
 ### 3.3 转录与鼠标交互 (Transcript)
 - **鼠标划选自动复制**：在转录区域按住左键拖拽选中文本，松开鼠标左键时**自动复制到系统剪贴板**，右下角弹出复制字符数提示（如 `Copied 120 chars to host clipboard`）。
@@ -198,7 +198,7 @@
 - **极简键盘控制**：`↑`/`↓`（或 `Ctrl+P`/`Ctrl+N`）循环移动光标，`Enter` 确认切换并自动重新订阅事件流与载入历史记录，`Ctrl+D`/`Del` 删除选中文档，`Esc` 或再次按 `Ctrl+O` 关闭弹窗。
 
 ### 4.11 交互式思考等级选择器 (`EffortPicker`)
-- 输入 `/effort`（或 `/reasoning`）且不带参数时，在输入带上方弹出选择器；不再要求用户记忆 `/effort <level>` 语法。
+- 输入 `/effort` 且不带参数时，在输入带上方弹出选择器；不再要求用户记忆 `/effort <level>` 语法。
 - 选项固定为 `default`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，当前生效项以 `✓ current` 标注。
 - 键盘流转：`↑`/`↓`（或 `j`/`k`、`Ctrl+P`/`Ctrl+N`）循环移动，`1`-`8` 直接选择并应用，`Enter` 应用，`Esc` 关闭。
 - 应用后只更新会话设置中的 `reasoning_effort`，保留当前模型 profile 与其它会话设置不变；Footer 中模型名后以 `[effort: high]` 形式显示当前等级（未设置时显示 `[effort: default]`）。

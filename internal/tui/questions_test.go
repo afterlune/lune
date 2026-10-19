@@ -136,7 +136,7 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 		Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid"}},
-			Models:    map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}}, DefaultModel: "main",
+			Profiles:  map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}}, DefaultProfile: "main",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 	})
@@ -264,7 +264,7 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 
 func TestDelegationFooterUsesEffectiveLimits(t *testing.T) {
 	workspace := t.TempDir()
-	config := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"models":{"main":{"provider":"host","model":"test"}},"defaultModel":"main","maxParallelAgents":0,"maxTeamChildrenPerAgent":0}`
+	config := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"main":{"provider":"host","model":"test"}},"defaultProfile":"main"},"runtime":{"maxParallelAgents":0,"maxTeamChildrenPerAgent":0}}`
 	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}

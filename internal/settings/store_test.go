@@ -172,29 +172,32 @@ func TestStoreEncryptsAndRestoresProviderKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := publicmodel.Config{
+	settings := SharedModelSettings{Catalog: publicmodel.Config{
 		Providers: map[string]publicmodel.ProviderConfig{
 			"test": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://model.example.test/v1", APIKey: "test-secret-value"},
 		},
-		Models:       map[string]publicmodel.ModelProfile{"test-model": {Provider: "test", Model: "unit-model"}},
-		DefaultModel: "test-model",
-	}
-	if err := store.SaveModelConfig(config); err != nil {
+		Profiles:       map[string]publicmodel.ModelProfile{"test-model": {Provider: "test", Model: "unit-model"}},
+		DefaultProfile: "test-model",
+	}, MaxParallelAgents: 3}
+	if err := store.SaveModelSettings(settings); err != nil {
 		t.Fatal(err)
 	}
 	var encrypted []byte
 	if err := store.db.QueryRow(`SELECT encrypted_api_key FROM providers WHERE name = 'test'`).Scan(&encrypted); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encrypted), config.Providers["test"].APIKey) {
+	if strings.Contains(string(encrypted), settings.Catalog.Providers["test"].APIKey) {
 		t.Fatal("API key appears in plaintext in the settings database")
 	}
-	loaded, err := store.LoadModelConfig()
+	loaded, err := store.LoadModelSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := loaded.Providers["test"].APIKey; got != config.Providers["test"].APIKey {
+	if got := loaded.Catalog.Providers["test"].APIKey; got != settings.Catalog.Providers["test"].APIKey {
 		t.Fatalf("API key round trip = %q", got)
+	}
+	if loaded.Catalog.DefaultProfile != settings.Catalog.DefaultProfile || loaded.MaxParallelAgents != settings.MaxParallelAgents {
+		t.Fatalf("model settings round trip = %#v", loaded)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -203,7 +206,7 @@ func TestStoreEncryptsAndRestoresProviderKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(bytes), config.Providers["test"].APIKey) {
+	if strings.Contains(string(bytes), settings.Catalog.Providers["test"].APIKey) {
 		t.Fatal("API key appears in the SQLite file")
 	}
 }

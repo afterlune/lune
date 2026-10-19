@@ -24,7 +24,6 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
 	{Command: "/model", Description: "choose an active model profile"},
 	{Command: "/effort", Description: "choose the reasoning effort level interactively"},
-	{Command: "/reasoning", Description: "alias for /effort"},
 	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
 	{Command: "/memory", Description: "view and manage workspace long-term memories"},
 	{Command: "/agents", Description: "inspect live agents and their context, cache, speed, and usage"},
@@ -34,7 +33,6 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/sessions", Description: "open session switcher modal or search: /sessions [query]"},
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
 	{Command: "/drop", Description: "delete a saved session: /drop <id|prefix>"},
-	{Command: "/delete", Description: "alias for /drop"},
 	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session transcript: /export [md|html|jsonl] [file]"},
@@ -75,7 +73,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	cmdName := strings.ToLower(parts[0])
 
 	switch cmdName {
-	case "/exit", "/quit":
+	case "/exit":
 		return m, tea.Quit
 
 	case "/help":
@@ -174,7 +172,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/open":
 		return m.handleOpenCommand(parts)
 
-	case "/drop", "/delete":
+	case "/drop":
 		return m.handleDropCommand(parts)
 
 	case "/detail":
@@ -502,7 +500,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/memory":
 		return m.handleMemoryCommand(parts)
 
-	case "/ps", "/process":
+	case "/ps":
 		return m.handlePsCommand(parts)
 
 	case "/stop":
@@ -514,7 +512,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/agents":
 		return m.handleAgentsCommand(parts)
 
-	case "/effort", "/reasoning":
+	case "/effort":
 		return m.handleEffortCommand(parts)
 
 	case "/context":
@@ -2017,7 +2015,7 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if len(parts) < 2 {
-		m.addSystemEntry("Usage: `/drop <session-id|prefix>` (or `/delete`).")
+		m.addSystemEntry("Usage: `/drop <session-id|prefix>`.")
 		return m, nil
 	}
 	targetPrefix := parts[1]

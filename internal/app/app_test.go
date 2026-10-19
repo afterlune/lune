@@ -173,7 +173,7 @@ func TestReadPipedStdin(t *testing.T) {
 func createTestWorkspace(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
-	cfg := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	cfg := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(cfg), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -280,30 +280,36 @@ func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 		t.Fatalf("unmarshal config.example.json: %v", err)
 	}
 
-	if _, ok := raw["maxTeamChildrenPerAgent"]; !ok {
-		t.Error("maxTeamChildrenPerAgent missing from config.example.json")
+	runtimeConfig, ok := raw["runtime"].(map[string]any)
+	if !ok {
+		t.Fatal("runtime section missing from config.example.json")
 	}
-	if _, ok := raw["maxTeamDepth"]; !ok {
-		t.Error("maxTeamDepth missing from config.example.json")
+	if _, ok := runtimeConfig["maxTeamChildrenPerAgent"]; !ok {
+		t.Error("runtime.maxTeamChildrenPerAgent missing from config.example.json")
+	}
+	if _, ok := runtimeConfig["maxTeamDepth"]; !ok {
+		t.Error("runtime.maxTeamDepth missing from config.example.json")
 	}
 
 	var cfg struct {
-		MaxParallelAgents       int `json:"maxParallelAgents"`
-		MaxTeamChildrenPerAgent int `json:"maxTeamChildrenPerAgent"`
-		MaxTeamDepth            int `json:"maxTeamDepth"`
+		Runtime struct {
+			MaxParallelAgents       int `json:"maxParallelAgents"`
+			MaxTeamChildrenPerAgent int `json:"maxTeamChildrenPerAgent"`
+			MaxTeamDepth            int `json:"maxTeamDepth"`
+		} `json:"runtime"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal config.example.json into struct: %v", err)
 	}
 
-	if cfg.MaxParallelAgents != 4 {
-		t.Errorf("expected maxParallelAgents=4, got %d", cfg.MaxParallelAgents)
+	if cfg.Runtime.MaxParallelAgents != 4 {
+		t.Errorf("expected runtime.maxParallelAgents=4, got %d", cfg.Runtime.MaxParallelAgents)
 	}
-	if cfg.MaxTeamChildrenPerAgent != 4 {
-		t.Errorf("expected maxTeamChildrenPerAgent=4, got %d", cfg.MaxTeamChildrenPerAgent)
+	if cfg.Runtime.MaxTeamChildrenPerAgent != 4 {
+		t.Errorf("expected runtime.maxTeamChildrenPerAgent=4, got %d", cfg.Runtime.MaxTeamChildrenPerAgent)
 	}
-	if cfg.MaxTeamDepth != 2 {
-		t.Errorf("expected maxTeamDepth=2, got %d", cfg.MaxTeamDepth)
+	if cfg.Runtime.MaxTeamDepth != 2 {
+		t.Errorf("expected runtime.maxTeamDepth=2, got %d", cfg.Runtime.MaxTeamDepth)
 	}
 
 	// Also verify that with placeholder keys populated, core.New parses and validates config.example.json without schema or configuration errors
@@ -318,5 +324,3 @@ func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 	}
 	defer coreClient.Close()
 }
-
-

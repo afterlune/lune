@@ -11,10 +11,10 @@ import (
 
 func TestMergeWorkspaceConfigPreservesUnchangedMCPSecretsAndOmitsRemovedVariables(t *testing.T) {
 	current := core.DefaultProjectConfig()
-	current.ModelConfig = publicmodel.Config{
-		Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-key"}},
-		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
-		DefaultModel: "main",
+	current.Models = publicmodel.Config{
+		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-key"}},
+		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultProfile: "main",
 	}
 	current.MCPServers = map[string]core.MCPServerConfig{
 		"private-api": {
@@ -40,7 +40,7 @@ func TestMergeWorkspaceConfigPreservesUnchangedMCPSecretsAndOmitsRemovedVariable
 	if _, exists := env["REMOVE_ME"]; exists {
 		t.Fatalf("removed environment key was retained: %#v", env)
 	}
-	if merged.ContextWindow != 32000 || merged.AutoCompactThreshold != 0.75 {
+	if merged.Runtime.ContextWindow != 32000 || merged.Runtime.AutoCompactThreshold != 0.75 {
 		t.Fatalf("runtime settings were not applied: %#v", merged)
 	}
 
@@ -55,10 +55,10 @@ func TestMergeWorkspaceConfigPreservesUnchangedMCPSecretsAndOmitsRemovedVariable
 
 func TestMergeWorkspaceConfigRejectsInvalidMCPAndRuntimeValues(t *testing.T) {
 	current := core.DefaultProjectConfig()
-	current.ModelConfig = publicmodel.Config{
-		Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-key"}},
-		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
-		DefaultModel: "main",
+	current.Models = publicmodel.Config{
+		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid", APIKey: "model-key"}},
+		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultProfile: "main",
 	}
 	for _, input := range []WorkspaceConfigInput{
 		{AutoCompact: true, MCPServers: []MCPServerConfigInput{{Name: "bad", Transport: "stdio"}}},

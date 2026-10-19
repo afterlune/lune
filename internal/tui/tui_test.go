@@ -1562,7 +1562,7 @@ func TestMemoryCommand(t *testing.T) {
 
 	// 2. With real core client in tempDir
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1666,7 +1666,7 @@ func TestProcessCommands(t *testing.T) {
 
 	// 2. With real core client and session runtime
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1724,7 +1724,7 @@ func TestProcessCommands(t *testing.T) {
 
 func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1788,7 +1788,7 @@ func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.
 
 func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary","contextWindow":1000000}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{"contextWindow":1000000}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1890,7 +1890,7 @@ func TestSessionSnapshotRestoresLeadContextUsage(t *testing.T) {
 
 func TestSessionsModalInteractions(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2054,7 +2054,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 
 func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2627,7 +2627,7 @@ func TestFormatRelativeTime(t *testing.T) {
 
 func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2807,7 +2807,7 @@ func TestExportMultiFormat(t *testing.T) {
 
 func TestRewindPreviewAndRestoration(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -2875,7 +2875,7 @@ func TestRewindPreviewAndRestoration(t *testing.T) {
 
 func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -3891,7 +3891,7 @@ func TestContextMetricsUseLatestPromptNotCumulative(t *testing.T) {
 
 func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 	tmpDir := t.TempDir()
-	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"alpha":{"provider":"host","model":"shared-model","displayName":"Alpha"},"beta":{"provider":"host","model":"shared-model","displayName":"Beta"}},"defaultModel":"alpha","maxParallelAgents":8}`
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"alpha":{"provider":"host","model":"shared-model","displayName":"Alpha"},"beta":{"provider":"host","model":"shared-model","displayName":"Beta"}},"defaultProfile":"alpha"},"runtime":{"maxParallelAgents":8}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}

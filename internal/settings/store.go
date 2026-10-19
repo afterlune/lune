@@ -135,14 +135,22 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) LoadModelConfig() (publicmodel.Config, error) {
+type SharedModelSettings struct {
+	Catalog           publicmodel.Config
+	MaxParallelAgents int
+}
+
+func (s *Store) LoadModelSettings() (SharedModelSettings, error) {
 	if s == nil || s.db == nil {
-		return publicmodel.Config{}, errors.New("settings store is closed")
+		return SharedModelSettings{}, errors.New("settings store is closed")
 	}
-	config := publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Models: map[string]publicmodel.ModelProfile{}}
+	settings := SharedModelSettings{Catalog: publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{}, Profiles: map[string]publicmodel.ModelProfile{},
+	}}
+	config := &settings.Catalog
 	rows, err := s.db.Query(`SELECT name, protocol, base_url, encrypted_api_key, server_compaction FROM providers ORDER BY name`)
 	if err != nil {
-		return publicmodel.Config{}, fmt.Errorf("read providers: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("read providers: %w", err)
 	}
 	for rows.Next() {
 		var name, protocol, baseURL string
@@ -150,12 +158,12 @@ func (s *Store) LoadModelConfig() (publicmodel.Config, error) {
 		var serverCompaction bool
 		if err := rows.Scan(&name, &protocol, &baseURL, &encrypted, &serverCompaction); err != nil {
 			_ = rows.Close()
-			return publicmodel.Config{}, fmt.Errorf("read provider: %w", err)
+			return SharedModelSettings{}, fmt.Errorf("read provider: %w", err)
 		}
 		apiKey, err := unprotectSecret(encrypted)
 		if err != nil {
 			_ = rows.Close()
-			return publicmodel.Config{}, fmt.Errorf("decrypt API key for provider %q: %w", name, err)
+			return SharedModelSettings{}, fmt.Errorf("decrypt API key for provider %q: %w", name, err)
 		}
 		config.Providers[name] = publicmodel.ProviderConfig{
 			Protocol: protocol, BaseURL: baseURL, APIKey: apiKey, ServerCompaction: serverCompaction,
@@ -163,14 +171,14 @@ func (s *Store) LoadModelConfig() (publicmodel.Config, error) {
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return publicmodel.Config{}, fmt.Errorf("read providers: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("read providers: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return publicmodel.Config{}, fmt.Errorf("close provider rows: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("close provider rows: %w", err)
 	}
 	modelRows, err := s.db.Query(`SELECT name, provider, model, max_output_tokens, supports_input_audio FROM models ORDER BY name`)
 	if err != nil {
-		return publicmodel.Config{}, fmt.Errorf("read model profiles: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("read model profiles: %w", err)
 	}
 	for modelRows.Next() {
 		var name, provider, modelID string
@@ -178,51 +186,55 @@ func (s *Store) LoadModelConfig() (publicmodel.Config, error) {
 		var supportsInputAudio bool
 		if err := modelRows.Scan(&name, &provider, &modelID, &maxOutputTokens, &supportsInputAudio); err != nil {
 			_ = modelRows.Close()
-			return publicmodel.Config{}, fmt.Errorf("read model profile: %w", err)
+			return SharedModelSettings{}, fmt.Errorf("read model profile: %w", err)
 		}
-		config.Models[name] = publicmodel.ModelProfile{
+		config.Profiles[name] = publicmodel.ModelProfile{
 			Provider: provider, Model: modelID, MaxOutputTokens: maxOutputTokens, SupportsInputAudio: supportsInputAudio,
 		}
 	}
 	if err := modelRows.Err(); err != nil {
 		_ = modelRows.Close()
-		return publicmodel.Config{}, fmt.Errorf("read model profiles: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("read model profiles: %w", err)
 	}
 	if err := modelRows.Close(); err != nil {
-		return publicmodel.Config{}, fmt.Errorf("close model rows: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("close model rows: %w", err)
 	}
-	if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'defaultModel'`).Scan(&config.DefaultModel); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return publicmodel.Config{}, fmt.Errorf("read default model: %w", err)
+	if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'defaultModel'`).Scan(&config.DefaultProfile); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return SharedModelSettings{}, fmt.Errorf("read default model: %w", err)
 	}
 	var maxParallel string
 	if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'maxParallelAgents'`).Scan(&maxParallel); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return publicmodel.Config{}, fmt.Errorf("read parallel agent setting: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("read parallel agent setting: %w", err)
 	}
 	if maxParallel != "" {
-		if _, err := fmt.Sscan(maxParallel, &config.MaxParallelAgents); err != nil {
-			return publicmodel.Config{}, fmt.Errorf("decode parallel agent setting: %w", err)
+		if _, err := fmt.Sscan(maxParallel, &settings.MaxParallelAgents); err != nil {
+			return SharedModelSettings{}, fmt.Errorf("decode parallel agent setting: %w", err)
 		}
 	}
-	if len(config.Providers) == 0 && len(config.Models) == 0 {
-		return config, nil
+	if len(config.Providers) == 0 && len(config.Profiles) == 0 {
+		return settings, nil
 	}
 	if err := config.Validate(); err != nil {
-		return publicmodel.Config{}, fmt.Errorf("validate shared model settings: %w", err)
+		return SharedModelSettings{}, fmt.Errorf("validate shared model settings: %w", err)
 	}
 	for name, provider := range config.Providers {
 		if strings.TrimSpace(provider.APIKey) == "" {
-			return publicmodel.Config{}, fmt.Errorf("provider %q has no API key", name)
+			return SharedModelSettings{}, fmt.Errorf("provider %q has no API key", name)
 		}
 	}
-	return config, nil
+	return settings, nil
 }
 
-func (s *Store) SaveModelConfig(config publicmodel.Config) error {
+func (s *Store) SaveModelSettings(settings SharedModelSettings) error {
 	if s == nil || s.db == nil {
 		return errors.New("settings store is closed")
 	}
+	config := settings.Catalog
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("validate model settings: %w", err)
+	}
+	if settings.MaxParallelAgents < 0 {
+		return errors.New("maxParallelAgents must not be negative")
 	}
 	for name, provider := range config.Providers {
 		if strings.TrimSpace(provider.APIKey) == "" {
@@ -250,16 +262,16 @@ func (s *Store) SaveModelConfig(config publicmodel.Config) error {
 	if _, err := tx.Exec(`DELETE FROM models`); err != nil {
 		return fmt.Errorf("replace model profiles: %w", err)
 	}
-	for name, profile := range config.Models {
+	for name, profile := range config.Profiles {
 		if _, err := tx.Exec(`INSERT INTO models(name, provider, model, max_output_tokens, supports_input_audio) VALUES (?, ?, ?, ?, ?)`,
 			name, profile.Provider, profile.Model, profile.MaxOutputTokens, profile.SupportsInputAudio); err != nil {
 			return fmt.Errorf("save model profile %q: %w", name, err)
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('defaultModel', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, config.DefaultModel); err != nil {
+	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('defaultModel', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, config.DefaultProfile); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('maxParallelAgents', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprint(config.MaxParallelAgents)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('maxParallelAgents', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprint(settings.MaxParallelAgents)); err != nil {
 		return fmt.Errorf("save parallel agent setting: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -379,11 +391,18 @@ func (s *Store) LoadWorkspaceConfig(workspace string) (core.ProjectConfig, bool,
 	if err != nil {
 		return core.ProjectConfig{}, false, fmt.Errorf("decrypt Desktop project configuration: %w", err)
 	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(plaintext), &shape); err != nil {
+		return core.ProjectConfig{}, false, fmt.Errorf("decode Desktop project configuration: %w", err)
+	}
+	if _, currentShape := shape["runtime"]; !currentShape {
+		return core.DefaultProjectConfig(), true, nil
+	}
 	var config core.ProjectConfig
 	if err := json.Unmarshal([]byte(plaintext), &config); err != nil {
 		return core.ProjectConfig{}, false, fmt.Errorf("decode Desktop project configuration: %w", err)
 	}
-	config.ModelConfig = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Models: map[string]publicmodel.ModelProfile{}}
+	config.Models = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Profiles: map[string]publicmodel.ModelProfile{}}
 	return config, true, nil
 }
 
@@ -397,7 +416,7 @@ func (s *Store) SaveWorkspaceConfig(workspace string, config core.ProjectConfig)
 	if err != nil {
 		return err
 	}
-	config.ModelConfig = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Models: map[string]publicmodel.ModelProfile{}}
+	config.Models = publicmodel.Config{Providers: map[string]publicmodel.ProviderConfig{}, Profiles: map[string]publicmodel.ModelProfile{}}
 	plaintext, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("encode Desktop project configuration: %w", err)

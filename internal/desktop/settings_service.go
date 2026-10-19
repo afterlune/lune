@@ -111,7 +111,7 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	if err != nil {
 		return Bootstrap{}, err
 	}
-	modelConfig, err := s.store.LoadModelConfig()
+	modelSettings, err := s.store.LoadModelSettings()
 	if err != nil {
 		return Bootstrap{}, err
 	}
@@ -125,7 +125,7 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	defer s.mu.Unlock()
 	result := Bootstrap{
 		Theme: appearance.Theme, Appearance: appearanceView(appearance), Recent: recent,
-		Models: modelSettingsView(modelConfig), Workspace: s.workspace, SessionID: s.activeSessionIDLocked(),
+		Models: modelSettingsView(modelSettings), Workspace: s.workspace, SessionID: s.activeSessionIDLocked(),
 		LastWorkspace: restore.Workspace, LastSessionID: restore.SessionID,
 	}
 	if s.activeCoreLocked() != nil {
@@ -136,15 +136,16 @@ func (s *DesktopService) Bootstrap() (Bootstrap, error) {
 	return result, nil
 }
 
-func modelSettingsView(config publicmodel.Config) ModelSettingsView {
-	view := ModelSettingsView{DefaultModel: config.DefaultModel, MaxParallelAgents: config.MaxParallelAgents, Configured: len(config.Providers) > 0 && len(config.Models) > 0}
+func modelSettingsView(settings settings.SharedModelSettings) ModelSettingsView {
+	config := settings.Catalog
+	view := ModelSettingsView{DefaultModel: config.DefaultProfile, MaxParallelAgents: settings.MaxParallelAgents, Configured: len(config.Providers) > 0 && len(config.Profiles) > 0}
 	for name, provider := range config.Providers {
 		view.Providers = append(view.Providers, ProviderView{
 			Name: name, Protocol: provider.Protocol, BaseURL: provider.BaseURL,
 			HasAPIKey: strings.TrimSpace(provider.APIKey) != "", ServerCompaction: provider.ServerCompaction,
 		})
 	}
-	for name, profile := range config.Models {
+	for name, profile := range config.Profiles {
 		view.Models = append(view.Models, ModelProfileView{
 			Name: name, Provider: profile.Provider, Model: profile.Model,
 			MaxOutputTokens: profile.MaxOutputTokens, SupportsInputAudio: profile.SupportsInputAudio,
@@ -156,33 +157,33 @@ func modelSettingsView(config publicmodel.Config) ModelSettingsView {
 }
 
 func (s *DesktopService) projectModelsView() *ModelSettingsView {
-	view := modelSettingsView(s.projectConfig.ModelConfig)
+	view := modelSettingsView(settings.SharedModelSettings{Catalog: s.projectConfig.Models, MaxParallelAgents: s.projectConfig.Runtime.MaxParallelAgents})
 	return &view
 }
 
 func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSettingsView, error) {
 	s.workspaceMu.Lock()
 	defer s.workspaceMu.Unlock()
-	current, err := s.store.LoadModelConfig()
+	current, err := s.store.LoadModelSettings()
 	if err != nil {
 		return ModelSettingsView{}, err
 	}
-	config := publicmodel.Config{
-		Providers:    make(map[string]publicmodel.ProviderConfig, len(input.Providers)),
-		Models:       make(map[string]publicmodel.ModelProfile, len(input.Models)),
-		DefaultModel: input.DefaultModel, MaxParallelAgents: input.MaxParallelAgents,
+	catalog := publicmodel.Config{
+		Providers:      make(map[string]publicmodel.ProviderConfig, len(input.Providers)),
+		Profiles:       make(map[string]publicmodel.ModelProfile, len(input.Models)),
+		DefaultProfile: input.DefaultModel,
 	}
 	for _, provider := range input.Providers {
 		apiKey := strings.TrimSpace(provider.APIKey)
 		if apiKey == "" {
-			apiKey = current.Providers[provider.Name].APIKey
+			apiKey = current.Catalog.Providers[provider.Name].APIKey
 		}
-		config.Providers[provider.Name] = publicmodel.ProviderConfig{
+		catalog.Providers[provider.Name] = publicmodel.ProviderConfig{
 			Protocol: provider.Protocol, BaseURL: provider.BaseURL, APIKey: apiKey, ServerCompaction: provider.ServerCompaction,
 		}
 	}
 	for _, profile := range input.Models {
-		config.Models[profile.Name] = publicmodel.ModelProfile{
+		catalog.Profiles[profile.Name] = publicmodel.ModelProfile{
 			Provider: profile.Provider, Model: profile.Model, MaxOutputTokens: profile.MaxOutputTokens,
 			SupportsInputAudio: profile.SupportsInputAudio,
 		}
@@ -232,7 +233,7 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 			s.mu.Unlock()
 		}()
 	}
-	if err := s.store.SaveModelConfig(config); err != nil {
+	if err := s.store.SaveModelSettings(settings.SharedModelSettings{Catalog: catalog, MaxParallelAgents: input.MaxParallelAgents}); err != nil {
 		if workspace != "" {
 			if reopenErr := s.startWorkspace(workspace); reopenErr == nil && sessionID != "" {
 				s.restoreControls(savedControls)
@@ -255,7 +256,7 @@ func (s *DesktopService) SaveModelSettings(input ModelSettingsInput) (ModelSetti
 			}
 		}
 	}
-	return modelSettingsView(config), nil
+	return modelSettingsView(settings.SharedModelSettings{Catalog: catalog, MaxParallelAgents: input.MaxParallelAgents}), nil
 }
 
 func appearanceView(appearance settings.Appearance) AppearanceView {
