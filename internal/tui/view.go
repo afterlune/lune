@@ -68,27 +68,17 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindQuestionAnswered:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		if len(entry.AnsweredQuestions) > 0 {
-			total := entry.QuestionsTotal
-			if total < len(entry.AnsweredQuestions) {
-				total = len(entry.AnsweredQuestions)
-			}
-			title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("Questions %d/%d answered", len(entry.AnsweredQuestions), total))
-			var rows []string
-			rows = append(rows, bullet+title)
-			for _, qa := range entry.AnsweredQuestions {
-				qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(qa.Question))
-				ansLabel := styleTextMuted().Render("    answer: ")
-				ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(qa.Answer)
-				rows = append(rows, qLine, ansLabel+ansVal)
-			}
-			return strings.Join(rows, "\n")
+		total := max(entry.QuestionsTotal, len(entry.AnsweredQuestions))
+		title := styleTextPrimary().Bold(true).Render(fmt.Sprintf("Questions %d/%d answered", len(entry.AnsweredQuestions), total))
+		var rows []string
+		rows = append(rows, bullet+title)
+		for _, qa := range entry.AnsweredQuestions {
+			qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(qa.Question))
+			ansLabel := styleTextMuted().Render("    answer: ")
+			ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(qa.Answer)
+			rows = append(rows, qLine, ansLabel+ansVal)
 		}
-		title := styleTextPrimary().Bold(true).Render("Question answered")
-		qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(entry.QuestionText))
-		ansLabel := styleTextMuted().Render("    answer: ")
-		ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(entry.AnswerText)
-		return bullet + title + "\n" + qLine + "\n" + ansLabel + ansVal
+		return strings.Join(rows, "\n")
 
 	case KindPlan:
 		th := activeTheme()
@@ -136,9 +126,6 @@ func renderEntry(entry TranscriptEntry, width int) string {
 			return box + "\n" + chipLine
 		}
 		return box
-
-	case KindDiff:
-		return renderDiffEntry(entry, width)
 
 	case KindReasoning:
 		return renderReasoningEntry(entry, width)
@@ -278,39 +265,6 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 	}
 
 	return strings.Join(outLines, "\n")
-}
-
-// renderDiffEntry formats Git unified diff outputs with syntax highlighting.
-func renderDiffEntry(entry TranscriptEntry, width int) string {
-	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render("• ")
-	title := styleTextPrimary().Bold(true).Render("Workspace Diff")
-
-	lines := strings.Split(entry.Text, "\n")
-	var formatted []string
-
-	styleAdd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().SuccessGreen))
-	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().FailureRed))
-	styleHunk := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true)
-	styleFile := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true)
-	styleNormal := styleTextMuted()
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git") {
-			formatted = append(formatted, "\n  "+styleFile.Render(line))
-		} else if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
-			formatted = append(formatted, "  "+styleNormal.Render(line))
-		} else if strings.HasPrefix(line, "@@") {
-			formatted = append(formatted, "  "+styleHunk.Render(line))
-		} else if strings.HasPrefix(line, "+") {
-			formatted = append(formatted, "  "+styleAdd.Render(line))
-		} else if strings.HasPrefix(line, "-") {
-			formatted = append(formatted, "  "+styleDel.Render(line))
-		} else {
-			formatted = append(formatted, "  "+styleNormal.Render(line))
-		}
-	}
-
-	return bullet + title + "\n" + strings.Join(formatted, "\n")
 }
 
 // sanitizeAndTruncateLine expands tabs, strips carriage returns, and truncates safely by display width.
@@ -834,7 +788,7 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		return strings.Join(out, "\n")
 
 	case KindQuestionAnswered:
-		qSummary := strings.TrimSpace(entry.QuestionText)
+		qSummary := ""
 		if len(entry.AnsweredQuestions) > 0 {
 			qSummary = strings.TrimSpace(entry.AnsweredQuestions[0].Question)
 			if len(entry.AnsweredQuestions) > 1 {
@@ -853,13 +807,9 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		}
 		var rows []string
 		rows = append(rows, header)
-		if len(entry.AnsweredQuestions) > 0 {
-			for _, qa := range entry.AnsweredQuestions {
-				rows = append(rows, "  • "+styleTextPrimary().Render(qa.Question))
-				rows = append(rows, "    "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(qa.Answer))
-			}
-		} else if entry.AnswerText != "" {
-			rows = append(rows, "  "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(entry.AnswerText))
+		for _, qa := range entry.AnsweredQuestions {
+			rows = append(rows, "  • "+styleTextPrimary().Render(qa.Question))
+			rows = append(rows, "    "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(qa.Answer))
 		}
 		return strings.Join(rows, "\n")
 

@@ -105,7 +105,6 @@ var (
 	cachedStyleMuted    lipgloss.Style
 	cachedStylePlan     lipgloss.Style
 	cachedStyleSelected lipgloss.Style
-	cachedStyleCard     lipgloss.Style
 )
 
 func init() {
@@ -121,9 +120,6 @@ func recalculateThemeStyles() {
 		Background(lipgloss.Color(th.SelectBg)).
 		Foreground(lipgloss.Color(th.SelectFg)).
 		Bold(true)
-	cachedStyleCard = lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary))
 }
 
 func activeTheme() Theme {
@@ -180,10 +176,6 @@ func stylePlanPurple() lipgloss.Style {
 
 func styleSelectedRow() lipgloss.Style {
 	return cachedStyleSelected
-}
-
-func styleCard() lipgloss.Style {
-	return cachedStyleCard
 }
 
 func parseHexRGB(hex string) (int, int, int, bool) {

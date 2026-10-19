@@ -35,9 +35,10 @@ type turnSubmittedMsg struct {
 }
 
 type turnFinishedMsg struct {
-	sessionID string
-	result    core.TurnResult
-	err       error
+	sessionID   string
+	executionID string
+	result      core.TurnResult
+	err         error
 }
 
 type tickMsg time.Time
@@ -53,7 +54,7 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 	m.runtimeCancel = cancel
 	runtime := m.runtime
 	sessionID := m.sessionID
-	return func() tea.Msg {
+	streamCmd := func() tea.Msg {
 		rawEvents, err := runtime.SubscribeEvents(ctx, 0)
 		if err != nil {
 			return runtimeStreamReadyMsg{sessionID: sessionID, err: err}
@@ -81,6 +82,18 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 		}()
 		return runtimeStreamReadyMsg{sessionID: sessionID, events: buffered}
 	}
+	return tea.Batch(streamCmd, m.waitForExecution(m.runningExecution))
+}
+
+func (m *tuiModel) waitForExecution(executionID string) tea.Cmd {
+	if m.runtime == nil || executionID == "" || !m.running {
+		return nil
+	}
+	if _, waiting := m.awaitingTurns[executionID]; waiting {
+		return nil
+	}
+	m.awaitingTurns[executionID] = struct{}{}
+	return waitForTurn(m.runtime, m.sessionID, executionID)
 }
 
 func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
@@ -121,7 +134,7 @@ func waitForTurn(runtime *core.SessionRuntime, sessionID, executionID string) te
 	}
 	return func() tea.Msg {
 		res, err := runtime.WaitTurn(context.Background(), executionID)
-		return turnFinishedMsg{sessionID: sessionID, result: res, err: err}
+		return turnFinishedMsg{sessionID: sessionID, executionID: executionID, result: res, err: err}
 	}
 }
 
@@ -209,15 +222,12 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.running = true
 	m.thinking = false
 	m.taskStartedAt = time.Now()
-	m.turnStreamTokens = 0
 	m.turnStreamStartTime = time.Now()
 	m.streamFirstTokenTime = time.Time{}
-	m.streamLastTokenTime = time.Time{}
 	m.streamGenerationTokens = 0
 	m.currentStreamText = ""
 	m.currentReasoningText = ""
 	m.reasoningStartTime = time.Time{}
-	m.streamActive = true
 	m.scrolledUp = false
 	m.activeQuestion = nil
 	m.activeApproval = nil
@@ -286,10 +296,11 @@ func (m *tuiModel) flushStreamTextEntry() {
 		return
 	}
 	m.entries = append(m.entries, TranscriptEntry{
-		ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
-		Kind:      KindAssistant,
-		Text:      text,
-		Timestamp: time.Now(),
+		ID:          fmt.Sprintf("asst-%d", time.Now().UnixNano()),
+		ExecutionID: m.runningExecution,
+		Kind:        KindAssistant,
+		Text:        text,
+		Timestamp:   time.Now(),
 	})
 	m.invalidateEntryCache()
 }
@@ -301,20 +312,20 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	text := m.currentStreamText
 	m.currentStreamText = ""
 
-	if strings.TrimSpace(text) == "" && len(fallbackResponse) > 0 {
-		// Check whether an assistant message was already appended at the tail of m.entries
-		alreadyHasAssistant := false
-		for i := len(m.entries) - 1; i >= 0; i-- {
-			if m.entries[i].Kind == KindUser {
-				break
+	if len(fallbackResponse) > 0 {
+		if responseText := extractResponseText(fallbackResponse); strings.TrimSpace(responseText) != "" {
+			text = responseText
+			if executionID != "" {
+				stableID := assistantOutputID(executionID)
+				for i := len(m.entries) - 1; i >= 0; i-- {
+					if m.entries[i].Kind == KindUser {
+						break
+					}
+					if m.entries[i].Kind == KindAssistant && m.entries[i].ExecutionID == executionID && m.entries[i].ID != stableID {
+						m.entries = append(m.entries[:i], m.entries[i+1:]...)
+					}
+				}
 			}
-			if m.entries[i].Kind == KindAssistant || m.entries[i].Kind == KindPlan {
-				alreadyHasAssistant = true
-				break
-			}
-		}
-		if !alreadyHasAssistant {
-			text = extractResponseText(fallbackResponse)
 		}
 	}
 
@@ -340,18 +351,26 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	text = stripProposedPlan(text)
 
 	var turnDur time.Duration
-	if !m.taskStartedAt.IsZero() {
+	assistantIndex := m.assistantEntryIndex(executionID)
+	if assistantIndex >= 0 {
+		turnDur = m.entries[assistantIndex].TurnDuration
+	} else if !m.taskStartedAt.IsZero() {
 		turnDur = time.Since(m.taskStartedAt)
 	}
 
 	if strings.TrimSpace(text) != "" {
-		m.entries = append(m.entries, TranscriptEntry{
-			ID:           fmt.Sprintf("asst-%d", time.Now().UnixNano()),
-			Kind:         KindAssistant,
-			Text:         text,
-			TurnDuration: turnDur,
-			Timestamp:    time.Now(),
-		})
+		if assistantIndex >= 0 {
+			m.entries[assistantIndex].Text = text
+		} else {
+			id := fmt.Sprintf("asst-%d", time.Now().UnixNano())
+			if executionID != "" {
+				id = assistantOutputID(executionID)
+			}
+			m.entries = append(m.entries, TranscriptEntry{
+				ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: text,
+				TurnDuration: turnDur, Timestamp: time.Now(),
+			})
+		}
 		m.invalidateEntryCache()
 	} else if turnDur >= time.Second && len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && m.entries[len(m.entries)-1].TurnDuration == 0 {
 		m.entries[len(m.entries)-1].TurnDuration = turnDur
@@ -375,6 +394,21 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 			Selected:    0,
 		}
 	}
+}
+
+func assistantOutputID(executionID string) string { return "asst-execution-" + executionID }
+
+func (m *tuiModel) assistantEntryIndex(executionID string) int {
+	if executionID == "" {
+		return -1
+	}
+	id := assistantOutputID(executionID)
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].ID == id && m.entries[i].Kind == KindAssistant {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *tuiModel) markRunningSubagentsAndToolsDone() {
@@ -615,11 +649,13 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
 	switch event.Kind {
 	case core.EventTaskStarted:
-		if len(m.queuedTurns) > 0 {
-			execID := event.ExecutionID
-			if execID != "" && m.queuedTurns[0].ExecutionID == execID {
-				m.queuedTurns = m.queuedTurns[1:]
-			}
+		execID := event.ExecutionID
+		if execID == "" {
+			return m, nil
+		}
+		queued := len(m.queuedTurns) > 0 && m.queuedTurns[0].ExecutionID == execID
+		if queued {
+			m.queuedTurns = m.queuedTurns[1:]
 			for i := range m.entries {
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
 					m.entries[i].Kind = KindUser
@@ -628,16 +664,22 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					break
 				}
 			}
-			m.running = true
-			m.runningExecution = execID
-			m.taskStartedAt = time.Now()
-			m.thinking = false
 			m.currentStreamText = ""
 			m.currentReasoningText = ""
-			m.transcriptDirty = true
-			m.updateLayout()
-			return m, waitForTurn(m.runtime, m.sessionID, execID)
 		}
+		if !queued && (!m.running || (m.runningExecution != "" && m.runningExecution != execID)) {
+			return m, nil
+		}
+		if m.runningExecution == execID {
+			return m, m.waitForExecution(execID)
+		}
+		m.running = true
+		m.runningExecution = execID
+		m.taskStartedAt = time.Now()
+		m.thinking = false
+		m.transcriptDirty = true
+		m.updateLayout()
+		return m, m.waitForExecution(execID)
 
 	case core.EventModelStream:
 		if event.Stream == nil {
@@ -664,7 +706,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.streamFirstTokenTime = time.Now()
 				m.streamGenerationTokens = 0
 			}
-			m.streamLastTokenTime = time.Now()
 			m.thinking = true
 			m.currentReasoningText += event.Stream.Delta
 			if event.Stream.Delta != "" {
@@ -685,7 +726,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.streamFirstTokenTime = time.Now()
 				m.streamGenerationTokens = 0
 			}
-			m.streamLastTokenTime = time.Now()
 			if event.Stream.Delta != "" {
 				m.thinking = false
 				m.currentStreamText += event.Stream.Delta
@@ -707,7 +747,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 
 	case core.EventToolStarted:
 		m.streamFirstTokenTime = time.Time{}
-		m.streamLastTokenTime = time.Time{}
 		m.streamGenerationTokens = 0
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
@@ -892,16 +931,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 		}
 
-	case core.EventModelRetry:
-		if m.running {
-			attempt := 1
-			if event.ModelFailure != nil && event.ModelFailure.Attempts > 0 {
-				attempt = event.ModelFailure.Attempts
-			}
-			m.statusMessage = fmt.Sprintf("Retrying model (attempt %d)...", attempt)
-			m.transcriptDirty = true
-		}
-
 	case core.EventUserQuestionRequired, core.EventUserInteractionRequired:
 		m.thinking = false
 		m.running = false
@@ -988,43 +1017,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.updateLayout()
 
 	case core.EventTaskFinished:
-		if m.runningExecution != "" && event.ExecutionID != "" && event.ExecutionID != m.runningExecution {
-			return m, nil
-		}
-		m.thinking = false
-		m.finalizeTurnOutput("", nil, event.ExecutionID)
-		m.running = false
-		if event.Status == core.TaskPaused {
-			if m.pausedCheckpoint == nil {
-				toolCount := 0
-				lastTool := ""
-				for i := len(m.entries) - 1; i >= 0; i-- {
-					if m.entries[i].Kind == KindUser {
-						break
-					}
-					if m.entries[i].Kind == KindTool {
-						toolCount++
-						if lastTool == "" {
-							lastTool = m.entries[i].ToolName
-						}
-					}
-				}
-				m.pausedCheckpoint = &PausedCheckpoint{
-					ExecutionID:  event.ExecutionID,
-					PausedAt:     time.Now(),
-					ToolCount:    toolCount,
-					LastToolName: lastTool,
-					Reason:       "Task paused",
-				}
-			}
-			m.checkPendingState(context.Background())
-		} else {
-			m.pausedCheckpoint = nil
-			m.activeRecovery = nil
-			m.activeToolRecovery = nil
-		}
-		m.transcriptDirty = true
-		m.updateLayout()
+		m.finishTurnEvent(event)
+		return m, m.waitForExecution(event.ExecutionID)
 
 	case core.EventTaskDiscarded:
 		m.thinking = false

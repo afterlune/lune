@@ -61,8 +61,8 @@ type tuiModel struct {
 	scrolledUp             bool
 	runningExecution       string
 	runtimeCancel          context.CancelFunc
-	statusMessage          string
-	streamActive           bool
+	awaitingTurns          map[string]struct{}
+	terminalEvents         map[string]core.Event
 	currentStreamText      string
 	currentReasoningText   string
 	reasoningStartTime     time.Time
@@ -91,10 +91,8 @@ type tuiModel struct {
 	reasoningEffort string
 
 	// Streaming and generation diagnostics
-	turnStreamTokens       int64
 	turnStreamStartTime    time.Time
 	streamFirstTokenTime   time.Time
-	streamLastTokenTime    time.Time
 	streamGenerationTokens int64
 	lastTokensPerSec       float64
 
@@ -150,87 +148,136 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SoftWrap = true
 
-	currentModel := ""
 	workspace := ""
 	permMode := core.PermissionWorkspace
+	currentModel := ""
 	if client != nil {
 		workspace = client.Workspace()
 		permMode = client.PermissionMode()
 		currentModel = client.ModelForSession(context.Background(), sessionID)
 	}
-
-	var entries []TranscriptEntry
-	title := ""
-	var totalIn, totalOut, cached, reasoning, lastIn, ctxWin int64
-	var effort, modelProfile string
+	m := &tuiModel{
+		client: client, runtime: runtime, workspace: workspace, sessionID: sessionID,
+		currentModel: currentModel, currentModelProfile: currentModel,
+		permissionMode: permMode, savedMode: permMode,
+		composer: comp, viewport: vp, entries: []TranscriptEntry{},
+		fileScanner: NewWorkspaceFileScanner(workspace), reasoningLiveCollapsed: true,
+		transcriptDirty: true, output: os.Stdout,
+		awaitingTurns: map[string]struct{}{}, terminalEvents: map[string]core.Event{},
+	}
 	if client != nil && sessionID != "" {
 		if saved, err := client.GetSession(context.Background(), sessionID); err == nil {
-			title = saved.Title
-			totalIn = saved.SessionUsage.Input
-			totalOut = saved.SessionUsage.Output
-			cached = saved.SessionUsage.Cached
-			reasoning = saved.SessionUsage.Reasoning
-			effort = saved.Settings.ReasoningEffort
-			modelProfile = saved.Settings.ModelProfile
-			entries = transcriptFromHistory(saved.History)
-			if len(saved.UsageRequests) > 0 {
-				lastReq := saved.UsageRequests[len(saved.UsageRequests)-1]
-				lastIn = lastReq.Usage.InputTokens
-				if lastReq.ContextWindow > 0 {
-					ctxWin = lastReq.ContextWindow
-				}
-			}
+			m.loadSessionSnapshot(saved)
 		}
 	}
-	if entries == nil {
-		entries = []TranscriptEntry{}
-	}
-	if strings.TrimSpace(title) == "" {
-		title = deriveSessionTitleFromEntries(entries)
-	}
-	if strings.TrimSpace(modelProfile) == "" {
-		modelProfile = currentModel
-	}
-
-	var historyPrompts []string
-	for _, entry := range entries {
-		if entry.Kind == KindUser && entry.Text != "" {
-			historyPrompts = append(historyPrompts, entry.Text)
-		}
-	}
-
-	m := &tuiModel{
-		client:                 client,
-		runtime:                runtime,
-		workspace:              workspace,
-		sessionID:              sessionID,
-		sessionTitle:           title,
-		currentModel:           currentModel,
-		currentModelProfile:    modelProfile,
-		reasoningEffort:        effort,
-		permissionMode:         permMode,
-		savedMode:              permMode,
-		totalInputTokens:       totalIn,
-		totalOutputTokens:      totalOut,
-		cachedTokens:           cached,
-		reasoningTokens:        reasoning,
-		contextWindow:          ctxWin,
-		lastInputTokens:        lastIn,
-		seededSessionUsage:     totalIn > 0 || totalOut > 0 || cached > 0 || reasoning > 0,
-		composer:               comp,
-		viewport:               vp,
-		entries:                entries,
-		promptHistory:          historyPrompts,
-		historyIndex:           len(historyPrompts),
-		fileScanner:            NewWorkspaceFileScanner(workspace),
-		reasoningLiveCollapsed: true,
-		transcriptDirty:        true,
-		output:                 os.Stdout,
-	}
-
 	m.applyThemeStyles()
-	m.checkPendingState(context.Background())
+	if runtime != nil {
+		m.restoreRuntimeState(context.Background())
+		m.checkPendingState(context.Background())
+	}
 	return m
+}
+
+// loadSessionSnapshot restores the session-owned transcript, prompt history, and usage state.
+func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
+	m.sessionTitle = saved.Title
+	if strings.TrimSpace(m.sessionTitle) == "" {
+		m.sessionTitle = deriveSessionTitleFromEntries(transcriptFromHistory(saved.History))
+	}
+	m.currentModelProfile = saved.Settings.ModelProfile
+	if strings.TrimSpace(m.currentModelProfile) == "" {
+		m.currentModelProfile = m.currentModel
+	}
+	m.reasoningEffort = saved.Settings.ReasoningEffort
+	m.totalInputTokens = saved.SessionUsage.Input
+	m.totalOutputTokens = saved.SessionUsage.Output
+	m.cachedTokens = saved.SessionUsage.Cached
+	m.reasoningTokens = saved.SessionUsage.Reasoning
+	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
+	m.lastInputTokens = 0
+	m.contextWindow = 0
+	if len(saved.UsageRequests) > 0 {
+		last := saved.UsageRequests[len(saved.UsageRequests)-1]
+		m.lastInputTokens = last.Usage.InputTokens
+		m.contextWindow = last.ContextWindow
+	}
+	m.entries = transcriptFromHistory(saved.History)
+	if m.entries == nil {
+		m.entries = []TranscriptEntry{}
+	}
+	m.promptHistory = nil
+	for _, entry := range m.entries {
+		if entry.Kind == KindUser && entry.Text != "" {
+			m.promptHistory = append(m.promptHistory, entry.Text)
+		}
+	}
+	m.historyIndex = len(m.promptHistory)
+	m.historyDraft = ""
+	m.estimatedInputTokens = 0
+	m.invalidateEntryCache()
+	m.refreshViewportContent()
+}
+
+// resetSessionState clears data that belongs to the previous session before a new snapshot is applied.
+func (m *tuiModel) resetSessionState() {
+	m.sessionTitle = ""
+	m.currentModel = ""
+	m.currentModelProfile = ""
+	m.totalInputTokens = 0
+	m.totalOutputTokens = 0
+	m.cachedTokens = 0
+	m.reasoningTokens = 0
+	m.contextWindow = 0
+	m.lastInputTokens = 0
+	m.estimatedInputTokens = 0
+	m.seededSessionUsage = false
+	m.reasoningEffort = ""
+	m.running = false
+	m.runningExecution = ""
+	m.taskStartedAt = time.Time{}
+	m.queuedTurns = nil
+	m.entries = []TranscriptEntry{}
+	m.promptHistory = nil
+	m.historyIndex = 0
+	m.historyDraft = ""
+	m.activeQuestion = nil
+	m.activeApproval = nil
+	m.activePlanReview = nil
+	m.effortPicker = nil
+	m.activeRecovery = nil
+	m.activeToolRecovery = nil
+	m.pausedCheckpoint = nil
+	m.currentStreamText = ""
+	m.currentReasoningText = ""
+	m.reasoningStartTime = time.Time{}
+	m.thinking = false
+	m.streamFirstTokenTime = time.Time{}
+	m.turnStreamStartTime = time.Time{}
+	m.streamGenerationTokens = 0
+	m.lastTokensPerSec = 0
+	m.scrolledUp = false
+	m.autocompleteOpen = false
+	m.shortcutsOpen = false
+	m.sessionsModalOpen = false
+	m.sessionsConfirmDelete = false
+	m.sessionsDeletingID = ""
+	m.toolPagerOpen = false
+	m.diffModalOpen = false
+	m.awaitingTurns = map[string]struct{}{}
+	m.terminalEvents = map[string]core.Event{}
+	m.invalidateEntryCache()
+}
+
+// restoreRuntimeState restores the current execution state for the bound session.
+func (m *tuiModel) restoreRuntimeState(ctx context.Context) {
+	if m.runtime == nil {
+		return
+	}
+	state, err := m.runtime.State(ctx)
+	if err != nil {
+		return
+	}
+	m.restoreRuntimeSnapshot(state)
 }
 
 // currentReasoningEffort returns the configured reasoning effort for the current session.
@@ -785,11 +832,31 @@ func (m *tuiModel) View() tea.View {
 	return view
 }
 
-// bindSessionRuntime switches the active runtime and session context cleanly.
+// bindSessionRuntime loads a complete replacement snapshot before switching session state.
 func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
+	if m.client == nil {
+		return fmt.Errorf("core client is unavailable")
+	}
+	rt, err := m.client.OpenSessionRuntime(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	saved, err := m.client.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	state, err := rt.State(ctx)
+	if err != nil {
+		return err
+	}
+	pending, err := rt.PendingRequests(ctx)
+	if err != nil {
+		return err
+	}
+
 	if m.runtimeCancel != nil {
 		m.runtimeCancel()
 		m.runtimeCancel = nil
@@ -797,59 +864,30 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	if m.runtime != nil {
 		m.runtime.SetUserInteractionAvailable(false)
 	}
-	rt, err := m.client.OpenSessionRuntime(ctx, sessionID)
-	if err != nil {
-		return err
-	}
+	m.resetSessionState()
 	m.runtime = rt
 	m.sessionID = sessionID
-	m.queuedTurns = nil
-	if m.client != nil {
-		m.currentModel = m.client.ModelForSession(ctx, sessionID)
-		if saved, err := m.client.GetSession(ctx, sessionID); err == nil {
-			m.sessionTitle = saved.Title
-			m.totalInputTokens = saved.SessionUsage.Input
-			m.totalOutputTokens = saved.SessionUsage.Output
-			m.cachedTokens = saved.SessionUsage.Cached
-			m.reasoningTokens = saved.SessionUsage.Reasoning
-			m.currentModelProfile = saved.Settings.ModelProfile
-			m.reasoningEffort = saved.Settings.ReasoningEffort
-			if strings.TrimSpace(m.currentModelProfile) == "" {
-				m.currentModelProfile = m.currentModel
-			}
-			m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
-			m.entries = transcriptFromHistory(saved.History)
-			if m.entries == nil {
-				m.entries = []TranscriptEntry{}
-			}
-			if strings.TrimSpace(m.sessionTitle) == "" {
-				m.sessionTitle = deriveSessionTitleFromEntries(m.entries)
-			}
-			m.promptHistory = nil
-			for _, entry := range m.entries {
-				if entry.Kind == KindUser && entry.Text != "" {
-					m.promptHistory = append(m.promptHistory, entry.Text)
-				}
-			}
-			m.historyIndex = len(m.promptHistory)
-			m.historyDraft = ""
-			m.invalidateEntryCache()
-			m.refreshViewportContent()
-		}
-	}
+	m.currentModel = m.client.ModelForSession(ctx, sessionID)
+	m.loadSessionSnapshot(saved)
+	m.restoreRuntimeSnapshot(state)
+	m.applyPendingRequests(pending)
 	rt.SetUserInteractionAvailable(true)
-	m.checkPendingState(ctx)
-	if state, err := rt.State(ctx); err == nil && state.Task.Status == core.TaskPaused {
-		m.pausedCheckpoint = &PausedCheckpoint{
-			ExecutionID: state.Task.ExecutionID,
-			PausedAt:    time.Now(),
-			Reason:      "Paused in session",
-		}
-	} else {
-		m.pausedCheckpoint = nil
-	}
 	m.syncTerminalTitle()
+	m.updateLayout()
 	return nil
+}
+
+func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
+	m.runningExecution = ""
+	switch state.Task.Status {
+	case core.TaskRunning, core.TaskQueued:
+		m.running = true
+		m.runningExecution = state.Task.ExecutionID
+		m.taskStartedAt = time.Now()
+	case core.TaskPaused:
+		m.runningExecution = state.Task.ExecutionID
+		m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: state.Task.ExecutionID}
+	}
 }
 
 // hasPausedTask reports whether the current session has an interrupted checkpoint or pending recovery.
@@ -866,6 +904,10 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	m.applyPendingRequests(reqs)
+}
+
+func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 	var foundQuestion *core.UserQuestionRequest
 	var foundApproval *core.ApprovalRequest
 	var foundRecovery *core.PendingModelRecovery

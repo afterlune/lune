@@ -18,7 +18,6 @@ const (
 	KindPlan             EntryKind = "plan"
 	KindSystem           EntryKind = "system"
 	KindQueued           EntryKind = "queued"
-	KindDiff             EntryKind = "diff"
 	KindReasoning        EntryKind = "reasoning"
 	KindSubagent         EntryKind = "subagent"
 )
@@ -34,17 +33,15 @@ type entryLineRange struct {
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.
 type QueuedItem struct {
 	ExecutionID string
-	QueueID     string
-	Text        string
-	CreatedAt   time.Time
 }
 
 // TranscriptEntry represents a single visual block in the conversation transcript.
 type TranscriptEntry struct {
-	ID        string
-	Kind      EntryKind
-	Text      string
-	Timestamp time.Time
+	ID          string
+	ExecutionID string
+	Kind        EntryKind
+	Text        string
+	Timestamp   time.Time
 
 	// Round grouping & turn duration fields
 	RoundExpanded bool
@@ -78,8 +75,6 @@ type TranscriptEntry struct {
 	// Question answered specific fields
 	QuestionBatchID   string
 	QuestionsTotal    int
-	QuestionText      string
-	AnswerText        string
 	AnsweredQuestions []AnsweredQuestionItem
 
 	// Reasoning specific fields
@@ -103,13 +98,6 @@ type AutocompleteItem struct {
 	Description string
 }
 
-// QuestionOption represents a suggested option in an interactive clarification question.
-type QuestionOption struct {
-	Key         string
-	Label       string
-	Description string
-}
-
 // ActiveQuestion holds the state of a pending clarification question.
 type ActiveQuestion struct {
 	Request      core.UserQuestionRequest
@@ -118,7 +106,6 @@ type ActiveQuestion struct {
 	Custom       string
 	NotesOpen    bool
 	NoteText     string
-	Answered     bool
 	Answers      []core.UserQuestionResponse
 	Error        string
 }
@@ -162,11 +149,8 @@ type ActiveRecovery struct {
 // PausedCheckpoint holds execution metadata for an interrupted or paused task.
 type PausedCheckpoint struct {
 	ExecutionID  string
-	PausedAt     time.Time
 	ToolCount    int
 	LastToolName string
-	Interrupted  bool
-	Reason       string
 }
 
 // ActiveToolRecovery holds the state of a pending tool recovery decision.
@@ -178,13 +162,4 @@ type ActiveToolRecovery struct {
 	Arguments    string
 	ErrorOutput  string
 	Selected     int // 0: retry, 1: skip
-}
-
-// ImageAttachment represents a pasted clipboard image.
-type ImageAttachment struct {
-	ID        int
-	Name      string
-	MediaType string
-	Data      []byte
-	Size      int64
 }

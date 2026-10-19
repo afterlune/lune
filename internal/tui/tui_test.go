@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
 	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
@@ -778,7 +779,7 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	m = mod.(*tuiModel)
 
 	// Question 1 should be recorded in transcript entries
-	if len(m.entries) != 1 || m.entries[0].Kind != KindQuestionAnswered || m.entries[0].AnswerText != "Choice 1B" {
+	if len(m.entries) != 1 || m.entries[0].Kind != KindQuestionAnswered || len(m.entries[0].AnsweredQuestions) != 1 || m.entries[0].AnsweredQuestions[0].Answer != "Choice 1B" {
 		t.Fatalf("expected Question 1 answered with Choice 1B, got %+v", m.entries)
 	}
 
@@ -797,7 +798,7 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	// Press Enter to submit choice 2A for question 2
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if len(m.entries) != 1 || m.entries[0].AnswerText != "Choice 2A" || len(m.entries[0].AnsweredQuestions) != 2 {
+	if len(m.entries) != 1 || len(m.entries[0].AnsweredQuestions) != 2 || m.entries[0].AnsweredQuestions[1].Answer != "Choice 2A" {
 		t.Fatalf("expected Question 2 merged into batch entry with Choice 2A, got %+v", m.entries)
 	}
 
@@ -833,12 +834,14 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 func TestTurnFinishedPausedClearsRunningState(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.running = true
+	m.runningExecution = "exec-paused"
 	m.thinking = true
 
 	mod, _ := m.Update(turnFinishedMsg{
 		sessionID: "test-sess",
 		result: core.TurnResult{
-			Status: core.TaskPaused,
+			ExecutionID: "exec-paused",
+			Status:      core.TaskPaused,
 		},
 	})
 	m = mod.(*tuiModel)
@@ -848,6 +851,86 @@ func TestTurnFinishedPausedClearsRunningState(t *testing.T) {
 	}
 	if m.thinking {
 		t.Errorf("expected m.thinking to be false when turn is paused")
+	}
+	if m.runningExecution != "exec-paused" {
+		t.Errorf("expected paused execution id to remain available for resolution, got %q", m.runningExecution)
+	}
+}
+
+func TestRestoreRuntimeSnapshotIgnoresFinishedExecution(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{
+		ExecutionID: "finished-exec",
+		Status:      core.TaskCompleted,
+	}})
+	if m.running || m.runningExecution != "" {
+		t.Fatalf("finished execution must not be treated as active: running=%v execution=%q", m.running, m.runningExecution)
+	}
+}
+
+func TestTaskStartedEventDoesNotReviveHistory(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	_, cmd := m.processRuntimeEventNoRefresh(core.Event{
+		Kind:        core.EventTaskStarted,
+		ExecutionID: "old-exec",
+	})
+	if m.running || m.runningExecution != "" || cmd != nil {
+		t.Fatalf("historical task start must not revive an idle session: running=%v execution=%q cmd=%v", m.running, m.runningExecution, cmd != nil)
+	}
+}
+
+func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
+	response := json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Canonical response"}]}]}`)
+	completion := core.Event{Kind: core.EventTaskFinished, ExecutionID: "exec-complete", Status: core.TaskCompleted}
+	result := turnFinishedMsg{
+		sessionID:   "test-sess",
+		executionID: "exec-complete",
+		result: core.TurnResult{
+			ExecutionID: "exec-complete",
+			Status:      core.TaskCompleted,
+			Response:    response,
+		},
+	}
+
+	for _, eventFirst := range []bool{true, false} {
+		name := "waiter first"
+		if eventFirst {
+			name = "event first"
+		}
+		t.Run(name, func(t *testing.T) {
+			m := newTUIModel(nil, nil, "test-sess")
+			m.running = true
+			m.runningExecution = "exec-complete"
+			m.taskStartedAt = time.Now().Add(-time.Second)
+			m.entries = append(m.entries,
+				TranscriptEntry{ID: "user-current", Kind: KindUser, Text: "answer"},
+				TranscriptEntry{ID: "assistant-partial", ExecutionID: "exec-complete", Kind: KindAssistant, Text: "Old partial"},
+			)
+			m.currentStreamText = "Latest draft"
+
+			if eventFirst {
+				m.finishTurnEvent(completion)
+				m.finishTurn(result)
+			} else {
+				m.finishTurn(result)
+				m.finishTurnEvent(completion)
+			}
+			m.finishTurnEvent(completion)
+			m.finishTurn(result)
+
+			var assistant []TranscriptEntry
+			for _, entry := range m.entries {
+				if entry.Kind == KindAssistant && entry.ExecutionID == "exec-complete" {
+					assistant = append(assistant, entry)
+				}
+			}
+			if len(assistant) != 1 || assistant[0].Text != "Canonical response" {
+				t.Fatalf("expected one canonical assistant response, got %+v", assistant)
+			}
+			if m.running || m.currentStreamText != "" {
+				t.Fatalf("expected completion to clear live turn state, running=%v stream=%q", m.running, m.currentStreamText)
+			}
+		})
 	}
 }
 
@@ -1101,7 +1184,7 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	}
 
 	// 4. Test cancel queued turn
-	m.queuedTurns = append(m.queuedTurns, QueuedItem{ExecutionID: "exec-q2", Text: "Cancel me"})
+	m.queuedTurns = append(m.queuedTurns, QueuedItem{ExecutionID: "exec-q2"})
 	m.entries = append(m.entries, TranscriptEntry{Kind: KindQueued, ToolCallID: "exec-q2", Text: "Cancel me"})
 	m.cancelQueuedTurn()
 	if len(m.queuedTurns) != 0 {
@@ -1116,35 +1199,6 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	}
 	if !cancelledFound {
 		t.Errorf("expected entry to be marked as cancelled")
-	}
-}
-
-func TestDiffRendering(t *testing.T) {
-	diffContent := `diff --git a/main.go b/main.go
-index 1234567..89abcdef 100644
---- a/main.go
-+++ b/main.go
-@@ -10,3 +10,4 @@ func main() {
--	fmt.Println("old")
-+	fmt.Println("new line")
-+	fmt.Println("added line")
- }`
-	entry := TranscriptEntry{
-		Kind: KindDiff,
-		Text: diffContent,
-	}
-	rendered := renderEntry(entry, 80)
-	if !strings.Contains(rendered, "Workspace Diff") {
-		t.Errorf("expected 'Workspace Diff' title, got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "diff --git a/main.go b/main.go") {
-		t.Errorf("expected file header in rendered diff, got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "+") || !strings.Contains(rendered, "added line") {
-		t.Errorf("expected addition line in rendered diff, got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "-") || !strings.Contains(rendered, "old") {
-		t.Errorf("expected deletion line in rendered diff, got: %s", rendered)
 	}
 }
 
@@ -1665,6 +1719,70 @@ func TestProcessCommands(t *testing.T) {
 	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
 	if !strings.Contains(lastSys, "Process \"non-existent\" not found.") {
 		t.Errorf("expected not found message, got: %s", lastSys)
+	}
+}
+
+func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+
+	first, err := client.CreateSession(ctx, json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"First session prompt"}]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetSessionTitle(ctx, first.ID, "First session"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.CreateSession(ctx, json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"Second session prompt"}]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetSessionTitle(ctx, second.ID, "Second session"); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUIModel(client, runtime, first.ID)
+	var terminalOutput strings.Builder
+	m.output = &terminalOutput
+	m.activeQuestion = &ActiveQuestion{}
+	m.activeApproval = &ActiveApproval{}
+	m.activePlanReview = &ActivePlanReview{}
+
+	if err := m.bindSessionRuntime(ctx, second.ID); err != nil {
+		t.Fatalf("failed to switch session: %v", err)
+	}
+	if m.sessionID != second.ID || m.sessionTitle != "Second session" {
+		t.Fatalf("session metadata was not restored: id=%q title=%q", m.sessionID, m.sessionTitle)
+	}
+	if len(m.promptHistory) != 1 || m.promptHistory[0] != "Second session prompt" {
+		t.Fatalf("session prompt history was not restored: %+v", m.promptHistory)
+	}
+	if len(m.entries) != 1 || m.entries[0].Text != "Second session prompt" {
+		t.Fatalf("session transcript was not replaced from snapshot: %+v", m.entries)
+	}
+	if m.activeQuestion != nil || m.activeApproval != nil || m.activePlanReview != nil {
+		t.Fatal("pending UI state from the previous session must not leak into the new session")
+	}
+
+	previousRuntime := m.runtime
+	previousEntries := append([]TranscriptEntry(nil), m.entries...)
+	if err := m.bindSessionRuntime(ctx, "missing-session"); err == nil {
+		t.Fatal("expected binding a missing session to fail")
+	}
+	if m.sessionID != second.ID || m.runtime != previousRuntime || len(m.entries) != len(previousEntries) || m.entries[0].Text != previousEntries[0].Text {
+		t.Fatal("failed session preflight must leave the active session intact")
 	}
 }
 
@@ -3098,7 +3216,8 @@ func TestMultiAgentStreamIsolation(t *testing.T) {
 
 func TestRenderCardSurfacePreservesBackground(t *testing.T) {
 	inner := "Before " + styleTextMuted().Render("code.go") + " After"
-	rendered := renderCardSurface(styleCard().Width(50), inner)
+	card := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg)).Foreground(lipgloss.Color(activeTheme().TextPrimary)).Width(50)
+	rendered := renderCardSurface(card, inner)
 	if strings.Contains(rendered, "\x1b[0m After") || strings.Contains(rendered, "\x1b[m After") {
 		t.Errorf("expected card background SGR to be re-asserted after inner reset, got %q", rendered)
 	}
@@ -3251,9 +3370,9 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 			ToolOutput:  "cmd/\ninternal/\ngo.mod",
 		},
 		{
-			Kind:         KindQuestionAnswered,
-			QuestionText: "这次分析希望回答什么问题？",
-			AnswerText:   "整体代码审查 (推荐)",
+			Kind:              KindQuestionAnswered,
+			QuestionsTotal:    1,
+			AnsweredQuestions: []AnsweredQuestionItem{{Question: "这次分析希望回答什么问题？", Answer: "整体代码审查 (推荐)"}},
 		},
 		{
 			Kind:        KindTool,

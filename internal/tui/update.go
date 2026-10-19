@@ -121,8 +121,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.submission.Status == core.SubmissionQueued {
 			m.queuedTurns = append(m.queuedTurns, QueuedItem{
 				ExecutionID: msg.submission.ExecutionID,
-				QueueID:     msg.submission.QueueID,
-				CreatedAt:   time.Now(),
 			})
 			for i := len(m.entries) - 1; i >= 0; i-- {
 				if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == "" {
@@ -136,61 +134,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = true
 		m.runningExecution = msg.submission.ExecutionID
 		m.refreshViewportContent()
-		cmds = append(cmds, tickClock(), waitForTurn(m.runtime, m.sessionID, msg.submission.ExecutionID))
+		cmds = append(cmds, tickClock(), m.waitForExecution(msg.submission.ExecutionID))
 		return m, tea.Batch(cmds...)
 
 	case turnFinishedMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		if m.runningExecution != "" && msg.result.ExecutionID != "" && msg.result.ExecutionID != m.runningExecution {
-			return m, nil
-		}
-		m.running = false
-		m.thinking = false
-		m.streamActive = false
-		m.statusMessage = ""
-
-		var planText string
-		if msg.result.ProposedPlan != nil {
-			planText = msg.result.ProposedPlan.Text
-		}
-		m.finalizeTurnOutput(planText, msg.result.Response, msg.result.ExecutionID)
-
-		if msg.err != nil {
-			m.addSystemEntry("Task failed: " + msg.err.Error())
-		} else {
-			if msg.result.Status == core.TaskPaused {
-				if m.pausedCheckpoint == nil {
-					m.pausedCheckpoint = &PausedCheckpoint{
-						ExecutionID: msg.result.ExecutionID,
-						PausedAt:    time.Now(),
-						Reason:      "Task paused",
-					}
-				}
-				m.checkPendingState(context.Background())
-			} else {
-				m.pausedCheckpoint = nil
-			}
-			if msg.result.Status == core.TaskFailed {
-				if msg.result.ModelFailure != nil {
-					reason := string(msg.result.ModelFailure.Category)
-					if msg.result.ModelFailure.Code != "" {
-						reason += " (" + msg.result.ModelFailure.Code + ")"
-					} else if msg.result.ModelFailure.StatusCode > 0 {
-						reason += fmt.Sprintf(" (HTTP %d)", msg.result.ModelFailure.StatusCode)
-					}
-					if reason == "" {
-						reason = "model request failed"
-					}
-					m.addSystemEntry("Task failed: " + reason)
-				} else if msg.result.BudgetReason != "" {
-					m.addSystemEntry(fmt.Sprintf("Task stopped: execution budget limit reached (`%s`).", msg.result.BudgetReason))
-				}
-			}
-		}
-		m.refreshViewportContent()
-		m.updateLayout()
+		m.finishTurn(msg)
 		return m, nil
 
 	case compactDoneMsg:
@@ -210,18 +161,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Failed to bind forked session runtime: " + err.Error())
 			return m, nil
 		}
-		m.sessionTitle = msg.session.Title
-		m.syncTerminalTitle()
-		m.entries = nil
-		m.invalidateEntryCache()
-		m.activeQuestion = nil
-		m.activeApproval = nil
-		m.activePlanReview = nil
-		m.effortPicker = nil
-		m.running = false
-		m.currentStreamText = ""
-		m.refreshViewportContent()
-		m.updateLayout()
 		m.addSystemEntry("Forked into new session: " + msg.session.ID)
 		return m, m.subscribeRuntimeEvents()
 
@@ -234,18 +173,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Failed to bind new session runtime: " + err.Error())
 			return m, nil
 		}
-		m.sessionTitle = msg.session.Title
-		m.syncTerminalTitle()
-		m.entries = nil
-		m.invalidateEntryCache()
-		m.activeQuestion = nil
-		m.activeApproval = nil
-		m.activePlanReview = nil
-		m.effortPicker = nil
-		m.running = false
-		m.currentStreamText = ""
-		m.refreshViewportContent()
-		m.updateLayout()
 		m.addSystemEntry("Started fresh session.")
 		return m, m.subscribeRuntimeEvents()
 
@@ -262,10 +189,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addSystemEntry("Failed to bind new plan session: " + err.Error())
 				return m, nil
 			}
-			m.entries = nil
-			m.invalidateEntryCache()
-			m.refreshViewportContent()
-			m.updateLayout()
 			planCmds = append(planCmds, m.subscribeRuntimeEvents())
 		}
 		message := "Starting plan implementation."
@@ -276,7 +199,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.running = true
 		m.taskStartedAt = time.Now()
 		m.runningExecution = msg.impl.Submission.ExecutionID
-		planCmds = append(planCmds, tickClock(), waitForTurn(m.runtime, m.sessionID, msg.impl.Submission.ExecutionID))
+		planCmds = append(planCmds, tickClock(), m.waitForExecution(msg.impl.Submission.ExecutionID))
 		return m, tea.Batch(planCmds...)
 
 	case taskDiscardedMsg:
@@ -435,6 +358,120 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *tuiModel) finishTurn(msg turnFinishedMsg) {
+	executionID := msg.executionID
+	if executionID == "" {
+		executionID = msg.result.ExecutionID
+	}
+	if executionID == "" {
+		executionID = m.runningExecution
+	}
+	if executionID == "" {
+		return
+	}
+	event, eventFinalized := m.terminalEvents[executionID]
+	if m.runningExecution != executionID && !eventFinalized {
+		return
+	}
+	if msg.err != nil && eventFinalized {
+		msg.result = core.TurnResult{ExecutionID: executionID, Status: event.Status, BudgetReason: event.BudgetReason}
+		if event.Err == "" {
+			msg.err = nil
+		} else {
+			msg.err = fmt.Errorf("%s", event.Err)
+		}
+	}
+	delete(m.awaitingTurns, executionID)
+	delete(m.terminalEvents, executionID)
+
+	var planText string
+	if msg.result.ProposedPlan != nil {
+		planText = msg.result.ProposedPlan.Text
+	}
+	m.finalizeTurnOutput(planText, msg.result.Response, executionID)
+	if msg.err != nil {
+		m.addSystemEntry("Task failed: " + msg.err.Error())
+	} else if msg.result.Status == core.TaskFailed {
+		if msg.result.ModelFailure != nil {
+			reason := string(msg.result.ModelFailure.Category)
+			if msg.result.ModelFailure.Code != "" {
+				reason += " (" + msg.result.ModelFailure.Code + ")"
+			} else if msg.result.ModelFailure.StatusCode > 0 {
+				reason += fmt.Sprintf(" (HTTP %d)", msg.result.ModelFailure.StatusCode)
+			}
+			if reason == "" {
+				reason = "model request failed"
+			}
+			m.addSystemEntry("Task failed: " + reason)
+		} else if msg.result.BudgetReason != "" {
+			m.addSystemEntry(fmt.Sprintf("Task stopped: execution budget limit reached (`%s`).", msg.result.BudgetReason))
+		}
+	}
+	if m.runningExecution == executionID {
+		m.running = false
+		m.thinking = false
+		if msg.result.Status == core.TaskPaused {
+			if m.pausedCheckpoint == nil {
+				m.pausedCheckpoint = m.pausedCheckpointFor(executionID)
+			}
+			m.checkPendingState(context.Background())
+		} else {
+			m.runningExecution = ""
+			m.pausedCheckpoint = nil
+			m.activeRecovery = nil
+			m.activeToolRecovery = nil
+		}
+	}
+	m.refreshViewportContent()
+	m.updateLayout()
+}
+
+func (m *tuiModel) finishTurnEvent(event core.Event) {
+	executionID := event.ExecutionID
+	if executionID == "" || executionID != m.runningExecution {
+		return
+	}
+	if event.Status == core.TaskPaused && !m.running {
+		if _, awaiting := m.awaitingTurns[executionID]; !awaiting {
+			return
+		}
+	}
+	if _, finalized := m.terminalEvents[executionID]; finalized {
+		return
+	}
+	m.terminalEvents[executionID] = event
+	m.thinking = false
+	m.finalizeTurnOutput("", nil, executionID)
+	if event.Status == core.TaskPaused {
+		if m.pausedCheckpoint == nil {
+			m.pausedCheckpoint = m.pausedCheckpointFor(executionID)
+		}
+		m.checkPendingState(context.Background())
+	} else {
+		m.pausedCheckpoint = nil
+		m.activeRecovery = nil
+		m.activeToolRecovery = nil
+	}
+	m.transcriptDirty = true
+	m.updateLayout()
+}
+
+func (m *tuiModel) pausedCheckpointFor(executionID string) *PausedCheckpoint {
+	checkpoint := &PausedCheckpoint{ExecutionID: executionID}
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindUser {
+			break
+		}
+		if m.entries[i].Kind == KindTool {
+			checkpoint.ToolCount++
+			if checkpoint.LastToolName == "" {
+				checkpoint.LastToolName = m.entries[i].ToolName
+			}
+		}
+	}
+	return checkpoint
 }
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1533,8 +1570,6 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		m.entries[len(m.entries)-1].QuestionBatchID == batchID &&
 		len(m.entries[len(m.entries)-1].AnsweredQuestions) < totalQuestions {
 		last := &m.entries[len(m.entries)-1]
-		last.QuestionText = qItem.Question
-		last.AnswerText = answerText
 		last.QuestionsTotal = totalQuestions
 		last.AnsweredQuestions = append(last.AnsweredQuestions, qaItem)
 	} else {
@@ -1542,8 +1577,6 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 			Kind:              KindQuestionAnswered,
 			QuestionBatchID:   batchID,
 			QuestionsTotal:    totalQuestions,
-			QuestionText:      qItem.Question,
-			AnswerText:        answerText,
 			AnsweredQuestions: []AnsweredQuestionItem{qaItem},
 		})
 	}
@@ -1585,14 +1618,13 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 	m.updateLayout()
 
 	runtime := m.runtime
-	sessionID := m.sessionID
 	executionID := q.Request.ExecutionID
 	if executionID != "" {
 		m.runningExecution = executionID
 	}
 	return m, tea.Batch(
 		tickClock(),
-		waitForTurn(runtime, sessionID, executionID),
+		m.waitForExecution(executionID),
 		func() tea.Msg {
 			_ = runtime.ResolveUserQuestion(context.Background(), qAnswer)
 			return nil
@@ -1655,11 +1687,10 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decision, toolName))
 
 	runtime := m.runtime
-	sessionID := m.sessionID
 	executionID := m.runningExecution
 	return m, tea.Batch(
 		tickClock(),
-		waitForTurn(runtime, sessionID, executionID),
+		m.waitForExecution(executionID),
 		func() tea.Msg {
 			_ = runtime.ResolveApproval(apprID, allowed)
 			return nil
@@ -1754,17 +1785,13 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 
 	m.pausedCheckpoint = &PausedCheckpoint{
 		ExecutionID:  execID,
-		PausedAt:     time.Now(),
 		ToolCount:    toolCount,
 		LastToolName: lastToolName,
-		Interrupted:  true,
-		Reason:       "Interrupted by user",
 	}
 
 	m.runtime.Interrupt(execID)
 	m.running = false
 	m.thinking = false
-	m.streamActive = false
 
 	card := m.formatCheckpointCard(m.pausedCheckpoint, lastToolCmd)
 	m.addSystemEntry(card)

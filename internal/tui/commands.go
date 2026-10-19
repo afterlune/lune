@@ -2181,15 +2181,6 @@ func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 	}
-	m.activeQuestion = nil
-	m.activeApproval = nil
-	m.activePlanReview = nil
-	m.effortPicker = nil
-	m.activeRecovery = nil
-	m.activeToolRecovery = nil
-	m.running = false
-	m.currentStreamText = ""
-	m.updateLayout()
 	m.addSystemEntry("Opened session: " + targetID)
 	return m, m.subscribeRuntimeEvents()
 }
