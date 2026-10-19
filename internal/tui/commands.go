@@ -655,12 +655,9 @@ func (m *tuiModel) renderStatusTable() string {
 		}
 	}
 
-	maxSubs := m.maxParallelAgents()
 	totalSubs := m.totalSubagentsCount()
 	activeSubs := m.activeSubagentsCount()
-	if maxSubs > 0 || totalSubs > 0 {
-		lines = append(lines, fmt.Sprintf("Subagents:      %d active (max %d configured, %d in session)", activeSubs, maxSubs, totalSubs))
-	}
+	lines = append(lines, fmt.Sprintf("Subagents:      %d active (%d in session); %s", activeSubs, totalSubs, m.delegationLimitsLabel()))
 
 	return strings.Join(lines, "\n")
 }
@@ -1432,12 +1429,9 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 	lines = append(lines, fmt.Sprintf("- Conversation turns: %d total (%d user, %d assistant, %d tool calls)",
 		len(m.entries), userTurns, asstTurns, toolTurns))
-	maxSubs := m.maxParallelAgents()
 	totalSubs := m.totalSubagentsCount()
 	activeSubs := m.activeSubagentsCount()
-	if maxSubs > 0 || totalSubs > 0 {
-		lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session, max %d configured, use `/agents` to inspect)", activeSubs, totalSubs, maxSubs))
-	}
+	lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session); %s; use `/agents` to inspect", activeSubs, totalSubs, m.delegationLimitsLabel()))
 
 	// 6. Workspace Memory
 	lines = append(lines, "\n**Workspace Memory:**")

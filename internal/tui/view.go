@@ -1131,6 +1131,9 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	}
 	qItem := q.Request.Questions[currIdx]
 	meta := styleTextMuted().Render(fmt.Sprintf("Question %d/%d (%d unanswered)", currIdx+1, total, unanswered))
+	if q.Submitting {
+		meta = styleTextMuted().Render(fmt.Sprintf("Submitting answers (%d)…", len(q.Answers)))
+	}
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(qItem.Question)
 
 	var optionsRows []string
@@ -1180,6 +1183,12 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	}
 
 	hint := styleTextMuted().Render("tab to add notes | enter to submit answer | esc to interrupt")
+	if q.Submitting {
+		hint = styleTextMuted().Render("Waiting for Core to accept answers…")
+	}
+	if q.Error != "" {
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render(q.Error) + "\n" + hint
+	}
 
 	panelContent := meta + "\n" + title + "\n\n" + strings.Join(optionsRows, "\n") + "\n\n" + hint
 	cardStyle := lipgloss.NewStyle().
@@ -2118,7 +2127,12 @@ func renderFooter(m *tuiModel, width int) string {
 	}
 	maxSubs := m.maxParallelAgents()
 	activeSubs := m.activeSubagentsCount()
-	subagentLabel := fmt.Sprintf("🤖 %d active · %d max", activeSubs, maxSubs)
+	var subagentLabel string
+	if m.delegationEnabled() {
+		subagentLabel = fmt.Sprintf("🤖 %d active · %d parallel", activeSubs, maxSubs)
+	} else {
+		subagentLabel = fmt.Sprintf("🤖 %d active · disabled", activeSubs)
+	}
 	maxLeftWidth := max(1, width-rightLen-2)
 	primaryItems := []string{subagentLabel}
 	if modelLabel != "" {
@@ -2127,6 +2141,9 @@ func renderFooter(m *tuiModel, width int) string {
 	rawLeft := strings.Join(primaryItems, " · ")
 	if lipgloss.Width(rawLeft) > maxLeftWidth {
 		compactSubagentLabel := fmt.Sprintf("🤖 %d/%d", activeSubs, maxSubs)
+		if !m.delegationEnabled() {
+			compactSubagentLabel = fmt.Sprintf("🤖 %d · off", activeSubs)
+		}
 		modelWidth := maxLeftWidth - lipgloss.Width(compactSubagentLabel) - lipgloss.Width(" · ")
 		if modelLabel != "" && modelWidth > 0 {
 			modelLabel = ansi.Truncate(modelLabel, modelWidth, "…")
@@ -2178,7 +2195,7 @@ func renderFooter(m *tuiModel, width int) string {
 		line2RightText = "⏸ task paused · /resume or /discard"
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
-	} else if m.totalSubagentsCount() > 0 || m.maxParallelAgents() > 0 {
+	} else if m.totalSubagentsCount() > 0 || m.delegationEnabled() {
 		line2RightText = "? for shortcuts · /agents to inspect"
 	} else {
 		line2RightText = "? for shortcuts"

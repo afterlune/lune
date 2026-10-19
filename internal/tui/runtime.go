@@ -37,6 +37,7 @@ type turnSubmittedMsg struct {
 type turnFinishedMsg struct {
 	sessionID   string
 	executionID string
+	generation  uint64
 	result      core.TurnResult
 	err         error
 }
@@ -86,14 +87,22 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 }
 
 func (m *tuiModel) waitForExecution(executionID string) tea.Cmd {
-	if m.runtime == nil || executionID == "" || !m.running {
+	if !m.running {
+		return nil
+	}
+	return m.awaitExecutionResult(executionID)
+}
+
+func (m *tuiModel) awaitExecutionResult(executionID string) tea.Cmd {
+	if m.runtime == nil || executionID == "" || m.questionInFlight(executionID) {
 		return nil
 	}
 	if _, waiting := m.awaitingTurns[executionID]; waiting {
 		return nil
 	}
-	m.awaitingTurns[executionID] = struct{}{}
-	return waitForTurn(m.runtime, m.sessionID, executionID)
+	m.waitGeneration++
+	m.awaitingTurns[executionID] = m.waitGeneration
+	return waitForTurn(m.runtime, m.sessionID, executionID, m.waitGeneration)
 }
 
 func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
@@ -128,13 +137,13 @@ func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
 	}
 }
 
-func waitForTurn(runtime *core.SessionRuntime, sessionID, executionID string) tea.Cmd {
+func waitForTurn(runtime *core.SessionRuntime, sessionID, executionID string, generation uint64) tea.Cmd {
 	if runtime == nil || executionID == "" {
 		return nil
 	}
 	return func() tea.Msg {
 		res, err := runtime.WaitTurn(context.Background(), executionID)
-		return turnFinishedMsg{sessionID: sessionID, executionID: executionID, result: res, err: err}
+		return turnFinishedMsg{sessionID: sessionID, executionID: executionID, generation: generation, result: res, err: err}
 	}
 }
 
@@ -689,12 +698,37 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.currentStreamText = ""
 			m.currentReasoningText = ""
 		}
-		if !queued && (!m.running || (m.runningExecution != "" && m.runningExecution != execID)) {
+		if !queued && ((!m.running && m.runningExecution != execID) || (m.runningExecution != "" && m.runningExecution != execID)) {
 			return m, nil
 		}
-		if m.runningExecution == execID {
+		if m.runningExecution == execID && m.taskSnapshot.TaskID == event.TaskID && m.running {
 			return m, m.waitForExecution(execID)
 		}
+		limits := core.ExecutionOptions{}
+		if m.client != nil {
+			limits = m.client.ExecutionDefaults()
+		}
+		nextTask := core.TaskState{TaskID: event.TaskID, ExecutionID: execID, Status: core.TaskRunning, Execution: limits}
+		if m.runtime != nil {
+			if state, err := m.runtime.State(context.Background()); err == nil && state.Task.ExecutionID == execID {
+				nextTask = state.Task
+				if state.Task.TaskID != event.TaskID || state.Task.Status != core.TaskRunning {
+					m.restoreRuntimeSnapshot(state)
+					m.checkPendingState(context.Background())
+					switch state.Task.Status {
+					case core.TaskCompleted, core.TaskFailed, core.TaskCancelled, core.TaskDiscarded:
+						m.runningExecution = execID
+						return m, m.awaitExecutionResult(execID)
+					}
+					return m, m.waitForExecution(m.runningExecution)
+				}
+			}
+		}
+		if m.taskSnapshot.TaskID != "" && m.taskSnapshot.TaskID != event.TaskID {
+			delete(m.awaitingTurns, execID)
+			delete(m.terminalEvents, execID)
+		}
+		m.taskSnapshot = nextTask
 		m.running = true
 		m.runningExecution = execID
 		m.taskStartedAt = time.Now()
@@ -990,7 +1024,28 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 		}
 
-	case core.EventUserQuestionRequired, core.EventUserInteractionRequired:
+	case core.EventUserQuestionRequired:
+		if m.staleTaskAttempt(event.ExecutionID, event.TaskID) {
+			return m, nil
+		}
+		if event.UserQuestion != nil {
+			request := *event.UserQuestion
+			if request.ExecutionID == "" {
+				request.ExecutionID = event.ExecutionID
+			}
+			if m.questionSubmissions[m.questionKey(request)] != 0 {
+				return m, nil
+			}
+		}
+		m.checkPendingState(context.Background())
+		if m.activeQuestion != nil && !m.activeQuestion.Submitting {
+			m.thinking = false
+			m.running = false
+		}
+		m.transcriptDirty = true
+		m.updateLayout()
+
+	case core.EventUserInteractionRequired:
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())

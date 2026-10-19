@@ -61,7 +61,10 @@ type tuiModel struct {
 	scrolledUp             bool
 	runningExecution       string
 	runtimeCancel          context.CancelFunc
-	awaitingTurns          map[string]struct{}
+	awaitingTurns          map[string]uint64
+	waitGeneration         uint64
+	taskSnapshot           core.TaskState
+	questionSubmissions    map[questionWaitKey]questionSubmissionState
 	terminalEvents         map[string]core.Event
 	currentStreamText      string
 	currentReasoningText   string
@@ -168,7 +171,7 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		composer: comp, viewport: vp, entries: []TranscriptEntry{},
 		fileScanner: NewWorkspaceFileScanner(workspace), reasoningLiveCollapsed: true,
 		transcriptDirty: true, output: os.Stdout,
-		awaitingTurns: map[string]struct{}{}, terminalEvents: map[string]core.Event{},
+		awaitingTurns: map[string]uint64{}, terminalEvents: map[string]core.Event{},
 		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
 	m.ensureAgentMetrics("lead")
@@ -312,7 +315,9 @@ func (m *tuiModel) resetSessionState() {
 	m.sessionsDeletingID = ""
 	m.toolPagerOpen = false
 	m.diffModalOpen = false
-	m.awaitingTurns = map[string]struct{}{}
+	m.awaitingTurns = map[string]uint64{}
+	m.taskSnapshot = core.TaskState{}
+	m.questionSubmissions = nil
 	m.terminalEvents = map[string]core.Event{}
 	m.invalidateEntryCache()
 }
@@ -345,11 +350,37 @@ func (m *tuiModel) currentReasoningEffort() string {
 // maxParallelAgents returns the maximum configured parallel subagent count.
 func (m *tuiModel) maxParallelAgents() int {
 	if m.client != nil {
-		if limit := m.client.MaxParallelAgents(); limit > 0 {
-			return limit
+		return m.client.MaxParallelAgents()
+	}
+	return 0
+}
+
+func (m *tuiModel) delegationExecution() core.ExecutionOptions {
+	switch m.taskSnapshot.Status {
+	case core.TaskRunning, core.TaskQueued, core.TaskPaused:
+		if m.taskSnapshot.TaskID != "" {
+			return m.taskSnapshot.Execution
 		}
 	}
-	return 4
+	if m.client != nil {
+		return m.client.ExecutionDefaults()
+	}
+	return core.ExecutionOptions{}
+}
+
+func (m *tuiModel) delegationEnabled() bool {
+	limits := m.delegationExecution()
+	return limits.MaxTeamChildrenPerAgent > 0 && limits.MaxTeamDepth > 0
+}
+
+func (m *tuiModel) delegationLimitsLabel() string {
+	limits := m.delegationExecution()
+	status := "enabled"
+	if !m.delegationEnabled() {
+		status = "disabled"
+	}
+	return fmt.Sprintf("%s (parallel %d; children per agent %d; depth %d)", status,
+		m.maxParallelAgents(), limits.MaxTeamChildrenPerAgent, limits.MaxTeamDepth)
 }
 
 func (m *tuiModel) invalidateEntryCache() {
@@ -931,10 +962,14 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 }
 
 func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
+	m.taskSnapshot = state.Task
+	m.running = false
 	m.runningExecution = ""
+	m.pausedCheckpoint = nil
 	contextWindowKnown := state.Task.ContextWindow > 0 || state.Task.TaskID != ""
 	switch state.Task.Status {
 	case core.TaskRunning, core.TaskQueued:
+		m.pausedCheckpoint = nil
 		m.running = true
 		m.runningExecution = state.Task.ExecutionID
 		if contextWindowKnown {
@@ -974,7 +1009,9 @@ func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 	var foundToolRecovery *core.ToolRecoveryRequest
 	for _, req := range reqs {
 		if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil && foundQuestion == nil {
-			foundQuestion = req.UserQuestion
+			if m.questionSubmissions[m.questionKey(*req.UserQuestion)] == 0 {
+				foundQuestion = req.UserQuestion
+			}
 		}
 		if req.Kind == core.PendingApproval && req.Approval != nil && foundApproval == nil {
 			foundApproval = req.Approval
@@ -987,8 +1024,10 @@ func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 		}
 	}
 
-	if foundQuestion != nil {
-		if m.activeQuestion == nil || m.activeQuestion.Request.ID != foundQuestion.ID {
+	if m.activeQuestion != nil && m.activeQuestion.Submitting {
+		// Keep selections visible until the submission command reports its result.
+	} else if foundQuestion != nil {
+		if m.activeQuestion == nil || m.questionKey(m.activeQuestion.Request) != m.questionKey(*foundQuestion) {
 			m.activeQuestion = &ActiveQuestion{
 				Request:  *foundQuestion,
 				Selected: 0,

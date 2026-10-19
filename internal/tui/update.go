@@ -38,6 +38,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.PasteMsg:
+		if m.activeQuestion != nil && m.activeQuestion.Submitting {
+			return m, nil
+		}
 		if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 {
 			currIdx := min(m.activeQuestion.CurrentIndex, len(m.activeQuestion.Request.Questions)-1)
 			currQ := m.activeQuestion.Request.Questions[currIdx]
@@ -141,8 +144,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		m.finishTurn(msg)
-		return m, nil
+		return m, m.finishTurn(msg)
+
+	case questionSubmittedMsg:
+		return m, m.finishQuestionSubmission(msg)
 
 	case compactDoneMsg:
 		if msg.err != nil {
@@ -360,7 +365,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *tuiModel) finishTurn(msg turnFinishedMsg) {
+func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 	executionID := msg.executionID
 	if executionID == "" {
 		executionID = msg.result.ExecutionID
@@ -369,11 +374,25 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) {
 		executionID = m.runningExecution
 	}
 	if executionID == "" {
-		return
+		return nil
+	}
+	if msg.generation != 0 && m.awaitingTurns[executionID] != msg.generation {
+		return nil
+	}
+	if msg.result.Status == core.TaskPaused && m.stalePause(executionID, "") {
+		delete(m.awaitingTurns, executionID)
+		if m.taskSnapshot.ExecutionID == executionID {
+			switch m.taskSnapshot.Status {
+			case core.TaskCompleted, core.TaskFailed, core.TaskCancelled, core.TaskDiscarded:
+				m.runningExecution = executionID
+				return m.awaitExecutionResult(executionID)
+			}
+		}
+		return m.waitForExecution(executionID)
 	}
 	event, eventFinalized := m.terminalEvents[executionID]
 	if m.runningExecution != executionID && !eventFinalized {
-		return
+		return nil
 	}
 	if msg.err != nil && eventFinalized {
 		msg.result = core.TurnResult{ExecutionID: executionID, Status: event.Status, BudgetReason: event.BudgetReason}
@@ -385,6 +404,9 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) {
 	}
 	delete(m.awaitingTurns, executionID)
 	delete(m.terminalEvents, executionID)
+	if m.taskSnapshot.ExecutionID == executionID {
+		m.taskSnapshot.Status = msg.result.Status
+	}
 
 	var planText string
 	if msg.result.ProposedPlan != nil {
@@ -426,11 +448,16 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) {
 	}
 	m.refreshViewportContent()
 	m.updateLayout()
+	return nil
 }
 
 func (m *tuiModel) finishTurnEvent(event core.Event) {
 	executionID := event.ExecutionID
 	if executionID == "" || executionID != m.runningExecution {
+		return
+	}
+	if m.staleTaskAttempt(executionID, event.TaskID) ||
+		(event.Status == core.TaskPaused && m.stalePause(executionID, event.TaskID)) {
 		return
 	}
 	if event.Status == core.TaskPaused && !m.running {
@@ -456,6 +483,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 		main.Duration = time.Since(main.StartedAt)
 	}
 	m.terminalEvents[executionID] = event
+	m.taskSnapshot.Status = event.Status
 	m.thinking = false
 	m.finalizeTurnOutput("", nil, executionID)
 	if event.Status == core.TaskPaused {
@@ -490,6 +518,9 @@ func (m *tuiModel) pausedCheckpointFor(executionID string) *PausedCheckpoint {
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
+	if m.activeQuestion != nil && m.activeQuestion.Submitting && keyStr != "ctrl+c" {
+		return m, nil
+	}
 
 	// 0. Shortcut Help Modal handling
 	if m.shortcutsOpen {
@@ -918,6 +949,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 		if m.activeQuestion != nil {
+			delete(m.questionSubmissions, m.questionKey(m.activeQuestion.Request))
 			m.activeQuestion = nil
 			if m.runtime != nil {
 				_, _ = m.runtime.DiscardPaused(context.Background())
@@ -1593,7 +1625,7 @@ func (m *tuiModel) setCursorTo(targetOffset int) {
 
 func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 	q := m.activeQuestion
-	if q == nil || len(q.Request.Questions) == 0 {
+	if q == nil || q.Submitting || len(q.Request.Questions) == 0 {
 		return m, nil
 	}
 
@@ -1621,39 +1653,21 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	batchID := q.Request.ID
-	if batchID == "" {
-		batchID = q.Request.CallID
-	}
-	if batchID == "" {
-		batchID = "question-batch"
-	}
-	totalQuestions := len(q.Request.Questions)
 	qaItem := AnsweredQuestionItem{
 		Question: qItem.Question,
 		Answer:   answerText,
 	}
-	if len(m.entries) > 0 &&
-		m.entries[len(m.entries)-1].Kind == KindQuestionAnswered &&
-		m.entries[len(m.entries)-1].QuestionBatchID == batchID &&
-		len(m.entries[len(m.entries)-1].AnsweredQuestions) < totalQuestions {
-		last := &m.entries[len(m.entries)-1]
-		last.QuestionsTotal = totalQuestions
-		last.AnsweredQuestions = append(last.AnsweredQuestions, qaItem)
-	} else {
-		m.entries = append(m.entries, TranscriptEntry{
-			Kind:              KindQuestionAnswered,
-			QuestionBatchID:   batchID,
-			QuestionsTotal:    totalQuestions,
-			AnsweredQuestions: []AnsweredQuestionItem{qaItem},
-		})
-	}
-	m.invalidateEntryCache()
+	m.recordQuestionAnswer(q, currIdx, qaItem)
 
-	q.Answers = append(q.Answers, core.UserQuestionResponse{
+	answer := core.UserQuestionResponse{
 		QuestionID: qItem.ID,
 		Answer:     answerText,
-	})
+	}
+	if currIdx < len(q.Answers) {
+		q.Answers[currIdx] = answer
+	} else {
+		q.Answers = append(q.Answers, answer)
+	}
 
 	// If there are more questions in this batch, advance to the next question
 	if currIdx+1 < len(q.Request.Questions) {
@@ -1667,37 +1681,12 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// All questions answered, submit the full batch answer to Core
-	qAnswer := core.UserQuestionAnswer{
-		ExecutionID:  q.Request.ExecutionID,
-		RunID:        q.Request.RunID,
-		InvocationID: q.Request.InvocationID,
-		CallID:       q.Request.CallID,
-		Answers:      q.Answers,
-	}
-
-	m.activeQuestion = nil
-	m.running = true
-	m.thinking = false
-	m.taskStartedAt = time.Now()
-	m.scrolledUp = false
+	// Retain the answered batch until Core acknowledges the exact wait identity.
+	cmd := m.submitQuestionBatch(q)
 	m.refreshViewportContent()
 	m.viewport.GotoBottom()
 	m.updateLayout()
-
-	runtime := m.runtime
-	executionID := q.Request.ExecutionID
-	if executionID != "" {
-		m.runningExecution = executionID
-	}
-	return m, tea.Batch(
-		tickClock(),
-		m.waitForExecution(executionID),
-		func() tea.Msg {
-			_ = runtime.ResolveUserQuestion(context.Background(), qAnswer)
-			return nil
-		},
-	)
+	return m, cmd
 }
 
 func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {

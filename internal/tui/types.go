@@ -126,6 +126,7 @@ type AutocompleteItem struct {
 
 // ActiveQuestion holds the state of a pending clarification question.
 type ActiveQuestion struct {
+	Submitting   bool
 	Request      core.UserQuestionRequest
 	CurrentIndex int
 	Selected     int

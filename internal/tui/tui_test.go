@@ -815,9 +815,9 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
 
-	// All 3 answered, activeQuestion is closed, task marked running to await Core response
-	if m.activeQuestion != nil {
-		t.Fatalf("expected activeQuestion to be nil after all questions answered")
+	// Keep the batch visible until Core acknowledges the submitted answers.
+	if m.activeQuestion == nil || !m.activeQuestion.Submitting {
+		t.Fatalf("expected activeQuestion to wait for submission acknowledgement")
 	}
 	if len(m.entries) != 1 || len(m.entries[0].AnsweredQuestions) != 3 {
 		t.Fatalf("expected 1 grouped question batch entry with 3 answers, got %+v", m.entries)
@@ -3938,8 +3938,8 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 	if !strings.Contains(footer, "Beta . high") {
 		t.Fatalf("expected footer to show model and effort, got:\n%s", footer)
 	}
-	if !strings.Contains(footer, "🤖 0 active · 8 max") {
-		t.Fatalf("expected footer to show configured subagent limit, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 0 active · disabled") {
+		t.Fatalf("expected footer to show delegation disabled despite scheduler concurrency, got:\n%s", footer)
 	}
 }
 
@@ -3958,8 +3958,8 @@ func TestEffortPickerRendering(t *testing.T) {
 func TestFooterSubagentsAlwaysVisible(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	footer := ansi.Strip(renderFooter(m, 120))
-	if !strings.Contains(footer, "🤖 0 active · 4 max") {
-		t.Fatalf("expected footer to show 🤖 0 active · 4 max when idle, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 0 active · disabled") {
+		t.Fatalf("expected footer to show disabled when idle, got:\n%s", footer)
 	}
 }
 
@@ -3971,8 +3971,8 @@ func TestFooterSubagentCountReportsActiveAgents(t *testing.T) {
 	}
 	m.width = 140
 	footer := ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "🤖 1 active · 4 max") {
-		t.Fatalf("expected footer to show one active agent and the limit, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 1 active · disabled") {
+		t.Fatalf("expected footer to retain the active count with delegation disabled, got:\n%s", footer)
 	}
 	if strings.Contains(footer, "2 active") {
 		t.Fatalf("completed agents must not be counted as active, got:\n%s", footer)
@@ -3989,8 +3989,8 @@ func TestFooterKeepsSubagentCountVisibleWhenCrowded(t *testing.T) {
 	m.entries = []TranscriptEntry{{Kind: KindSubagent, AgentID: "active", SubagentRunning: true}}
 
 	footer := ansi.Strip(renderFooter(m, 80))
-	if !strings.Contains(footer, "🤖 1/4") {
-		t.Fatalf("crowded footer should preserve the compact active/max count, got:\n%s", footer)
+	if !strings.Contains(footer, "🤖 1 · off") {
+		t.Fatalf("crowded footer should preserve the compact active/disabled state, got:\n%s", footer)
 	}
 	firstLine := strings.Split(footer, "\n")[0]
 	if width := ansi.StringWidth(firstLine); width > 80 {
