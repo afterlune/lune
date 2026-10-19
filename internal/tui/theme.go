@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	AppName    = "LuneAgent"
+	AppName    = "lune"
 	AppVersion = "v0.1.0"
 )
 

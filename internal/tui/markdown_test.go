@@ -88,16 +88,48 @@ func TestStripProposedPlan(t *testing.T) {
 		t.Errorf("Expected empty string for plan-only text, got: %q", got)
 	}
 
-	// Unclosed tag
+	// Unclosed tag: the dangling tag is removed, but following prose is kept.
 	t3 := "Preamble.\n<proposed_plan>## Incomplete plan"
-	if got := stripProposedPlan(t3); got != "Preamble." {
-		t.Errorf("Expected preamble only, got: %q", got)
+	if got := stripProposedPlan(t3); got != "Preamble.\n## Incomplete plan" {
+		t.Errorf("Expected preamble and following prose, got: %q", got)
+	}
+
+	// A literal tag mention in ordinary prose must not swallow the sentence.
+	t5 := "我会先阅读相关代码，再用 <proposed_plan> 给你完整方案。"
+	if got := stripProposedPlan(t5); got != "我会先阅读相关代码，再用  给你完整方案。" {
+		t.Errorf("Expected prose preserved, got: %q", got)
+	}
+
+	// extractProposedPlan must ignore dangling tags.
+	if plan, _ := extractProposedPlan(t3); plan != "" {
+		t.Errorf("Expected no plan from unclosed tag, got: %q", plan)
 	}
 
 	// No tag
 	t4 := "Just plain message."
 	if got := stripProposedPlan(t4); got != t4 {
 		t.Errorf("Expected unchanged message, got: %q", got)
+	}
+}
+
+func TestExtractProposedPlanRequiresOneCompleteBlock(t *testing.T) {
+	plan, remaining := extractProposedPlan("Intro.\n<proposed_plan>## Steps\n1. Do it</proposed_plan>\nOutro.")
+	if plan != "## Steps\n1. Do it" {
+		t.Fatalf("unexpected plan: %q", plan)
+	}
+	if remaining != "Intro.\n\nOutro." && remaining != "Intro.\nOutro." {
+		t.Fatalf("unexpected remaining text: %q", remaining)
+	}
+
+	for _, text := range []string{
+		"<proposed_plan>unfinished",
+		"<proposed_plan></proposed_plan>",
+		"<proposed_plan>one</proposed_plan><proposed_plan>two</proposed_plan>",
+		"</proposed_plan>orphaned",
+	} {
+		if plan, _ := extractProposedPlan(text); plan != "" {
+			t.Errorf("extractProposedPlan(%q) = %q, want no plan", text, plan)
+		}
 	}
 }
 
@@ -147,4 +179,3 @@ func TestAutocompleteScrolling(t *testing.T) {
 		t.Errorf("Expected last line to be selected, got: %s", lastLine)
 	}
 }
-

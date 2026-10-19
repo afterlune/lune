@@ -531,27 +531,47 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int) []stri
 	return out
 }
 
-// stripProposedPlan removes <proposed_plan>...</proposed_plan> tags and content from raw streamed text.
-func stripProposedPlan(text string) string {
-	_, cleaned := extractProposedPlan(text)
-	return cleaned
+var (
+	reProposedPlanTags  = regexp.MustCompile(`(?i)</?proposed_plan>`)
+	reProposedPlanBlock = regexp.MustCompile(`(?is)<proposed_plan>.*?</proposed_plan>`)
+)
+
+// cleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text.
+func cleanProposedPlanTags(s string) string {
+	if !strings.Contains(strings.ToLower(s), "proposed_plan") {
+		return strings.TrimSpace(s)
+	}
+	return strings.TrimSpace(reProposedPlanTags.ReplaceAllString(s, ""))
 }
 
-// extractProposedPlan extracts the inner plan text and the remaining assistant text outside <proposed_plan>...</proposed_plan>.
+// stripProposedPlan removes complete <proposed_plan>...</proposed_plan> blocks
+// (their content is rendered separately) and any dangling tag tokens. Text after
+// a dangling open tag is preserved, because it is ordinary assistant prose.
+func stripProposedPlan(text string) string {
+	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
+		return strings.TrimSpace(text)
+	}
+	return cleanProposedPlanTags(reProposedPlanBlock.ReplaceAllString(text, ""))
+}
+
+// extractProposedPlan extracts one complete, non-empty <proposed_plan> block and
+// the remaining assistant text. A dangling open tag is not a plan.
 func extractProposedPlan(text string) (string, string) {
 	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
 	start := strings.Index(text, openTag)
 	if start < 0 {
-		return "", text
+		return "", cleanProposedPlanTags(text)
 	}
 	innerStart := start + len(openTag)
 	relEnd := strings.Index(text[innerStart:], closeTag)
 	if relEnd < 0 {
-		return strings.TrimSpace(text[innerStart:]), strings.TrimSpace(text[:start])
+		// Unclosed tag: keep the prose after the tag, but do not produce a plan.
+		return "", stripProposedPlan(text)
 	}
-	planText := strings.TrimSpace(text[innerStart : innerStart+relEnd])
 	end := innerStart + relEnd + len(closeTag)
-	cleaned := strings.TrimSpace(text[:start] + text[end:])
-	return planText, cleaned
+	planText := cleanProposedPlanTags(text[innerStart : innerStart+relEnd])
+	if planText == "" || strings.Contains(text[innerStart:], openTag) || strings.Contains(text[end:], closeTag) {
+		return "", stripProposedPlan(text)
+	}
+	return planText, cleanProposedPlanTags(text[:start] + text[end:])
 }
-

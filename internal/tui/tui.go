@@ -97,7 +97,17 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	}
 
 	// Initialize model
+	in := opts.Input
+	if in == nil {
+		in = os.Stdin
+	}
+	out := opts.Output
+	if out == nil {
+		out = os.Stdout
+	}
+
 	model := newTUIModel(client, runtime, sessionID)
+	model.output = out
 	if sessionTitle != "" {
 		model.sessionTitle = sessionTitle
 	}
@@ -112,15 +122,6 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	runtime.SetUserInteractionAvailable(true)
 	defer runtime.SetUserInteractionAvailable(false)
-
-	in := opts.Input
-	if in == nil {
-		in = os.Stdin
-	}
-	out := opts.Output
-	if out == nil {
-		out = os.Stdout
-	}
 
 	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)
 	// even if an unexpected panic or error occurs during execution.

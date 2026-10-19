@@ -20,15 +20,18 @@
   "models": {
     "deepseek-flash": {
       "provider": "deepseek",
-      "model": "deepseek-flash"
+      "modelId": "deepseek-chat",
+      "displayName": "DeepSeek V3"
     },
     "openai-model": {
       "provider": "openai-responses",
-      "model": "replace-with-model-id"
+      "modelId": "gpt-5",
+      "displayName": "GPT-5"
     },
     "anthropic-model": {
       "provider": "anthropic",
-      "model": "replace-with-model-id",
+      "modelId": "claude-3-7-sonnet-20250219",
+      "displayName": "Claude 3.7 Sonnet",
       "maxOutputTokens": 8192
     }
   },

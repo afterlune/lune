@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,7 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" {
 		if autoTitle := deriveSessionTitleText(text); autoTitle != "" {
 			m.sessionTitle = autoTitle
+			m.syncTerminalTitle()
 			if m.client != nil && m.sessionID != "" {
 				client := m.client
 				sid := m.sessionID
@@ -207,6 +209,11 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.running = true
 	m.thinking = false
 	m.taskStartedAt = time.Now()
+	m.turnStreamTokens = 0
+	m.turnStreamStartTime = time.Now()
+	m.streamFirstTokenTime = time.Time{}
+	m.streamLastTokenTime = time.Time{}
+	m.streamGenerationTokens = 0
 	m.currentStreamText = ""
 	m.currentReasoningText = ""
 	m.reasoningStartTime = time.Time{}
@@ -215,6 +222,7 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
+	m.effortPicker = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	m.updateLayout()
@@ -272,7 +280,7 @@ func (m *tuiModel) flushStreamTextEntry() {
 	if m.currentStreamText == "" {
 		return
 	}
-	text := m.currentStreamText
+	text := stripProposedPlan(m.currentStreamText)
 	m.currentStreamText = ""
 	if strings.TrimSpace(text) == "" {
 		return
@@ -310,30 +318,26 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		}
 	}
 
-	// If an earlier EventTaskFinished already flushed raw <proposed_plan> into the last KindAssistant entry,
-	// clean it up and extract the plan text.
-	if len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && strings.Contains(m.entries[len(m.entries)-1].Text, "<proposed_plan>") {
-		extracted, cleaned := extractProposedPlan(m.entries[len(m.entries)-1].Text)
-		if proposedPlan == "" && extracted != "" {
-			proposedPlan = extracted
+	// The proposed plan is authoritative only when the Core returns one complete
+	// <proposed_plan>...</proposed_plan> block. Never infer a plan from a dangling
+	// or literal tag in the assistant text: that used to turn ordinary replies
+	// (including greetings that merely mention the tag) into empty plan reviews.
+	proposedPlan = cleanProposedPlanTags(proposedPlan)
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindUser {
+			break
 		}
-		if cleaned == "" {
-			m.entries = m.entries[:len(m.entries)-1]
-		} else {
-			m.entries[len(m.entries)-1].Text = cleaned
+		if m.entries[i].Kind != KindAssistant || !strings.Contains(strings.ToLower(m.entries[i].Text), "proposed_plan") {
+			continue
+		}
+		m.entries[i].Text = stripProposedPlan(m.entries[i].Text)
+		if strings.TrimSpace(m.entries[i].Text) == "" {
+			m.entries = append(m.entries[:i], m.entries[i+1:]...)
 		}
 		m.invalidateEntryCache()
 	}
 
-	if strings.Contains(text, "<proposed_plan>") {
-		extracted, cleaned := extractProposedPlan(text)
-		if proposedPlan == "" && extracted != "" {
-			proposedPlan = extracted
-		}
-		text = cleaned
-	} else if proposedPlan != "" {
-		text = stripProposedPlan(text)
-	}
+	text = stripProposedPlan(text)
 
 	var turnDur time.Duration
 	if !m.taskStartedAt.IsZero() {
@@ -656,17 +660,41 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			if m.reasoningStartTime.IsZero() {
 				m.reasoningStartTime = time.Now()
 			}
+			if m.streamFirstTokenTime.IsZero() {
+				m.streamFirstTokenTime = time.Now()
+				m.streamGenerationTokens = 0
+			}
+			m.streamLastTokenTime = time.Now()
 			m.thinking = true
 			m.currentReasoningText += event.Stream.Delta
+			if event.Stream.Delta != "" {
+				toks := estimateDeltaTokens(event.Stream.Delta)
+				m.streamGenerationTokens += toks
+				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
+				if elapsed >= 0.05 {
+					m.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+				}
+			}
 			m.transcriptDirty = true
 
 		case "text_delta", "":
 			if m.currentReasoningText != "" {
 				m.flushReasoningEntry()
 			}
+			if m.streamFirstTokenTime.IsZero() {
+				m.streamFirstTokenTime = time.Now()
+				m.streamGenerationTokens = 0
+			}
+			m.streamLastTokenTime = time.Now()
 			if event.Stream.Delta != "" {
 				m.thinking = false
 				m.currentStreamText += event.Stream.Delta
+				toks := estimateDeltaTokens(event.Stream.Delta)
+				m.streamGenerationTokens += toks
+				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
+				if elapsed >= 0.05 {
+					m.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+				}
 				if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
 					m.activePlanExecution.CheckTextForAdvance(m.currentStreamText)
 				}
@@ -681,6 +709,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, false, 0)
 
 	case core.EventToolStarted:
+		m.streamFirstTokenTime = time.Time{}
+		m.streamLastTokenTime = time.Time{}
+		m.streamGenerationTokens = 0
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
@@ -903,9 +934,24 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.totalOutputTokens += event.Usage.OutputTokens
 			m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
 			m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
+			if event.Usage.OutputTokens > 0 {
+				var elapsed float64
+				if !m.streamFirstTokenTime.IsZero() {
+					elapsed = time.Since(m.streamFirstTokenTime).Seconds()
+				} else if !m.turnStreamStartTime.IsZero() {
+					elapsed = time.Since(m.turnStreamStartTime).Seconds()
+				}
+				if elapsed >= 0.05 {
+					m.lastTokensPerSec = float64(event.Usage.OutputTokens) / elapsed
+				}
+				m.streamFirstTokenTime = time.Time{}
+			}
 		}
 		if event.ContextWindow > 0 {
 			m.contextWindow = event.ContextWindow
+		}
+		if event.Usage.InputTokens > 0 {
+			m.lastInputTokens = event.Usage.InputTokens
 		}
 		if event.EstimatedInputTokens > 0 {
 			m.estimatedInputTokens = event.EstimatedInputTokens
@@ -1125,4 +1171,27 @@ func cleanToolInline(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
 	return strings.TrimSpace(s)
+}
+
+// estimateDeltaTokens estimates token count from an incremental stream delta.
+func estimateDeltaTokens(delta string) int64 {
+	if delta == "" {
+		return 0
+	}
+	var count float64
+	for _, r := range delta {
+		if r >= 0x4e00 && r <= 0x9fff || r >= 0x3400 && r <= 0x4dbf || r >= 0x20000 && r <= 0x2a6df {
+			// CJK characters in modern LLMs average 1.3 to 1.5 tokens
+			count += 1.4
+		} else if r > 127 {
+			count += 1.0
+		} else {
+			count += 0.25
+		}
+	}
+	toks := int64(math.Ceil(count))
+	if toks < 1 {
+		toks = 1
+	}
+	return toks
 }

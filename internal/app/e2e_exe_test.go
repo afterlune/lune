@@ -336,7 +336,7 @@ func TestLuneExeTUIWithConPTY(t *testing.T) {
 	defer windows.CloseHandle(pi.Process)
 
 	// 1. Wait for initial TUI render in the 120x36 ConPTY
-	waitForOutputSubstring(t, &output, "LuneAgent", 8*time.Second)
+	waitForOutputSubstring(t, &output, ">_ lune", 8*time.Second)
 	waitForOutputSubstring(t, &output, "Ask Lune to do anything", 5*time.Second)
 
 	// 2. Open '?' keyboard shortcuts modal and close with Esc

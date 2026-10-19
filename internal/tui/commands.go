@@ -23,6 +23,8 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
 	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
 	{Command: "/model", Description: "choose an active model profile"},
+	{Command: "/effort", Description: "choose the reasoning effort level interactively"},
+	{Command: "/reasoning", Description: "alias for /effort"},
 	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
 	{Command: "/memory", Description: "view and manage workspace long-term memories"},
 	{Command: "/agents", Description: "list and inspect subagents in this session: /agents [id]"},
@@ -111,7 +113,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 
-	case "/thought", "/reasoning":
+	case "/thought":
 		return m.toggleReasoningExpansion()
 
 	case "/theme":
@@ -226,6 +228,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.sessionTitle = newTitle
+			m.syncTerminalTitle()
 			m.updateLayout()
 			m.addSystemEntry(fmt.Sprintf("Session title updated to `%s`.", newTitle))
 		} else {
@@ -434,22 +437,33 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			targetProfile := parts[1]
 			profiles := m.client.ListModelProfiles()
 			valid := false
+			// Prefer an exact profile ID match; model IDs may be shared by profiles.
 			for _, p := range profiles {
-				if strings.EqualFold(p.Profile, targetProfile) || strings.EqualFold(p.Model, targetProfile) {
+				if strings.EqualFold(p.Profile, targetProfile) {
 					valid = true
 					targetProfile = p.Profile
 					break
 				}
 			}
+			if !valid {
+				for _, p := range profiles {
+					if strings.EqualFold(p.Model, targetProfile) {
+						valid = true
+						targetProfile = p.Profile
+						break
+					}
+				}
+			}
 			if valid {
-				err := m.client.SetSessionSettings(context.Background(), m.sessionID, core.SessionSettings{
-					ModelProfile: targetProfile,
+				err := m.mutateSessionSettings(func(settings *core.SessionSettings) {
+					settings.ModelProfile = targetProfile
 				})
 				if err != nil {
 					m.addSystemEntry("Failed to set model: " + err.Error())
 				} else {
+					m.currentModelProfile = targetProfile
 					m.currentModel = m.client.ModelForSession(context.Background(), m.sessionID)
-					m.addSystemEntry(fmt.Sprintf("Active model switched to `%s`.", m.currentModel))
+					m.addSystemEntry(fmt.Sprintf("Active model switched to `%s`.", m.currentModelDisplayName()))
 					m.updateLayout()
 				}
 			} else {
@@ -461,15 +475,23 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			profiles := m.client.ListModelProfiles()
+			activeProfile := m.currentModelProfile
+			if strings.TrimSpace(activeProfile) == "" {
+				activeProfile = m.currentModel
+			}
 			var lines []string
-			lines = append(lines, fmt.Sprintf("**Current model:** `%s`", m.currentModel))
+			lines = append(lines, fmt.Sprintf("**Current model:** `%s` (`%s`)", m.currentModelDisplayName(), activeProfile))
 			lines = append(lines, "\n**Available model profiles:**")
 			for _, p := range profiles {
 				marker := "  "
-				if strings.EqualFold(p.Profile, m.currentModel) || strings.EqualFold(p.Model, m.currentModel) {
+				if strings.EqualFold(p.Profile, activeProfile) {
 					marker = "* "
 				}
-				lines = append(lines, fmt.Sprintf("%s`%s` (%s / %s)", marker, p.Profile, p.Provider, p.Model))
+				nameDesc := p.Model
+				if p.DisplayName != "" && p.DisplayName != p.Model {
+					nameDesc = fmt.Sprintf("%s / %s", p.Model, p.DisplayName)
+				}
+				lines = append(lines, fmt.Sprintf("%s`%s` (%s / %s)", marker, p.Profile, p.Provider, nameDesc))
 			}
 			lines = append(lines, "\nUsage: `/model <profile>` to switch.")
 			m.addSystemEntry(strings.Join(lines, "\n"))
@@ -503,6 +525,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/agents", "/subagents":
 		return m.handleAgentsCommand(parts)
+
+	case "/effort", "/reasoning":
+		return m.handleEffortCommand(parts)
 
 	case "/context":
 		contextText := m.renderContextDiagnostics()
@@ -592,8 +617,14 @@ func (m *tuiModel) renderStatusTable() string {
 		title = "<none>"
 	}
 
+	effort := m.currentReasoningEffort()
+	if effort == "" {
+		effort = "default"
+	}
+
 	lines := []string{
 		fmt.Sprintf("Model:          %s", modelName),
+		fmt.Sprintf("Reasoning Effort: %s", effort),
 		fmt.Sprintf("Directory:      %s", m.workspace),
 		fmt.Sprintf("Permissions:    %s", permStr),
 		fmt.Sprintf("Thread name:    %s", title),
@@ -602,12 +633,21 @@ func (m *tuiModel) renderStatusTable() string {
 	}
 
 	if m.contextWindow > 0 {
-		pct := 0.0
-		if m.estimatedInputTokens > 0 {
-			pct = float64(m.estimatedInputTokens) / float64(m.contextWindow) * 100.0
+		var inputLabel string
+		var usedCtx int64
+		if m.lastInputTokens > 0 {
+			usedCtx = m.lastInputTokens
+			inputLabel = "active prompt"
+		} else {
+			usedCtx = m.estimatedInputTokens
+			inputLabel = "est. input"
 		}
-		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (est. input: %s, %.1f%% full)",
-			formatTokens(m.contextWindow), formatTokens(m.estimatedInputTokens), pct))
+		pct := 0.0
+		if usedCtx > 0 {
+			pct = float64(usedCtx) / float64(m.contextWindow) * 100.0
+		}
+		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (%s: %s, %.1f%% full)",
+			formatTokens(m.contextWindow), inputLabel, formatTokens(usedCtx), pct))
 	}
 	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
 		lines = append(lines, fmt.Sprintf("Total Tokens:   in: %s (cached: %s) · out: %s (reasoning: %s)",
@@ -627,9 +667,11 @@ func (m *tuiModel) renderStatusTable() string {
 		}
 	}
 
-	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
-		activeSubs := m.activeSubagentsCount()
-		lines = append(lines, fmt.Sprintf("Subagents:      %d active (%d total)", activeSubs, totalSubs))
+	maxSubs := m.maxParallelAgents()
+	totalSubs := m.totalSubagentsCount()
+	activeSubs := m.activeSubagentsCount()
+	if maxSubs > 0 || totalSubs > 0 {
+		lines = append(lines, fmt.Sprintf("Subagents:      %d active (max %d configured, %d in session)", activeSubs, maxSubs, totalSubs))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1402,9 +1444,11 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 	lines = append(lines, fmt.Sprintf("- Conversation turns: %d total (%d user, %d assistant, %d tool calls)",
 		len(m.entries), userTurns, asstTurns, toolTurns))
-	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
-		activeSubs := m.activeSubagentsCount()
-		lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session, use `/agents` to inspect)", activeSubs, totalSubs))
+	maxSubs := m.maxParallelAgents()
+	totalSubs := m.totalSubagentsCount()
+	activeSubs := m.activeSubagentsCount()
+	if maxSubs > 0 || totalSubs > 0 {
+		lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session, max %d configured, use `/agents` to inspect)", activeSubs, totalSubs, maxSubs))
 	}
 
 	// 6. Workspace Memory
@@ -1883,7 +1927,7 @@ func (m *tuiModel) handleLogsCommand(parts []string) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleAgentsCommand(parts []string) (tea.Model, tea.Cmd) {
 	subs := m.getSubagentEntries()
 	if len(subs) == 0 {
-		m.addSystemEntry("No subagents have been invoked in this session yet.")
+		m.addSystemEntry(fmt.Sprintf("No subagents have been invoked in this session yet (max parallel: %d).", m.maxParallelAgents()))
 		return m, nil
 	}
 
@@ -2152,6 +2196,7 @@ func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
+	m.effortPicker = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	m.running = false
@@ -2495,4 +2540,93 @@ func (m *tuiModel) handlePushCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 }
 
+// reasoningEffortOptions returns the selectable reasoning-effort levels in display order.
+func reasoningEffortOptions() []ReasoningEffortOption {
+	return []ReasoningEffortOption{
+		{Value: "", Label: "default", Description: "Provider default (omit effort)"},
+		{Value: "none", Label: "none", Description: "Disable reasoning"},
+		{Value: "minimal", Label: "minimal", Description: "Minimal reasoning tokens"},
+		{Value: "low", Label: "low", Description: "Faster, lighter reasoning"},
+		{Value: "medium", Label: "medium", Description: "Balanced reasoning"},
+		{Value: "high", Label: "high", Description: "Deeper reasoning"},
+		{Value: "xhigh", Label: "xhigh", Description: "Extra-deep reasoning"},
+		{Value: "max", Label: "max", Description: "Maximum reasoning budget"},
+	}
+}
 
+// normalizeReasoningEffort maps a user-provided level to its canonical value.
+// The empty string means "provider default" (effort is omitted from the request).
+func normalizeReasoningEffort(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "default", "unset", "clear", "reset", "off", "inherit":
+		return "", true
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(raw)), true
+	}
+	return "", false
+}
+
+// openEffortPicker opens the interactive reasoning-effort selector.
+func (m *tuiModel) openEffortPicker() {
+	current := m.currentReasoningEffort()
+	m.reasoningEffort = current
+	selected := 0
+	for i, opt := range reasoningEffortOptions() {
+		if opt.Value == current {
+			selected = i
+			break
+		}
+	}
+	m.effortPicker = &ActiveEffortPicker{Selected: selected}
+	m.updateLayout()
+}
+
+// mutateSessionSettings updates only the requested session settings, preserving
+// all other fields already stored on the session.
+func (m *tuiModel) mutateSessionSettings(mutate func(*core.SessionSettings)) error {
+	if m.client == nil || m.sessionID == "" {
+		return nil
+	}
+	ctx := context.Background()
+	saved, err := m.client.GetSession(ctx, m.sessionID)
+	if err != nil {
+		return err
+	}
+	settings := saved.Settings
+	mutate(&settings)
+	return m.client.SetSessionSettings(ctx, m.sessionID, settings)
+}
+
+// applyReasoningEffort persists and applies a reasoning-effort level.
+func (m *tuiModel) applyReasoningEffort(value string) (tea.Model, tea.Cmd) {
+	if err := m.mutateSessionSettings(func(settings *core.SessionSettings) {
+		settings.ReasoningEffort = value
+	}); err != nil {
+		m.addSystemEntry("Failed to update reasoning effort: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
+	m.reasoningEffort = value
+	display := value
+	if display == "" {
+		display = "default"
+	}
+	m.addSystemEntry(fmt.Sprintf("Reasoning effort set to `%s`.", display))
+	m.updateLayout()
+	return m, nil
+}
+
+// handleEffortCommand opens the interactive effort picker, or sets a level directly
+// when an explicit level is supplied.
+func (m *tuiModel) handleEffortCommand(parts []string) (tea.Model, tea.Cmd) {
+	if len(parts) == 1 {
+		m.openEffortPicker()
+		return m, nil
+	}
+	value, ok := normalizeReasoningEffort(parts[1])
+	if !ok {
+		m.addSystemEntry(fmt.Sprintf("Invalid reasoning effort `%s`. Valid levels: `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.", parts[1]))
+		return m, nil
+	}
+	return m.applyReasoningEffort(value)
+}

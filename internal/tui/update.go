@@ -86,7 +86,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		if msg.events == nil {
+		if msg.event.Kind == "" && msg.events == nil {
 			return m, nil
 		}
 		var mod tea.Model
@@ -223,11 +223,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionTitle = msg.session.Title
+		m.syncTerminalTitle()
 		m.entries = nil
 		m.invalidateEntryCache()
 		m.activeQuestion = nil
 		m.activeApproval = nil
 		m.activePlanReview = nil
+		m.effortPicker = nil
 		m.running = false
 		m.currentStreamText = ""
 		m.refreshViewportContent()
@@ -245,11 +247,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionTitle = msg.session.Title
+		m.syncTerminalTitle()
 		m.entries = nil
 		m.invalidateEntryCache()
 		m.activeQuestion = nil
 		m.activeApproval = nil
 		m.activePlanReview = nil
+		m.effortPicker = nil
 		m.running = false
 		m.currentStreamText = ""
 		m.refreshViewportContent()
@@ -927,6 +931,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.activeApproval.Selected = 1
 			return m.resolveActiveApproval()
 		}
+		if m.effortPicker != nil {
+			m.effortPicker = nil
+			m.updateLayout()
+			return m, nil
+		}
 		if m.activePlanReview != nil {
 			m.activePlanReview = nil
 			m.updateLayout()
@@ -1247,6 +1256,51 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.activeQuestion.Selected = idx
 					m.updateLayout()
 					return m, nil
+				}
+			}
+		}
+		return m, nil
+	}
+
+	if m.effortPicker != nil {
+		options := reasoningEffortOptions()
+		switch keyStr {
+		case "esc", "ctrl+c", "q":
+			m.effortPicker = nil
+			m.updateLayout()
+			return m, nil
+		case "up", "k", "ctrl+p":
+			if m.effortPicker.Selected > 0 {
+				m.effortPicker.Selected--
+			} else {
+				m.effortPicker.Selected = len(options) - 1
+			}
+			m.updateLayout()
+			return m, nil
+		case "down", "j", "ctrl+n":
+			if m.effortPicker.Selected < len(options)-1 {
+				m.effortPicker.Selected++
+			} else {
+				m.effortPicker.Selected = 0
+			}
+			m.updateLayout()
+			return m, nil
+		case "enter":
+			if m.effortPicker.Selected >= 0 && m.effortPicker.Selected < len(options) {
+				value := options[m.effortPicker.Selected].Value
+				m.effortPicker = nil
+				return m.applyReasoningEffort(value)
+			}
+			m.effortPicker = nil
+			m.updateLayout()
+			return m, nil
+		default:
+			if len(keyStr) == 1 && keyStr[0] >= '1' && keyStr[0] <= '9' {
+				idx := int(keyStr[0] - '1')
+				if idx < len(options) {
+					value := options[idx].Value
+					m.effortPicker = nil
+					return m.applyReasoningEffort(value)
 				}
 			}
 		}
@@ -1941,5 +1995,3 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 	m.addSystemEntry("No thinking/reasoning blocks found in this session.")
 	return m, nil
 }
-
-

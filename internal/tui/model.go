@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -24,41 +26,43 @@ const (
 )
 
 type tuiModel struct {
-	client            *core.Core
-	runtime           *core.SessionRuntime
-	workspace         string
-	sessionID         string
-	sessionTitle      string
-	currentModel      string
-	permissionMode    core.PermissionMode
-	planMode          bool
-	savedMode         core.PermissionMode
-	width             int
-	height            int
-	composer          textarea.Model
-	viewport          viewport.Model
-	entries           []TranscriptEntry
-	running           bool
-	taskStartedAt     time.Time
-	activeQuestion    *ActiveQuestion
-	activeApproval     *ActiveApproval
-	activePlanReview   *ActivePlanReview
-	activeRecovery     *ActiveRecovery
-	activeToolRecovery *ActiveToolRecovery
-	pausedCheckpoint    *PausedCheckpoint
-	activePlanExecution *ActivePlanExecution
-	queuedTurns         []QueuedItem
-	autocompleteOpen  bool
-	autocompleteMode  AutocompleteMode
-	autocompleteItems []AutocompleteItem
-	autocompleteIndex int
-	autocompleteStart int
-	autocompleteEnd   int
-	fileScanner       *WorkspaceFileScanner
-	scrolledUp        bool
-	runningExecution  string
-	runtimeCancel     context.CancelFunc
-	statusMessage     string
+	client                 *core.Core
+	runtime                *core.SessionRuntime
+	workspace              string
+	sessionID              string
+	sessionTitle           string
+	currentModel           string
+	currentModelProfile    string
+	permissionMode         core.PermissionMode
+	planMode               bool
+	savedMode              core.PermissionMode
+	width                  int
+	height                 int
+	composer               textarea.Model
+	viewport               viewport.Model
+	entries                []TranscriptEntry
+	running                bool
+	taskStartedAt          time.Time
+	activeQuestion         *ActiveQuestion
+	activeApproval         *ActiveApproval
+	activePlanReview       *ActivePlanReview
+	effortPicker           *ActiveEffortPicker
+	activeRecovery         *ActiveRecovery
+	activeToolRecovery     *ActiveToolRecovery
+	pausedCheckpoint       *PausedCheckpoint
+	activePlanExecution    *ActivePlanExecution
+	queuedTurns            []QueuedItem
+	autocompleteOpen       bool
+	autocompleteMode       AutocompleteMode
+	autocompleteItems      []AutocompleteItem
+	autocompleteIndex      int
+	autocompleteStart      int
+	autocompleteEnd        int
+	fileScanner            *WorkspaceFileScanner
+	scrolledUp             bool
+	runningExecution       string
+	runtimeCancel          context.CancelFunc
+	statusMessage          string
 	streamActive           bool
 	currentStreamText      string
 	currentReasoningText   string
@@ -81,8 +85,22 @@ type tuiModel struct {
 	cachedTokens         int64
 	reasoningTokens      int64
 	contextWindow        int64
+	lastInputTokens      int64
 	estimatedInputTokens int64
 	seededSessionUsage   bool
+
+	reasoningEffort string
+
+	// Streaming and generation diagnostics
+	turnStreamTokens       int64
+	turnStreamStartTime    time.Time
+	streamFirstTokenTime   time.Time
+	streamLastTokenTime    time.Time
+	streamGenerationTokens int64
+	lastTokensPerSec       float64
+
+	// Terminal output writer for escape sequences
+	output io.Writer
 
 	// Mouse text selection and copy feedback
 	isSelecting           bool
@@ -144,7 +162,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 
 	var entries []TranscriptEntry
 	title := ""
-	var totalIn, totalOut, cached, reasoning int64
+	var totalIn, totalOut, cached, reasoning, lastIn, ctxWin int64
+	var effort, modelProfile string
 	if client != nil && sessionID != "" {
 		if saved, err := client.GetSession(context.Background(), sessionID); err == nil {
 			title = saved.Title
@@ -152,7 +171,16 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 			totalOut = saved.SessionUsage.Output
 			cached = saved.SessionUsage.Cached
 			reasoning = saved.SessionUsage.Reasoning
+			effort = saved.Settings.ReasoningEffort
+			modelProfile = saved.Settings.ModelProfile
 			entries = transcriptFromHistory(saved.History)
+			if len(saved.UsageRequests) > 0 {
+				lastReq := saved.UsageRequests[len(saved.UsageRequests)-1]
+				lastIn = lastReq.Usage.InputTokens
+				if lastReq.ContextWindow > 0 {
+					ctxWin = lastReq.ContextWindow
+				}
+			}
 		}
 	}
 	if entries == nil {
@@ -160,6 +188,9 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	}
 	if strings.TrimSpace(title) == "" {
 		title = deriveSessionTitleFromEntries(entries)
+	}
+	if strings.TrimSpace(modelProfile) == "" {
+		modelProfile = currentModel
 	}
 
 	var historyPrompts []string
@@ -170,32 +201,60 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	}
 
 	m := &tuiModel{
-		client:             client,
-		runtime:            runtime,
-		workspace:          workspace,
-		sessionID:          sessionID,
-		sessionTitle:       title,
-		currentModel:       currentModel,
-		permissionMode:     permMode,
-		savedMode:          permMode,
-		totalInputTokens:   totalIn,
-		totalOutputTokens:  totalOut,
-		cachedTokens:       cached,
-		reasoningTokens:    reasoning,
-		seededSessionUsage: totalIn > 0 || totalOut > 0 || cached > 0 || reasoning > 0,
-		composer:           comp,
-		viewport:           vp,
-		entries:            entries,
+		client:                 client,
+		runtime:                runtime,
+		workspace:              workspace,
+		sessionID:              sessionID,
+		sessionTitle:           title,
+		currentModel:           currentModel,
+		currentModelProfile:    modelProfile,
+		reasoningEffort:        effort,
+		permissionMode:         permMode,
+		savedMode:              permMode,
+		totalInputTokens:       totalIn,
+		totalOutputTokens:      totalOut,
+		cachedTokens:           cached,
+		reasoningTokens:        reasoning,
+		contextWindow:          ctxWin,
+		lastInputTokens:        lastIn,
+		seededSessionUsage:     totalIn > 0 || totalOut > 0 || cached > 0 || reasoning > 0,
+		composer:               comp,
+		viewport:               vp,
+		entries:                entries,
 		promptHistory:          historyPrompts,
 		historyIndex:           len(historyPrompts),
 		fileScanner:            NewWorkspaceFileScanner(workspace),
 		reasoningLiveCollapsed: true,
 		transcriptDirty:        true,
+		output:                 os.Stdout,
 	}
 
 	m.applyThemeStyles()
 	m.checkPendingState(context.Background())
 	return m
+}
+
+// currentReasoningEffort returns the configured reasoning effort for the current session.
+func (m *tuiModel) currentReasoningEffort() string {
+	if m.reasoningEffort != "" {
+		return m.reasoningEffort
+	}
+	if m.client != nil && m.sessionID != "" {
+		if saved, err := m.client.GetSession(context.Background(), m.sessionID); err == nil {
+			return saved.Settings.ReasoningEffort
+		}
+	}
+	return ""
+}
+
+// maxParallelAgents returns the maximum configured parallel subagent count.
+func (m *tuiModel) maxParallelAgents() int {
+	if m.client != nil {
+		if limit := m.client.MaxParallelAgents(); limit > 0 {
+			return limit
+		}
+	}
+	return 4
 }
 
 func (m *tuiModel) invalidateEntryCache() {
@@ -212,6 +271,90 @@ func (m *tuiModel) getFileScanner() *WorkspaceFileScanner {
 		m.fileScanner = NewWorkspaceFileScanner(ws)
 	}
 	return m.fileScanner
+}
+
+// currentModelDisplayName returns the user-friendly display name of the active model.
+// If displayName is configured in the model profile, it returns displayName;
+// otherwise it falls back to model name or profile name.
+func (m *tuiModel) currentModelDisplayName() string {
+	profile := m.currentModelProfile
+	cur := m.currentModel
+	if cur == "" && m.client != nil {
+		cur = m.client.ModelForSession(context.Background(), m.sessionID)
+	}
+	// Prefer the exact profile ID; model IDs may be shared by several profiles.
+	// Example: both "deepseek-flash" and "anthropic-model" can run "deepseek-flash".
+	lookup := strings.TrimSpace(profile)
+	if lookup == "" {
+		lookup = cur
+	}
+	if lookup == "" {
+		return ""
+	}
+	if m.client != nil {
+		profiles := m.client.ListModelProfiles()
+		for _, p := range profiles {
+			if strings.EqualFold(p.Profile, lookup) {
+				return modelProfileLabel(p)
+			}
+		}
+		for _, p := range profiles {
+			if strings.EqualFold(p.Model, lookup) {
+				return modelProfileLabel(p)
+			}
+		}
+	}
+	return lookup
+}
+
+// modelProfileLabel resolves the best display label for a model profile.
+func modelProfileLabel(p core.ModelOption) string {
+	if strings.TrimSpace(p.DisplayName) != "" {
+		return p.DisplayName
+	}
+	if strings.TrimSpace(p.Model) != "" {
+		return p.Model
+	}
+	return p.Profile
+}
+
+// currentReasoningEffortLabel returns the effort level shown next to the model name.
+func (m *tuiModel) currentReasoningEffortLabel() string {
+	level := strings.TrimSpace(m.reasoningEffort)
+	if level == "" {
+		return "default"
+	}
+	return level
+}
+
+// desiredTerminalTitle computes the expected window/tab title:
+// displays "lune" initially/for untitled sessions, and "<title> | lune" when titled.
+func (m *tuiModel) desiredTerminalTitle() string {
+	title := strings.TrimSpace(m.sessionTitle)
+	if title == "" {
+		title = strings.TrimSpace(deriveSessionTitleFromEntries(m.entries))
+	}
+	if title == "" || title == "<untitled>" {
+		return AppName
+	}
+	return title + " | " + AppName
+}
+
+// syncTerminalTitle writes the OSC 0/2 escape sequence to update the terminal window/tab title.
+func (m *tuiModel) syncTerminalTitle() {
+	out := m.output
+	if out == nil {
+		out = os.Stdout
+	}
+	_, _ = io.WriteString(out, ansi.SetWindowTitle(m.desiredTerminalTitle()))
+}
+
+// updateTerminalTitleCmd returns a Bubbletea command that synchronizes the terminal title.
+func (m *tuiModel) updateTerminalTitleCmd() tea.Cmd {
+	return func() tea.Msg {
+		m.syncTerminalTitle()
+		return nil
+	}
 }
 
 func (m *tuiModel) applyThemeStyles() {
@@ -246,6 +389,7 @@ func (m *tuiModel) Init() tea.Cmd {
 		textarea.Blink,
 		tea.RequestBackgroundColor,
 		m.subscribeRuntimeEvents(),
+		m.updateTerminalTitleCmd(),
 	)
 }
 
@@ -284,6 +428,8 @@ func (m *tuiModel) updateLayout() {
 		modalHeight = lipgloss.Height(renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)) + 1
 	} else if m.activeQuestion != nil {
 		modalHeight = lipgloss.Height(renderQuestionPanel(m.activeQuestion, contentWidth)) + 1
+	} else if m.effortPicker != nil {
+		modalHeight = lipgloss.Height(renderEffortPicker(m, contentWidth)) + 1
 	} else if m.activeApproval != nil {
 		modalHeight = lipgloss.Height(renderApprovalPanel(m.activeApproval, contentWidth)) + 1
 	} else if m.activePlanReview != nil {
@@ -603,6 +749,8 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, renderToolRecoveryPanel(m.activeToolRecovery, contentWidth))
 	} else if m.activeQuestion != nil {
 		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
+	} else if m.effortPicker != nil {
+		sections = append(sections, renderEffortPicker(m, contentWidth))
 	} else if m.activeApproval != nil {
 		sections = append(sections, renderApprovalPanel(m.activeApproval, contentWidth))
 	} else if m.activePlanReview != nil {
@@ -667,6 +815,11 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 			m.totalOutputTokens = saved.SessionUsage.Output
 			m.cachedTokens = saved.SessionUsage.Cached
 			m.reasoningTokens = saved.SessionUsage.Reasoning
+			m.currentModelProfile = saved.Settings.ModelProfile
+			m.reasoningEffort = saved.Settings.ReasoningEffort
+			if strings.TrimSpace(m.currentModelProfile) == "" {
+				m.currentModelProfile = m.currentModel
+			}
 			m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 			m.entries = transcriptFromHistory(saved.History)
 			if m.entries == nil {
@@ -698,6 +851,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	} else {
 		m.pausedCheckpoint = nil
 	}
+	m.syncTerminalTitle()
 	return nil
 }
 
@@ -860,6 +1014,9 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 					})
 				}
 				continue
+			}
+			if kind == KindAssistant {
+				text = cleanProposedPlanTags(text)
 			}
 			entries = append(entries, TranscriptEntry{
 				ID:        fmt.Sprintf("hist-%d", i),

@@ -35,11 +35,11 @@ func TestEmptyStateClean(t *testing.T) {
 func TestHeaderRendering(t *testing.T) {
 	header := renderHeader("D:\\Git\\test-repo")
 	stripped := ansi.Strip(header)
-	if !strings.Contains(stripped, "LuneAgent") {
-		t.Errorf("expected LuneAgent in header, got: %s", stripped)
+	if !strings.Contains(stripped, ">_ lune") {
+		t.Errorf("expected '>_ lune' in header, got: %s", stripped)
 	}
-	if !strings.Contains(stripped, "(v0.1.0)") {
-		t.Errorf("expected version (v0.1.0) in header, got: %s", stripped)
+	if strings.Contains(stripped, "v0.1.0") || strings.Contains(stripped, "LuneAgent") {
+		t.Errorf("expected no version or old LuneAgent brand in header, got: %s", stripped)
 	}
 	if !strings.Contains(stripped, "D:\\Git\\test-repo") {
 		t.Errorf("expected workspace in header, got: %s", stripped)
@@ -2521,14 +2521,14 @@ func TestExportMultiFormat(t *testing.T) {
 				Timestamp: time.Now(),
 			},
 			{
-				ID:          "t1",
-				Kind:        KindTool,
-				ToolName:    "run_command",
-				ToolCommand: "go test ./...",
-				ToolArgs:    `{"cmd":"go test"}`,
-				ToolOutput:  "PASS\nok\n",
+				ID:           "t1",
+				Kind:         KindTool,
+				ToolName:     "run_command",
+				ToolCommand:  "go test ./...",
+				ToolArgs:     `{"cmd":"go test"}`,
+				ToolOutput:   "PASS\nok\n",
 				ToolExitCode: &exitZero,
-				Timestamp:   time.Now(),
+				Timestamp:    time.Now(),
 			},
 			{
 				ID:        "a1",
@@ -3802,4 +3802,445 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 	}
 }
 
+func TestPlanTagStripping(t *testing.T) {
+	raw := "Here is the proposal:\n<proposed_plan>\n1. Step One\n2. Step Two\n</proposed_plan>\nLet me know!"
+	extracted, cleaned := extractProposedPlan(raw)
+	if strings.Contains(extracted, "<proposed_plan>") || strings.Contains(extracted, "</proposed_plan>") {
+		t.Fatalf("extracted plan contains raw tags: %q", extracted)
+	}
+	if !strings.Contains(extracted, "1. Step One") {
+		t.Fatalf("expected plan content in extracted, got: %q", extracted)
+	}
+	if strings.Contains(cleaned, "<proposed_plan>") || strings.Contains(cleaned, "</proposed_plan>") {
+		t.Fatalf("cleaned surrounding contains raw tags: %q", cleaned)
+	}
 
+	stripped := stripProposedPlan(raw)
+	if strings.Contains(stripped, "<proposed_plan>") || strings.Contains(stripped, "</proposed_plan>") {
+		t.Fatalf("stripProposedPlan leaked raw tags: %q", stripped)
+	}
+
+	// Test renderEntry for KindPlan and KindAssistant
+	planEntry := TranscriptEntry{
+		Kind: KindPlan,
+		Text: "<proposed_plan>\nImplement auth service\n</proposed_plan>",
+	}
+	renderedPlan := ansi.Strip(renderEntry(planEntry, 80))
+	if strings.Contains(renderedPlan, "<proposed_plan>") || strings.Contains(renderedPlan, "</proposed_plan>") {
+		t.Fatalf("renderEntry(KindPlan) leaked plan tags: %q", renderedPlan)
+	}
+	if !strings.Contains(renderedPlan, "Implement auth service") {
+		t.Fatalf("renderEntry(KindPlan) missing text: %q", renderedPlan)
+	}
+
+	asstEntry := TranscriptEntry{
+		Kind: KindAssistant,
+		Text: "Notice <proposed_plan> in text</proposed_plan>",
+	}
+	renderedAsst := ansi.Strip(renderEntry(asstEntry, 80))
+	if strings.Contains(renderedAsst, "<proposed_plan>") || strings.Contains(renderedAsst, "</proposed_plan>") {
+		t.Fatalf("renderEntry(KindAssistant) leaked plan tags: %q", renderedAsst)
+	}
+}
+
+func TestHeaderBrandLune(t *testing.T) {
+	rendered := renderHeader("/my/project")
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, ">_ lune") {
+		t.Fatalf("expected '>_ lune' in header, got: %q", stripped)
+	}
+	if strings.Contains(stripped, "v0.1.0") || strings.Contains(stripped, "LuneAgent") {
+		t.Fatalf("header must not contain version or old brand: %q", stripped)
+	}
+	if !strings.Contains(stripped, "/my/project") {
+		t.Fatalf("header missing workspace: %q", stripped)
+	}
+}
+
+func TestFooterLiveTokenDiagnostics(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.estimatedInputTokens = 12400
+	m.contextWindow = 200000
+	m.totalInputTokens = 15000
+	m.cachedTokens = 12750 // 85% cache
+	m.totalOutputTokens = 9500
+	m.lastTokensPerSec = 48.5
+
+	summary := formatContextAndTokenSummary(m, 120)
+	if !strings.Contains(summary, "Context: 12.4k/200k (6.2%)") {
+		t.Fatalf("expected used/total ctx in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Cache: 85%") {
+		t.Fatalf("expected cache 85%% in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "48.5 tok/s") {
+		t.Fatalf("expected 48.5 tok/s in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Total: 24.5k tok") {
+		t.Fatalf("expected Total: 24.5k tok in summary, got: %q", summary)
+	}
+
+	footer := ansi.Strip(renderFooter(m, 120))
+	if !strings.Contains(footer, "Context: 12.4k/200k (6.2%)") {
+		t.Fatalf("expected footer line 2 to show context metrics, got:\n%s", footer)
+	}
+	if !strings.Contains(footer, "48.5 tok/s") || !strings.Contains(footer, "Total: 24.5k tok") {
+		t.Fatalf("expected footer line 2 to show speed and total, got:\n%s", footer)
+	}
+}
+
+func TestTerminalTitleUpdates(t *testing.T) {
+	var buf strings.Builder
+	m := newTUIModel(nil, nil, "sess-1")
+	m.output = &buf
+
+	// 1. Initial untitled session: title is "lune"
+	if got := m.desiredTerminalTitle(); got != "lune" {
+		t.Fatalf("expected initial title 'lune', got: %q", got)
+	}
+	m.syncTerminalTitle()
+	if !strings.Contains(buf.String(), "lune") {
+		t.Fatalf("expected OSC sequence to contain 'lune', got: %q", buf.String())
+	}
+
+	// 2. Set title: title becomes "<title> | lune"
+	buf.Reset()
+	m.sessionTitle = "Refactor Architecture"
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
+		t.Fatalf("expected title 'Refactor Architecture | lune', got: %q", got)
+	}
+	m.syncTerminalTitle()
+	if !strings.Contains(buf.String(), "Refactor Architecture | lune") {
+		t.Fatalf("expected OSC sequence to contain 'Refactor Architecture | lune', got: %q", buf.String())
+	}
+}
+
+func TestModelDisplayName(t *testing.T) {
+	m := newTUIModel(nil, nil, "sess-1")
+	m.currentModel = "claude-3-7-sonnet"
+
+	// When no client or profiles loaded, fallback to currentModel
+	if got := m.currentModelDisplayName(); got != "claude-3-7-sonnet" {
+		t.Fatalf("expected fallback model name, got: %q", got)
+	}
+}
+
+func TestContextMetricsUseLatestPromptNotCumulative(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.contextWindow = 1000000
+	m.lastInputTokens = 42000
+	m.totalInputTokens = 794000
+	m.totalOutputTokens = 12000
+	m.cachedTokens = 754300 // ~95%
+	m.lastTokensPerSec = 20.4
+
+	summary := formatContextAndTokenSummary(m, 120)
+	if !strings.Contains(summary, "Context: 42k/1M (4.2%)") {
+		t.Fatalf("expected Context to use lastInputTokens (42k/1M (4.2%%)), got: %q", summary)
+	}
+	if !strings.Contains(summary, "Total: 806k tok") {
+		t.Fatalf("expected Total to show cumulative sum (806k tok), got: %q", summary)
+	}
+	if !strings.Contains(summary, "Cache: 95%") {
+		t.Fatalf("expected Cache: 95%%, got: %q", summary)
+	}
+}
+
+func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"models":{"alpha":{"provider":"host","model":"shared-model","displayName":"Alpha"},"beta":{"provider":"host","model":"shared-model","displayName":"Beta"}},"defaultModel":"alpha","maxParallelAgents":8}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create core: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	sess, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUIModel(client, nil, sess.ID)
+
+	// Both profiles run the same model ID; the footer must still identify the
+	// active profile, not whichever profile happens to sort first.
+	m.handleSlashCommand("/model beta")
+	if m.currentModelProfile != "beta" {
+		t.Fatalf("expected active profile beta, got %q", m.currentModelProfile)
+	}
+	if got := m.currentModelDisplayName(); got != "Beta" {
+		t.Fatalf("expected display name Beta, got %q", got)
+	}
+
+	m.handleSlashCommand("/effort")
+	for i := 0; i < 5; i++ {
+		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	saved, err := client.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Settings.ModelProfile != "beta" {
+		t.Fatalf("effort change must not switch model profile, got %q", saved.Settings.ModelProfile)
+	}
+	if saved.Settings.ReasoningEffort != "high" {
+		t.Fatalf("expected persisted effort high, got %q", saved.Settings.ReasoningEffort)
+	}
+	footer := ansi.Strip(renderFooter(m, 300))
+	if !strings.Contains(footer, "Beta [effort: high]") {
+		t.Fatalf("expected footer to show model and effort, got:\n%s", footer)
+	}
+	if !strings.Contains(footer, "🤖 0 used · 8 max subagents") {
+		t.Fatalf("expected footer to show configured subagent limit, got:\n%s", footer)
+	}
+}
+
+func TestEffortPickerRendering(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.reasoningEffort = "high"
+	m.effortPicker = &ActiveEffortPicker{Selected: 5}
+	rendered := ansi.Strip(renderEffortPicker(m, 80))
+	for _, want := range []string{"Reasoning effort", "6. high", "✓ current", "enter apply"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected effort picker to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestFooterSubagentsAlwaysVisible(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	footer := ansi.Strip(renderFooter(m, 120))
+	if !strings.Contains(footer, "🤖 0 used · 4 max subagents") {
+		t.Fatalf("expected footer to show 🤖 0 used · 4 max subagents when idle, got:\n%s", footer)
+	}
+}
+
+func TestFooterSubagentCountReportsSessionUsage(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.entries = []TranscriptEntry{
+		{Kind: KindSubagent, AgentID: "a", AgentName: "researcher", SubagentRunning: false},
+		{Kind: KindSubagent, AgentID: "b", AgentName: "reviewer", SubagentRunning: true},
+	}
+	m.width = 140
+	footer := ansi.Strip(renderFooter(m, 140))
+	if !strings.Contains(footer, "🤖 2 used · 4 max subagents") {
+		t.Fatalf("expected footer to show 2 used · 4 max subagents, got:\n%s", footer)
+	}
+}
+
+func TestFooterShowsReasoningEffortBesideModel(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.currentModel = "deepseek-flash"
+	m.currentModelProfile = "deepseek-flash"
+	m.reasoningEffort = "high"
+	m.width = 140
+	footer := ansi.Strip(renderFooter(m, 140))
+	if !strings.Contains(footer, "deepseek-flash [effort: high]") {
+		t.Fatalf("expected reasoning effort beside the model name, got:\n%s", footer)
+	}
+
+	m.reasoningEffort = ""
+	footer = ansi.Strip(renderFooter(m, 140))
+	if !strings.Contains(footer, "deepseek-flash [effort: default]") {
+		t.Fatalf("expected default effort label, got:\n%s", footer)
+	}
+}
+
+func TestGreetingWithDanglingPlanTagDoesNotOpenPlanReview(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.currentStreamText = "你好！我是 Plan 模式下的规划助手。你说明目标后，我会先阅读相关代码，再用 <proposed_plan> 给你完整方案。"
+	m.finalizeTurnOutput("", nil, "exec-1")
+
+	if m.activePlanReview != nil {
+		t.Fatalf("expected no plan review for a greeting, got: %+v", m.activePlanReview)
+	}
+	var assistantText string
+	for _, entry := range m.entries {
+		if entry.Kind == KindPlan {
+			t.Fatalf("expected no plan entry for a greeting, got: %q", entry.Text)
+		}
+		if entry.Kind == KindAssistant {
+			assistantText = entry.Text
+		}
+	}
+	if strings.Contains(assistantText, "<proposed_plan>") {
+		t.Fatalf("expected raw plan tag to be removed, got: %q", assistantText)
+	}
+	if !strings.Contains(assistantText, "给你完整方案。") {
+		t.Fatalf("expected the reply's prose to be preserved, got: %q", assistantText)
+	}
+}
+
+func TestCompleteCoreProposedPlanOpensPlanReview(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	plan := "## 实施步骤\n1. 修改 runtime.go\n2. 运行测试"
+	m.finalizeTurnOutput(plan, nil, "exec-2")
+
+	if m.activePlanReview == nil {
+		t.Fatalf("expected a plan review for a complete Core-provided plan")
+	}
+	if m.activePlanReview.Text != plan {
+		t.Fatalf("unexpected plan review text: %q", m.activePlanReview.Text)
+	}
+	foundPlan := false
+	for _, entry := range m.entries {
+		if entry.Kind == KindPlan && entry.Text == plan {
+			foundPlan = true
+		}
+	}
+	if !foundPlan {
+		t.Fatalf("expected a plan transcript entry, got: %+v", m.entries)
+	}
+}
+
+func TestPlanMarkupInTextWithoutCorePlanDoesNotOpenReview(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.currentStreamText = "Here you go:\n<proposed_plan>1. Do it</proposed_plan>"
+	m.finalizeTurnOutput("", nil, "exec-3")
+
+	if m.activePlanReview != nil {
+		t.Fatalf("expected no review when the Core returned no ProposedPlan, got: %+v", m.activePlanReview)
+	}
+	for _, entry := range m.entries {
+		if entry.Kind == KindPlan {
+			t.Fatalf("expected no plan entry without a Core plan, got: %q", entry.Text)
+		}
+		if entry.Kind == KindAssistant && strings.Contains(entry.Text, "<proposed_plan>") {
+			t.Fatalf("expected raw plan markup to be removed, got: %q", entry.Text)
+		}
+	}
+}
+
+func TestSummarizeToolRoundRecognizesAskUserAndSubagents(t *testing.T) {
+	entries := []TranscriptEntry{
+		{Kind: KindTool, ToolName: "list_dir"},
+		{Kind: KindTool, ToolName: "read_file"},
+		{Kind: KindTool, ToolName: "grep"},
+		{Kind: KindTool, ToolName: "ask_user"},
+		{Kind: KindTool, ToolName: "delegate_team"},
+	}
+	summary := summarizeToolRound(entries)
+	if !strings.Contains(summary, "Explored 1 directory, 1 file, 1 search") {
+		t.Fatalf("expected file exploration in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "asked 1 question") {
+		t.Fatalf("expected 'asked 1 question' in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "ran 1 subagent") {
+		t.Fatalf("expected 'ran 1 subagent' in summary, got: %q", summary)
+	}
+}
+
+func TestEffortCommandOpensInteractivePicker(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+
+	// 1. Initial effort is default
+	if got := m.currentReasoningEffort(); got != "" {
+		t.Fatalf("expected empty effort initially, got: %q", got)
+	}
+
+	// 2. /effort without arguments opens the interactive picker instead of printing usage.
+	m.handleSlashCommand("/effort")
+	if m.effortPicker == nil {
+		t.Fatalf("expected /effort to open the interactive effort picker")
+	}
+	if m.effortPicker.Selected != 0 {
+		t.Fatalf("expected picker to start at current level (default), got %d", m.effortPicker.Selected)
+	}
+	if len(m.entries) != 0 {
+		t.Fatalf("expected no system entry when opening the picker, got: %+v", m.entries)
+	}
+
+	// 3. Navigate down to "high" (index 5) and apply with Enter.
+	for i := 0; i < 5; i++ {
+		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+		t.Fatalf("expected picker selection at high, got %+v", m.effortPicker)
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.effortPicker != nil {
+		t.Fatalf("expected picker to close after applying")
+	}
+	if m.reasoningEffort != "high" {
+		t.Fatalf("expected reasoningEffort 'high', got: %q", m.reasoningEffort)
+	}
+	last := m.entries[len(m.entries)-1]
+	if !strings.Contains(last.Text, "Reasoning effort set to `high`") {
+		t.Fatalf("expected set confirmation, got: %q", last.Text)
+	}
+
+	// 4. Reopening the picker selects the active level.
+	m.handleSlashCommand("/effort")
+	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+		t.Fatalf("expected picker to remember active level high, got %+v", m.effortPicker)
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.effortPicker != nil {
+		t.Fatalf("expected Esc to close the picker")
+	}
+
+	// 5. Direct level argument still works for quick, scriptable changes.
+	m.handleSlashCommand("/effort default")
+	if m.reasoningEffort != "" {
+		t.Fatalf("expected reasoningEffort empty, got: %q", m.reasoningEffort)
+	}
+	last = m.entries[len(m.entries)-1]
+	if !strings.Contains(last.Text, "Reasoning effort set to `default`") {
+		t.Fatalf("expected reset confirmation, got: %q", last.Text)
+	}
+
+	// 6. Invalid effort level
+	m.handleSlashCommand("/effort super-turbo")
+	last = m.entries[len(m.entries)-1]
+	if !strings.Contains(last.Text, "Invalid reasoning effort `super-turbo`") {
+		t.Fatalf("expected invalid effort error, got: %q", last.Text)
+	}
+}
+
+func TestEstimateDeltaTokens(t *testing.T) {
+	// Empty delta
+	if got := estimateDeltaTokens(""); got != 0 {
+		t.Fatalf("expected 0 tokens for empty, got %d", got)
+	}
+
+	// ASCII English: "Hello world" (11 chars) -> approx 2-5 tokens
+	if got := estimateDeltaTokens("Hello world"); got < 2 || got > 5 {
+		t.Fatalf("expected 2-5 tokens for 'Hello world', got %d", got)
+	}
+
+	// Chinese: "你好世界" (4 chars) -> approx 5-7 tokens (average 1.4 per char)
+	if got := estimateDeltaTokens("你好世界"); got < 5 || got > 7 {
+		t.Fatalf("expected 5-7 tokens for '你好世界', got %d", got)
+	}
+}
+
+func TestStreamingGenerationSpeedCalculation(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	// Simulate user submit 5 seconds ago (e.g. prompt overhead, queue, network TTFT)
+	m.turnStreamStartTime = time.Now().Add(-5 * time.Second)
+
+	// Stream first token arrives now (100 tokens generated in 0.4s)
+	m.streamFirstTokenTime = time.Now().Add(-400 * time.Millisecond)
+
+	// Usage event arrives with 100 output tokens
+	usageEvent := core.Event{
+		Kind: core.EventUsage,
+		Usage: core.Usage{
+			OutputTokens: 100,
+		},
+	}
+	res, _ := m.Update(runtimeEventMsg{event: usageEvent})
+	updated := res.(*tuiModel)
+
+	// 100 tokens / 0.4s = 250 tok/s! Should NOT be 100 / 5.4s = 18 tok/s!
+	if updated.lastTokensPerSec < 200.0 || updated.lastTokensPerSec > 300.0 {
+		t.Fatalf("expected generation speed ~250 tok/s, got %.1f tok/s", updated.lastTokensPerSec)
+	}
+}

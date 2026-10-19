@@ -130,6 +130,18 @@ type ActivePlanReview struct {
 	Selected    int // 0: implement, 1: clear & implement, 2: cancel/stay
 }
 
+// ReasoningEffortOption describes one selectable reasoning effort level.
+type ReasoningEffortOption struct {
+	Value       string // empty means provider default (omit effort)
+	Label       string
+	Description string
+}
+
+// ActiveEffortPicker holds the state of the interactive reasoning-effort picker.
+type ActiveEffortPicker struct {
+	Selected int
+}
+
 // PlanStepStatus represents the execution state of an individual plan step.
 type PlanStepStatus int
 

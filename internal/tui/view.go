@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -12,12 +11,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// renderHeader renders the top left LuneAgent branding.
+// renderHeader renders the top left branding.
 func renderHeader(workspace string) string {
 	prompt := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(">_")
 	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render(AppName)
-	version := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render(fmt.Sprintf("(%s)", AppVersion))
-	top := fmt.Sprintf("%s %s %s", prompt, brand, version)
+	top := fmt.Sprintf("%s %s", prompt, brand)
 
 	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Underline(true).Render(workspace)
 	return top + "\n" + cwd + "\n"
@@ -45,7 +43,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindAssistant:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		rendered := RenderMarkdown(entry.Text, width-4)
+		cleanText := cleanProposedPlanTags(entry.Text)
+		rendered := RenderMarkdown(cleanText, width-4)
 		lines := strings.Split(rendered, "\n")
 		var out []string
 		for i, line := range lines {
@@ -96,7 +95,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("• ")
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
-		rendered := RenderMarkdown(entry.Text, max(20, width-6))
+		cleanPlan := cleanProposedPlanTags(entry.Text)
+		rendered := RenderMarkdown(cleanPlan, max(20, width-6))
 		var outLines []string
 		outLines = append(outLines, bullet+title)
 		for _, line := range strings.Split(rendered, "\n") {
@@ -635,8 +635,10 @@ func summarizeToolRound(entries []TranscriptEntry) string {
 				edits++
 			case "command", "run_command", "bash", "exec_command", "shell":
 				cmds++
-			case "ask_user_question", "ask_question":
+			case "ask_user_question", "ask_question", "ask_user":
 				questions++
+			case "delegate_team":
+				subagents++
 			default:
 				otherTools++
 			}
@@ -692,8 +694,12 @@ func summarizeToolRound(entries []TranscriptEntry) string {
 		}
 		parts = append(parts, verb+plural(subagents, "subagent", "subagents"))
 	}
-	if questions > 0 && len(parts) == 0 {
-		parts = append(parts, "Asked "+plural(questions, "question", "questions"))
+	if questions > 0 {
+		verb := "asked "
+		if len(parts) == 0 {
+			verb = "Asked "
+		}
+		parts = append(parts, verb+plural(questions, "question", "questions"))
 	}
 
 	summary := strings.Join(parts, ", ")
@@ -1159,7 +1165,6 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 	return strings.Join(rows, "\n")
 }
 
-
 // renderQuestionPanel renders the clarification question card at the bottom.
 func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if len(q.Request.Questions) == 0 {
@@ -1234,6 +1239,45 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		Width(max(20, width))
 
 	return renderCardSurface(cardStyle, panelContent)
+}
+
+// renderEffortPicker renders the interactive reasoning-effort selector.
+func renderEffortPicker(m *tuiModel, width int) string {
+	title := styleTextPrimary().Bold(true).Render("Reasoning effort")
+	current := strings.TrimSpace(m.reasoningEffort)
+
+	options := reasoningEffortOptions()
+	var rows []string
+	for i, opt := range options {
+		marker := "  "
+		if i == m.effortPicker.Selected {
+			marker = "› "
+		}
+		label := fmt.Sprintf("%d. %-8s", i+1, opt.Label)
+		suffix := ""
+		if opt.Value == current {
+			suffix = "  ✓ current"
+		}
+		raw := fmt.Sprintf("%s%-42s %s%s", marker, label, opt.Description, suffix)
+		if i == m.effortPicker.Selected {
+			pad := max(0, width-lipgloss.Width(raw)-4)
+			rows = append(rows, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
+		} else {
+			labelStyled := styleTextPrimary().Render(marker + label)
+			descStyled := styleTextMuted().Render(opt.Description + suffix)
+			rows = append(rows, labelStyled+descStyled)
+		}
+	}
+
+	footer := styleTextMuted().Render("↑/↓ or 1-8 select · enter apply · esc cancel")
+	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
+
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(activeTheme().CardBg)).
+		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	return renderCardSurface(cardStyle, content)
 }
 
 // renderPlanReviewPanel renders the plan implementation options.
@@ -2046,6 +2090,103 @@ func renderComposerBand(inputView string, width int) string {
 	return strings.Join(padded, "\n")
 }
 
+// formatCompactTokens formats token counts into human-readable compact strings (e.g. 500, 12.4k, 200k, 1M).
+func formatCompactTokens(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	if n < 1000 {
+		return strconv.FormatInt(n, 10)
+	}
+	if n < 1_000_000 {
+		k := float64(n) / 1000.0
+		if k >= 100 || math.Mod(k, 1) == 0 {
+			return fmt.Sprintf("%.0fk", k)
+		}
+		str := fmt.Sprintf("%.1f", k)
+		return strings.TrimRight(strings.TrimRight(str, "0"), ".") + "k"
+	}
+	m := float64(n) / 1_000_000.0
+	if m >= 100 || math.Mod(m, 1) == 0 {
+		return fmt.Sprintf("%.0fM", m)
+	}
+	str := fmt.Sprintf("%.1f", m)
+	return strings.TrimRight(strings.TrimRight(str, "0"), ".") + "M"
+}
+
+// formatContextAndTokenSummary produces the 6 live metrics string for the footer:
+// 1. Used context
+// 2. Total context window
+// 3. Percentage
+// 4. Cache hit rate (Cache: X%)
+// 5. Generation speed (X.X tok/s)
+// 6. Cumulative session total tokens (Total: X tok)
+func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
+	usedCtx := m.lastInputTokens
+	if usedCtx == 0 {
+		usedCtx = m.estimatedInputTokens
+	}
+	totalCtx := m.contextWindow
+	if totalCtx <= 0 {
+		totalCtx = 200000 // Standard fallback context window
+	}
+
+	pct := 0.0
+	if totalCtx > 0 {
+		pct = float64(usedCtx) / float64(totalCtx) * 100.0
+		if pct > 100.0 {
+			pct = 100.0
+		}
+	}
+	ctxStr := fmt.Sprintf("Context: %s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
+
+	cachePct := 0.0
+	if m.totalInputTokens > 0 {
+		cachePct = float64(m.cachedTokens) / float64(m.totalInputTokens) * 100.0
+		if cachePct > 100.0 {
+			cachePct = 100.0
+		}
+	}
+	cacheStr := fmt.Sprintf("Cache: %.0f%%", cachePct)
+
+	var speedStr string
+	if m.lastTokensPerSec > 0 {
+		speedStr = fmt.Sprintf("%.1f tok/s", m.lastTokensPerSec)
+	} else {
+		speedStr = "0.0 tok/s"
+	}
+
+	totalToks := m.totalInputTokens + m.totalOutputTokens
+	totalStr := fmt.Sprintf("Total: %s tok", formatCompactTokens(totalToks))
+
+	full := fmt.Sprintf("%s · %s · %s · %s", ctxStr, cacheStr, speedStr, totalStr)
+	if maxWidth <= 0 || lipgloss.Width(full) <= maxWidth {
+		return full
+	}
+
+	// Graceful degradation when footer width is limited
+	withoutTotal := fmt.Sprintf("%s · %s · %s", ctxStr, cacheStr, speedStr)
+	if lipgloss.Width(withoutTotal) <= maxWidth {
+		return withoutTotal
+	}
+
+	withoutSpeed := fmt.Sprintf("%s · %s", ctxStr, cacheStr)
+	if lipgloss.Width(withoutSpeed) <= maxWidth {
+		return withoutSpeed
+	}
+
+	if lipgloss.Width(ctxStr) <= maxWidth {
+		return ctxStr
+	}
+
+	compactCtx := fmt.Sprintf("%s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
+	if lipgloss.Width(compactCtx) <= maxWidth {
+		return compactCtx
+	}
+
+	return ansi.Truncate(full, maxWidth, "…")
+}
+
 // renderFooter renders the bottom two-line status bar.
 func renderFooter(m *tuiModel, width int) string {
 	// Right side: Permission / Plan mode
@@ -2061,14 +2202,11 @@ func renderFooter(m *tuiModel, width int) string {
 	}
 	rightLen := lipgloss.Width(rightStr)
 
-	// Left side: Model · Workspace · Title (truncated so line1 never wraps)
+	// Left side: Model DisplayName · Workspace · Title (truncated so line1 never wraps)
 	var leftItems []string
-	modelName := m.currentModel
-	if modelName == "" && m.client != nil {
-		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
-	}
+	modelName := m.currentModelDisplayName()
 	if modelName != "" {
-		leftItems = append(leftItems, modelName)
+		leftItems = append(leftItems, fmt.Sprintf("%s [effort: %s]", modelName, m.currentReasoningEffortLabel()))
 	}
 	if m.workspace != "" {
 		leftItems = append(leftItems, m.workspace)
@@ -2080,13 +2218,14 @@ func renderFooter(m *tuiModel, width int) string {
 	if title != "" {
 		leftItems = append(leftItems, title)
 	}
-	if totalSubs := m.totalSubagentsCount(); totalSubs > 0 {
-		activeSubs := m.activeSubagentsCount()
-		if activeSubs > 0 {
-			leftItems = append(leftItems, fmt.Sprintf("🤖 %d/%d subagents", activeSubs, totalSubs))
-		} else {
-			leftItems = append(leftItems, fmt.Sprintf("🤖 %d subagents", totalSubs))
-		}
+	maxSubs := m.maxParallelAgents()
+	totalSubs := m.totalSubagentsCount()
+	if maxSubs > 0 {
+		// Explicit "used" wording avoids the old active/max ambiguity: 0 clearly
+		// means no subagent was spawned in this session.
+		leftItems = append(leftItems, fmt.Sprintf("🤖 %d used · %d max subagents", totalSubs, maxSubs))
+	} else {
+		leftItems = append(leftItems, fmt.Sprintf("🤖 %d subagents used", totalSubs))
 	}
 	rawLeft := strings.Join(leftItems, " · ")
 	maxLeftWidth := max(10, width-rightLen-2)
@@ -2099,16 +2238,17 @@ func renderFooter(m *tuiModel, width int) string {
 	gap := max(1, width-leftLen-rightLen)
 	line1 := leftStr + strings.Repeat(" ", gap) + rightStr
 
-	// Line 2: ? for shortcuts (left) + contextual hint (right)
-	line2Left := styleTextMuted().Render("? for shortcuts")
-	if m.totalSubagentsCount() > 0 {
-		line2Left = styleTextMuted().Render("? for shortcuts · /agents to inspect")
-	}
+	// Line 2: 6 token & context diagnostic metrics (left) + contextual hint / shortcuts (right)
 	var line2RightText string
 	if m.running {
 		if m.hasActivePlan() {
 			stepInfo := fmt.Sprintf("📋 step %d/%d · esc to interrupt", m.activePlanExecution.CurrentStepIndex+1, len(m.activePlanExecution.Steps))
+			if m.totalSubagentsCount() > 0 {
+				stepInfo += " · /agents"
+			}
 			line2RightText = stepInfo
+		} else if m.totalSubagentsCount() > 0 {
+			line2RightText = "esc to interrupt · /agents"
 		} else {
 			line2RightText = "esc to interrupt"
 		}
@@ -2116,16 +2256,21 @@ func renderFooter(m *tuiModel, width int) string {
 		line2RightText = "⏸ task paused · /resume or /discard"
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
+	} else if m.totalSubagentsCount() > 0 || m.maxParallelAgents() > 0 {
+		line2RightText = "? for shortcuts · /agents to inspect"
+	} else {
+		line2RightText = "? for shortcuts"
 	}
 
-	line2 := line2Left
-	if line2RightText != "" {
-		line2Right := styleTextMuted().Render(line2RightText)
-		gap2 := width - lipgloss.Width(line2Left) - lipgloss.Width(line2Right)
-		if gap2 >= 2 {
-			line2 = line2Left + strings.Repeat(" ", gap2) + line2Right
-		}
-	}
+	line2Right := styleTextMuted().Render(line2RightText)
+	right2Len := lipgloss.Width(line2Right)
+
+	maxMetricsWidth := max(10, width-right2Len-2)
+	metricsStr := formatContextAndTokenSummary(m, maxMetricsWidth)
+	line2Left := styleTextMuted().Render(metricsStr)
+
+	gap2 := max(1, width-lipgloss.Width(line2Left)-right2Len)
+	line2 := line2Left + strings.Repeat(" ", gap2) + line2Right
 
 	return line1 + "\n" + line2
 }
