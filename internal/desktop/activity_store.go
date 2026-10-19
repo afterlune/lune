@@ -126,19 +126,6 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 			queue_position INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(session_id, execution_id)
 		);
-		-- Legacy Worktree session rows are kept for data preservation only.
-		-- The application no longer reads or writes this table.
-		CREATE TABLE IF NOT EXISTS desktop_sessions (
-			session_id TEXT PRIMARY KEY,
-			mode TEXT NOT NULL,
-			workspace TEXT NOT NULL,
-			state_dir TEXT NOT NULL,
-			worktree_path TEXT NOT NULL,
-			repository_root TEXT NOT NULL,
-			title TEXT NOT NULL DEFAULT '',
-			updated_at INTEGER NOT NULL,
-			status TEXT NOT NULL DEFAULT 'idle'
-		);
 		CREATE INDEX IF NOT EXISTS execution_activity_runs_session
 			ON execution_activity_runs(session_id, started_at, execution_id);
 		CREATE INDEX IF NOT EXISTS execution_activity_tools_session

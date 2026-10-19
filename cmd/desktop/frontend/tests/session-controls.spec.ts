@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) {
-  await page.route('**/src/main.ts', async (route) => {
+  await page.route(/\/src\/main\.ts(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const entry = await response.text();
     await route.fulfill({ response, body: `
@@ -14,7 +14,7 @@ async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) 
       const appearance = {theme:'light',wallpaperType:'static',wallpaperFile:'',wallpaperName:'',wallpaperURL:'',panelOpacity:80};
       const policies = Object.fromEntries(['a','b','c'].map(id => [id,{permissionMode:'workspace',effectivePermissionMode:'workspace',planMode:false}]));
       const sessions = ['a','b','c'].map(id => ({id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',mode:'local',workingDirectory:workspace,status:'idle'}));
-      const snapshot = id => ({workspace,projectRoot:workspace,workspaceMode:'local',workingDirectory:workspace,session:{id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',settings:{model_profile:'test'},messages:[]},sessions,controls:{...policies[id]},models,pending:[],executionHistory:[],runtimeState:{Task:{Status:flags.runningA && id==='a'?'running':'idle',ExecutionID:flags.runningA && id==='a'?'exec-a':''},Queue:[]}});
+      const snapshot = id => ({workspace,session:{id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',settings:{model_profile:'test'},messages:[]},sessions,controls:{...policies[id]},models,pending:[],executionHistory:[],runtimeState:{Task:{Status:flags.runningA && id==='a'?'running':'idle',ExecutionID:flags.runningA && id==='a'?'exec-a':''},Queue:[]}});
       installDesktopApi({
         Bootstrap: async () => ({theme:'light',appearance,recentWorkspaces:[{path:workspace,lastUsed:''}],models,workspace:'',sessionId:'',lastWorkspace:(flags.restore || flags.staleRestore) ? workspace : '',lastSessionId:flags.restore||flags.staleRestore?'b':'',controls:policies.a}),
         OpenWorkspace: async () => {

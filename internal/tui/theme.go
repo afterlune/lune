@@ -103,12 +103,7 @@ var (
 
 	cachedStylePrimary  lipgloss.Style
 	cachedStyleMuted    lipgloss.Style
-	cachedStyleAccent   lipgloss.Style
 	cachedStylePlan     lipgloss.Style
-	cachedStyleSuccess  lipgloss.Style
-	cachedStyleFailure  lipgloss.Style
-	cachedStyleWarning  lipgloss.Style
-	cachedStyleExplored lipgloss.Style
 	cachedStyleSelected lipgloss.Style
 	cachedStyleCard     lipgloss.Style
 )
@@ -121,12 +116,7 @@ func recalculateThemeStyles() {
 	th := currentTheme
 	cachedStylePrimary = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
 	cachedStyleMuted = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
-	cachedStyleAccent = lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
 	cachedStylePlan = lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple))
-	cachedStyleSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen))
-	cachedStyleFailure = lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed))
-	cachedStyleWarning = lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber))
-	cachedStyleExplored = lipgloss.NewStyle().Foreground(lipgloss.Color(th.ExploredGray))
 	cachedStyleSelected = lipgloss.NewStyle().
 		Background(lipgloss.Color(th.SelectBg)).
 		Foreground(lipgloss.Color(th.SelectFg)).
@@ -184,28 +174,8 @@ func styleTextMuted() lipgloss.Style {
 	return cachedStyleMuted
 }
 
-func styleAccentBlue() lipgloss.Style {
-	return cachedStyleAccent
-}
-
 func stylePlanPurple() lipgloss.Style {
 	return cachedStylePlan
-}
-
-func styleSuccess() lipgloss.Style {
-	return cachedStyleSuccess
-}
-
-func styleFailure() lipgloss.Style {
-	return cachedStyleFailure
-}
-
-func styleWarning() lipgloss.Style {
-	return cachedStyleWarning
-}
-
-func styleExplored() lipgloss.Style {
-	return cachedStyleExplored
 }
 
 func styleSelectedRow() lipgloss.Style {

@@ -28,8 +28,6 @@ type SessionView struct {
 
 type WorkspaceState struct {
 	Workspace        string                  `json:"workspace"`
-	ProjectRoot      string                  `json:"projectRoot"`
-	WorkingDirectory string                  `json:"workingDirectory"`
 	Session          SessionView             `json:"session"`
 	Sessions         []SessionSummary        `json:"sessions"`
 	Controls         SessionControlsView     `json:"controls"`
@@ -73,14 +71,14 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 		return WorkspaceState{}, errors.New("请先打开工作区")
 	}
 	sessionContext := s.sessionContexts[sessionID]
-	projectRoot, store := s.workspace, s.activityStore
+	workspace, store := s.workspace, s.activityStore
 	s.mu.Unlock()
 	if sessionContext == nil {
 		if _, err := localCore.GetSession(context.Background(), sessionID); err != nil {
 			return WorkspaceState{}, fmt.Errorf("读取会话: %w", err)
 		}
 		sessionContext = &desktopSessionContext{
-			core: localCore, sessionID: sessionID, workspace: projectRoot,
+			core: localCore, sessionID: sessionID, workspace: workspace,
 		}
 		if err := s.attachSessionRuntime(sessionContext); err != nil {
 			return WorkspaceState{}, err
@@ -88,7 +86,6 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	}
 	s.mu.Lock()
 	s.setActiveSessionContextLocked(sessionContext)
-	projectRoot = s.workspace
 	models := s.projectModelsView()
 	s.mu.Unlock()
 
@@ -121,8 +118,8 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	s.mu.Unlock()
 	s.rememberSession(sessionID)
 	return WorkspaceState{
-		Workspace: sessionContext.workspace, ProjectRoot: projectRoot,
-		WorkingDirectory: sessionContext.workspace, Session: view, Sessions: list.Sessions,
+		Workspace: sessionContext.workspace,
+		Session:   view, Sessions: list.Sessions,
 		Controls: controls, Models: models, State: state, Pending: pendingRequestViews(pending),
 		ExecutionHistory: activityHistory,
 	}, nil
@@ -144,14 +141,14 @@ func (s *DesktopService) CreateSession() (WorkspaceState, error) {
 		s.mu.Unlock()
 		return WorkspaceState{}, errors.New("请先打开工作区")
 	}
-	projectRoot := s.workspace
+	workspace := s.workspace
 	s.mu.Unlock()
 	session, err := localCore.CreateSession(context.Background(), nil)
 	if err != nil {
 		return WorkspaceState{}, err
 	}
 	sessionContext := &desktopSessionContext{
-		core: localCore, sessionID: session.ID, workspace: projectRoot,
+		core: localCore, sessionID: session.ID, workspace: workspace,
 	}
 	if err := s.attachSessionRuntime(sessionContext); err != nil {
 		return WorkspaceState{}, err
@@ -164,7 +161,6 @@ func (s *DesktopService) RefreshSession(sessionID string) (WorkspaceState, error
 	defer s.workspaceMu.RUnlock()
 	s.mu.Lock()
 	sessionContext := s.sessionContexts[sessionID]
-	projectRoot := s.workspace
 	store := s.activityStore
 	models := s.projectModelsView()
 	s.mu.Unlock()
@@ -196,10 +192,9 @@ func (s *DesktopService) RefreshSession(sessionID string) (WorkspaceState, error
 	controls := sessionControls(sessionContext)
 	s.mu.Unlock()
 	return WorkspaceState{
-		Workspace: sessionContext.workspace, ProjectRoot: projectRoot,
-		WorkingDirectory: sessionContext.workspace,
-		Session:          SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
-		Sessions:         list.Sessions, Controls: controls, Models: models, State: state,
+		Workspace: sessionContext.workspace,
+		Session:   SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
+		Sessions:  list.Sessions, Controls: controls, Models: models, State: state,
 		Pending: pendingRequestViews(requests), ExecutionHistory: activityHistory,
 	}, nil
 }

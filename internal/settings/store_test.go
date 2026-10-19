@@ -101,7 +101,7 @@ func TestStoreDesktopRestoreDefaultsToZero(t *testing.T) {
 	}
 }
 
-func TestStorePersistsAppearanceAndReadsLegacyTheme(t *testing.T) {
+func TestStorePersistsAppearance(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestStorePersistsAppearanceAndReadsLegacyTheme(t *testing.T) {
 	}
 }
 
-func TestStoreAppearanceMigratesExistingTheme(t *testing.T) {
+func TestStoreAppearanceIgnoresLegacyTheme(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -141,8 +141,8 @@ func TestStoreAppearanceMigratesExistingTheme(t *testing.T) {
 		t.Fatal(err)
 	}
 	appearance, err := store.Appearance()
-	if err != nil || appearance.Theme != "light" || appearance.WallpaperType != "static" || appearance.PanelOpacity != defaultPanelOpacity {
-		t.Fatalf("Appearance() = %#v, %v; want migrated light defaults", appearance, err)
+	if err != nil || appearance.Theme != defaultTheme || appearance.WallpaperType != "static" || appearance.PanelOpacity != defaultPanelOpacity {
+		t.Fatalf("Appearance() = %#v, %v; want current defaults", appearance, err)
 	}
 }
 

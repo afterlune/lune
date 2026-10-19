@@ -218,35 +218,6 @@ func (s *Store) LoadModelConfig() (publicmodel.Config, error) {
 }
 
 func (s *Store) SaveModelConfig(config publicmodel.Config) error {
-	return s.SaveModelConfigWith(config, nil, nil)
-}
-
-func (s *Store) RestoreModelConfig(config publicmodel.Config) error {
-	if len(config.Providers) > 0 || len(config.Models) > 0 {
-		return s.SaveModelConfig(config)
-	}
-	tx, err := s.db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return fmt.Errorf("begin model settings restore: %w", err)
-	}
-	defer tx.Rollback()
-	for _, table := range []string{"providers", "models"} {
-		if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
-			return fmt.Errorf("clear %s: %w", table, err)
-		}
-	}
-	if _, err := tx.Exec(`DELETE FROM app_settings WHERE key IN ('defaultModel', 'maxParallelAgents')`); err != nil {
-		return fmt.Errorf("clear model settings: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit model settings restore: %w", err)
-	}
-	return nil
-}
-
-// SaveModelConfigWith applies a related file update while the SQLite write is
-// open. If the update or commit fails, rollbackFile restores the previous file.
-func (s *Store) SaveModelConfigWith(config publicmodel.Config, applyFile, rollbackFile func() error) error {
 	if s == nil || s.db == nil {
 		return errors.New("settings store is closed")
 	}
@@ -291,17 +262,7 @@ func (s *Store) SaveModelConfigWith(config publicmodel.Config, applyFile, rollba
 	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('maxParallelAgents', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprint(config.MaxParallelAgents)); err != nil {
 		return fmt.Errorf("save parallel agent setting: %w", err)
 	}
-	fileApplied := false
-	if applyFile != nil {
-		if err := applyFile(); err != nil {
-			return err
-		}
-		fileApplied = true
-	}
 	if err := tx.Commit(); err != nil {
-		if fileApplied && rollbackFile != nil {
-			return errors.Join(fmt.Errorf("commit shared model settings: %w", err), rollbackFile())
-		}
 		return fmt.Errorf("commit shared model settings: %w", err)
 	}
 	return nil
@@ -311,15 +272,6 @@ func (s *Store) Appearance() (Appearance, error) {
 	var encoded string
 	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'appearance'`).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Read the previous single-value setting on first launch after this
-		// appearance setting is introduced.
-		var theme string
-		if err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = 'theme'`).Scan(&theme); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return Appearance{}, fmt.Errorf("read theme setting: %w", err)
-		}
-		if supportedTheme(theme) {
-			return defaultAppearance(theme), nil
-		}
 		return defaultAppearance(defaultTheme), nil
 	}
 	if err != nil {
@@ -352,21 +304,8 @@ func (s *Store) SaveAppearance(appearance Appearance) error {
 	if err != nil {
 		return fmt.Errorf("encode appearance setting: %w", err)
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin appearance setting transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('appearance', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, string(encoded)); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO app_settings(key, value) VALUES ('appearance', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, string(encoded)); err != nil {
 		return fmt.Errorf("save appearance setting: %w", err)
-	}
-	// Keep the legacy theme key in sync for the existing Theme API and older
-	// settings readers while all new appearance fields live in one value.
-	if _, err := tx.Exec(`INSERT INTO app_settings(key, value) VALUES ('theme', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, appearance.Theme); err != nil {
-		return fmt.Errorf("save legacy theme setting: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit appearance setting: %w", err)
 	}
 	return nil
 }

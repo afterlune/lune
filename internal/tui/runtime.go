@@ -695,9 +695,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				if elapsed >= 0.05 {
 					m.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
 				}
-				if m.activePlanExecution != nil && !m.activePlanExecution.Completed {
-					m.activePlanExecution.CheckTextForAdvance(m.currentStreamText)
-				}
 				m.transcriptDirty = true
 			}
 		}

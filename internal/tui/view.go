@@ -1356,48 +1356,6 @@ func renderPausedBanner(width int) string {
 	return strings.Repeat(" ", pad) + banner
 }
 
-// renderPlanProgressBanner renders an active plan execution progress banner in the composer gap.
-func renderPlanProgressBanner(plan *ActivePlanExecution, width int) string {
-	if plan == nil || len(plan.Steps) == 0 {
-		return ""
-	}
-	th := activeTheme()
-	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Bold(true).Render("📋 ")
-
-	total := len(plan.Steps)
-	current := plan.CurrentStepIndex + 1
-	if current > total {
-		current = total
-	}
-
-	completedCount := 0
-	for _, s := range plan.Steps {
-		if s.Status == PlanStepCompleted {
-			completedCount++
-		}
-	}
-
-	ratio := float64(completedCount) / float64(total)
-	bar := renderProgressBar(ratio, 14)
-
-	currentTitle := ""
-	if plan.CurrentStepIndex >= 0 && plan.CurrentStepIndex < len(plan.Steps) {
-		currentTitle = plan.Steps[plan.CurrentStepIndex].Title
-	}
-
-	statusText := fmt.Sprintf("Step %d/%d %s", current, total, bar)
-	styledStatus := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(statusText)
-
-	detailText := ""
-	if currentTitle != "" {
-		detailText = " " + styleTextMuted().Render("· "+truncateString(currentTitle, max(10, width-lipgloss.Width(icon)-lipgloss.Width(styledStatus)-12)))
-	}
-
-	banner := icon + styledStatus + detailText
-	pad := max(0, (width-lipgloss.Width(banner))/2)
-	return strings.Repeat(" ", pad) + banner
-}
-
 // renderRecoveryPanel renders the model recovery prompt when a provider times out or rate limits.
 func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	if recovery == nil {
@@ -1976,7 +1934,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
 	} else {
-		hint := styleTextMuted().Render("1-9 jump · [/] or tab switch · c copy · m draft commit · esc/q close")
+		hint := styleTextMuted().Render("1-9 jump · [/] or tab switch · c copy · esc/q close")
 		lines = append(lines, hint)
 	}
 
@@ -2241,13 +2199,7 @@ func renderFooter(m *tuiModel, width int) string {
 	// Line 2: 6 token & context diagnostic metrics (left) + contextual hint / shortcuts (right)
 	var line2RightText string
 	if m.running {
-		if m.hasActivePlan() {
-			stepInfo := fmt.Sprintf("📋 step %d/%d · esc to interrupt", m.activePlanExecution.CurrentStepIndex+1, len(m.activePlanExecution.Steps))
-			if m.totalSubagentsCount() > 0 {
-				stepInfo += " · /agents"
-			}
-			line2RightText = stepInfo
-		} else if m.totalSubagentsCount() > 0 {
+		if m.totalSubagentsCount() > 0 {
 			line2RightText = "esc to interrupt · /agents"
 		} else {
 			line2RightText = "esc to interrupt"

@@ -50,7 +50,6 @@ type tuiModel struct {
 	activeRecovery         *ActiveRecovery
 	activeToolRecovery     *ActiveToolRecovery
 	pausedCheckpoint       *PausedCheckpoint
-	activePlanExecution    *ActivePlanExecution
 	queuedTurns            []QueuedItem
 	autocompleteOpen       bool
 	autocompleteMode       AutocompleteMode
@@ -769,8 +768,6 @@ func (m *tuiModel) View() tea.View {
 		gapLine = renderScrollPill(contentWidth)
 	} else if m.hasPausedTask() && !m.running {
 		gapLine = renderPausedBanner(contentWidth)
-	} else if m.hasActivePlan() {
-		gapLine = renderPlanProgressBanner(m.activePlanExecution, contentWidth)
 	}
 	sections = append(sections, gapLine)
 
@@ -858,11 +855,6 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 // hasPausedTask reports whether the current session has an interrupted checkpoint or pending recovery.
 func (m *tuiModel) hasPausedTask() bool {
 	return m.pausedCheckpoint != nil || m.activeRecovery != nil || m.activeToolRecovery != nil
-}
-
-// hasActivePlan reports whether an approved plan execution is currently active.
-func (m *tuiModel) hasActivePlan() bool {
-	return m.activePlanExecution != nil && !m.activePlanExecution.Completed
 }
 
 // checkPendingState queries Core for any pending user questions or approvals.

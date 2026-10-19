@@ -87,7 +87,6 @@ export function createDesktopState() {
   let recent = $state<Bootstrap['recentWorkspaces']>([]);
   let models = $state<ModelSettingsView>({ providers: [], profiles: [], defaultModel: '', maxParallelAgents: 0, configured: false });
   let workspace = $state('');
-  let workingDirectory = $state('');
   let workspaceMenuOpen = $state(false);
   let sidebarCollapsed = $state(window.matchMedia('(max-width: 960px)').matches);
   let sessions = $state<SessionSummary[]>([]);
@@ -929,10 +928,9 @@ export function createDesktopState() {
     }
     const currentPlanReview = preservePlanReview && session?.id === state.session.id ? planReview : null;
     clearElapsedTimer();
-    const nextWorkspace = state.projectRoot || state.workspace;
+    const nextWorkspace = state.workspace;
     if (workspace && nextWorkspace && workspace.toLowerCase() !== nextWorkspace.toLowerCase()) clearSessionSearch();
     workspace = nextWorkspace;
-    workingDirectory = state.workingDirectory || state.workspace;
     session = state.session;
     sessions = state.sessions ?? [];
     installControls(state.controls);
@@ -1046,7 +1044,6 @@ export function createDesktopState() {
     } catch {
       try { await Desktop.CloseWorkspace(false); } catch { /* workspace was not open */ }
       workspace = '';
-      workingDirectory = '';
       session = null;
       sessions = [];
       messages = [];
@@ -1071,7 +1068,6 @@ export function createDesktopState() {
       }
       if (variant === 'welcome') {
         workspace = '';
-        workingDirectory = '';
         session = null;
         sessions = [];
         messages = [];
@@ -1207,7 +1203,6 @@ export function createDesktopState() {
       recent = data.recentWorkspaces ?? [];
       models = data.models;
       workspace = data.workspace;
-      workingDirectory = data.workspace;
       if (data.controls?.effectivePermissionMode) installControls(data.controls);
       unsubscribeEvents.push(Events.On('agent-event', (event: { data: AgentEvent }) => onAgentEvent(event.data)));
       unsubscribeEvents.push(Events.On('turn-result', (event: { data: TurnResultEvent }) => onTurnResult(event.data)));
@@ -1774,7 +1769,6 @@ export function createDesktopState() {
 
   async function completeWorkspaceOpen(result: WorkspaceOpenResult, preferredSessionID = '') {
     workspace = result.workspace;
-    workingDirectory = result.workspace;
     if (result.models) models = result.models;
     sessions = result.sessions ?? [];
     permissionMode = result.permissionMode || 'workspace';
@@ -1792,7 +1786,6 @@ export function createDesktopState() {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
       clearDesktopProcesses();
-      workingDirectory = '';
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -1814,7 +1807,6 @@ export function createDesktopState() {
     }
     workspace = '';
     clearDesktopProcesses();
-    workingDirectory = '';
     pendingSessions = [];
     pendingSessionsError = '';
     session = null;
@@ -1831,7 +1823,6 @@ export function createDesktopState() {
       clearSessionSearch();
       workspace = '';
       clearDesktopProcesses();
-      workingDirectory = '';
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -1953,7 +1944,7 @@ export function createDesktopState() {
 
   async function createSession() {
     if (previewMode) {
-      installWorkspaceState({ ...previewState, projectRoot: previewState.workspace });
+      installWorkspaceState(previewState);
       return;
     }
     try { installWorkspaceState(await Desktop.CreateSession()); }
@@ -2594,7 +2585,7 @@ export function createDesktopState() {
       planReview = null;
       planMode = false;
       if (result.sessionId !== session?.id) {
-        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString(), workingDirectory, status: 'running' }, ...sessions];
+        sessions = [{ id: result.sessionId, title: '实施方案', updatedAt: new Date().toISOString(), workingDirectory: workspace, status: 'running' }, ...sessions];
         await openSession(result.sessionId);
         if (workspaceEpoch !== targetEpoch || session?.id !== result.sessionId) return;
       }
@@ -2656,7 +2647,6 @@ get copiedMessageID() { return copiedMessageID; }, set copiedMessageID(value: ty
 get recent() { return recent; }, set recent(value: typeof recent) { recent = value; },
 get models() { return models; }, set models(value: typeof models) { models = value; },
 get workspace() { return workspace; }, set workspace(value: typeof workspace) { workspace = value; },
-get workingDirectory() { return workingDirectory; }, set workingDirectory(value: typeof workingDirectory) { workingDirectory = value; },
 get workspaceMenuOpen() { return workspaceMenuOpen; }, set workspaceMenuOpen(value: typeof workspaceMenuOpen) { workspaceMenuOpen = value; },
 get sidebarCollapsed() { return sidebarCollapsed; }, set sidebarCollapsed(value: typeof sidebarCollapsed) { sidebarCollapsed = value; },
 get processPopoverOpen() { return processPopoverOpen; }, set processPopoverOpen(value: typeof processPopoverOpen) { processPopoverOpen = value; },

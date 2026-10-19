@@ -77,23 +77,11 @@ func (s *DesktopService) activeCoreLocked() *core.Core {
 	}
 	return s.localCore
 }
-func (s *DesktopService) activeRuntimeLocked() *core.SessionRuntime {
-	if s.activeContext != nil {
-		return s.activeContext.runtime
-	}
-	return nil
-}
 func (s *DesktopService) activeSessionIDLocked() string {
 	if s.activeContext != nil {
 		return s.activeContext.sessionID
 	}
 	return ""
-}
-func (s *DesktopService) activeDirectoryLocked() string {
-	if s.activeContext != nil {
-		return s.activeContext.workspace
-	}
-	return s.workspace
 }
 
 func (s *DesktopService) captureControlsLocked() map[string]SessionControlsView {

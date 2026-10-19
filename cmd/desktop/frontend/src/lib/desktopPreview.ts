@@ -12,7 +12,7 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
   };
 
   const previewState: WorkspaceState = {
-    workspace: 'D:\\Git\\luneAgent', projectRoot: 'D:\\Git\\luneAgent', workingDirectory: 'D:\\Git\\luneAgent', controls: { permissionMode: 'workspace', effectivePermissionMode: 'workspace', planMode: false },
+    workspace: 'D:\\Git\\luneAgent', controls: { permissionMode: 'workspace', effectivePermissionMode: 'workspace', planMode: false },
     session: {
       id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00',
       settings: { model_profile: '工作模型' },
@@ -67,7 +67,6 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
     const target = previewPendingSessions.find((item) => item.id === id) ?? previewPendingSessions[0];
     return {
       ...previewState,
-      workingDirectory: target.workingDirectory,
       session: { ...previewState.session, id: target.id, title: target.title, updatedAt: target.updatedAt },
       sessions: previewPendingSessions.map((item) => ({
         id: item.id, title: item.title, updatedAt: item.updatedAt,

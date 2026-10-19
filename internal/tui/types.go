@@ -142,32 +142,6 @@ type ActiveEffortPicker struct {
 	Selected int
 }
 
-// PlanStepStatus represents the execution state of an individual plan step.
-type PlanStepStatus int
-
-const (
-	PlanStepPending PlanStepStatus = iota
-	PlanStepInProgress
-	PlanStepCompleted
-)
-
-// PlanStep represents a single actionable item or phase extracted from a plan.
-type PlanStep struct {
-	Index  int
-	Title  string
-	Status PlanStepStatus
-}
-
-// ActivePlanExecution tracks an approved plan being executed in the current session.
-type ActivePlanExecution struct {
-	SourcePlan       string
-	ExecutionID      string
-	Steps            []PlanStep
-	CurrentStepIndex int
-	StartedAt        time.Time
-	Completed        bool
-}
-
 // ActiveApproval holds the state of a pending tool execution approval.
 type ActiveApproval struct {
 	Request  core.ApprovalRequest

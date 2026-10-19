@@ -375,8 +375,6 @@ export interface WorkspaceOpenResult {
 
 export interface WorkspaceState {
     "workspace": string;
-    "projectRoot": string;
-    "workingDirectory": string;
     "session": SessionView;
     "sessions": SessionSummary[] | null;
     "controls": SessionControlsView;

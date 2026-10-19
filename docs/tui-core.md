@@ -19,12 +19,12 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 - **User Questions (`ask_user`)**: Interactive card in the transcript with radio-style choices and free text. Navigated via `Up`/`Down`, confirmed via `Enter`.
 - **Tool Execution Records**: Chronological tool cards with 3-line preview, toggled between compact and expanded via `Ctrl+T` or mouse click.
 - **Tool Approvals**: Interactive card when permission mode requires user consent before running shell commands or modifying files.
-- **Plan Review**: Interactive card triggered when a `<proposed_plan>` completes in Plan mode, offering same-context or new-branch implementation.
+- **Plan Review**: Interactive card triggered when a `<proposed_plan>` completes in Plan mode, offering same-context or new-context implementation. Approved plans remain archived; execution status comes from Core, without inferred step completion.
 - **Model Recovery (`ActiveRecovery`)**: Interactive amber card for model rate limits or timeouts, offering retry (`Enter`) or discard (`Esc`).
 - **Keyboard Shortcuts**: Cheat sheet modal (`?` or `/shortcuts`) with a 3-column layout (Compose, Session, Transcript).
 - **Session Management**: Full lifecycle support with `/sessions`, `/open <prefix>`, `/rewind [N]`, `/clear`, and `/title [name]`.
 - **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards and `/cancel-queue`.
-- **Workspace Diff**: In-line colored git diff output via `/diff [path]`.
+- **Workspace Diff**: Read-only colored git diff output via `/diff [path]`. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
 
 ## Permissions, Modes, and Themes
 
