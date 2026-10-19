@@ -235,6 +235,17 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 	m.effortPicker = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
+	main := m.ensureAgentMetrics("lead")
+	main.Task = compactAgentTask(text)
+	main.Status = "Running"
+	main.Activity = "Starting"
+	main.StartedAt = m.taskStartedAt
+	main.Duration = 0
+	main.ContextWindow = m.contextWindow
+	main.ModelProfile = m.currentModelProfile
+	main.StreamStartedAt = time.Time{}
+	main.StreamGenerationTokens = 0
+	main.TokensPerSecond = 0
 	m.updateLayout()
 	m.refreshViewportContent()
 	m.viewport.GotoBottom()
@@ -421,6 +432,17 @@ func (m *tuiModel) markRunningSubagentsAndToolsDone() {
 		if m.entries[i].Kind == KindSubagent && m.entries[i].SubagentRunning {
 			m.entries[i].SubagentRunning = false
 			changed = true
+		}
+	}
+	for _, stats := range m.agentMetrics {
+		if stats.ID != "lead" && stats.Status == "Running" {
+			stats.Status = "Completed"
+			if !stats.StartedAt.IsZero() {
+				stats.Duration = time.Since(stats.StartedAt)
+			}
+			if stats.Activity == "" || stats.Activity == "Starting" {
+				stats.Activity = "Completed"
+			}
 		}
 	}
 	if changed {
@@ -676,6 +698,28 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.running = true
 		m.runningExecution = execID
 		m.taskStartedAt = time.Now()
+		main := m.ensureAgentMetrics("lead")
+		main.Status = "Running"
+		main.Activity = "Starting"
+		main.StartedAt = m.taskStartedAt
+		main.Duration = 0
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].Kind == KindUser {
+				main.Task = compactAgentTask(m.entries[i].Text)
+				break
+			}
+		}
+		if event.ContextWindow > 0 {
+			main.ContextWindow = event.ContextWindow
+			m.contextWindow = event.ContextWindow
+		}
+		if event.ModelProfile != "" {
+			main.ModelProfile = event.ModelProfile
+			m.currentModelProfile = event.ModelProfile
+		}
+		if event.Model != "" {
+			main.Model = event.Model
+		}
 		m.thinking = false
 		m.transcriptDirty = true
 		m.updateLayout()
@@ -690,6 +734,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if purpose != "" && purpose != string(core.UsagePurposeMain) && purpose != string(core.UsagePurposeTeam) {
 			return m, nil
 		}
+		m.recordAgentStream(event)
 		// Isolate concurrent subagent streams from the lead assistant stream!
 		agentID := strings.TrimSpace(event.AgentID)
 		if agentID != "" && agentID != "lead" {
@@ -740,22 +785,26 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventAgentStarted:
+		m.updateAgentEvent(event, true)
 		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, true, 0)
 
 	case core.EventAgentFinished:
+		m.updateAgentEvent(event, false)
 		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, false, 0)
 
 	case core.EventToolStarted:
-		m.streamFirstTokenTime = time.Time{}
-		m.streamGenerationTokens = 0
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
 			return m, nil
 		}
 		agentID := strings.TrimSpace(event.AgentID)
 		if agentID != "" && agentID != "lead" {
+			m.recordAgentToolStarted(agentID, event.Tool.Name)
 			m.recordSubagentToolStarted(agentID, event.AgentName, event.AgentRole, event.Tool.Name, string(event.Tool.Arguments))
 			return m, nil
 		}
+		m.streamFirstTokenTime = time.Time{}
+		m.streamGenerationTokens = 0
+		m.recordAgentToolStarted("lead", event.Tool.Name)
 		m.flushReasoningEntry()
 		m.flushStreamTextEntry()
 		m.thinking = false
@@ -883,6 +932,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		agentID := strings.TrimSpace(event.AgentID)
 		if agentID != "" && agentID != "lead" {
+			errText := event.Err
+			if errText == "" && (event.Tool.Failed || event.Tool.Canceled || event.CommandStatus == core.CommandFailed || event.CommandStatus == core.CommandTimedOut) {
+				errText = "tool failed"
+			}
+			m.recordAgentToolFinished(agentID, event.Tool.Name, errText)
 			m.recordSubagentToolFinished(agentID, event.Tool.Name, event.Tool.Duration)
 			return m, nil
 		}
@@ -891,6 +945,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			event.CommandStatus == core.CommandFailed ||
 			event.CommandStatus == core.CommandTimedOut ||
 			(event.CommandExitCode != nil && *event.CommandExitCode != 0)
+		errText := event.Err
+		if errText == "" && isFailed {
+			errText = "tool failed"
+		}
+		m.recordAgentToolFinished("lead", event.Tool.Name, errText)
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			if m.entries[i].Kind == KindTool && (m.entries[i].ToolCallID == event.Tool.ID || (event.Tool.ID == "" && m.entries[i].ToolName == event.Tool.Name)) {
 				m.entries[i].ToolRunning = false
@@ -960,7 +1019,10 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.totalOutputTokens += event.Usage.OutputTokens
 			m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
 			m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
-			if event.Usage.OutputTokens > 0 {
+			if strings.TrimSpace(event.AgentID) != "" || isLeadMainUsage(event.AgentID, event.UsagePurpose) {
+				m.recordAgentUsage(event)
+			}
+			if isLeadMainUsage(event.AgentID, event.UsagePurpose) && event.Usage.OutputTokens > 0 {
 				var elapsed float64
 				if !m.streamFirstTokenTime.IsZero() {
 					elapsed = time.Since(m.streamFirstTokenTime).Seconds()
@@ -1021,6 +1083,12 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	case core.EventTaskDiscarded:
 		m.thinking = false
 		m.running = false
+		main := m.ensureAgentMetrics("lead")
+		main.Status = "Cancelled"
+		main.Activity = "Cancelled"
+		if !main.StartedAt.IsZero() {
+			main.Duration = time.Since(main.StartedAt)
+		}
 		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil

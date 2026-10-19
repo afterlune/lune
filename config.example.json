@@ -37,6 +37,8 @@
   },
   "defaultModel": "deepseek-flash",
   "maxParallelAgents": 4,
+  "maxTeamChildrenPerAgent": 4,
+  "maxTeamDepth": 2,
   "contextWindow": 0,
   "autoCompact": true,
   "autoCompactThreshold": 0.8,

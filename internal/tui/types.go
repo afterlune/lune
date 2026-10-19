@@ -65,6 +65,7 @@ type TranscriptEntry struct {
 	AgentID          string
 	AgentName        string
 	AgentRole        string
+	AgentTask        string
 	SubagentRunning  bool
 	SubagentPreview  string
 	SubagentDuration time.Duration
@@ -84,6 +85,31 @@ type TranscriptEntry struct {
 
 	// File mentions attachments
 	AttachedFiles []string
+}
+
+type agentRuntimeMetrics struct {
+	ID                     string
+	Name                   string
+	Role                   string
+	Task                   string
+	Activity               string
+	Status                 string
+	ModelProfile           string
+	Provider               string
+	Model                  string
+	ContextWindow          int64
+	InputTokens            int64
+	EstimatedInputTokens   int64
+	OutputTokens           int64
+	CachedTokens           int64
+	ReasoningTokens        int64
+	ToolCount              int
+	ContextInputTokens     int64
+	TokensPerSecond        float64
+	StreamStartedAt        time.Time
+	StreamGenerationTokens int64
+	StartedAt              time.Time
+	Duration               time.Duration
 }
 
 // AnsweredQuestionItem represents a single question-answer pair in a resolved question batch.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -267,4 +268,55 @@ func TestRunWithStreamsPipedStdin(t *testing.T) {
 		t.Errorf("expected helpful empty error, got: %v", err)
 	}
 }
+
+func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "config.example.json"))
+	if err != nil {
+		t.Fatalf("read config.example.json: %v", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal config.example.json: %v", err)
+	}
+
+	if _, ok := raw["maxTeamChildrenPerAgent"]; !ok {
+		t.Error("maxTeamChildrenPerAgent missing from config.example.json")
+	}
+	if _, ok := raw["maxTeamDepth"]; !ok {
+		t.Error("maxTeamDepth missing from config.example.json")
+	}
+
+	var cfg struct {
+		MaxParallelAgents       int `json:"maxParallelAgents"`
+		MaxTeamChildrenPerAgent int `json:"maxTeamChildrenPerAgent"`
+		MaxTeamDepth            int `json:"maxTeamDepth"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal config.example.json into struct: %v", err)
+	}
+
+	if cfg.MaxParallelAgents != 4 {
+		t.Errorf("expected maxParallelAgents=4, got %d", cfg.MaxParallelAgents)
+	}
+	if cfg.MaxTeamChildrenPerAgent != 4 {
+		t.Errorf("expected maxTeamChildrenPerAgent=4, got %d", cfg.MaxTeamChildrenPerAgent)
+	}
+	if cfg.MaxTeamDepth != 2 {
+		t.Errorf("expected maxTeamDepth=2, got %d", cfg.MaxTeamDepth)
+	}
+
+	// Also verify that with placeholder keys populated, core.New parses and validates config.example.json without schema or configuration errors
+	tmpData := strings.ReplaceAll(string(data), `"apiKey": ""`, `"apiKey": "test-key"`)
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(tmpData), 0600); err != nil {
+		t.Fatalf("write temp config.json: %v", err)
+	}
+	coreClient, err := newCore(tmpDir)
+	if err != nil {
+		t.Fatalf("newCore failed with config.example.json (with keys populated): %v", err)
+	}
+	defer coreClient.Close()
+}
+
 

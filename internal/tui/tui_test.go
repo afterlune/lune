@@ -3699,18 +3699,29 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 		t.Fatalf("expected footer to show active subagent count and /agents hint, got:\n%s", footer)
 	}
 
-	// 4. /agents command table view
-	m.handleSlashCommand("/agents")
-	lastEntry := m.entries[len(m.entries)-1]
-	if lastEntry.Kind != KindSystem || !strings.Contains(lastEntry.Text, "Subagents in Session (1 total)") {
-		t.Fatalf("expected /agents table in system entry, got:\n%s", lastEntry.Text)
+	// 4. /agents opens the interactive list with the main agent and worker.
+	m.recordAgentUsage(core.Event{AgentID: "researcher-1", ContextWindow: 64000, Usage: core.Usage{
+		InputTokens: 1000, InputTokensDetails: core.TokenInputDetails{CachedTokens: 400}, OutputTokens: 200, TotalTokens: 1200,
+	}})
+	_, _ = m.handleAgentsCommand([]string{"/agents"})
+	if !m.agentsPanelOpen {
+		t.Fatal("/agents did not open the interactive panel")
+	}
+	panel := ansi.Strip(m.renderAgentsPanel(120))
+	if !strings.Contains(panel, "Main agent") || !strings.Contains(panel, "code_researcher") || !strings.Contains(panel, "cache 40%") || !strings.Contains(panel, "total 1,200") {
+		t.Fatalf("agents list missing live agent statistics:\n%s", panel)
 	}
 
-	// 5. /agents 1 detail view
-	m.handleSlashCommand("/agents 1")
-	lastDetail := m.entries[len(m.entries)-1]
-	if !strings.Contains(lastDetail.Text, "Subagent Details: code_researcher") || !strings.Contains(lastDetail.Text, "Tools Executed: 1") {
-		t.Fatalf("expected /agents detail view, got:\n%s", lastDetail.Text)
+	// 5. Keyboard navigation opens the selected worker detail.
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	detail := ansi.Strip(m.renderAgentsPanel(120))
+	if !m.agentsPanelDetail || !strings.Contains(detail, "Agent details · code_researcher") || !strings.Contains(strings.ToLower(detail), "tools: 1") {
+		t.Fatalf("expected interactive agent details, got:\n%s", detail)
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.agentsPanelOpen {
+		t.Fatal("escape did not close the agents panel")
 	}
 }
 
@@ -3730,6 +3741,26 @@ func TestPlanTagStripping(t *testing.T) {
 	stripped := stripProposedPlan(raw)
 	if strings.Contains(stripped, "<proposed_plan>") || strings.Contains(stripped, "</proposed_plan>") {
 		t.Fatalf("stripProposedPlan leaked raw tags: %q", stripped)
+	}
+
+	// Test that inline code mentioning <proposed_plan> in markdown tables or prose is preserved
+	tableWithInlineTag := "| # | 问题 | 证据 |\n|---|---|---|\n| 4 | `<proposed_plan>` 处理两套实现 | markdown.go |\n\n## 五、候选方向\n\n<proposed_plan>\n## 目标\n修复缺陷\n</proposed_plan>"
+	extractedPlan, restText := extractProposedPlan(tableWithInlineTag)
+	if extractedPlan != "## 目标\n修复缺陷" {
+		t.Fatalf("unexpected extracted plan: %q", extractedPlan)
+	}
+	if !strings.Contains(restText, "`<proposed_plan>` 处理两套实现") {
+		t.Fatalf("inline code in table was swallowed: %q", restText)
+	}
+	if !strings.Contains(restText, "## 五、候选方向") {
+		t.Fatalf("subsequent markdown sections were swallowed: %q", restText)
+	}
+	strippedText := stripProposedPlan(tableWithInlineTag)
+	if !strings.Contains(strippedText, "`<proposed_plan>` 处理两套实现") || !strings.Contains(strippedText, "## 五、候选方向") {
+		t.Fatalf("stripProposedPlan swallowed table row or sections: %q", strippedText)
+	}
+	if strings.Contains(strippedText, "## 目标") {
+		t.Fatalf("stripProposedPlan should remove the plan block body: %q", strippedText)
 	}
 
 	// Test renderEntry for KindPlan and KindAssistant

@@ -441,6 +441,20 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	if _, finalized := m.terminalEvents[executionID]; finalized {
 		return
 	}
+	main := m.ensureAgentMetrics("lead")
+	switch event.Status {
+	case core.TaskPaused:
+		main.Status, main.Activity = "Paused", "Paused for input or recovery"
+	case core.TaskFailed:
+		main.Status, main.Activity = "Failed", "Failed"
+	case core.TaskCancelled:
+		main.Status, main.Activity = "Cancelled", "Cancelled"
+	default:
+		main.Status, main.Activity = "Completed", "Completed"
+	}
+	if !main.StartedAt.IsZero() {
+		main.Duration = time.Since(main.StartedAt)
+	}
 	m.terminalEvents[executionID] = event
 	m.thinking = false
 	m.finalizeTurnOutput("", nil, executionID)
@@ -486,6 +500,60 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+	}
+
+	if m.agentsPanelOpen {
+		ids := m.agentMetricIDs()
+		switch keyStr {
+		case "esc":
+			m.closeAgentsPanel()
+			return m, nil
+		case "backspace", "left":
+			if m.agentsPanelDetail {
+				m.agentsPanelDetail = false
+				m.agentsPanelDetailID = ""
+				m.updateLayout()
+			}
+			return m, nil
+		case "up", "ctrl+p":
+			if len(ids) > 0 {
+				if m.agentsPanelSelected > 0 {
+					m.agentsPanelSelected--
+				} else {
+					m.agentsPanelSelected = len(ids) - 1
+				}
+				if m.agentsPanelDetail {
+					m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+				}
+				m.updateLayout()
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			if len(ids) > 0 {
+				if m.agentsPanelSelected < len(ids)-1 {
+					m.agentsPanelSelected++
+				} else {
+					m.agentsPanelSelected = 0
+				}
+				if m.agentsPanelDetail {
+					m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+				}
+				m.updateLayout()
+			}
+			return m, nil
+		case "enter", "right":
+			if m.agentsPanelDetail {
+				m.agentsPanelDetail = false
+				m.agentsPanelDetailID = ""
+			} else if len(ids) > 0 && m.agentsPanelSelected >= 0 && m.agentsPanelSelected < len(ids) {
+				m.agentsPanelDetail = true
+				m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+			}
+			m.updateLayout()
+			return m, nil
+		default:
+			return m, nil
+		}
 	}
 
 	// 0.1 Session Switcher Modal handling

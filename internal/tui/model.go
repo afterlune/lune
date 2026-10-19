@@ -95,6 +95,11 @@ type tuiModel struct {
 	streamFirstTokenTime   time.Time
 	streamGenerationTokens int64
 	lastTokensPerSec       float64
+	agentMetrics           map[string]*agentRuntimeMetrics
+	agentsPanelOpen        bool
+	agentsPanelSelected    int
+	agentsPanelDetail      bool
+	agentsPanelDetailID    string
 
 	// Terminal output writer for escape sequences
 	output io.Writer
@@ -164,7 +169,9 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		fileScanner: NewWorkspaceFileScanner(workspace), reasoningLiveCollapsed: true,
 		transcriptDirty: true, output: os.Stdout,
 		awaitingTurns: map[string]struct{}{}, terminalEvents: map[string]core.Event{},
+		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
+	m.ensureAgentMetrics("lead")
 	if client != nil && sessionID != "" {
 		if saved, err := client.GetSession(context.Background(), sessionID); err == nil {
 			m.loadSessionSnapshot(saved)
@@ -214,10 +221,14 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 			m.contextWindow = last.ContextWindow
 		}
 	}
+	if m.contextWindow <= 0 {
+		m.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+	}
 	m.entries = transcriptFromHistory(saved.History)
 	if m.entries == nil {
 		m.entries = []TranscriptEntry{}
 	}
+	m.seedAgentMetrics(saved)
 	m.promptHistory = nil
 	for _, entry := range m.entries {
 		if entry.Kind == KindUser && entry.Text != "" {
@@ -228,6 +239,26 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.historyDraft = ""
 	m.invalidateEntryCache()
 	m.refreshViewportContent()
+}
+
+func (m *tuiModel) refreshMainContextWindow() {
+	m.contextWindow = 0
+	if m.client != nil {
+		if saved, err := m.client.GetSession(context.Background(), m.sessionID); err == nil && saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0 {
+			m.contextWindow = *saved.Settings.ContextWindow
+		}
+		if m.contextWindow <= 0 {
+			m.contextWindow = m.client.ProjectContextDefaults().ContextWindow
+		}
+	}
+	if m.contextWindow <= 0 {
+		m.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+	}
+	if main := m.ensureAgentMetrics("lead"); main != nil {
+		main.ContextWindow = m.contextWindow
+		main.ModelProfile = m.currentModelProfile
+		main.Model = m.currentModel
+	}
 }
 
 // resetSessionState clears data that belongs to the previous session before a new snapshot is applied.
@@ -267,6 +298,12 @@ func (m *tuiModel) resetSessionState() {
 	m.turnStreamStartTime = time.Time{}
 	m.streamGenerationTokens = 0
 	m.lastTokensPerSec = 0
+	m.agentMetrics = map[string]*agentRuntimeMetrics{}
+	m.ensureAgentMetrics("lead")
+	m.agentsPanelOpen = false
+	m.agentsPanelSelected = 0
+	m.agentsPanelDetail = false
+	m.agentsPanelDetailID = ""
 	m.scrolledUp = false
 	m.autocompleteOpen = false
 	m.shortcutsOpen = false
@@ -474,6 +511,8 @@ func (m *tuiModel) updateLayout() {
 	var modalHeight int
 	if m.shortcutsOpen {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
+	} else if m.agentsPanelOpen {
+		modalHeight = lipgloss.Height(m.renderAgentsPanel(contentWidth)) + 1
 	} else if m.sessionsModalOpen {
 		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
 	} else if m.toolPagerOpen {
@@ -795,6 +834,8 @@ func (m *tuiModel) View() tea.View {
 	// 3. Modal (Shortcuts / Sessions / Recovery / Question / Approval / Plan Review / Autocomplete)
 	if m.shortcutsOpen {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
+	} else if m.agentsPanelOpen {
+		sections = append(sections, m.renderAgentsPanel(contentWidth))
 	} else if m.sessionsModalOpen {
 		sections = append(sections, renderSessionsModal(m, contentWidth))
 	} else if m.toolPagerOpen {

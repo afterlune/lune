@@ -536,42 +536,83 @@ var (
 	reProposedPlanBlock = regexp.MustCompile(`(?is)<proposed_plan>.*?</proposed_plan>`)
 )
 
-// cleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text.
+// cleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text,
+// but preserves inline code mentions like `<proposed_plan>`.
 func cleanProposedPlanTags(s string) string {
 	if !strings.Contains(strings.ToLower(s), "proposed_plan") {
 		return strings.TrimSpace(s)
 	}
-	return strings.TrimSpace(reProposedPlanTags.ReplaceAllString(s, ""))
+	var codeTokens []string
+	protected := reInlineCode.ReplaceAllStringFunc(s, func(m string) string {
+		idx := len(codeTokens)
+		codeTokens = append(codeTokens, m)
+		return "\x00CODE_" + itoaByte(idx) + "\x00"
+	})
+	stripped := reProposedPlanTags.ReplaceAllString(protected, "")
+	for idx, token := range codeTokens {
+		stripped = strings.ReplaceAll(stripped, "\x00CODE_"+itoaByte(idx)+"\x00", token)
+	}
+	return strings.TrimSpace(stripped)
 }
 
 // stripProposedPlan removes complete <proposed_plan>...</proposed_plan> blocks
-// (their content is rendered separately) and any dangling tag tokens. Text after
-// a dangling open tag is preserved, because it is ordinary assistant prose.
+// (their content is rendered separately in the plan review card) and any dangling
+// standalone tags, while preserving inline code mentions like `<proposed_plan>`.
 func stripProposedPlan(text string) string {
 	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
 		return strings.TrimSpace(text)
 	}
-	return cleanProposedPlanTags(reProposedPlanBlock.ReplaceAllString(text, ""))
+	var codeTokens []string
+	protected := reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		idx := len(codeTokens)
+		codeTokens = append(codeTokens, m)
+		return "\x00CODE_" + itoaByte(idx) + "\x00"
+	})
+	stripped := reProposedPlanBlock.ReplaceAllString(protected, "")
+	for idx, token := range codeTokens {
+		stripped = strings.ReplaceAll(stripped, "\x00CODE_"+itoaByte(idx)+"\x00", token)
+	}
+	return cleanProposedPlanTags(stripped)
 }
 
 // extractProposedPlan extracts one complete, non-empty <proposed_plan> block and
-// the remaining assistant text. A dangling open tag is not a plan.
+// the remaining assistant text. A dangling open tag is not a plan. Inline mentions
+// like `<proposed_plan>` are preserved.
 func extractProposedPlan(text string) (string, string) {
+	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
+		return "", cleanProposedPlanTags(text)
+	}
+	var codeTokens []string
+	protected := reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		idx := len(codeTokens)
+		codeTokens = append(codeTokens, m)
+		return "\x00CODE_" + itoaByte(idx) + "\x00"
+	})
+
 	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
-	start := strings.Index(text, openTag)
+	start := strings.Index(protected, openTag)
 	if start < 0 {
 		return "", cleanProposedPlanTags(text)
 	}
 	innerStart := start + len(openTag)
-	relEnd := strings.Index(text[innerStart:], closeTag)
+	relEnd := strings.Index(protected[innerStart:], closeTag)
 	if relEnd < 0 {
 		// Unclosed tag: keep the prose after the tag, but do not produce a plan.
 		return "", stripProposedPlan(text)
 	}
 	end := innerStart + relEnd + len(closeTag)
-	planText := cleanProposedPlanTags(text[innerStart : innerStart+relEnd])
-	if planText == "" || strings.Contains(text[innerStart:], openTag) || strings.Contains(text[end:], closeTag) {
+	rawPlan := protected[innerStart : innerStart+relEnd]
+	for idx, token := range codeTokens {
+		rawPlan = strings.ReplaceAll(rawPlan, "\x00CODE_"+itoaByte(idx)+"\x00", token)
+	}
+	planText := cleanProposedPlanTags(rawPlan)
+	if planText == "" || strings.Contains(protected[innerStart:], openTag) || strings.Contains(protected[end:], closeTag) {
 		return "", stripProposedPlan(text)
 	}
-	return planText, cleanProposedPlanTags(text[:start] + text[end:])
+
+	restProtected := protected[:start] + protected[end:]
+	for idx, token := range codeTokens {
+		restProtected = strings.ReplaceAll(restProtected, "\x00CODE_"+itoaByte(idx)+"\x00", token)
+	}
+	return planText, cleanProposedPlanTags(restProtected)
 }
