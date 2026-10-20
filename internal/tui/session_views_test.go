@@ -820,25 +820,58 @@ func TestTerminalTitleUpdates(t *testing.T) {
 	var buf strings.Builder
 	m := newTUIModel(nil, nil, "sess-1")
 	m.output = &buf
+	m.workspace = filepath.Join(`D:\Git`, "luneAgent") + string(os.PathSeparator)
 
-	// 1. Initial untitled session: title is "lune"
-	if got := m.desiredTerminalTitle(); got != "lune" {
-		t.Fatalf("expected initial title 'lune', got: %q", got)
+	// 1. Initial untitled session includes the workspace directory.
+	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
+		t.Fatalf("expected initial title 'lune | luneAgent', got: %q", got)
 	}
 	m.syncTerminalTitle()
-	if !strings.Contains(buf.String(), "lune") {
-		t.Fatalf("expected OSC sequence to contain 'lune', got: %q", buf.String())
+	if !strings.Contains(buf.String(), "lune | luneAgent") {
+		t.Fatalf("expected OSC sequence to contain 'lune | luneAgent', got: %q", buf.String())
 	}
 
-	// 2. Set title: title becomes "<title> | lune"
+	// 2. Set title: it replaces "lune" while preserving the workspace suffix.
 	buf.Reset()
 	m.sessionTitle = "Refactor Architecture"
-	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
-		t.Fatalf("expected title 'Refactor Architecture | lune', got: %q", got)
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | luneAgent" {
+		t.Fatalf("expected title 'Refactor Architecture | luneAgent', got: %q", got)
 	}
 	m.syncTerminalTitle()
-	if !strings.Contains(buf.String(), "Refactor Architecture | lune") {
-		t.Fatalf("expected OSC sequence to contain 'Refactor Architecture | lune', got: %q", buf.String())
+	if !strings.Contains(buf.String(), "Refactor Architecture | luneAgent") {
+		t.Fatalf("expected OSC sequence to contain 'Refactor Architecture | luneAgent', got: %q", buf.String())
+	}
+
+	// A title derived from the conversation uses the same directory suffix.
+	m.sessionTitle = ""
+	m.entries = []TranscriptEntry{{Kind: KindUser, Text: "Review the latest commit"}}
+	if got := m.desiredTerminalTitle(); got != "Review the latest commit | luneAgent" {
+		t.Fatalf("expected derived title with workspace suffix, got: %q", got)
+	}
+
+	// 3. An explicit untitled marker uses the app name as the session title.
+	m.entries = nil
+	m.sessionTitle = "<untitled>"
+	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
+		t.Fatalf("expected untitled fallback 'lune | luneAgent', got: %q", got)
+	}
+
+	// 4. Without a usable workspace, keep the prior title behavior.
+	root := string(os.PathSeparator)
+	if volume := filepath.VolumeName(m.workspace); volume != "" {
+		root = volume + string(os.PathSeparator)
+	}
+	m.workspace = root
+	if got := m.desiredTerminalTitle(); got != "lune" {
+		t.Fatalf("expected root-workspace fallback 'lune', got: %q", got)
+	}
+	m.sessionTitle = "Refactor Architecture"
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
+		t.Fatalf("expected root-workspace title 'Refactor Architecture | lune', got: %q", got)
+	}
+	m.workspace = ""
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
+		t.Fatalf("expected empty-workspace title 'Refactor Architecture | lune', got: %q", got)
 	}
 }
 

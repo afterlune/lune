@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -487,17 +488,39 @@ func (m *tuiModel) currentReasoningEffortLabel() string {
 	return level
 }
 
-// desiredTerminalTitle computes the expected window/tab title:
-// displays "lune" initially/for untitled sessions, and "<title> | lune" when titled.
+// desiredTerminalTitle computes the expected window/tab title as
+// "<session title> | <workspace directory name>".
 func (m *tuiModel) desiredTerminalTitle() string {
 	title := strings.TrimSpace(m.sessionTitle)
 	if title == "" {
 		title = strings.TrimSpace(deriveSessionTitleFromEntries(m.entries))
 	}
-	if title == "" || title == "<untitled>" {
-		return AppName
+	hasTitle := title != "" && title != "<untitled>"
+	if !hasTitle {
+		title = AppName
 	}
-	return title + " | " + AppName
+
+	workspaceName := workspaceDirectoryName(m.workspace)
+	if workspaceName == "" {
+		if !hasTitle {
+			return AppName
+		}
+		workspaceName = AppName
+	}
+	return title + " | " + workspaceName
+}
+
+func workspaceDirectoryName(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(workspace)
+	name := filepath.Base(cleaned)
+	if name == "." || name == string(filepath.Separator) || filepath.Dir(cleaned) == cleaned {
+		return ""
+	}
+	return name
 }
 
 // syncTerminalTitle writes the OSC 0/2 escape sequence to update the terminal window/tab title.
