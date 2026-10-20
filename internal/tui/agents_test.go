@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 	publicmodel "github.com/afterlune/luneCore/model"
+	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -159,5 +160,362 @@ func TestRemovedSlashAliasesAreUnknown(t *testing.T) {
 		if len(m.entries) <= before || !strings.Contains(m.entries[len(m.entries)-1].Text, "Unknown command") {
 			t.Errorf("alias %q did not produce an unknown-command response", alias)
 		}
+	}
+}
+
+func TestMultiAgentStreamIsolation(t *testing.T) {
+	m := newTUIModel(nil, nil, "multi-agent-sess")
+	m.running = true
+
+	// 1. Subagent starts and streams reasoning + text
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentStarted,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		AgentRole: "TUI Auditor",
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventModelStream,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Subagent secret thought",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventModelStream,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Subagent report line 1\nSubagent report line 2",
+		},
+	})
+
+	// Lead buffers must remain untouched by subagent events
+	if m.currentReasoningText != "" {
+		t.Fatalf("expected lead currentReasoningText to be empty, got %q", m.currentReasoningText)
+	}
+	if m.currentStreamText != "" {
+		t.Fatalf("expected lead currentStreamText to be empty, got %q", m.currentStreamText)
+	}
+
+	// 2. Background memory stream is also ignored by lead stream
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Purpose: string(core.UsagePurposeMemory),
+			Type:    "text_delta",
+			Delta:   "internal memory json",
+		},
+	})
+	if m.currentStreamText != "" {
+		t.Fatalf("expected memory purpose delta to be ignored, got %q", m.currentStreamText)
+	}
+
+	// 3. Lead agent streams its own reasoning and text
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Lead thought part 1. ",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "reasoning_delta",
+			Delta: "Lead thought part 2.",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream: &core.ModelStreamEvent{
+			Type:  "text_delta",
+			Delta: "Final lead response.",
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentFinished,
+		AgentID:   "agent-1",
+		AgentName: "cli_tui_auditor",
+	})
+	m.finalizeTurnOutput("", nil, "exec-1")
+
+	var subagentEntries, reasoningEntries, assistantEntries []TranscriptEntry
+	for _, e := range m.entries {
+		switch e.Kind {
+		case KindSubagent:
+			subagentEntries = append(subagentEntries, e)
+		case KindReasoning:
+			reasoningEntries = append(reasoningEntries, e)
+		case KindAssistant:
+			assistantEntries = append(assistantEntries, e)
+		}
+	}
+
+	if len(subagentEntries) != 1 {
+		t.Fatalf("expected 1 subagent entry, got %d", len(subagentEntries))
+	}
+	if subagentEntries[0].SubagentRunning {
+		t.Errorf("expected subagent entry to be marked finished")
+	}
+	if subagentEntries[0].SubagentPreview != "Subagent report line 2" {
+		t.Errorf("unexpected subagent preview: %q", subagentEntries[0].SubagentPreview)
+	}
+	if len(reasoningEntries) != 1 || reasoningEntries[0].Text != "Lead thought part 1. Lead thought part 2." {
+		t.Errorf("expected 1 merged lead reasoning entry, got %+v", reasoningEntries)
+	}
+	if len(assistantEntries) != 1 || assistantEntries[0].Text != "Final lead response." {
+		t.Errorf("expected 1 clean lead assistant entry, got %+v", assistantEntries)
+	}
+}
+
+func TestCodexExecutionTimelineAlignment(t *testing.T) {
+	// 1. File change card: "• Added .desktop_rework.py (+3 -0)" with line-numbered diff preview and "+ Show details"
+	addedEntry := TranscriptEntry{
+		Kind:     KindTool,
+		ToolName: "write_file",
+		ToolChanges: []publictool.FileChange{
+			{
+				Path:  ".desktop_rework.py",
+				Added: 3,
+				Lines: []publictool.DiffLine{
+					{Kind: "add", NewLine: 1, Text: "from pathlib import Path"},
+					{Kind: "add", NewLine: 2, Text: "import re"},
+					{Kind: "add", NewLine: 3, Text: "p=Path('internal/desktop/service.go')"},
+				},
+			},
+		},
+	}
+	renderedAdded := ansi.Strip(renderEntry(addedEntry, 100))
+	if !strings.Contains(renderedAdded, "• Added .desktop_rework.py (+3 -0)") {
+		t.Fatalf("expected Codex Added file header, got:\n%s", renderedAdded)
+	}
+	if !strings.Contains(renderedAdded, "1 +from pathlib import Path") || !strings.Contains(renderedAdded, "+ Show details") {
+		t.Fatalf("expected inline diff preview and + Show details, got:\n%s", renderedAdded)
+	}
+
+	// 2. Command tail preview: shows the LAST 3 lines of output (e.g. FAIL summary / traceback)
+	exitOne := 1
+	failedEntry := TranscriptEntry{
+		Kind:         KindTool,
+		ToolName:     "run_command",
+		ToolCommand:  "go test ./internal/desktop",
+		ToolOutput:   "line 1 setup\nline 2 compile\nline 3 check\ninternal\\desktop\\service.go:83:6: too many errors\nFAIL\tgithub.com/afterlune/lune/internal/desktop [build failed]\nFAIL",
+		ToolExitCode: &exitOne,
+	}
+	renderedFailed := ansi.Strip(renderEntry(failedEntry, 100))
+	if !strings.Contains(renderedFailed, "Failed (exit 1)") {
+		t.Fatalf("expected Failed (exit 1), got:\n%s", renderedFailed)
+	}
+	if strings.Contains(renderedFailed, "line 1 setup") {
+		t.Fatalf("expected collapsed preview to show tail lines rather than line 1, got:\n%s", renderedFailed)
+	}
+	if !strings.Contains(renderedFailed, "[build failed]") || !strings.Contains(renderedFailed, "+ 3 lines (ctrl+t to expand)") {
+		t.Fatalf("expected tail error lines and expand hint, got:\n%s", renderedFailed)
+	}
+
+	// 3. Borderless horizontal-rule Markdown table
+	mdTable := "| 领域 | 功能 |\n| --- | --- |\n| 会话 | 多会话并行、历史搜索 |\n| 对话 | 流式回复、消息排队 |"
+	renderedTable := ansi.Strip(RenderMarkdown(mdTable, 80))
+	if strings.Contains(renderedTable, "╭") || strings.Contains(renderedTable, "│") {
+		t.Fatalf("expected borderless horizontal-rule table without vertical box borders, got:\n%s", renderedTable)
+	}
+	if !strings.Contains(renderedTable, "领域") || !strings.Contains(renderedTable, "────") || !strings.Contains(renderedTable, "多会话并行") {
+		t.Fatalf("expected table headers, horizontal dividers, and cell text, got:\n%s", renderedTable)
+	}
+}
+
+func TestSubagentTrackingAndCommands(t *testing.T) {
+	m := &tuiModel{
+		running:       true,
+		taskStartedAt: time.Now().Add(-10 * time.Second),
+	}
+
+	// 1. Subagent tool event routing: subagent tools do not mix into lead agent tools
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventAgentStarted,
+		AgentID:   "researcher-1",
+		AgentName: "code_researcher",
+		AgentRole: "Codebase Analyst",
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:      core.EventToolStarted,
+		AgentID:   "researcher-1",
+		AgentName: "code_researcher",
+		Tool: core.ToolCall{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: []byte(`{"path":"internal/tui/theme.go"}`),
+		},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind:    core.EventToolFinished,
+		AgentID: "researcher-1",
+		Tool: core.ToolCall{
+			ID:       "call-1",
+			Name:     "read_file",
+			Duration: 250 * time.Millisecond,
+		},
+	})
+
+	// Check that no KindTool entries were added to lead entries
+	for _, e := range m.entries {
+		if e.Kind == KindTool {
+			t.Fatalf("expected no KindTool in lead entries from subagent event, found: %+v", e)
+		}
+	}
+
+	// Check subagent entry updated properly
+	subs := m.getSubagentEntries()
+	if len(subs) != 1 {
+		t.Fatalf("expected 1 subagent entry, got %d", len(subs))
+	}
+	if subs[0].SubagentTools != 1 || subs[0].SubagentLastTool != "read_file" {
+		t.Fatalf("unexpected subagent tools: count=%d, last=%s", subs[0].SubagentTools, subs[0].SubagentLastTool)
+	}
+
+	// 2. Subagent summary in Working indicator
+	summary := m.subagentsStatusSummary()
+	if !strings.Contains(summary, "1 subagent running") {
+		t.Fatalf("expected '1 subagent running', got %q", summary)
+	}
+	workingBlock := renderWorking(10*time.Second, false, summary)
+	if !strings.Contains(workingBlock, "1 subagent running") {
+		t.Fatalf("expected workingBlock to contain subagent summary, got:\n%s", workingBlock)
+	}
+
+	// 3. Subagent badge in footer
+	footer := ansi.Strip(renderFooter(m, 120))
+	if !strings.Contains(footer, "1 active") || !strings.Contains(footer, "/agents") {
+		t.Fatalf("expected footer to show active subagent count and /agents hint, got:\n%s", footer)
+	}
+
+	// 4. /agents opens the interactive list with the main agent and worker.
+	m.recordAgentUsage(core.Event{AgentID: "researcher-1", ContextWindow: 64000, Usage: core.Usage{
+		InputTokens: 1000, InputTokensDetails: core.TokenInputDetails{CachedTokens: 400}, OutputTokens: 200, TotalTokens: 1200,
+	}})
+	_, _ = m.handleAgentsCommand([]string{"/agents"})
+	if !m.agentsPanelOpen {
+		t.Fatal("/agents did not open the interactive panel")
+	}
+	panel := ansi.Strip(m.renderAgentsPanel(120))
+	if !strings.Contains(panel, "Main agent") || !strings.Contains(panel, "code_researcher") || !strings.Contains(panel, "cache 40%") || !strings.Contains(panel, "total 1,200") {
+		t.Fatalf("agents list missing live agent statistics:\n%s", panel)
+	}
+
+	// 5. Keyboard navigation opens the selected worker detail.
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
+	detail := ansi.Strip(m.renderAgentsPanel(120))
+	if !m.agentsPanelDetail || !strings.Contains(detail, "Agent details · code_researcher") || !strings.Contains(strings.ToLower(detail), "tools: 1") {
+		t.Fatalf("expected interactive agent details, got:\n%s", detail)
+	}
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.agentsPanelOpen {
+		t.Fatal("escape did not close the agents panel")
+	}
+}
+
+func TestFooterSubagentsAlwaysVisible(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	footer := ansi.Strip(renderFooter(m, 120))
+	if !strings.Contains(footer, "🤖 0 active · disabled") {
+		t.Fatalf("expected footer to show disabled when idle, got:\n%s", footer)
+	}
+}
+
+func TestFooterSubagentCountReportsActiveAgents(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.entries = []TranscriptEntry{
+		{Kind: KindSubagent, AgentID: "a", AgentName: "researcher", SubagentRunning: false},
+		{Kind: KindSubagent, AgentID: "b", AgentName: "reviewer", SubagentRunning: true},
+	}
+	m.width = 140
+	footer := ansi.Strip(renderFooter(m, 140))
+	if !strings.Contains(footer, "🤖 1 active · disabled") {
+		t.Fatalf("expected footer to retain the active count with delegation disabled, got:\n%s", footer)
+	}
+	if strings.Contains(footer, "2 active") {
+		t.Fatalf("completed agents must not be counted as active, got:\n%s", footer)
+	}
+}
+
+func TestFooterKeepsSubagentCountVisibleWhenCrowded(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.currentModel = strings.Repeat("LongModelName", 5)
+	m.currentModelProfile = m.currentModel
+	m.reasoningEffort = "high"
+	m.workspace = strings.Repeat("long/workspace/path/", 5)
+	m.sessionTitle = strings.Repeat("long session title ", 5)
+	m.entries = []TranscriptEntry{{Kind: KindSubagent, AgentID: "active", SubagentRunning: true}}
+
+	footer := ansi.Strip(renderFooter(m, 80))
+	if !strings.Contains(footer, "🤖 1 · off") {
+		t.Fatalf("crowded footer should preserve the compact active/disabled state, got:\n%s", footer)
+	}
+	firstLine := strings.Split(footer, "\n")[0]
+	if width := ansi.StringWidth(firstLine); width > 80 {
+		t.Fatalf("footer first line wrapped past terminal width: %d > 80: %q", width, firstLine)
+	}
+}
+
+func TestSummarizeToolRoundRecognizesAskUserAndSubagents(t *testing.T) {
+	entries := []TranscriptEntry{
+		{Kind: KindTool, ToolName: "list_dir"},
+		{Kind: KindTool, ToolName: "read_file"},
+		{Kind: KindTool, ToolName: "grep"},
+		{Kind: KindTool, ToolName: "ask_user"},
+		{Kind: KindTool, ToolName: "delegate_team"},
+	}
+	summary := summarizeToolRound(entries)
+	if !strings.Contains(summary, "Explored 1 directory, 1 file, 1 search") {
+		t.Fatalf("expected file exploration in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "asked 1 question") {
+		t.Fatalf("expected 'asked 1 question' in summary, got: %q", summary)
+	}
+	if !strings.Contains(summary, "ran 1 subagent") {
+		t.Fatalf("expected 'ran 1 subagent' in summary, got: %q", summary)
+	}
+}
+
+func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.contextWindow = 1000000
+
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
+		Usage: core.Usage{InputTokens: 42000, OutputTokens: 200},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead/researcher", UsagePurpose: core.UsagePurposeTeam,
+		EstimatedInputTokens: 180000, Usage: core.Usage{InputTokens: 180000, OutputTokens: 1000},
+	})
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "memory", UsagePurpose: core.UsagePurposeMemory,
+		EstimatedInputTokens: 9000, Usage: core.Usage{InputTokens: 9000},
+	})
+
+	if m.lastInputTokens != 42000 || m.estimatedInputTokens != 0 || m.contextWindow != 1000000 {
+		t.Fatalf("subagent usage changed lead context metrics: input=%d estimated=%d context=%d", m.lastInputTokens, m.estimatedInputTokens, m.contextWindow)
+	}
+	if m.totalInputTokens != 231000 || m.totalOutputTokens != 1200 {
+		t.Fatalf("session totals should include all agent usage: input=%d output=%d", m.totalInputTokens, m.totalOutputTokens)
+	}
+
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
+		EstimatedInputTokens: 55000,
+	})
+	if m.lastInputTokens != 0 || m.estimatedInputTokens != 55000 {
+		t.Fatalf("latest lead estimate should replace prior measured input: input=%d estimated=%d", m.lastInputTokens, m.estimatedInputTokens)
 	}
 }

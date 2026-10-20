@@ -6,11 +6,11 @@ For detailed interface design, layout, keyboard shortcuts, and interaction life-
 
 ## Runtime boundary
 
-- `CoreClient` in `internal/tui/interfaces.go` handles workspace and session management.
+- `internal/tui` uses the `luneCore` client for workspace and session management.
 - `SessionRuntime` handles turn submission, waiting, events, interruption, recovery, and user decisions for one session.
 - `Run` creates a clean, fresh session and opens its runtime, then projects Core events into the Bubble Tea view.
 - The line-oriented CLI owns prompt input, commands, keyboard interruption, and approval prompts in `internal/cli`; it uses the same session runtime API.
-- `internal/tui` remains one package because its update loop and views share private model state; its source files are grouped by runtime, commands, model, view, theme, and update responsibilities.
+- `internal/tui` remains one package because its update loop and views share private model state; source files are split by command domain, runtime events, model state, transcript rendering, panels, and modals.
 
 The interactive TUI owns the terminal's alternate screen so its transcript, composer, and status remain in fixed positions.
 
@@ -25,7 +25,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 - **Keyboard Shortcuts**: Cheat sheet modal (`?` or `/shortcuts`) with a 3-column layout (Compose, Session, Transcript).
 - **Session Management**: Full lifecycle support with `/sessions`, `/open <prefix>`, `/rewind [N]`, `/clear`, and `/title [name]`.
 - **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards and `/cancel-queue`.
-- **Workspace Diff**: Read-only colored git diff output via `/diff [path]`. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
+- **Workspace Diff**: Read-only colored Git diff modal via `/diff [path]`. It reads unstaged changes and falls back to staged changes when no unstaged diff is available. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
 
 ## Permissions, Modes, and Themes
 

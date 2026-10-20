@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 	publicmodel "github.com/afterlune/luneCore/model"
 	"github.com/charmbracelet/x/ansi"
@@ -291,5 +292,44 @@ func TestDelegationFooterUsesEffectiveLimits(t *testing.T) {
 	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{Status: core.TaskCompleted}})
 	if m.delegationEnabled() {
 		t.Fatal("finished task's limits leaked into idle defaults")
+	}
+}
+
+func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
+	m := newTUIModel(nil, nil, "q-sess")
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{
+			ID: "q-req-1",
+			Questions: []core.UserQuestionItem{
+				{
+					ID:       "q1",
+					Question: "Choose an option",
+					Options: []core.UserQuestionOption{
+						{Label: "Opt A"},
+					},
+				},
+			},
+		},
+		Selected: 1, // "None of the above"
+	}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'i', Text: "i"}))
+	m = mod.(*tuiModel)
+	if m.activeQuestion.Custom != "hi" {
+		t.Fatalf("expected Custom answer 'hi', got %q", m.activeQuestion.Custom)
+	}
+
+	// Toggle notes with Tab and type into NoteText
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = mod.(*tuiModel)
+	if !m.activeQuestion.NotesOpen {
+		t.Fatalf("expected NotesOpen to be true after Tab")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	m = mod.(*tuiModel)
+	if m.activeQuestion.NoteText != "n" {
+		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.NoteText)
 	}
 }
