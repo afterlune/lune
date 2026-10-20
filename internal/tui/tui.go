@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -30,6 +31,22 @@ func Run(client *core.Core) error {
 // RunWithOptions starts the LuneAgent Bubble Tea TUI with custom launch options.
 func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	ctx := context.Background()
+	userSettings, settingsErr := settings.OpenUser()
+	if settingsErr == nil {
+		if mode, found, err := userSettings.TUITheme(); err == nil && found {
+			SetThemeMode(ThemeMode(mode))
+		} else {
+			SetThemeMode(ThemeModeAuto)
+			if err != nil {
+				settingsErr = err
+			}
+		}
+	} else {
+		SetThemeMode(ThemeModeAuto)
+	}
+	if userSettings != nil {
+		defer userSettings.Close()
+	}
 
 	var sessionID string
 	var sessionTitle string
@@ -107,7 +124,11 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	}
 
 	model := newTUIModel(client, runtime, sessionID)
+	model.settingsStore = userSettings
 	model.output = out
+	if settingsErr != nil {
+		model.addSystemEntry("Could not load the saved TUI theme; using `auto`: " + settingsErr.Error())
+	}
 	if sessionTitle != "" {
 		model.sessionTitle = sessionTitle
 	}
@@ -122,6 +143,7 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	runtime.SetUserInteractionAvailable(true)
 	defer runtime.SetUserInteractionAvailable(false)
+	defer model.cancelMCPAuthentication(false)
 
 	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)
 	// even if an unexpected panic or error occurs during execution.

@@ -153,6 +153,23 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case mcpAuthDoneMsg:
+		if msg.generation != m.mcpAuthGeneration {
+			return m, nil
+		}
+		if m.mcpAuthCancel != nil {
+			m.mcpAuthCancel()
+			m.mcpAuthCancel = nil
+		}
+		m.mcpAuthName = ""
+		if msg.err != nil {
+			m.addSystemEntry(fmt.Sprintf("Failed to authenticate MCP server `%s`: %v", msg.name, msg.err))
+		} else {
+			m.addSystemEntry(fmt.Sprintf("MCP server `%s` authorized successfully.", msg.name))
+		}
+		m.updateLayout()
+		return m, nil
+
 	case sessionForkedMsg:
 		if msg.err != nil {
 			m.addSystemEntry("Fork failed: " + msg.err.Error())

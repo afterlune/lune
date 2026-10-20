@@ -9,6 +9,82 @@ import (
 	"github.com/afterlune/luneCore/memory"
 )
 
+type ActiveMemoryPicker struct {
+	Items    []memory.Item
+	Selected int
+}
+
+func (m *tuiModel) openMemoryAddInput(category string) {
+	m.pendingMemoryAdd = true
+	m.pendingMemoryCategory = category
+	m.composer.Placeholder = "Memory content · Enter to save · Esc to cancel"
+	m.autocompleteOpen = false
+	m.updateLayout()
+}
+
+func (m *tuiModel) openMemoryPicker() (tea.Model, tea.Cmd) {
+	items, err := m.client.ListMemories(context.Background(), 200)
+	if err != nil {
+		m.addSystemEntry("Failed to query memories: " + err.Error())
+		return m, nil
+	}
+	if len(items) == 0 {
+		m.addSystemEntry("No workspace memories are available to remove.")
+		return m, nil
+	}
+	m.memoryPicker = &ActiveMemoryPicker{Items: items}
+	m.autocompleteOpen = false
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
+	if m.memoryClearConfirm {
+		switch strings.ToLower(keyStr) {
+		case "y":
+			m.memoryClearConfirm = false
+			if err := m.client.ClearMemories(context.Background()); err != nil {
+				m.addSystemEntry("Failed to clear memories: " + err.Error())
+			} else {
+				m.addSystemEntry("Cleared all workspace memories.")
+			}
+			m.updateLayout()
+		case "n", "esc", "q":
+			m.memoryClearConfirm = false
+			m.updateLayout()
+		}
+		return m, nil
+	}
+	if m.memoryPicker == nil {
+		return m, nil
+	}
+	switch strings.ToLower(keyStr) {
+	case "esc", "q":
+		m.memoryPicker = nil
+		m.updateLayout()
+	case "up", "k":
+		m.memoryPicker.Selected = (m.memoryPicker.Selected - 1 + len(m.memoryPicker.Items)) % len(m.memoryPicker.Items)
+		m.updateLayout()
+	case "down", "j":
+		m.memoryPicker.Selected = (m.memoryPicker.Selected + 1) % len(m.memoryPicker.Items)
+		m.updateLayout()
+	case "enter":
+		item := m.memoryPicker.Items[m.memoryPicker.Selected]
+		m.memoryPicker = nil
+		if err := m.client.DeleteMemory(context.Background(), item.ID); err != nil {
+			m.addSystemEntry("Failed to delete memory: " + err.Error())
+		} else {
+			shortID := item.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			m.addSystemEntry(fmt.Sprintf("Deleted workspace memory `[%s]`: %s", shortID, item.Content))
+		}
+		m.updateLayout()
+	}
+	return m, nil
+}
+
 func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		m.addSystemEntry("Memory management unavailable (no active client).")
@@ -75,21 +151,23 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "add":
-		if len(parts) < 3 {
-			m.addSystemEntry("Usage: `/memory add [category] <content>`\nCategories: `preference`, `convention`, `decision`, `correction`, `verified_fact` (default: `preference`)")
-			return m, nil
-		}
 		cat := memory.CategoryPreference
 		contentParts := parts[2:]
-		firstLower := strings.ToLower(parts[2])
-		switch memory.Category(firstLower) {
-		case memory.CategoryPreference, memory.CategoryConvention, memory.CategoryDecision, memory.CategoryCorrection, memory.CategoryVerifiedFact:
-			cat = memory.Category(firstLower)
-			contentParts = parts[3:]
+		categoryArg := ""
+		if len(parts) > 2 {
+			firstLower := strings.ToLower(parts[2])
+			switch memory.Category(firstLower) {
+			case memory.CategoryPreference, memory.CategoryConvention, memory.CategoryDecision, memory.CategoryCorrection, memory.CategoryVerifiedFact:
+				cat = memory.Category(firstLower)
+				categoryArg = firstLower
+				contentParts = parts[3:]
+			}
+		} else {
+			contentParts = nil
 		}
 		content := strings.TrimSpace(strings.Join(contentParts, " "))
 		if content == "" {
-			m.addSystemEntry("Memory content cannot be empty.")
+			m.openMemoryAddInput(categoryArg)
 			return m, nil
 		}
 		item, err := m.client.AddMemory(ctx, memory.Input{
@@ -110,8 +188,7 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 
 	case "remove", "delete":
 		if len(parts) < 3 {
-			m.addSystemEntry("Usage: `/memory remove <id|prefix>`")
-			return m, nil
+			return m.openMemoryPicker()
 		}
 		target := parts[2]
 		items, err := m.client.ListMemories(ctx, 200)
@@ -162,7 +239,8 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if !hasForce {
-			m.addSystemEntry("Are you sure you want to clear all workspace memories?\nRun `/memory clear --force` to confirm.")
+			m.memoryClearConfirm = true
+			m.updateLayout()
 			return m, nil
 		}
 		if err := m.client.ClearMemories(ctx); err != nil {

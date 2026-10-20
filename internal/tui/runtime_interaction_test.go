@@ -298,11 +298,15 @@ func TestThemeSwitching(t *testing.T) {
 		t.Errorf("expected auto theme mode, got: %s", CurrentThemeMode())
 	}
 
-	// /theme status inspect
+	// /theme opens the interactive selector and Enter applies its current selection.
 	m.handleSlashCommand("/theme")
-	lastSys := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "Current theme mode: `auto`") {
-		t.Errorf("expected theme inspect message, got: %s", lastSys)
+	if m.themePicker == nil || m.themePicker.Selected != 0 {
+		t.Fatalf("expected theme picker to open on current auto mode: %+v", m.themePicker)
+	}
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if m.themePicker != nil || CurrentThemeMode() != ThemeModeAuto {
+		t.Fatalf("expected Enter to apply auto theme, picker=%v mode=%q", m.themePicker, CurrentThemeMode())
 	}
 }
 

@@ -20,6 +20,21 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.shortcutsOpen {
 		return m.handleShortcutModalKeyPress(msg, keyStr)
 	}
+	if m.memoryPicker != nil || m.memoryClearConfirm {
+		return m.handleMemoryPickerKeyPress(keyStr)
+	}
+	if m.mcpServerPicker != nil {
+		return m.handleMCPServerPickerKeyPress(keyStr)
+	}
+	if m.themePicker != nil {
+		return m.handleThemePickerKeyPress(keyStr)
+	}
+	if m.modelPicker != nil || m.permissionPicker != nil {
+		return m.handleProfilePickerKeyPress(keyStr)
+	}
+	if m.processPickerOpen {
+		return m.handleProcessPickerKeyPress(keyStr)
+	}
 	if m.agentsPanelOpen {
 		return m.handleAgentsPanelKeyPress(msg, keyStr)
 	}
@@ -62,6 +77,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			return m.interruptRunningTask()
 		}
+		m.cancelMCPAuthentication(false)
 		return m, tea.Quit
 
 	case "ctrl+shift+c":
@@ -70,6 +86,18 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
+		if m.pendingMemoryAdd {
+			m.pendingMemoryAdd = false
+			m.pendingMemoryCategory = ""
+			m.composer.Placeholder = "Ask Lune to do anything"
+			m.addSystemEntry("Memory entry cancelled; the draft remains in the composer.")
+			m.updateLayout()
+			return m, nil
+		}
+		if m.mcpAuthCancel != nil {
+			m.cancelMCPAuthentication(true)
+			return m, nil
+		}
 		if m.shortcutsOpen {
 			m.shortcutsOpen = false
 			m.updateLayout()
@@ -145,9 +173,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.activePlanReview != nil {
-			m.activePlanReview = nil
-			m.updateLayout()
-			return m, nil
+			return m.cancelActivePlanReview()
 		}
 		if m.scrolledUp {
 			m.scrolledUp = false
@@ -254,9 +280,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.autocompleteItems[m.autocompleteIndex].Command
-			if keyStr == "enter" && strings.EqualFold(strings.TrimSpace(m.composer.Value()), selected) {
+			if keyStr == "enter" {
 				m.autocompleteOpen = false
 				m.composer.SetValue(selected)
+				m.composer.CursorEnd()
+				// Let the normal Enter path execute the selected command now.
 			} else {
 				m.composer.SetValue(selected + " ")
 				m.autocompleteOpen = false
@@ -608,6 +636,25 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// 5. Enter to submit Composer
 	if keyStr == "enter" {
+		if m.pendingMemoryAdd {
+			content := strings.TrimSpace(m.composer.Value())
+			category := m.pendingMemoryCategory
+			m.pendingMemoryAdd = false
+			m.pendingMemoryCategory = ""
+			m.composer.Reset()
+			m.composer.Placeholder = "Ask Lune to do anything"
+			if content == "" {
+				m.addSystemEntry("Memory content cannot be empty.")
+				m.updateLayout()
+				return m, nil
+			}
+			parts := []string{"/memory", "add"}
+			if category != "" {
+				parts = append(parts, category)
+			}
+			parts = append(parts, content)
+			return m.handleMemoryCommand(parts)
+		}
 		val := strings.TrimSpace(m.composer.Value())
 		if val == "" {
 			return m, nil
@@ -626,7 +673,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.composer, cmd = m.composer.Update(msg)
 	val := m.composer.Value()
-	if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
+	if m.pendingMemoryAdd {
+		m.autocompleteOpen = false
+	} else if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
 		items := filterCommands(val)
 		if len(items) > 0 {
 			m.autocompleteOpen = true

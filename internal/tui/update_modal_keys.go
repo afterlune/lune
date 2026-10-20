@@ -128,6 +128,7 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 			m.sessionsFilter = ""
 			m.sessionsConfirmDelete = false
 			m.sessionsDeletingID = ""
+			m.sessionsDeleteMode = false
 			m.updateLayout()
 			return m, nil
 		case "ctrl+d", "delete":
@@ -167,6 +168,17 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 		case "enter":
 			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
 				targetID := m.sessionsFiltered[m.sessionsIndex].ID
+				if m.sessionsDeleteMode {
+					if targetID == m.sessionID {
+						m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
+						m.updateLayout()
+						return m, nil
+					}
+					m.sessionsConfirmDelete = true
+					m.sessionsDeletingID = targetID
+					m.updateLayout()
+					return m, nil
+				}
 				m.sessionsModalOpen = false
 				m.sessionsFilter = ""
 				if targetID == m.sessionID {

@@ -146,6 +146,34 @@ func TestStoreAppearanceIgnoresLegacyTheme(t *testing.T) {
 	}
 }
 
+func TestStoreTUIThemeIsIndependentAndPersistent(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, found, err := store.TUITheme(); err != nil || found {
+		t.Fatalf("TUITheme() = found %v, err %v; want no saved value", found, err)
+	}
+	if err := store.SaveTUITheme("light"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, found, err := store.TUITheme(); err != nil || !found || mode != "light" {
+		t.Fatalf("TUITheme() = %q, found %v, err %v; want light", mode, found, err)
+	}
+	appearance, err := store.Appearance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appearance.Theme != defaultTheme {
+		t.Fatalf("TUI preference changed Desktop theme: got %q, want %q", appearance.Theme, defaultTheme)
+	}
+	if err := store.SaveTUITheme("sepia"); err == nil {
+		t.Fatal("SaveTUITheme accepted an invalid mode")
+	}
+}
+
 func TestStoreRejectsInvalidAppearance(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {

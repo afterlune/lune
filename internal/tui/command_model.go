@@ -32,6 +32,10 @@ func (m *tuiModel) handlePlanCommand(parts []string) (tea.Model, tea.Cmd) {
 
 // handlePermissionsCommand handles the /permissions command.
 func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd) {
+	if m.client == nil {
+		m.addSystemEntry("Permission management is unavailable.")
+		return m, nil
+	}
 	if len(parts) > 1 {
 		mode := core.PermissionMode(strings.ToLower(parts[1]))
 		switch mode {
@@ -49,10 +53,9 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 		default:
 			m.addSystemEntry("Unknown permission mode. Choose: `read-only`, `workspace`, `ask`, `full-access`.")
 		}
-	} else {
-		m.addSystemEntry(fmt.Sprintf("Current permission mode: `%s` (Plan mode: %v)", m.permissionMode, m.planMode))
+		return m, nil
 	}
-	return m, nil
+	return m.openPermissionPicker()
 }
 
 // handleModelCommand handles the /model command.
@@ -103,27 +106,7 @@ func (m *tuiModel) handleModelCommand(parts []string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry(fmt.Sprintf("Unknown model profile `%s`. Available profiles: %s", parts[1], strings.Join(names, ", ")))
 		}
 	} else {
-		profiles := m.client.ListModelProfiles()
-		activeProfile := m.currentModelProfile
-		if strings.TrimSpace(activeProfile) == "" {
-			activeProfile = m.currentModel
-		}
-		var lines []string
-		lines = append(lines, fmt.Sprintf("**Current model:** `%s` (`%s`)", m.currentModelDisplayName(), activeProfile))
-		lines = append(lines, "\n**Available model profiles:**")
-		for _, p := range profiles {
-			marker := "  "
-			if strings.EqualFold(p.Profile, activeProfile) {
-				marker = "* "
-			}
-			nameDesc := p.Model
-			if p.DisplayName != "" && p.DisplayName != p.Model {
-				nameDesc = fmt.Sprintf("%s / %s", p.Model, p.DisplayName)
-			}
-			lines = append(lines, fmt.Sprintf("%s`%s` (%s / %s)", marker, p.Profile, p.Provider, nameDesc))
-		}
-		lines = append(lines, "\nUsage: `/model <profile>` to switch.")
-		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m.openModelPicker()
 	}
 	return m, nil
 }

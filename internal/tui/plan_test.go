@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -130,5 +132,42 @@ func TestPlanMarkupInTextWithoutCorePlanDoesNotOpenReview(t *testing.T) {
 		if entry.Kind == KindAssistant && strings.Contains(entry.Text, "<proposed_plan>") {
 			t.Fatalf("expected raw plan markup to be removed, got: %q", entry.Text)
 		}
+	}
+}
+
+func TestCancelPlanReviewKeepsPlanModeAndPlan(t *testing.T) {
+	plan := "1. Inspect the implementation\n2. Run focused tests"
+	m := newTUIModel(nil, nil, "plan-cancel")
+	m.planMode = true
+	m.permissionMode = core.PermissionReadOnly
+	m.entries = []TranscriptEntry{{Kind: KindPlan, Text: plan}}
+	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: plan, Selected: 2}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if m.activePlanReview != nil {
+		t.Fatal("cancel should close the plan review card")
+	}
+	if !m.planMode || m.permissionMode != core.PermissionReadOnly {
+		t.Fatalf("cancel should keep Plan mode and read-only permission, plan=%v permission=%q", m.planMode, m.permissionMode)
+	}
+	if len(m.entries) < 2 || m.entries[0].Text != plan || !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "continue discussing") {
+		t.Fatalf("expected original plan and continuation guidance to remain in transcript: %#v", m.entries)
+	}
+}
+
+func TestEscapePlanReviewKeepsPlanMode(t *testing.T) {
+	m := newTUIModel(nil, nil, "plan-escape")
+	m.planMode = true
+	m.permissionMode = core.PermissionReadOnly
+	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "Keep planning", Selected: 0}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.activePlanReview != nil || !m.planMode || m.permissionMode != core.PermissionReadOnly {
+		t.Fatalf("Esc should close only the review card, review=%v plan=%v permission=%q", m.activePlanReview, m.planMode, m.permissionMode)
+	}
+	if !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "continue discussing") {
+		t.Fatal("expected Esc cancellation to leave continuation guidance")
 	}
 }

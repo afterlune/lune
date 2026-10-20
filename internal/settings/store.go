@@ -36,6 +36,7 @@ const (
 	desktopLastSessionKey   = "desktop.lastSession"
 	desktopWindowWidthKey   = "desktop.windowWidth"
 	desktopWindowHeightKey  = "desktop.windowHeight"
+	tuiThemeKey             = "tui.theme"
 )
 
 // DesktopRestore is the small amount of UI state needed to make the next
@@ -571,6 +572,31 @@ func (s *Store) ClearDesktopRestore() error {
 		return fmt.Errorf("clear desktop restore state: %w", err)
 	}
 	return nil
+}
+
+// TUITheme returns the saved TUI theme mode. The boolean is false when no
+// preference has been saved; Desktop appearance settings use a separate key.
+func (s *Store) TUITheme() (string, bool, error) {
+	value, ok, err := s.setting(tuiThemeKey)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	switch value {
+	case "auto", "dark", "light":
+		return value, true, nil
+	default:
+		return "", false, fmt.Errorf("invalid saved TUI theme %q", value)
+	}
+}
+
+// SaveTUITheme persists the TUI-only theme preference independently of Desktop.
+func (s *Store) SaveTUITheme(mode string) error {
+	switch mode {
+	case "auto", "dark", "light":
+		return s.saveSetting(tuiThemeKey, mode)
+	default:
+		return fmt.Errorf("invalid TUI theme %q", mode)
+	}
 }
 
 func (s *Store) setting(key string) (string, bool, error) {

@@ -89,9 +89,7 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 	case 1:
 		mode = core.PlanImplementNewContext
 	default:
-		m.activePlanReview = nil
-		m.updateLayout()
-		return m, nil
+		return m.cancelActivePlanReview()
 	}
 
 	m.activePlanReview = nil
@@ -106,6 +104,16 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, core.PlanImplementationOptions{Mode: mode, PermissionMode: permissionMode})
 		return planImplementedMsg{impl: impl, planText: review.Text, err: err}
 	}
+}
+
+func (m *tuiModel) cancelActivePlanReview() (tea.Model, tea.Cmd) {
+	if m.activePlanReview == nil {
+		return m, nil
+	}
+	m.activePlanReview = nil
+	m.addSystemEntry("Plan review closed. The plan remains in the conversation, and Plan mode is still active. Continue discussing or revising it here.")
+	m.updateLayout()
+	return m, nil
 }
 
 func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {

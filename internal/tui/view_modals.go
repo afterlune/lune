@@ -104,9 +104,225 @@ func renderSessionsModal(m *tuiModel, width int) string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, styleTextMuted().Render("↑/↓ navigate · enter select · ctrl+d/del delete · esc close"))
+	hint := "↑/↓ navigate · enter select · ctrl+d/del delete · esc close"
+	if m.sessionsDeleteMode {
+		hint = "↑/↓ navigate · enter choose session to delete · y confirm · n/esc cancel · esc close"
+	}
+	lines = append(lines, styleTextMuted().Render(hint))
 
 	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderThemePicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Theme")}
+	for i, mode := range themeModes {
+		label := string(mode)
+		if mode == CurrentThemeMode() {
+			label += " · current"
+		}
+		if i == m.themePicker.Selected {
+			lines = append(lines, styleSelectedRow().Render("› "+label))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter apply · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderModelPicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("Model profile (%d)", len(m.modelPicker.Items)))}
+	visible := 8
+	start := 0
+	if m.modelPicker.Selected >= visible {
+		start = m.modelPicker.Selected - visible + 1
+	}
+	end := min(len(m.modelPicker.Items), start+visible)
+	for i := start; i < end; i++ {
+		item := m.modelPicker.Items[i]
+		modelName := item.Model
+		if item.DisplayName != "" && item.DisplayName != item.Model {
+			modelName = item.DisplayName + " · " + item.Model
+		}
+		label := fmt.Sprintf("%s · %s · %s", item.Profile, item.Provider, modelName)
+		if strings.EqualFold(item.Profile, m.currentModelProfile) {
+			label += " · current"
+		}
+		label = sanitizeAndTruncateLine(label, max(12, width-8))
+		if i == m.modelPicker.Selected {
+			lines = append(lines, styleSelectedRow().Render("› "+label))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter apply · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderPermissionPicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Permission mode")}
+	for i, mode := range permissionModes {
+		label := string(mode)
+		if mode == m.permissionMode {
+			label += " · current"
+		}
+		if i == m.permissionPicker.Selected {
+			lines = append(lines, styleSelectedRow().Render("› "+label))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter apply · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderMemoryInputPrompt(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	category := "preference"
+	if m.pendingMemoryCategory != "" {
+		category = m.pendingMemoryCategory
+	}
+	content := fmt.Sprintf("Add workspace memory (%s)\nType the memory in the composer. Enter saves · Esc cancels.", category)
+	return renderCardSurface(cardStyle, content)
+}
+
+func renderMemoryPicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Remove workspace memory")}
+	visible := 8
+	start := 0
+	if m.memoryPicker.Selected >= visible {
+		start = m.memoryPicker.Selected - visible + 1
+	}
+	end := min(len(m.memoryPicker.Items), start+visible)
+	for i := start; i < end; i++ {
+		item := m.memoryPicker.Items[i]
+		id := item.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		label := fmt.Sprintf("[%s] %s · %s", id, item.Category, sanitizeAndTruncateLine(item.Content, max(10, width-36)))
+		if i == m.memoryPicker.Selected {
+			lines = append(lines, styleSelectedRow().Render("› "+label))
+		} else {
+			lines = append(lines, "  "+label)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter remove · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderMemoryClearConfirm(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	content := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).
+		Render("Clear all workspace memories?") + "\n" + styleTextMuted().Render("y confirm · n/Esc cancel")
+	return renderCardSurface(cardStyle, content)
+}
+
+func renderMCPServerPicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	title := map[string]string{"enable": "Enable MCP server", "disable": "Disable MCP server", "auth": "Authorize MCP server"}[m.mcpServerPicker.Action]
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(title)}
+	visible := 8
+	start := 0
+	if m.mcpServerPicker.Selected >= visible {
+		start = m.mcpServerPicker.Selected - visible + 1
+	}
+	end := min(len(m.mcpServerPicker.Names), start+visible)
+	for i := start; i < end; i++ {
+		name := sanitizeAndTruncateLine(m.mcpServerPicker.Names[i], max(10, width-8))
+		if i == m.mcpServerPicker.Selected {
+			lines = append(lines, styleSelectedRow().Render("› "+name))
+		} else {
+			lines = append(lines, "  "+name)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter select · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderProcessPicker(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	title := "Select process logs"
+	if m.processPickerMode == processPickerStop {
+		title = "Select process to stop"
+	}
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%s (%d)", title, len(m.processPickerItems)))}
+	visible := 8
+	start := 0
+	if m.processPickerSelected >= visible {
+		start = m.processPickerSelected - visible + 1
+	}
+	end := min(len(m.processPickerItems), start+visible)
+	for i := start; i < end; i++ {
+		command := m.processPickerItems[i]
+		id := command.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		row := fmt.Sprintf("[%s] %s · %s", id, command.Status, sanitizeAndTruncateLine(command.Command, max(10, width-30)))
+		if i == m.processPickerSelected {
+			lines = append(lines, styleSelectedRow().Render("› "+row))
+		} else {
+			lines = append(lines, "  "+row)
+		}
+	}
+	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter select · esc cancel"))
+	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
+}
+
+func renderMCPAuthPanel(m *tuiModel, width int) string {
+	th := activeTheme()
+	cardStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", m.mcpAuthName)
+	return renderCardSurface(cardStyle, content)
 }
 
 // renderToolPagerModal renders the dedicated floating pager modal for inspecting full tool output.

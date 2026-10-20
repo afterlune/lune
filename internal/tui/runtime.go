@@ -150,6 +150,10 @@ func tickClock() tea.Cmd {
 
 // submitTurn initiates a model turn for user input.
 func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
+	return m.submitTurnWithOptions(rawInput, "", m.planMode, true)
+}
+
+func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.PermissionMode, planMode, expandMentions bool) (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(rawInput)
 	if text == "" {
 		return m, nil
@@ -177,7 +181,11 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	attachments, augmentedText := ExpandFileMentions(text, m.workspace)
+	attachments := []FileAttachment(nil)
+	augmentedText := text
+	if expandMentions {
+		attachments, augmentedText = ExpandFileMentions(text, m.workspace)
+	}
 	var attachedLabels []string
 	for _, att := range attachments {
 		attachedLabels = append(attachedLabels, att.Label)
@@ -190,8 +198,9 @@ func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	req := core.TurnRequest{
-		Input:    input,
-		PlanMode: m.planMode,
+		Input:          input,
+		PlanMode:       planMode,
+		PermissionMode: permissionMode,
 	}
 
 	runtime := m.runtime

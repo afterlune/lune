@@ -8,6 +8,102 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+type mcpAuthDoneMsg struct {
+	generation uint64
+	name       string
+	err        error
+}
+
+type ActiveMCPServerPicker struct {
+	Action   string
+	Names    []string
+	Selected int
+}
+
+func (m *tuiModel) openMCPServerPicker(action string) (tea.Model, tea.Cmd) {
+	servers := m.client.MCPServers()
+	var names []string
+	for _, server := range servers {
+		if action == "enable" && server.Enabled {
+			continue
+		}
+		if action == "disable" && !server.Enabled {
+			continue
+		}
+		names = append(names, server.Name)
+	}
+	if len(names) == 0 {
+		m.addSystemEntry(fmt.Sprintf("No MCP servers are available to %s.", action))
+		return m, nil
+	}
+	m.mcpServerPicker = &ActiveMCPServerPicker{Action: action, Names: names}
+	m.autocompleteOpen = false
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) handleMCPServerPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
+	if m.mcpServerPicker == nil {
+		return m, nil
+	}
+	switch strings.ToLower(keyStr) {
+	case "esc", "q":
+		m.mcpServerPicker = nil
+		m.updateLayout()
+		return m, nil
+	case "up", "k":
+		m.mcpServerPicker.Selected = (m.mcpServerPicker.Selected - 1 + len(m.mcpServerPicker.Names)) % len(m.mcpServerPicker.Names)
+		m.updateLayout()
+		return m, nil
+	case "down", "j":
+		m.mcpServerPicker.Selected = (m.mcpServerPicker.Selected + 1) % len(m.mcpServerPicker.Names)
+		m.updateLayout()
+		return m, nil
+	case "enter":
+		name := m.mcpServerPicker.Names[m.mcpServerPicker.Selected]
+		action := m.mcpServerPicker.Action
+		m.mcpServerPicker = nil
+		return m.handleMCPCommand([]string{"/mcp", action, name})
+	default:
+		return m, nil
+	}
+}
+
+func (m *tuiModel) startMCPAuthentication(name string) tea.Cmd {
+	if m.mcpAuthCancel != nil {
+		m.addSystemEntry("An MCP authorization is already in progress. Press Esc to cancel it first.")
+		return nil
+	}
+	if m.mcpAuthRunner == nil {
+		m.mcpAuthRunner = m.client.AuthenticateMCPServer
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mcpAuthGeneration++
+	generation := m.mcpAuthGeneration
+	m.mcpAuthName = name
+	m.mcpAuthCancel = cancel
+	m.updateLayout()
+	runner := m.mcpAuthRunner
+	return func() tea.Msg {
+		return mcpAuthDoneMsg{generation: generation, name: name, err: runner(ctx, name)}
+	}
+}
+
+func (m *tuiModel) cancelMCPAuthentication(report bool) {
+	if m.mcpAuthCancel == nil {
+		return
+	}
+	name := m.mcpAuthName
+	m.mcpAuthGeneration++
+	m.mcpAuthCancel()
+	m.mcpAuthCancel = nil
+	m.mcpAuthName = ""
+	if report {
+		m.addSystemEntry(fmt.Sprintf("Cancelled MCP authorization for `%s`.", name))
+	}
+	m.updateLayout()
+}
+
 // handleMCPCommand handles the /mcp command.
 func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.client == nil {
@@ -54,8 +150,7 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(parts) < 3 {
-			m.addSystemEntry("Usage: `/mcp enable <server-name>`")
-			return m, nil
+			return m.openMCPServerPicker("enable")
 		}
 		name := parts[2]
 		if err := m.client.EnableMCPServer(name); err != nil {
@@ -69,8 +164,7 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(parts) < 3 {
-			m.addSystemEntry("Usage: `/mcp disable <server-name>`")
-			return m, nil
+			return m.openMCPServerPicker("disable")
 		}
 		name := parts[2]
 		if err := m.client.DisableMCPServer(name); err != nil {
@@ -84,15 +178,11 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(parts) < 3 {
-			m.addSystemEntry("Usage: `/mcp auth <server-name>`")
-			return m, nil
+			return m.openMCPServerPicker("auth")
 		}
 		name := parts[2]
-		if err := m.client.AuthenticateMCPServer(context.Background(), name); err != nil {
-			m.addSystemEntry(fmt.Sprintf("Failed to authenticate MCP server `%s`: %v", name, err))
-		} else {
-			m.addSystemEntry(fmt.Sprintf("MCP server `%s` authorized successfully.", name))
-		}
+		m.addSystemEntry(fmt.Sprintf("Authenticating MCP server `%s`; complete the browser flow or press Esc to cancel.", name))
+		return m, m.startMCPAuthentication(name)
 	default:
 		m.addSystemEntry(fmt.Sprintf("Unknown MCP subcommand `%s`. Usage: `/mcp [list|enable|disable|auth]`", subcommand))
 	}

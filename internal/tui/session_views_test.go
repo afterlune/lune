@@ -461,11 +461,12 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	m = mod.(*tuiModel)
 
 	// 6. Test /drop command
-	// Usage error
+	// No arguments opens the interactive delete picker.
 	m.handleSlashCommand("/drop")
-	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Usage: `/drop") {
-		t.Fatalf("expected usage error for /drop")
+	if !m.sessionsModalOpen || !m.sessionsDeleteMode {
+		t.Fatalf("expected /drop to open delete picker, open=%v deleteMode=%v", m.sessionsModalOpen, m.sessionsDeleteMode)
 	}
+	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 
 	// Cannot delete active session
 	m.handleSlashCommand("/drop " + s1.ID)
@@ -476,8 +477,22 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	// Delete s3 via prefix
 	s3Prefix := s3.ID[:8]
 	m.handleSlashCommand("/drop " + s3Prefix)
-	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Deleted session: "+s3.ID) {
-		t.Fatalf("expected deleted session notice for s3, got: %s", m.entries[len(m.entries)-1].Text)
+	if !m.sessionsModalOpen || !m.sessionsConfirmDelete || m.sessionsDeletingID != s3.ID {
+		t.Fatalf("expected /drop to request confirmation for s3, open=%v confirm=%v id=%q", m.sessionsModalOpen, m.sessionsConfirmDelete, m.sessionsDeletingID)
+	}
+	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	if !m.sessionsModalOpen || m.sessionsConfirmDelete {
+		t.Fatal("expected n to cancel the deletion and return to the picker")
+	}
+	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m.handleSlashCommand("/drop " + s3Prefix)
+	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
+	if m.sessionsConfirmDelete {
+		t.Fatal("expected y to complete the confirmed deletion")
+	}
+	lastSys = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Deleted session: "+s3.ID) {
+		t.Fatalf("expected deleted session notice for s3, got: %s", lastSys)
 	}
 
 	// 7. Test running guard for /drop

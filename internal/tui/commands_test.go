@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -52,22 +54,147 @@ func TestMCPCommand(t *testing.T) {
 	}
 }
 
-func TestReviewCommand(t *testing.T) {
-	m := newTUIModel(nil, nil, "test-sess")
-	m.workspace = "."
-
-	// Non-existent file review
-	m.handleSlashCommand("/review non-existent-file-xyz.txt")
-	lastSys := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "No changes found for: non-existent-file-xyz.txt") {
-		t.Errorf("expected no changes message for non-existent file, got: %s", lastSys)
+func TestMCPAuthenticationIsCancelableAndDoesNotBlockInput(t *testing.T) {
+	m := newTUIModel(nil, nil, "mcp-auth")
+	started := make(chan struct{})
+	m.mcpAuthRunner = func(ctx context.Context, _ string) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	cmd := m.startMCPAuthentication("test-server")
+	if cmd == nil || m.mcpAuthName != "test-server" {
+		t.Fatal("expected MCP authorization to start with visible state")
+	}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "Press Esc to") {
+		t.Fatalf("expected MCP authorization panel to show cancellation instructions, got: %q", view)
 	}
 
-	// Full workspace review
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	<-started
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
+	m = mod.(*tuiModel)
+	if m.composer.Value() != "x" {
+		t.Fatal("composer input should remain responsive during OAuth authorization")
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.mcpAuthCancel != nil || m.mcpAuthName != "" {
+		t.Fatal("Esc should cancel and clear the active OAuth state")
+	}
+	mod, _ = m.Update(<-done)
+	m = mod.(*tuiModel)
+	if strings.Contains(m.entries[len(m.entries)-1].Text, "Failed to authenticate") {
+		t.Fatal("late cancellation result should not overwrite the cancellation state")
+	}
+	foundCancel := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Cancelled MCP authorization") {
+			foundCancel = true
+		}
+	}
+	if !foundCancel {
+		t.Fatal("expected a cancellation notice")
+	}
+}
+
+func TestReviewCommand(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.workspace = initReviewGitRepo(t)
+
+	// An empty worktree reports that there is nothing to review without requiring a runtime.
 	m.handleSlashCommand("/review")
-	lastSys2 := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys2, "Workspace Changes Review") && !strings.Contains(lastSys2, "No unstaged or uncommitted changes in workspace") {
-		t.Errorf("expected review summary or no-changes message, got: %s", lastSys2)
+	lastSys := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "No text changes to review") {
+		t.Errorf("expected no-changes message, got: %s", lastSys)
+	}
+
+	// Changed workspaces need an active runtime before the model can review them.
+	if err := os.WriteFile(filepath.Join(m.workspace, "tracked.txt"), []byte("working tree change\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m.handleSlashCommand("/review")
+	lastSys = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "active session runtime") {
+		t.Errorf("expected runtime requirement message, got: %s", lastSys)
+	}
+}
+
+func TestCollectReviewMaterialsIncludesTextChangesAndExcludesIgnoredBinary(t *testing.T) {
+	workspace := initReviewGitRepo(t)
+	tracked := filepath.Join(workspace, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("staged line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runReviewGit(t, workspace, "add", "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("staged and unstaged line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "new.txt"), []byte("untracked review content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "ignored.txt"), []byte("ignored secret content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "image.bin"), []byte{1, 'B', 'I', 'N', 'A', 'R', 'Y'}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	materials, changed, err := collectReviewMaterials(workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected textual changes to be reviewable")
+	}
+	for _, want := range []string{"staged line", "unstaged line", "untracked review content"} {
+		if !strings.Contains(materials, want) {
+			t.Errorf("review materials missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{"ignored secret content", "BINARY"} {
+		if strings.Contains(materials, unwanted) {
+			t.Errorf("review materials unexpectedly include %q", unwanted)
+		}
+	}
+
+	pathMaterials, pathChanged, err := collectReviewMaterials(workspace, "tracked.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pathChanged || !strings.Contains(pathMaterials, "staged line") || strings.Contains(pathMaterials, "untracked review content") {
+		t.Fatalf("path-scoped materials were not limited to tracked.txt: changed=%v materials=%q", pathChanged, pathMaterials)
+	}
+	if _, _, err := collectReviewMaterials(workspace, "../outside.txt"); err == nil {
+		t.Fatal("review accepted a path outside the workspace")
+	}
+}
+
+func initReviewGitRepo(t *testing.T) string {
+	t.Helper()
+	workspace := t.TempDir()
+	runReviewGit(t, workspace, "init")
+	runReviewGit(t, workspace, "config", "user.email", "review-test@example.invalid")
+	runReviewGit(t, workspace, "config", "user.name", "Review Test")
+	if err := os.WriteFile(filepath.Join(workspace, ".gitignore"), []byte("ignored.txt\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "tracked.txt"), []byte("initial line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runReviewGit(t, workspace, "add", ".")
+	runReviewGit(t, workspace, "commit", "-m", "initial")
+	return workspace
+}
+
+func runReviewGit(t *testing.T, workspace string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workspace
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 }
 
@@ -242,6 +369,82 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	}
 }
 
+func TestCommandAutocompleteEnterExecutesSelectedCandidate(t *testing.T) {
+	for _, input := range []string{"/the", "/theme"} {
+		t.Run(input, func(t *testing.T) {
+			m := newTUIModel(nil, nil, "autocomplete-enter")
+			m.composer.SetValue(input)
+			m.composer.CursorEnd()
+			m.autocompleteMode = AutocompleteModeCommand
+			m.autocompleteItems = filterCommands(input)
+			m.autocompleteOpen = true
+			for i, item := range m.autocompleteItems {
+				if item.Command == "/theme" {
+					m.autocompleteIndex = i
+					break
+				}
+			}
+
+			mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+			m = mod.(*tuiModel)
+			if m.themePicker == nil {
+				t.Fatal("Enter should execute the selected command, not leave it in the composer")
+			}
+			if m.composer.Value() != "" {
+				t.Fatalf("composer should be cleared after command execution, got %q", m.composer.Value())
+			}
+			if m.autocompleteOpen {
+				t.Fatal("command autocomplete should close after execution")
+			}
+		})
+	}
+}
+
+func TestThemePickerPersistsSelection(t *testing.T) {
+	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	SetThemeMode(ThemeModeAuto)
+
+	m := newTUIModel(nil, nil, "theme-picker")
+	m.settingsStore = store
+	m.handleSlashCommand("/theme")
+	for i := 0; i < 2; i++ {
+		mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
+		m = mod.(*tuiModel)
+	}
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+	if CurrentThemeMode() != ThemeModeLight {
+		t.Fatalf("theme mode = %q, want light", CurrentThemeMode())
+	}
+	if mode, found, err := store.TUITheme(); err != nil || !found || mode != "light" {
+		t.Fatalf("persisted theme = %q, found %v, err %v; want light", mode, found, err)
+	}
+}
+
+func TestThemeStillAppliesWhenPersistenceFails(t *testing.T) {
+	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	SetThemeMode(ThemeModeAuto)
+	m := newTUIModel(nil, nil, "theme-unsaved")
+	m.settingsStore = store
+	m.handleSlashCommand("/theme dark")
+	if CurrentThemeMode() != ThemeModeDark {
+		t.Fatalf("theme should still apply in memory after persistence failure, got %q", CurrentThemeMode())
+	}
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "for this run") {
+		t.Fatalf("expected persistence failure notice, got %q", m.entries[len(m.entries)-1].Text)
+	}
+}
+
 func TestFileMentionAutocomplete(t *testing.T) {
 	tempDir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(tempDir, "internal", "tui"), 0755)
@@ -393,8 +596,14 @@ func TestMemoryCommand(t *testing.T) {
 		t.Errorf("expected empty message, got: %s", lastSys)
 	}
 
-	// Add convention
-	mWithClient.handleSlashCommand("/memory add convention Always verify tests")
+	// Missing content opens a composer input flow and Enter saves it.
+	mWithClient.handleSlashCommand("/memory add convention")
+	if !mWithClient.pendingMemoryAdd || mWithClient.pendingMemoryCategory != "convention" {
+		t.Fatal("expected missing memory content to open an input flow")
+	}
+	mWithClient.composer.SetValue("Always verify tests")
+	mod, _ := mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	mWithClient = mod.(*tuiModel)
 	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
 	if !strings.Contains(lastSys, "Added workspace memory") || !strings.Contains(lastSys, "convention") {
 		t.Errorf("expected added message, got: %s", lastSys)
@@ -421,6 +630,17 @@ func TestMemoryCommand(t *testing.T) {
 		t.Errorf("expected search match for verify, got: %s", lastSys)
 	}
 
+	// Missing remove ID opens a selector and removes the highlighted item on Enter.
+	mWithClient.handleSlashCommand("/memory remove")
+	if mWithClient.memoryPicker == nil {
+		t.Fatal("expected missing memory ID to open a selector")
+	}
+	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	mWithClient = mod.(*tuiModel)
+	if mWithClient.memoryPicker != nil || !strings.Contains(mWithClient.entries[len(mWithClient.entries)-1].Text, "Deleted workspace memory") {
+		t.Fatal("expected Enter to remove the selected memory")
+	}
+
 	// Remove by prefix or exact ID
 	// Extract short ID from list output: `[mem-...` or similar
 	items, err := client.ListMemories(context.Background(), 10)
@@ -436,16 +656,20 @@ func TestMemoryCommand(t *testing.T) {
 
 	// Clear requires confirmation
 	mWithClient.handleSlashCommand("/memory clear")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Are you sure you want to clear all workspace memories?") {
-		t.Errorf("expected confirmation warning, got: %s", lastSys)
+	if !mWithClient.memoryClearConfirm {
+		t.Fatal("expected /memory clear to open confirmation")
 	}
-
-	// Clear with force
-	mWithClient.handleSlashCommand("/memory clear --force")
+	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
+	mWithClient = mod.(*tuiModel)
+	if mWithClient.memoryClearConfirm {
+		t.Fatal("expected n to cancel memory clear")
+	}
+	mWithClient.handleSlashCommand("/memory clear")
+	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
+	mWithClient = mod.(*tuiModel)
 	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
 	if !strings.Contains(lastSys, "Cleared all workspace memories.") {
-		t.Errorf("expected cleared confirmation, got: %s", lastSys)
+		t.Errorf("expected confirmed clear, got: %s", lastSys)
 	}
 
 	// List after clear
@@ -499,6 +723,21 @@ func TestProcessCommands(t *testing.T) {
 	}
 	mWithRuntime := newTUIModel(client, runtime, session.ID)
 
+	// Settings commands open real choice pickers when selected without arguments.
+	mWithRuntime.handleSlashCommand("/model")
+	if mWithRuntime.modelPicker == nil || len(mWithRuntime.modelPicker.Items) != 1 {
+		t.Fatalf("expected /model to open configured model picker, got: %+v", mWithRuntime.modelPicker)
+	}
+	_, _ = mWithRuntime.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	mWithRuntime.handleSlashCommand("/permissions")
+	if mWithRuntime.permissionPicker == nil {
+		t.Fatal("expected /permissions to open the permission mode picker")
+	}
+	_, _ = mWithRuntime.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if mWithRuntime.permissionPicker != nil {
+		t.Fatal("Enter should apply and close the permission picker")
+	}
+
 	// Initially empty ps
 	mWithRuntime.handleSlashCommand("/ps")
 	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
@@ -506,11 +745,11 @@ func TestProcessCommands(t *testing.T) {
 		t.Errorf("expected empty processes message, got: %s", lastSys)
 	}
 
-	// Usage error for /stop
+	// Missing process IDs open a selector; with no active processes it reports an empty state.
 	mWithRuntime.handleSlashCommand("/stop")
 	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
-	if !strings.Contains(lastSys, "Usage: `/stop <id|prefix|all>`") {
-		t.Errorf("expected usage message, got: %s", lastSys)
+	if !strings.Contains(lastSys, "No active background processes to stop.") {
+		t.Errorf("expected empty stop picker state, got: %s", lastSys)
 	}
 
 	// Stop all when none running
@@ -520,11 +759,11 @@ func TestProcessCommands(t *testing.T) {
 		t.Errorf("expected no active processes message, got: %s", lastSys)
 	}
 
-	// Usage error for /logs
+	// Missing process IDs open the log selector; with no processes it reports an empty state.
 	mWithRuntime.handleSlashCommand("/logs")
 	lastSys = mWithRuntime.entries[len(mWithRuntime.entries)-1].Text
-	if !strings.Contains(lastSys, "Usage: `/logs <id|prefix> [--tail N]`") {
-		t.Errorf("expected usage message, got: %s", lastSys)
+	if !strings.Contains(lastSys, "No background processes in current session.") {
+		t.Errorf("expected empty logs picker state, got: %s", lastSys)
 	}
 
 	// Logs for non-existent process

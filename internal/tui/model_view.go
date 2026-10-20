@@ -62,6 +62,24 @@ func (m *tuiModel) modalHeight(contentWidth int) int {
 		modalHeight = lipgloss.Height(m.renderAgentsPanel(contentWidth)) + 1
 	} else if m.sessionsModalOpen {
 		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
+	} else if m.memoryClearConfirm {
+		modalHeight = lipgloss.Height(renderMemoryClearConfirm(m, contentWidth)) + 1
+	} else if m.memoryPicker != nil {
+		modalHeight = lipgloss.Height(renderMemoryPicker(m, contentWidth)) + 1
+	} else if m.mcpServerPicker != nil {
+		modalHeight = lipgloss.Height(renderMCPServerPicker(m, contentWidth)) + 1
+	} else if m.pendingMemoryAdd {
+		modalHeight = lipgloss.Height(renderMemoryInputPrompt(m, contentWidth)) + 1
+	} else if m.themePicker != nil {
+		modalHeight = lipgloss.Height(renderThemePicker(m, contentWidth)) + 1
+	} else if m.modelPicker != nil {
+		modalHeight = lipgloss.Height(renderModelPicker(m, contentWidth)) + 1
+	} else if m.permissionPicker != nil {
+		modalHeight = lipgloss.Height(renderPermissionPicker(m, contentWidth)) + 1
+	} else if m.processPickerOpen {
+		modalHeight = lipgloss.Height(renderProcessPicker(m, contentWidth)) + 1
+	} else if m.mcpAuthName != "" {
+		modalHeight = lipgloss.Height(renderMCPAuthPanel(m, contentWidth)) + 1
 	} else if m.toolPagerOpen {
 		modalHeight = lipgloss.Height(renderToolPagerModal(m, contentWidth)) + 1
 	} else if m.diffModalOpen {
@@ -381,6 +399,24 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, m.renderAgentsPanel(contentWidth))
 	} else if m.sessionsModalOpen {
 		sections = append(sections, renderSessionsModal(m, contentWidth))
+	} else if m.memoryClearConfirm {
+		sections = append(sections, renderMemoryClearConfirm(m, contentWidth))
+	} else if m.memoryPicker != nil {
+		sections = append(sections, renderMemoryPicker(m, contentWidth))
+	} else if m.mcpServerPicker != nil {
+		sections = append(sections, renderMCPServerPicker(m, contentWidth))
+	} else if m.pendingMemoryAdd {
+		sections = append(sections, renderMemoryInputPrompt(m, contentWidth))
+	} else if m.themePicker != nil {
+		sections = append(sections, renderThemePicker(m, contentWidth))
+	} else if m.modelPicker != nil {
+		sections = append(sections, renderModelPicker(m, contentWidth))
+	} else if m.permissionPicker != nil {
+		sections = append(sections, renderPermissionPicker(m, contentWidth))
+	} else if m.processPickerOpen {
+		sections = append(sections, renderProcessPicker(m, contentWidth))
+	} else if m.mcpAuthName != "" {
+		sections = append(sections, renderMCPAuthPanel(m, contentWidth))
 	} else if m.toolPagerOpen {
 		sections = append(sections, renderToolPagerModal(m, contentWidth))
 	} else if m.diffModalOpen {

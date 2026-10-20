@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -46,6 +47,9 @@ type tuiModel struct {
 	activeApproval         *ActiveApproval
 	activePlanReview       *ActivePlanReview
 	effortPicker           *ActiveEffortPicker
+	themePicker            *ActiveThemePicker
+	modelPicker            *ActiveModelPicker
+	permissionPicker       *ActivePermissionPicker
 	activeRecovery         *ActiveRecovery
 	activeToolRecovery     *ActiveToolRecovery
 	pausedCheckpoint       *PausedCheckpoint
@@ -124,6 +128,25 @@ type tuiModel struct {
 	sessionsIndex          int
 	sessionsConfirmDelete  bool
 	sessionsDeletingID     string
+	sessionsDeleteMode     bool
+
+	settingsStore *settings.Store
+
+	pendingMemoryAdd      bool
+	pendingMemoryCategory string
+	memoryPicker          *ActiveMemoryPicker
+	memoryClearConfirm    bool
+	mcpServerPicker       *ActiveMCPServerPicker
+
+	mcpAuthName       string
+	mcpAuthCancel     context.CancelFunc
+	mcpAuthGeneration uint64
+	mcpAuthRunner     func(context.Context, string) error
+
+	processPickerOpen     bool
+	processPickerMode     processPickerMode
+	processPickerItems    []core.CommandInfo
+	processPickerSelected int
 
 	// Tool output pager modal
 	toolPagerOpen    bool
@@ -266,6 +289,7 @@ func (m *tuiModel) refreshMainContextWindow() {
 
 // resetSessionState clears data that belongs to the previous session before a new snapshot is applied.
 func (m *tuiModel) resetSessionState() {
+	m.composer.Placeholder = "Ask Lune to do anything"
 	m.sessionTitle = ""
 	m.currentModel = ""
 	m.currentModelProfile = ""
@@ -310,9 +334,19 @@ func (m *tuiModel) resetSessionState() {
 	m.scrolledUp = false
 	m.autocompleteOpen = false
 	m.shortcutsOpen = false
+	m.modelPicker = nil
+	m.permissionPicker = nil
+	m.memoryPicker = nil
+	m.memoryClearConfirm = false
+	m.mcpServerPicker = nil
+	m.pendingMemoryAdd = false
+	m.pendingMemoryCategory = ""
 	m.sessionsModalOpen = false
 	m.sessionsConfirmDelete = false
 	m.sessionsDeletingID = ""
+	m.sessionsDeleteMode = false
+	m.processPickerOpen = false
+	m.processPickerItems = nil
 	m.toolPagerOpen = false
 	m.diffModalOpen = false
 	m.awaitingTurns = map[string]uint64{}

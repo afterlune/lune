@@ -11,6 +11,88 @@ import (
 	core "github.com/afterlune/luneCore"
 )
 
+type processPickerMode string
+
+const (
+	processPickerStop processPickerMode = "stop"
+	processPickerLogs processPickerMode = "logs"
+)
+
+func (m *tuiModel) openProcessPicker(mode processPickerMode) (tea.Model, tea.Cmd) {
+	if m.runtime == nil {
+		m.addSystemEntry("Background process management unavailable (no active session runtime).")
+		return m, nil
+	}
+	commands, err := m.runtime.ListCommands(context.Background())
+	if err != nil {
+		m.addSystemEntry("Failed to list background processes: " + err.Error())
+		return m, nil
+	}
+	items := make([]core.CommandInfo, 0, len(commands))
+	for _, command := range commands {
+		if mode == processPickerStop && !command.Status.Active() {
+			continue
+		}
+		items = append(items, command)
+	}
+	if len(items) == 0 {
+		if mode == processPickerStop {
+			m.addSystemEntry("No active background processes to stop.")
+		} else {
+			m.addSystemEntry("No background processes in current session.")
+		}
+		return m, nil
+	}
+	m.processPickerOpen = true
+	m.processPickerMode = mode
+	m.processPickerItems = items
+	m.processPickerSelected = 0
+	m.sessionsModalOpen = false
+	m.autocompleteOpen = false
+	m.updateLayout()
+	return m, nil
+}
+
+func (m *tuiModel) handleProcessPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
+	if !m.processPickerOpen {
+		return m, nil
+	}
+	switch keyStr {
+	case "esc", "q":
+		m.processPickerOpen = false
+		m.processPickerItems = nil
+		m.updateLayout()
+		return m, nil
+	case "up", "k":
+		if len(m.processPickerItems) > 0 {
+			m.processPickerSelected = (m.processPickerSelected - 1 + len(m.processPickerItems)) % len(m.processPickerItems)
+		}
+		m.updateLayout()
+		return m, nil
+	case "down", "j":
+		if len(m.processPickerItems) > 0 {
+			m.processPickerSelected = (m.processPickerSelected + 1) % len(m.processPickerItems)
+		}
+		m.updateLayout()
+		return m, nil
+	case "enter":
+		if m.processPickerSelected < 0 || m.processPickerSelected >= len(m.processPickerItems) {
+			return m, nil
+		}
+		item := m.processPickerItems[m.processPickerSelected]
+		mode := m.processPickerMode
+		m.processPickerOpen = false
+		m.processPickerItems = nil
+		m.updateLayout()
+		if mode == processPickerStop {
+			return m.handleStopCommand([]string{"/stop", item.ID})
+		}
+		return m.handleLogsCommand([]string{"/logs", item.ID})
+	default:
+		return m, nil
+	}
+}
+
 func (m *tuiModel) handlePsCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.runtime == nil {
 		m.addSystemEntry("Background process management unavailable (no active session runtime).")
@@ -61,8 +143,7 @@ func (m *tuiModel) handleStopCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 
 	if len(parts) < 2 {
-		m.addSystemEntry("Usage: `/stop <id|prefix|all>`")
-		return m, nil
+		return m.openProcessPicker(processPickerStop)
 	}
 
 	target := strings.ToLower(parts[1])
@@ -144,8 +225,7 @@ func (m *tuiModel) handleLogsCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 
 	if len(parts) < 2 {
-		m.addSystemEntry("Usage: `/logs <id|prefix> [--tail N]`")
-		return m, nil
+		return m.openProcessPicker(processPickerLogs)
 	}
 
 	target := strings.ToLower(parts[1])

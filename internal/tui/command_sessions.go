@@ -205,6 +205,7 @@ func (m *tuiModel) openSessionsModalWithFilter(filter string) (tea.Model, tea.Cm
 	m.autocompleteOpen = false
 	m.sessionsConfirmDelete = false
 	m.sessionsDeletingID = ""
+	m.sessionsDeleteMode = false
 	m.sessionsItems = sessions
 	m.sessionsFilter = strings.TrimSpace(filter)
 	m.filterSessions()
@@ -251,9 +252,27 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Cannot delete sessions while a task is running.")
 		return m, nil
 	}
-	if len(parts) < 2 {
-		m.addSystemEntry("Usage: `/drop <session-id|prefix>`.")
+	if m.client == nil {
+		m.addSystemEntry("Session management unavailable.")
 		return m, nil
+	}
+	if len(parts) < 2 {
+		mod, cmd := m.openSessionsModal()
+		if m.sessionsModalOpen {
+			m.sessionsDeleteMode = true
+			m.sessionsIndex = -1
+			for i, session := range m.sessionsFiltered {
+				if session.ID != m.sessionID {
+					m.sessionsIndex = i
+					break
+				}
+			}
+			if m.sessionsIndex < 0 {
+				m.addSystemEntry("No other saved sessions are available to delete.")
+			}
+			m.updateLayout()
+		}
+		return mod, cmd
 	}
 	targetPrefix := parts[1]
 	targetID, matches, err := m.resolveSessionID(targetPrefix)
@@ -266,16 +285,19 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry(fmt.Sprintf("No session found matching prefix `%s`.", targetPrefix))
 			return m, nil
 		}
-		var ids []string
-		for _, match := range matches {
-			short := match.ID
-			if len(short) > 12 {
-				short = short[:12]
+		mod, cmd := m.openSessionsModal()
+		if m.sessionsModalOpen {
+			m.sessionsDeleteMode = true
+			m.sessionsIndex = -1
+			for i, session := range m.sessionsFiltered {
+				if session.ID != m.sessionID {
+					m.sessionsIndex = i
+					break
+				}
 			}
-			ids = append(ids, short)
+			m.updateLayout()
 		}
-		m.addSystemEntry(fmt.Sprintf("Prefix `%s` is ambiguous. Matches: %s", targetPrefix, strings.Join(ids, ", ")))
-		return m, nil
+		return mod, cmd
 	}
 
 	if targetID == m.sessionID {
@@ -283,12 +305,24 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if err := m.client.DeleteSession(context.Background(), targetID); err != nil {
-		m.addSystemEntry("Failed to delete session: " + err.Error())
-		return m, nil
+	mod, cmd := m.openSessionsModalWithFilter("")
+	if !m.sessionsModalOpen {
+		return mod, cmd
 	}
-	m.addSystemEntry("Deleted session: " + targetID)
-	return m, nil
+	m.sessionsDeleteMode = true
+	for i, session := range m.sessionsFiltered {
+		if session.ID == targetID {
+			m.sessionsIndex = i
+			m.sessionsDeletingID = targetID
+			m.sessionsConfirmDelete = true
+			break
+		}
+	}
+	if !m.sessionsConfirmDelete {
+		m.addSystemEntry("Session is no longer available to delete: " + targetID)
+	}
+	m.updateLayout()
+	return mod, cmd
 }
 
 // filterSessions updates sessionsFiltered according to the current sessionsFilter.

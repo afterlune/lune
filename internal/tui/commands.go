@@ -15,25 +15,25 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/new", Description: "start a new chat during a conversation"},
 	{Command: "/clear", Description: "clear transcript history from the current view"},
 	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
-	{Command: "/permissions", Description: "show or set mode: read-only, workspace, ask, full-access"},
+	{Command: "/permissions", Description: "choose a permission mode: read-only, workspace, ask, full-access"},
 	{Command: "/model", Description: "choose an active model profile"},
 	{Command: "/effort", Description: "choose the reasoning effort level interactively"},
-	{Command: "/theme", Description: "change or inspect theme: dark, light, auto"},
+	{Command: "/theme", Description: "choose a persisted theme: auto, dark, light"},
 	{Command: "/memory", Description: "view and manage workspace long-term memories"},
 	{Command: "/agents", Description: "inspect live agents and their context, cache, speed, and usage"},
 	{Command: "/ps", Description: "list background processes and daemon commands in session"},
-	{Command: "/stop", Description: "stop running background process: /stop <id|all>"},
-	{Command: "/logs", Description: "view output logs of a background process: /logs <id>"},
+	{Command: "/stop", Description: "choose a running process to stop, or use /stop <id|all>"},
+	{Command: "/logs", Description: "choose a process to inspect, or use /logs <id>"},
 	{Command: "/sessions", Description: "open session switcher modal or search: /sessions [query]"},
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
-	{Command: "/drop", Description: "delete a saved session: /drop <id|prefix>"},
+	{Command: "/drop", Description: "choose a saved session to delete with confirmation"},
 	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)"},
 	{Command: "/title", Description: "view or set custom title for this session"},
 	{Command: "/export", Description: "export session transcript: /export [md|html|jsonl] [file]"},
 	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
 	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)"},
-	{Command: "/review", Description: "summarize and review workspace changes"},
-	{Command: "/mcp", Description: "manage external MCP servers: list, enable, disable, auth"},
+	{Command: "/review", Description: "run a read-only model review of workspace changes"},
+	{Command: "/mcp", Description: "list and interactively manage external MCP servers"},
 	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
@@ -68,6 +68,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	switch cmdName {
 	case "/exit":
+		m.cancelMCPAuthentication(false)
 		return m, tea.Quit
 
 	case "/help":
@@ -108,18 +109,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/theme":
 		if len(parts) > 1 {
 			target := strings.ToLower(parts[1])
-			switch target {
-			case "dark", "light", "auto":
-				SetThemeMode(ThemeMode(target))
-				m.applyThemeStyles()
-				m.refreshViewportContent()
-				m.updateLayout()
-				m.addSystemEntry(fmt.Sprintf("Theme mode set to `%s` (active: %s).", target, CurrentThemeMode()))
-			default:
-				m.addSystemEntry(fmt.Sprintf("Unknown theme mode %q. Options: `dark`, `light`, `auto`.", parts[1]))
-			}
+			m.applyThemeMode(ThemeMode(target))
 		} else {
-			m.addSystemEntry(fmt.Sprintf("Current theme mode: `%s`.", CurrentThemeMode()))
+			m.openThemePicker()
 		}
 		return m, nil
 
