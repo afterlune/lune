@@ -125,7 +125,6 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	model := newTUIModel(client, runtime, sessionID)
 	model.settingsStore = userSettings
-	model.output = out
 	if settingsErr != nil {
 		model.addSystemEntry("Could not load the saved TUI theme; using `auto`: " + settingsErr.Error())
 	}

@@ -189,13 +189,15 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 
 		rawArgs := string(event.Tool.Arguments)
 		cmdText := formatToolSummary(event.Tool.Name, rawArgs, m.workspace)
+		cmdOverride := ""
 		outText := ""
 		var changes []publictool.FileChange
 		if event.Tool.Details != nil {
 			outText = event.Tool.Details.Output
 			changes = event.Tool.Details.Changes
 			if event.Tool.Details.Command != nil && strings.TrimSpace(event.Tool.Details.Command.Command.Command) != "" {
-				cmdText = event.Tool.Details.Command.Command.Command
+				cmdOverride = event.Tool.Details.Command.Command.Command
+				cmdText = cmdOverride
 				if outText == "" {
 					outText = event.Tool.Details.Command.Output
 				}
@@ -207,10 +209,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			for i := len(m.entries) - 1; i >= 0; i-- {
 				if m.entries[i].Kind == KindTool && m.entries[i].ToolCallID == callID {
 					m.entries[i].ToolName = event.Tool.Name
-					if rawArgs != "" {
-						m.entries[i].ToolArgs = rawArgs
-					}
-					if cmdText != "" {
+					if cmdOverride != "" || hasToolSummaryArguments(event.Tool.Name, rawArgs, cmdText) {
 						m.entries[i].ToolCommand = cmdText
 					}
 					if outText != "" {
@@ -232,7 +231,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			Kind:        KindTool,
 			ToolCallID:  callID,
 			ToolName:    event.Tool.Name,
-			ToolArgs:    rawArgs,
 			Timestamp:   time.Now(),
 			ToolCommand: cmdText,
 			ToolRunning: m.running,
@@ -250,58 +248,81 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if agentID != "" && agentID != "lead" {
 			return m, nil
 		}
+		rawArgs := string(event.Tool.Arguments)
+		cmdText := formatToolSummary(event.Tool.Name, rawArgs, m.workspace)
+		cmdOverride := ""
+		outText := ""
+		var changes []publictool.FileChange
 		if event.Tool.Details != nil {
-			outText := event.Tool.Details.Output
-			cmdOverride := ""
+			outText = event.Tool.Details.Output
+			changes = event.Tool.Details.Changes
 			if event.Tool.Details.Command != nil {
 				cmdOverride = strings.TrimSpace(event.Tool.Details.Command.Command.Command)
 				if outText == "" {
 					outText = event.Tool.Details.Command.Output
 				}
 			}
-			targetID := event.Tool.ID
-			if targetID == "" {
-				targetID = event.CommandID
+		}
+		if cmdOverride != "" {
+			cmdText = cmdOverride
+		}
+		hasSummary := hasToolSummaryArguments(event.Tool.Name, rawArgs, cmdText)
+		if !hasSummary && cmdOverride == "" && event.Tool.Details == nil && event.CommandExitCode == nil {
+			return m, nil
+		}
+
+		targetID := event.Tool.ID
+		if targetID == "" {
+			targetID = event.CommandID
+		}
+		found := false
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].Kind != KindTool || !((targetID != "" && m.entries[i].ToolCallID == targetID) || (targetID == "" && m.entries[i].ToolName == event.Tool.Name)) {
+				continue
 			}
-			found := false
-			for i := len(m.entries) - 1; i >= 0; i-- {
-				if m.entries[i].Kind == KindTool && ((targetID != "" && m.entries[i].ToolCallID == targetID) || (targetID == "" && m.entries[i].ToolName == event.Tool.Name)) {
-					if cmdOverride != "" {
-						m.entries[i].ToolCommand = cmdOverride
-					}
-					if outText != "" {
-						m.entries[i].ToolOutput = outText
-					}
-					if len(event.Tool.Details.Changes) > 0 {
-						m.entries[i].ToolChanges = event.Tool.Details.Changes
-					}
-					if event.CommandExitCode != nil {
-						m.entries[i].ToolExitCode = event.CommandExitCode
-					}
-					m.invalidateEntryCache()
-					found = true
-					break
+			m.entries[i].ToolName = event.Tool.Name
+			if cmdOverride != "" || hasSummary {
+				m.entries[i].ToolCommand = cmdText
+			}
+			if event.Tool.Details != nil {
+				if outText != "" {
+					m.entries[i].ToolOutput = outText
+				}
+				if len(changes) > 0 {
+					m.entries[i].ToolChanges = changes
 				}
 			}
-			if !found {
-				cmdText := cmdOverride
-				if cmdText == "" {
-					cmdText = formatToolSummary(event.Tool.Name, string(event.Tool.Arguments), m.workspace)
-				}
-				m.entries = append(m.entries, TranscriptEntry{
-					ID:           targetID,
-					Kind:         KindTool,
-					ToolCallID:   targetID,
-					ToolName:     event.Tool.Name,
-					ToolCommand:  cmdText,
-					ToolOutput:   outText,
-					ToolChanges:  event.Tool.Details.Changes,
-					ToolExitCode: event.CommandExitCode,
-					ToolRunning:  m.running,
-					Timestamp:    time.Now(),
-				})
-				m.invalidateEntryCache()
+			if event.CommandExitCode != nil {
+				m.entries[i].ToolExitCode = event.CommandExitCode
 			}
+			if event.Tool.Started {
+				m.entries[i].ToolRunning = true
+			} else if event.Tool.Duration > 0 || event.Tool.Details != nil {
+				m.entries[i].ToolRunning = false
+			}
+			if event.Tool.Duration > 0 {
+				m.entries[i].ToolDuration = event.Tool.Duration
+			}
+			m.invalidateEntryCache()
+			found = true
+			break
+		}
+		if !found {
+			entry := TranscriptEntry{
+				ID:          targetID,
+				Kind:        KindTool,
+				ToolCallID:  targetID,
+				ToolName:    event.Tool.Name,
+				ToolCommand: cmdText,
+				ToolOutput:  outText,
+				ToolRunning: event.Tool.Started,
+				Timestamp:   time.Now(),
+			}
+			entry.ToolChanges = changes
+			entry.ToolExitCode = event.CommandExitCode
+			entry.ToolDuration = event.Tool.Duration
+			m.entries = append(m.entries, entry)
+			m.invalidateEntryCache()
 		}
 
 	case core.EventToolFinished:

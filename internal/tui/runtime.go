@@ -169,7 +169,6 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		if autoTitle := deriveSessionTitleText(text); autoTitle != "" {
 			if !isTrivialGreeting(text) || strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" {
 				m.sessionTitle = autoTitle
-				m.syncTerminalTitle()
 				if m.client != nil && m.sessionID != "" {
 					client := m.client
 					sid := m.sessionID

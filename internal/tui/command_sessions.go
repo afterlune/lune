@@ -427,7 +427,6 @@ func (m *tuiModel) handleTitleCommand(parts []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.sessionTitle = newTitle
-		m.syncTerminalTitle()
 		m.updateLayout()
 		m.addSystemEntry(fmt.Sprintf("Session title updated to `%s`.", newTitle))
 	} else {

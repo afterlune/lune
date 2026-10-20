@@ -149,6 +149,15 @@ func formatToolSummary(toolName, rawArgs, workspace string) string {
 	return cleanToolInline(name + " " + argsText)
 }
 
+func hasToolSummaryArguments(toolName, rawArgs, summary string) bool {
+	args := strings.TrimSpace(rawArgs)
+	if args == "" || args == "null" || args == "{}" {
+		return false
+	}
+	summary = strings.TrimSpace(summary)
+	return summary != "" && summary != strings.TrimSpace(toolName)
+}
+
 func cleanToolInline(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")

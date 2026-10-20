@@ -48,7 +48,6 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	m.restoreRuntimeSnapshot(state)
 	m.applyPendingRequests(pending)
 	rt.SetUserInteractionAvailable(true)
-	m.syncTerminalTitle()
 	m.updateLayout()
 	return nil
 }

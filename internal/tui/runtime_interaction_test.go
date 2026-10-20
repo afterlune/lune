@@ -2,14 +2,91 @@ package tui
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
 )
+
+func TestToolSummaryUsesTransientArgumentsRegardlessOfEventOrder(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "internal", "tui", "model.go")
+	rawArgs, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	durableStart := core.Event{
+		Kind: core.EventToolStarted,
+		Tool: core.ToolCall{ID: "read-call", Name: "read_file", Started: true},
+	}
+	liveStart := core.Event{
+		Kind: core.EventToolDetails,
+		Tool: core.ToolCall{ID: "read-call", Name: "read_file", Arguments: rawArgs, Started: true},
+	}
+	finished := core.Event{
+		Kind: core.EventToolFinished,
+		Tool: core.ToolCall{ID: "read-call", Name: "read_file", Duration: time.Second},
+	}
+
+	cases := []struct {
+		name   string
+		events []core.Event
+	}{
+		{name: "durable event first", events: []core.Event{durableStart, liveStart, finished}},
+		{name: "live detail first", events: []core.Event{liveStart, durableStart, finished}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTUIModel(nil, nil, "tool-summary")
+			m.workspace = workspace
+			m.running = true
+			for _, event := range tc.events {
+				mod, _ := m.handleRuntimeEvent(event)
+				m = mod.(*tuiModel)
+			}
+			if len(m.entries) != 1 {
+				t.Fatalf("expected one merged tool entry, got %d: %+v", len(m.entries), m.entries)
+			}
+			entry := m.entries[0]
+			if entry.ToolCommand != "Read internal/tui/model.go" {
+				t.Fatalf("expected workspace-relative read summary, got %q", entry.ToolCommand)
+			}
+			if entry.ToolArgs != "" {
+				t.Fatalf("transient tool arguments should not be retained, got %q", entry.ToolArgs)
+			}
+			collapsed := ansi.Strip(renderRoundChildEntry(entry, false, 120))
+			if !strings.Contains(collapsed, "Read internal/tui/model.go") || strings.Contains(collapsed, "Read read_file") {
+				t.Fatalf("collapsed execution step should show the file path:\n%s", collapsed)
+			}
+		})
+	}
+}
+
+func TestToolDetailsCommandOverridesArgumentSummary(t *testing.T) {
+	m := newTUIModel(nil, nil, "tool-summary-command")
+	m.running = true
+	m.handleRuntimeEvent(core.Event{
+		Kind: core.EventToolDetails,
+		Tool: core.ToolCall{
+			ID:        "command-call",
+			Name:      "run_command",
+			Arguments: json.RawMessage(`{"command":"go test ./..."}`),
+			Details: &publictool.ExecutionDetails{Command: &publictool.CommandOutput{
+				Command: publictool.CommandInfo{Command: "go test ./..."},
+			}},
+			Started: true,
+		},
+	})
+	if len(m.entries) != 1 || m.entries[0].ToolCommand != "go test ./..." {
+		t.Fatalf("actual command detail should override the generated summary: %+v", m.entries)
+	}
+}
 
 func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")

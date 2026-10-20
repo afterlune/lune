@@ -453,5 +453,6 @@ func (m *tuiModel) View() tea.View {
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
+	view.WindowTitle = m.desiredTerminalTitle()
 	return view
 }

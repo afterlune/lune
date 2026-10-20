@@ -3,8 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // AutocompleteMode distinguishes between slash command suggestions and @ file mentions.
@@ -108,9 +105,6 @@ type tuiModel struct {
 	agentsPanelDetail      bool
 	agentsPanelDetailID    string
 
-	// Terminal output writer for escape sequences
-	output io.Writer
-
 	// Mouse text selection and copy feedback
 	isSelecting            bool
 	composerMouseSelecting bool
@@ -194,8 +188,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		permissionMode: permMode, savedMode: permMode,
 		composer: comp, viewport: vp, entries: []TranscriptEntry{},
 		fileScanner: NewWorkspaceFileScanner(workspace), reasoningLiveCollapsed: true,
-		transcriptDirty: true, output: os.Stdout,
-		awaitingTurns: map[string]uint64{}, terminalEvents: map[string]core.Event{},
+		transcriptDirty: true,
+		awaitingTurns:   map[string]uint64{}, terminalEvents: map[string]core.Event{},
 		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
 	m.ensureAgentMetrics("lead")
@@ -523,23 +517,6 @@ func workspaceDirectoryName(workspace string) string {
 	return name
 }
 
-// syncTerminalTitle writes the OSC 0/2 escape sequence to update the terminal window/tab title.
-func (m *tuiModel) syncTerminalTitle() {
-	out := m.output
-	if out == nil {
-		out = os.Stdout
-	}
-	_, _ = io.WriteString(out, ansi.SetWindowTitle(m.desiredTerminalTitle()))
-}
-
-// updateTerminalTitleCmd returns a Bubbletea command that synchronizes the terminal title.
-func (m *tuiModel) updateTerminalTitleCmd() tea.Cmd {
-	return func() tea.Msg {
-		m.syncTerminalTitle()
-		return nil
-	}
-}
-
 func (m *tuiModel) applyThemeStyles() {
 	th := activeTheme()
 	bg := lipgloss.Color(th.CardBg)
@@ -572,6 +549,5 @@ func (m *tuiModel) Init() tea.Cmd {
 		textarea.Blink,
 		tea.RequestBackgroundColor,
 		m.subscribeRuntimeEvents(),
-		m.updateTerminalTitleCmd(),
 	)
 }
