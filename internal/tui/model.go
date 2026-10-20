@@ -39,6 +39,7 @@ type tuiModel struct {
 	composer               textarea.Model
 	viewport               viewport.Model
 	entries                []TranscriptEntry
+	terminalTitle          *terminalTitleManager
 	running                bool
 	taskStartedAt          time.Time
 	activeQuestion         *ActiveQuestion

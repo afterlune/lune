@@ -56,7 +56,7 @@ func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.
 	if m.sessionID != second.ID || m.sessionTitle != "Second session" {
 		t.Fatalf("session metadata was not restored: id=%q title=%q", m.sessionID, m.sessionTitle)
 	}
-	if got, want := m.View().WindowTitle, "Second session | "+filepath.Base(m.workspace); got != want {
+	if got, want := m.desiredTerminalTitle(), "Second session | "+filepath.Base(m.workspace); got != want {
 		t.Fatalf("session switch did not update the terminal title: got %q, want %q", got, want)
 	}
 	if len(m.promptHistory) != 1 || m.promptHistory[0] != "Second session prompt" {
@@ -824,28 +824,28 @@ func TestTerminalTitleUpdates(t *testing.T) {
 	m.height = 36
 	m.updateLayout()
 
-	// 1. Initial untitled session includes the workspace directory in the Tea view.
-	if got := m.View().WindowTitle; got != "lune | luneAgent" {
+	// 1. Initial untitled session includes the workspace directory.
+	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
 		t.Fatalf("expected initial title 'lune | luneAgent', got: %q", got)
 	}
 
 	// 2. Set title: it replaces "lune" while preserving the workspace suffix.
 	m.sessionTitle = "Refactor Architecture"
-	if got := m.View().WindowTitle; got != "Refactor Architecture | luneAgent" {
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | luneAgent" {
 		t.Fatalf("expected title 'Refactor Architecture | luneAgent', got: %q", got)
 	}
 
 	// A title derived from the conversation uses the same directory suffix.
 	m.sessionTitle = ""
 	m.entries = []TranscriptEntry{{Kind: KindUser, Text: "Review the latest commit"}}
-	if got := m.View().WindowTitle; got != "Review the latest commit | luneAgent" {
+	if got := m.desiredTerminalTitle(); got != "Review the latest commit | luneAgent" {
 		t.Fatalf("expected derived title with workspace suffix, got: %q", got)
 	}
 
 	// 3. An explicit untitled marker uses the app name as the session title.
 	m.entries = nil
 	m.sessionTitle = "<untitled>"
-	if got := m.View().WindowTitle; got != "lune | luneAgent" {
+	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
 		t.Fatalf("expected untitled fallback 'lune | luneAgent', got: %q", got)
 	}
 
@@ -855,15 +855,15 @@ func TestTerminalTitleUpdates(t *testing.T) {
 		root = volume + string(os.PathSeparator)
 	}
 	m.workspace = root
-	if got := m.View().WindowTitle; got != "lune" {
+	if got := m.desiredTerminalTitle(); got != "lune" {
 		t.Fatalf("expected root-workspace fallback 'lune', got: %q", got)
 	}
 	m.sessionTitle = "Refactor Architecture"
-	if got := m.View().WindowTitle; got != "Refactor Architecture | lune" {
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
 		t.Fatalf("expected root-workspace title 'Refactor Architecture | lune', got: %q", got)
 	}
 	m.workspace = ""
-	if got := m.View().WindowTitle; got != "Refactor Architecture | lune" {
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
 		t.Fatalf("expected empty-workspace title 'Refactor Architecture | lune', got: %q", got)
 	}
 }

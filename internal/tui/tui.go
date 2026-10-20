@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -122,8 +123,10 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	if out == nil {
 		out = os.Stdout
 	}
+	out, terminalTitle := prepareTerminalOutput(out)
 
 	model := newTUIModel(client, runtime, sessionID)
+	model.terminalTitle = terminalTitle
 	model.settingsStore = userSettings
 	if settingsErr != nil {
 		model.addSystemEntry("Could not load the saved TUI theme; using `auto`: " + settingsErr.Error())
@@ -148,6 +151,11 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	// even if an unexpected panic or error occurs during execution.
 	defer func() {
 		_, _ = io.WriteString(out, "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m")
+	}()
+	defer func() {
+		if err := terminalTitle.Clear(); err != nil {
+			slog.Debug("failed to clear terminal title", "error", err)
+		}
 	}()
 
 	// Run Bubble Tea v2 program (WithWindowSize provides a fallback size when launched

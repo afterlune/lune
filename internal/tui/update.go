@@ -21,7 +21,13 @@ type clearCopyFeedbackMsg struct {
 }
 
 // Update handles all incoming Bubble Tea messages and key events.
-func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
+	defer func() {
+		if current, ok := updated.(*tuiModel); ok {
+			current.syncTerminalTitle()
+		}
+	}()
+
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
