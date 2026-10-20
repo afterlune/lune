@@ -304,6 +304,30 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 	}
 }
 
+func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.runningExecution = "exec-failed"
+	m.finishTurn(turnFinishedMsg{
+		executionID: "exec-failed",
+		result:      core.TurnResult{ExecutionID: "exec-failed", Status: core.TaskFailed},
+	})
+
+	var found bool
+	for _, entry := range m.entries {
+		if entry.Kind == KindSystem && strings.Contains(entry.Text, "Task failed:") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected system entry reporting task failure, got entries: %+v", m.entries)
+	}
+	if m.running {
+		t.Fatal("expected running=false after task failure")
+	}
+}
+
 func TestEscCancelsActiveQuestion(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.activeQuestion = &ActiveQuestion{

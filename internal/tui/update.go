@@ -453,11 +453,11 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 	if m.runningExecution != executionID && !eventFinalized {
 		return nil
 	}
-	if msg.err != nil && eventFinalized {
-		msg.result = core.TurnResult{ExecutionID: executionID, Status: event.Status, BudgetReason: event.BudgetReason}
-		if event.Err == "" {
-			msg.err = nil
-		} else {
+	if eventFinalized {
+		if msg.err != nil {
+			msg.result = core.TurnResult{ExecutionID: executionID, Status: event.Status, BudgetReason: event.BudgetReason}
+		}
+		if event.Err != "" {
 			msg.err = fmt.Errorf("%s", event.Err)
 		}
 	}
@@ -488,6 +488,8 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 			m.addSystemEntry("Task failed: " + reason)
 		} else if msg.result.BudgetReason != "" {
 			m.addSystemEntry(fmt.Sprintf("Task stopped: execution budget limit reached (`%s`).", msg.result.BudgetReason))
+		} else {
+			m.addSystemEntry("Task failed: model request completed without a response. Check .luneagent/agent.log for details.")
 		}
 	}
 	if m.runningExecution == executionID {
