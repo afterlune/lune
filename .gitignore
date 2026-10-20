@@ -6,3 +6,7 @@
 /bin/
 /go.work
 /go.work.sum
+/go.pinned.mod
+/go.pinned.sum
+/.screenshots
+/diag
