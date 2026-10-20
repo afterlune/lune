@@ -389,6 +389,14 @@ func TestContextCommand(t *testing.T) {
 	}
 }
 
+func TestContextDiagnosticsShowsLastPromptCacheBreakdown(t *testing.T) {
+	model := tuiModel{lastInputTokens: 1000, lastCachedTokens: 320}
+	diagnostics := model.renderContextDiagnostics()
+	if !strings.Contains(diagnostics, "Last prompt cache: 320 cached, 680 uncached (32.0% hit)") {
+		t.Fatalf("context diagnostics = %q, want per-request cache hit and miss", diagnostics)
+	}
+}
+
 func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 

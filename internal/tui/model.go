@@ -92,6 +92,7 @@ type tuiModel struct {
 	reasoningTokens      int64
 	contextWindow        int64
 	lastInputTokens      int64
+	lastCachedTokens     int64
 	estimatedInputTokens int64
 	seededSessionUsage   bool
 
@@ -228,6 +229,7 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.reasoningTokens = saved.SessionUsage.Reasoning
 	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 	m.lastInputTokens = 0
+	m.lastCachedTokens = 0
 	m.estimatedInputTokens = 0
 	m.contextWindow = 0
 	contextWindowConfigured := false
@@ -242,6 +244,7 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	}
 	if last, ok := latestLeadUsageRecord(saved.UsageRequests); ok {
 		m.lastInputTokens = last.Usage.InputTokens
+		m.lastCachedTokens = last.Usage.InputTokensDetails.CachedTokens
 		m.estimatedInputTokens = last.EstimatedInputTokens
 		if !contextWindowConfigured {
 			m.contextWindow = last.ContextWindow
@@ -299,6 +302,7 @@ func (m *tuiModel) resetSessionState() {
 	m.reasoningTokens = 0
 	m.contextWindow = 0
 	m.lastInputTokens = 0
+	m.lastCachedTokens = 0
 	m.estimatedInputTokens = 0
 	m.seededSessionUsage = false
 	m.reasoningEffort = ""

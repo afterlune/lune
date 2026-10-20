@@ -1160,7 +1160,7 @@ func TestCLIContext(t *testing.T) {
 	}
 	var diagnostics bytes.Buffer
 	handleCoreCLIContext(client, "sess-ctx-1", "Context CLI Test", false, &diagnostics)
-	for _, want := range []string{"Configured:  1.0M tokens", "Last prompt: 540 input tokens (200 cached)", "Input:       900 (cached: 300)"} {
+	for _, want := range []string{"Configured:  1.0M tokens", "Last prompt: 540 input tokens (200 cached, 340 uncached; 37.0% hit)", "Input:       900 (cached: 300)"} {
 		if !strings.Contains(diagnostics.String(), want) {
 			t.Errorf("context diagnostics %q missing %q", diagnostics.String(), want)
 		}

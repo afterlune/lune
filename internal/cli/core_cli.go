@@ -624,7 +624,9 @@ func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMo
 				input = last.EstimatedInputTokens
 				fmt.Fprintf(stdout, "  Last prompt: %s input tokens (estimated)\n", compactCLITokens(input))
 			} else {
-				fmt.Fprintf(stdout, "  Last prompt: %s input tokens (%s cached)\n", compactCLITokens(input), compactCLITokens(last.Usage.InputTokensDetails.CachedTokens))
+				cached, missed, hitRate := promptCacheBreakdown(input, last.Usage.InputTokensDetails.CachedTokens)
+				fmt.Fprintf(stdout, "  Last prompt: %s input tokens (%s cached, %s uncached; %.1f%% hit)\n",
+					compactCLITokens(input), compactCLITokens(cached), compactCLITokens(missed), hitRate)
 			}
 		}
 		fmt.Fprintln(stdout, "")
@@ -674,6 +676,19 @@ func latestMainUsage(saved core.Session) (core.UsageRecord, bool) {
 		}
 	}
 	return core.UsageRecord{}, false
+}
+
+func promptCacheBreakdown(inputTokens, cachedTokens int64) (int64, int64, float64) {
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if inputTokens <= 0 {
+		return cachedTokens, 0, 0
+	}
+	if cachedTokens > inputTokens {
+		cachedTokens = inputTokens
+	}
+	return cachedTokens, inputTokens - cachedTokens, float64(cachedTokens) * 100 / float64(inputTokens)
 }
 
 func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) {
@@ -894,6 +909,9 @@ func handleCoreCLIPS(runtime cliRuntime, stdout, stderr io.Writer) {
 			shortID = shortID[:8]
 		}
 		statusStr := string(cmd.Status)
+		if cmd.Background {
+			statusStr += " [session service]"
+		}
 		timeInfo := ""
 		if !cmd.FinishedAt.IsZero() {
 			timeInfo = fmt.Sprintf(" (duration %s)", formatDuration(cmd.FinishedAt.Sub(cmd.StartedAt)))

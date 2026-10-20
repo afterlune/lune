@@ -119,6 +119,9 @@ func (m *tuiModel) handlePsCommand(parts []string) (tea.Model, tea.Cmd) {
 			shortID = shortID[:8]
 		}
 		statusStr := string(cmd.Status)
+		if cmd.Background {
+			statusStr += " · session service"
+		}
 		timeInfo := ""
 		if !cmd.FinishedAt.IsZero() {
 			timeInfo = fmt.Sprintf(" *(duration %s)*", formatDuration(cmd.FinishedAt.Sub(cmd.StartedAt)))

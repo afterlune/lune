@@ -58,6 +58,9 @@ func (m *tuiModel) renderStatusTable() string {
 		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (%s: %s, %.1f%% full)",
 			formatTokens(m.contextWindow), inputLabel, formatTokens(usedCtx), pct))
 	}
+	if m.lastInputTokens > 0 {
+		lines = append(lines, "Last Prompt Cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
+	}
 	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
 		lines = append(lines, fmt.Sprintf("Total Tokens:   in: %s (cached: %s) · out: %s (reasoning: %s)",
 			formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
@@ -195,6 +198,9 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	lines = append(lines, fmt.Sprintf("- Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
 		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
 		formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+	if m.lastInputTokens > 0 {
+		lines = append(lines, "- Last prompt cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
+	}
 
 	// 5. Conversation Metrics
 	userTurns := 0
@@ -255,6 +261,21 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func formatPromptCacheBreakdown(inputTokens, cachedTokens int64) string {
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > inputTokens {
+		cachedTokens = inputTokens
+	}
+	missed := inputTokens - cachedTokens
+	rate := 0.0
+	if inputTokens > 0 {
+		rate = float64(cachedTokens) * 100 / float64(inputTokens)
+	}
+	return fmt.Sprintf("%s cached, %s uncached (%.1f%% hit)", formatTokens(cachedTokens), formatTokens(missed), rate)
 }
 
 func renderProgressBar(ratio float64, width int) string {
