@@ -69,7 +69,7 @@ func TestParseFlagsModelAndPermission(t *testing.T) {
 }
 
 func TestParseFlagsSessionAndPlan(t *testing.T) {
-	flags, err := ParseFlags([]string{"-s", "session-xyz", "--plan"})
+	flags, err := ParseFlags([]string{"-s", "session-xyz", "--plan", "--no-sandbox"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,6 +78,9 @@ func TestParseFlagsSessionAndPlan(t *testing.T) {
 	}
 	if !flags.PlanMode {
 		t.Errorf("expected PlanMode to be true")
+	}
+	if !flags.NoSandbox {
+		t.Errorf("expected NoSandbox to be true")
 	}
 }
 

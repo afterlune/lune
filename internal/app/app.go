@@ -105,7 +105,7 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		defer slog.SetDefault(previousLogger)
 	}
 
-	client, err := newCore(workspace)
+	client, err := newCore(workspace, flags.NoSandbox)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,19 @@ func isTerminal(file *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func newCore(workspace string) (*core.Core, error) {
+func isSandboxDisabledEnv() bool {
+	v := strings.ToLower(os.Getenv("LUNE_SANDBOX"))
+	if v == "off" || v == "0" || v == "false" || v == "no" {
+		return true
+	}
+	v2 := strings.ToLower(os.Getenv("LUNE_NO_SANDBOX"))
+	if v2 == "1" || v2 == "true" || v2 == "yes" || v2 == "on" {
+		return true
+	}
+	return false
+}
+
+func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 	helperName := "lune-sandbox"
 	if runtime.GOOS == "windows" {
 		helperName += ".exe"
@@ -201,7 +213,16 @@ func newCore(workspace string) (*core.Core, error) {
 	if _, err := os.Stat(helperPath); err != nil {
 		helperPath = ""
 	}
-	baseCfg := core.Config{Workspace: workspace, Logger: slog.Default(), SandboxHelperPath: helperPath}
+	allowLocalCommand := isSandboxDisabledEnv()
+	if len(noSandbox) > 0 && noSandbox[0] {
+		allowLocalCommand = true
+	}
+	baseCfg := core.Config{
+		Workspace:         workspace,
+		Logger:            slog.Default(),
+		SandboxHelperPath: helperPath,
+		AllowLocalCommand: allowLocalCommand,
+	}
 
 	var storeModelCfg *publicmodel.Config
 	var storeProjectCfg *core.ProjectConfig

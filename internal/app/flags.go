@@ -21,6 +21,7 @@ type CLIFlags struct {
 	PermissionMode core.PermissionMode
 	SessionID      string
 	PlanMode       bool
+	NoSandbox      bool
 	ForceTUI       bool
 	ForceCLI       bool
 	Help           bool
@@ -69,6 +70,11 @@ func ParseFlags(args []string) (CLIFlags, error) {
 
 		if arg == "--plan" {
 			flags.PlanMode = true
+			continue
+		}
+
+		if arg == "--no-sandbox" {
+			flags.NoSandbox = true
 			continue
 		}
 
@@ -200,6 +206,7 @@ Flags:
   -s, --session <id|prefix>  Resume or open an existing session
       --prompt <text>        Instruction prompt (can also be passed as positional arguments)
       --plan                 Start in Plan mode (read-only exploration)
+      --no-sandbox           Disable OS sandbox and run commands directly
       --tui                  Force full-screen interactive TUI mode
       --cli                  Force classic streaming CLI mode
   -v, --version              Print version information and exit

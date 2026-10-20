@@ -58,6 +58,9 @@ Custom registries default to `read-only`; the built-in registry explicitly uses 
 Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` and `Shift+Tab` cannot raise access while Plan mode is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. Read-only web tools still require approval.
 Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 和 `Shift+Tab` 均不能提高权限。在计划审查中选择实施时，会先退出 Plan 模式并恢复之前的档位，再启动实施。只读 web 工具仍需授权。
 
+Approved commands and commands run under `full-access` have network access enabled by default. `full-access` is also supported when running as root in container environments (e.g. Docker, Podman, WSL). When sandboxing causes container conflicts or native execution is preferred, the OS sandbox can be bypassed using the `--no-sandbox` flag or `LUNE_SANDBOX=off` environment variable.
+已批准的命令与 `full-access` 模式下的命令默认允许访问网络。在容器环境（如 Docker、Podman、WSL）中以 root 运行时亦支持 `full-access` 模式。当沙箱产生容器环境冲突或需要原生执行时，可通过 `--no-sandbox` 参数或 `LUNE_SANDBOX=off` 环境变量跳过 OS 沙箱。
+
 ## Conventions / 约定
 
 - Register each tool with metadata for its category, permission class, and read-only behavior; an empty category means the tool is not discovered by category. Keep permission decisions and Plan mode filtering based on this metadata rather than tool names.
