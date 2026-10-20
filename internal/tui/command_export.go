@@ -478,6 +478,10 @@ pre {
 
 // handleExportCommand handles the /export command.
 func (m *tuiModel) handleExportCommand(parts []string) (tea.Model, tea.Cmd) {
+	if m.taskBusy() {
+		m.addSystemEntry("Transcript export is unavailable while a task is running or queued.")
+		return m, nil
+	}
 	targetPath := ""
 	if len(parts) > 1 {
 		targetPath = strings.TrimSpace(strings.Join(parts[1:], " "))

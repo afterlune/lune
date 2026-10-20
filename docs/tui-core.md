@@ -18,13 +18,13 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 
 - **User Questions (`ask_user`)**: Interactive card in the transcript with radio-style choices and free text. Navigated via `Up`/`Down`, confirmed via `Enter`. The complete batch remains visible while Core accepts the answers; failures retain choices and notes for retry. Exact wait identities and task-attempt generations prevent delayed pause notifications from reopening an answered batch.
 - **Agent Status**: The footer shows `disabled` when effective delegation limits prohibit children; otherwise it shows active workers and scheduling concurrency (`parallel`). `/status` and `/context` distinguish parallel capacity, cumulative children per agent, and recursion depth. `runtime.maxParallelAgents: 0` inherits the scheduler default, while `runtime.maxTeamChildrenPerAgent: 0` with no positive host/task override disables delegation.
-- **Tool Execution Records**: Chronological tool cards with 3-line preview, toggled between compact and expanded via `Ctrl+T` or mouse click.
+- **Tool Execution Records**: Chronological tool cards show a 3-line preview; click a card to expand it inline, or press `Ctrl+T` to open the full-output pager.
 - **Tool Approvals**: Interactive card when permission mode requires user consent before running shell commands or modifying files.
 - **Plan Review**: Interactive card triggered when a `<proposed_plan>` completes in Plan mode, offering same-context or new-context implementation. Approved plans remain archived; execution status comes from Core, without inferred step completion.
 - **Model Recovery (`ActiveRecovery`)**: Interactive amber card for model rate limits or timeouts, offering retry (`Enter`) or discard (`Esc`).
 - **Keyboard Shortcuts**: Cheat sheet modal (`?` or `/shortcuts`) with a 3-column layout (Compose, Session, Transcript).
 - **Session Management**: Full lifecycle support with `/sessions`, `/open <prefix>`, `/rewind [N]`, `/clear`, and `/title [name]`.
-- **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards and `/cancel-queue`.
+- **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards; `/cancel-queue` removes a queued turn and `Esc` interrupts the active task.
 - **Workspace Diff**: Read-only colored Git diff modal via `/diff [path]`. It reads unstaged changes and falls back to staged changes when no unstaged diff is available. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
 
 ## Permissions, Modes, and Themes
@@ -44,7 +44,7 @@ go run ./cmd
 Build the standalone binary into `bin/`:
 
 ```powershell
-go build -o bin/lune.exe ./cmd
+go build -trimpath -o bin/lune.exe ./cmd
 ```
 
 ## Verify

@@ -86,6 +86,13 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 		if m.sessionsConfirmDelete {
 			switch keyStr {
 			case "y", "Y":
+				if m.taskBusy() {
+					m.sessionsConfirmDelete = false
+					m.sessionsDeletingID = ""
+					m.addSystemEntry("Cannot delete sessions while a task is running.")
+					m.updateLayout()
+					return m, nil
+				}
 				targetID := m.sessionsDeletingID
 				m.sessionsConfirmDelete = false
 				m.sessionsDeletingID = ""
@@ -131,6 +138,11 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 			return m, nil
 		case "ctrl+d", "delete":
 			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
+				if m.taskBusy() {
+					m.addSystemEntry("Cannot delete sessions while a task is running.")
+					m.updateLayout()
+					return m, nil
+				}
 				target := m.sessionsFiltered[m.sessionsIndex]
 				if target.ID == m.sessionID {
 					m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
@@ -167,6 +179,11 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
 				targetID := m.sessionsFiltered[m.sessionsIndex].ID
 				if m.sessionsDeleteMode {
+					if m.taskBusy() {
+						m.addSystemEntry("Cannot delete sessions while a task is running.")
+						m.updateLayout()
+						return m, nil
+					}
 					if targetID == m.sessionID {
 						m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
 						m.updateLayout()

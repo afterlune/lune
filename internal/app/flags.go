@@ -207,8 +207,8 @@ Flags:
       --prompt <text>        Instruction prompt (can also be passed as positional arguments)
       --plan                 Start in Plan mode (read-only exploration)
       --no-sandbox           Disable OS sandbox and run commands directly
-      --tui                  Force full-screen interactive TUI mode
-      --cli                  Force classic streaming CLI mode
+      --tui                  Force full-screen TUI when no prompt is supplied
+      --cli                  Force line-oriented CLI when no prompt is supplied
   -v, --version              Print version information and exit
   -h, --help                 Print this help message and exit
 

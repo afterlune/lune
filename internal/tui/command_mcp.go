@@ -145,7 +145,7 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 		}
 		m.addSystemEntry(strings.Join(lines, "\n"))
 	case "enable":
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("Cannot change MCP servers while a task is running.")
 			return m, nil
 		}
@@ -159,7 +159,7 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry(fmt.Sprintf("MCP server `%s` enabled and tools registered.", name))
 		}
 	case "disable":
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("Cannot change MCP servers while a task is running.")
 			return m, nil
 		}
@@ -173,7 +173,7 @@ func (m *tuiModel) handleMCPCommand(parts []string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry(fmt.Sprintf("MCP server `%s` disabled and disconnected.", name))
 		}
 	case "auth":
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("Cannot authorize an MCP server while a task is running.")
 			return m, nil
 		}

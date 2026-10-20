@@ -105,7 +105,9 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	// Apply plan mode if provided
 	if opts.PlanMode {
-		_ = client.SetPermissionMode(core.PermissionReadOnly)
+		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+			return fmt.Errorf("set Plan mode permissions: %w", err)
+		}
 	}
 
 	// Open session runtime

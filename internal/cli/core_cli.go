@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/afterlune/lune/internal/workspacereview"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
 )
@@ -31,6 +32,8 @@ type cliRuntime interface {
 	DiscardPaused(context.Context) (bool, error)
 	PendingRequests(context.Context) ([]core.PendingRequest, error)
 	ResolveApproval(string, bool) error
+	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
+	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
 	SetUserInteractionAvailable(bool)
 	ListCommands(context.Context) ([]core.CommandInfo, error)
 	ReadCommand(context.Context, string, core.CommandReadOptions) (core.CommandOutput, error)
@@ -51,6 +54,7 @@ type cliCore interface {
 	Compact(context.Context, string) (int, error)
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
+	ProjectContextDefaults() core.ContextDefaults
 	ListModelProfiles() []core.ModelOption
 	ModelForSession(context.Context, string) string
 	SetSessionSettings(context.Context, string, core.SessionSettings) error
@@ -88,7 +92,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/detail", usage: "/detail [index]", description: "View full output of a tool call."},
 	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
-	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session (alias: /delete)."},
+	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
 	{name: "/export", usage: "/export [path]", description: "Export session conversation transcript to a markdown file."},
 	{name: "/fork", usage: "/fork", description: "Fork the current session."},
@@ -103,7 +107,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/plan", usage: "/plan", description: "Toggle Plan mode (read-only exploration)."},
 	{name: "/ps", usage: "/ps", description: "List background processes and daemon commands."},
 	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
-	{name: "/review", usage: "/review [path]", description: "Summarize and review workspace changes."},
+	{name: "/review", usage: "/review [path]", description: "Run a read-only model review of workspace changes in this session."},
 	{name: "/rewind", usage: "/rewind [N]", description: "Rewind conversation to a previous turn."},
 	{name: "/sessions", usage: "/sessions [query]", description: "List or search recent sessions in this workspace."},
 	{name: "/status", usage: "/status", description: "Show session, model, and token status."},
@@ -202,7 +206,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 
 	planMode := opts.PlanMode
 	if planMode {
-		_ = client.SetPermissionMode(core.PermissionReadOnly)
+		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+			return fmt.Errorf("set Plan mode permissions: %w", err)
+		}
 	}
 
 	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
@@ -221,7 +227,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		switch {
 		case line == "/help":
 			fmt.Fprint(stdout, cliHelpText())
-		case line == "/exit" || line == "/quit":
+		case line == "/exit":
 			return nil
 		case line == "/clear":
 			fmt.Fprint(stdout, "\033[H\033[2J")
@@ -230,24 +236,33 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			if err != nil {
 				fmt.Fprintf(stderr, "error: create session: %v\n", err)
 			} else {
-				sessionID = created.ID
-				sessionTitle = created.Title
-				workspace = created.Workspace
-				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
-				if err != nil {
-					fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
+				newRuntime, openErr := client.OpenSessionRuntime(ctx, created.ID)
+				if openErr != nil {
+					fmt.Fprintf(stderr, "error: open session runtime: %v\n", openErr)
+					if cleanupErr := client.DeleteSession(ctx, created.ID); cleanupErr != nil {
+						fmt.Fprintf(stderr, "error: remove unused session %s: %v\n", created.ID, cleanupErr)
+					}
 				} else {
+					sessionID, sessionTitle, workspace, runtime = created.ID, created.Title, created.Workspace, newRuntime
 					fmt.Fprintln(stdout, "New session.")
 				}
 			}
 		case line == "/plan":
-			planMode = !planMode
-			if planMode {
-				savedPermissionMode = client.PermissionMode()
-				_ = client.SetPermissionMode(core.PermissionReadOnly)
+			if !planMode {
+				previousMode := client.PermissionMode()
+				if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+					fmt.Fprintf(stderr, "error: enter Plan mode: %v\n", err)
+					continue
+				}
+				savedPermissionMode = previousMode
+				planMode = true
 				fmt.Fprintln(stdout, "Switched to Plan mode (permissions locked to read-only).")
 			} else {
-				_ = client.SetPermissionMode(savedPermissionMode)
+				if err := client.SetPermissionMode(savedPermissionMode); err != nil {
+					fmt.Fprintf(stderr, "error: exit Plan mode: %v\n", err)
+					continue
+				}
+				planMode = false
 				fmt.Fprintln(stdout, "Exited Plan mode (permissions restored).")
 			}
 		case line == "/status":
@@ -256,7 +271,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIContext(client, sessionID, sessionTitle, planMode, stdout)
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
 			handleCoreCLIMemory(client, line, stdout, stderr)
-		case line == "/ps" || strings.HasPrefix(line, "/ps ") || line == "/process" || strings.HasPrefix(line, "/process "):
+		case line == "/ps" || strings.HasPrefix(line, "/ps "):
 			handleCoreCLIPS(runtime, stdout, stderr)
 		case line == "/stop" || strings.HasPrefix(line, "/stop "):
 			handleCoreCLIStop(runtime, line, stdout, stderr)
@@ -282,7 +297,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 					workspace = s.Workspace
 				}
 			}
-		case line == "/drop" || strings.HasPrefix(line, "/drop ") || line == "/delete" || strings.HasPrefix(line, "/delete "):
+		case line == "/drop" || strings.HasPrefix(line, "/drop "):
 			handleCoreCLIDrop(client, sessionID, line, stdout, stderr)
 		case line == "/title" || strings.HasPrefix(line, "/title "):
 			sessionTitle = handleCoreCLITitle(client, sessionID, line, stdout, stderr)
@@ -299,7 +314,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			if targetWorkspace == "" {
 				targetWorkspace = client.Workspace()
 			}
-			handleCoreCLIReview(targetWorkspace, line, stdout, stderr)
+			if err := handleCoreCLIReview(runtime, targetWorkspace, line, watchKeys, stdout, stderr); err != nil {
+				return err
+			}
 		case line == "/mcp" || strings.HasPrefix(line, "/mcp "):
 			handleCoreCLIMCP(client, line, stdout, stderr)
 		case line == "/fork":
@@ -307,13 +324,14 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			if err != nil {
 				fmt.Fprintf(stderr, "error: fork session: %v\n", err)
 			} else {
-				sessionID = newSession.ID
-				sessionTitle = newSession.Title
-				workspace = newSession.Workspace
-				runtime, err = client.OpenSessionRuntime(ctx, sessionID)
-				if err != nil {
-					fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
+				newRuntime, openErr := client.OpenSessionRuntime(ctx, newSession.ID)
+				if openErr != nil {
+					fmt.Fprintf(stderr, "error: open session runtime: %v\n", openErr)
+					if cleanupErr := client.DeleteSession(ctx, newSession.ID); cleanupErr != nil {
+						fmt.Fprintf(stderr, "error: remove unused fork %s: %v\n", newSession.ID, cleanupErr)
+					}
 				} else {
+					sessionID, sessionTitle, workspace, runtime = newSession.ID, newSession.Title, newSession.Workspace, newRuntime
 					fmt.Fprintf(stdout, "Forked to new session: %s\n", sessionID)
 				}
 			}
@@ -340,11 +358,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 					fmt.Fprintf(stderr, "error: inspect task decisions: %v\n", requestErr)
 					continue
 				}
-				if len(requests) > 0 {
-					fmt.Fprintf(stderr, "Task is paused for %s. Use the TUI to resolve it.\n", requests[0].Kind)
-					continue
-				}
-				result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{}, true, watchKeys, stderr)
+				result, callErr, interrupted := resumePausedTaskCLI(runtime, reader, workspace, requests, watchKeys, stdout, stderr)
 				if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
 					return err
 				}
@@ -427,6 +441,10 @@ func handleCoreCLIStatus(client cliCore, sessionID, sessionTitle string, planMod
 	fmt.Fprintf(stdout, "Model:       %s\n", model)
 	fmt.Fprintf(stdout, "Workspace:   %s\n", workspace)
 	fmt.Fprintf(stdout, "Permissions: %s (Plan mode: %v)\n", mode, planMode)
+	if saved, err := client.GetSession(ctx, sessionID); err == nil {
+		usage := saved.SessionUsage
+		fmt.Fprintf(stdout, "Session tokens: %d input (%d cached), %d output; %d model requests\n", usage.Input, usage.Cached, usage.Output, usage.Requests)
+	}
 }
 
 func handleCoreCLIModel(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
@@ -592,8 +610,23 @@ func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMo
 		fmt.Fprintln(stdout, "  Plan Mode:   Inactive (all permitted tools available)")
 	}
 
-	// Session token usage
+	// Session token usage and the last model request's context budget.
 	if s, err := client.GetSession(ctx, sessionID); err == nil {
+		contextWindow := configuredContextWindow(client, s, model)
+		if contextWindow > 0 {
+			fmt.Fprintf(stdout, "\nContext Window:\n  Configured:  %s tokens\n", compactCLITokens(contextWindow))
+		} else {
+			fmt.Fprintln(stdout, "\nContext Window:\n  Configured:  unavailable")
+		}
+		if last, ok := latestMainUsage(s); ok {
+			input := last.Usage.InputTokens
+			if input == 0 && last.EstimatedInputTokens > 0 {
+				input = last.EstimatedInputTokens
+				fmt.Fprintf(stdout, "  Last prompt: %s input tokens (estimated)\n", compactCLITokens(input))
+			} else {
+				fmt.Fprintf(stdout, "  Last prompt: %s input tokens (%s cached)\n", compactCLITokens(input), compactCLITokens(last.Usage.InputTokensDetails.CachedTokens))
+			}
+		}
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, "Token Usage:")
 		fmt.Fprintf(stdout, "  Input:       %d (cached: %d)\n", s.SessionUsage.Input, s.SessionUsage.Cached)
@@ -609,6 +642,38 @@ func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMo
 			fmt.Fprintln(stdout, "  Stored:      None yet (use '/memory add <text>' to record conventions)")
 		}
 	}
+}
+
+func configuredContextWindow(client cliCore, saved core.Session, model string) int64 {
+	if saved.Settings.ContextWindow != nil {
+		return *saved.Settings.ContextWindow
+	}
+	if configured := client.ProjectContextDefaults().ContextWindow; configured > 0 {
+		return configured
+	}
+	for _, profile := range client.ListModelProfiles() {
+		if profile.Profile == saved.Settings.ModelProfile || profile.Model == model {
+			if profile.ContextWindow > 0 {
+				return profile.ContextWindow
+			}
+		}
+	}
+	if last, ok := latestMainUsage(saved); ok {
+		return last.ContextWindow
+	}
+	return 0
+}
+
+func latestMainUsage(saved core.Session) (core.UsageRecord, bool) {
+	for i := len(saved.UsageRequests) - 1; i >= 0; i-- {
+		request := saved.UsageRequests[i]
+		if request.Purpose == "" || request.Purpose == core.UsagePurposeMain {
+			if request.AgentID == "" || request.AgentID == "lead" {
+				return request, true
+			}
+		}
+	}
+	return core.UsageRecord{}, false
 }
 
 func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) {
@@ -702,7 +767,7 @@ func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintf(stdout, "Added workspace memory [%s] (%s): %s\n", shortID, item.Category, item.Content)
 
-	case "remove", "delete":
+	case "remove":
 		if len(parts) < 3 {
 			fmt.Fprintln(stderr, "Usage: /memory remove <id|prefix>")
 			return
@@ -749,7 +814,7 @@ func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) 
 	case "clear":
 		hasForce := false
 		for _, p := range parts[2:] {
-			if p == "--force" || p == "confirm" || p == "-f" {
+			if p == "--force" {
 				hasForce = true
 				break
 			}
@@ -874,16 +939,22 @@ func handleCoreCLIStop(runtime cliRuntime, line string, stdout, stderr io.Writer
 			return
 		}
 		var stopped []string
+		var failures []string
 		for _, cmd := range active {
-			if _, err := runtime.StopCommand(ctx, cmd.ID); err == nil {
-				shortID := cmd.ID
-				if len(shortID) > 8 {
-					shortID = shortID[:8]
-				}
-				stopped = append(stopped, shortID)
+			shortID := cmd.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
 			}
+			if _, err := runtime.StopCommand(ctx, cmd.ID); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", shortID, err))
+				continue
+			}
+			stopped = append(stopped, shortID)
 		}
-		fmt.Fprintf(stdout, "Stopped %d active background process(es): %s\n", len(stopped), strings.Join(stopped, ", "))
+		fmt.Fprintf(stdout, "Stopped %d of %d active background process(es): %s\n", len(stopped), len(active), strings.Join(stopped, ", "))
+		for _, failure := range failures {
+			fmt.Fprintf(stderr, "error: stop process [%s]\n", failure)
+		}
 		return
 	}
 
@@ -1423,57 +1494,52 @@ func handleCoreCLIRewind(client cliCore, sessionID, line string, stdout, stderr 
 }
 
 func handleCoreCLIDiff(workspace, line string, stdout, stderr io.Writer) {
-	fields := strings.Fields(line)
-	args := []string{"diff"}
-	if len(fields) > 1 {
-		args = append(args, "--")
-		args = append(args, fields[1:]...)
+	pathArgs := []string{}
+	if path := strings.TrimSpace(strings.TrimPrefix(line, "/diff")); path != "" {
+		pathArgs = append(pathArgs, "--")
+		pathArgs = append(pathArgs, path)
 	}
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = workspace
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(stderr, "error: git diff: %v\n", err)
+	var sections []string
+	for _, diff := range []struct {
+		name string
+		args []string
+	}{{"Unstaged changes", append([]string{"diff", "--no-ext-diff"}, pathArgs...)}, {"Staged changes", append([]string{"diff", "--cached", "--no-ext-diff"}, pathArgs...)}} {
+		cmd := exec.CommandContext(context.Background(), "git", diff.args...)
+		cmd.Dir = workspace
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: git %s: %v\n", diff.args[0], err)
+			return
+		}
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			sections = append(sections, "### "+diff.name+"\n"+trimmed)
+		}
+	}
+	if len(sections) == 0 {
+		fmt.Fprintln(stdout, "No staged or unstaged changes in workspace.")
 		return
 	}
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "" {
-		fmt.Fprintln(stdout, "No unstaged or uncommitted changes in workspace.")
-		return
-	}
-	fmt.Fprintln(stdout, trimmed)
+	fmt.Fprintln(stdout, strings.Join(sections, "\n\n"))
 }
 
-func handleCoreCLIReview(workspace, line string, stdout, stderr io.Writer) {
-	fields := strings.Fields(line)
-	if len(fields) > 1 {
-		handleCoreCLIDiff(workspace, line, stdout, stderr)
-		return
-	}
-	statusCmd := exec.CommandContext(context.Background(), "git", "status", "--short")
-	statusCmd.Dir = workspace
-	statusOut, err := statusCmd.CombinedOutput()
+func handleCoreCLIReview(runtime cliRuntime, workspace, line string, watchKeys keyEventWatcher, stdout, stderr io.Writer) error {
+	path := strings.TrimSpace(strings.TrimPrefix(line, "/review"))
+	materials, changed, err := workspacereview.CollectMaterials(workspace, path)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: git status: %v\n", err)
-		return
+		fmt.Fprintf(stderr, "error: prepare workspace review: %v\n", err)
+		return nil
 	}
-	statusText := strings.TrimSpace(string(statusOut))
-	if statusText == "" {
-		fmt.Fprintln(stdout, "No unstaged or uncommitted changes in workspace.")
-		return
+	if !changed {
+		fmt.Fprintln(stdout, "No text changes to review. Git-ignored and binary files are excluded.")
+		return nil
 	}
-	diffStatCmd := exec.CommandContext(context.Background(), "git", "diff", "--stat")
-	diffStatCmd.Dir = workspace
-	diffStatOut, _ := diffStatCmd.CombinedOutput()
-	statText := strings.TrimSpace(string(diffStatOut))
-
-	fmt.Fprintln(stdout, "Workspace Changes Summary:")
-	fmt.Fprintln(stdout, statusText)
-	if statText != "" {
-		fmt.Fprintln(stdout, "---")
-		fmt.Fprintln(stdout, statText)
+	input, err := core.ParseTaskInput(workspacereview.Prompt(materials, path))
+	if err != nil {
+		fmt.Fprintf(stderr, "error: parse review request: %v\n", err)
+		return nil
 	}
-	fmt.Fprintln(stdout, "\nTip: Use /review <path> or /diff <path> to view full diff for a specific file.")
+	result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PermissionMode: core.PermissionReadOnly}, false, watchKeys, stderr)
+	return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
 }
 
 func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
@@ -1564,9 +1630,27 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	}
 	defer stopWatching()
 
-	streamCtx, stopStream := context.WithCancel(context.Background())
+	var events <-chan core.Event
+	stopStream := func() {}
+	var err error
+	if resume {
+		state, stateErr := runtime.State(context.Background())
+		if stateErr != nil {
+			return core.TurnResult{}, stateErr, false
+		}
+		if state.Task.ExecutionID != "" {
+			events, stopStream, err = subscribeAfterPausedExecution(runtime, state.Task.ExecutionID)
+		} else {
+			streamCtx, cancel := context.WithCancel(context.Background())
+			stopStream = cancel
+			events, err = runtime.SubscribeEvents(streamCtx, 0)
+		}
+	} else {
+		streamCtx, cancel := context.WithCancel(context.Background())
+		stopStream = cancel
+		events, err = runtime.SubscribeEvents(streamCtx, 0)
+	}
 	defer stopStream()
-	events, err := runtime.SubscribeEvents(streamCtx, 0)
 	if err != nil {
 		return core.TurnResult{}, err, false
 	}
@@ -1581,9 +1665,13 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	if err != nil {
 		return core.TurnResult{}, err, false
 	}
+	return awaitCoreExecution(runtime, workspace, submission.ExecutionID, events, keyEvents, stderr)
+}
+
+func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, events <-chan core.Event, keyEvents <-chan cliInputEvent, stderr io.Writer) (core.TurnResult, error, bool) {
 	if keyEvents != nil {
 		if _, err := fmt.Fprintln(stderr, "Working... Press Esc to interrupt."); err != nil {
-			runtime.Interrupt(submission.ExecutionID)
+			runtime.Interrupt(executionID)
 			return core.TurnResult{}, err, true
 		}
 	}
@@ -1593,7 +1681,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	}
 	done := make(chan waitResult, 1)
 	go func() {
-		result, waitErr := runtime.WaitTurn(context.Background(), submission.ExecutionID)
+		result, waitErr := runtime.WaitTurn(context.Background(), executionID)
 		done <- waitResult{result: result, err: waitErr}
 	}()
 	interrupted := false
@@ -1627,7 +1715,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 			if !ok {
 				return core.TurnResult{}, errors.New("session event stream closed"), interrupted
 			}
-			if event.ExecutionID != "" && event.ExecutionID != submission.ExecutionID {
+			if event.ExecutionID != "" && event.ExecutionID != executionID {
 				continue
 			}
 			if event.Kind != core.EventApprovalRequired {
@@ -1681,21 +1769,21 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 					if keyEvents == nil {
 						if err := runtime.ResolveApproval(event.Approval.ID, false); err != nil {
 							fmt.Fprintf(stderr, "error: deny approval: %v\n", err)
-							runtime.Interrupt(submission.ExecutionID)
+							runtime.Interrupt(executionID)
 						} else {
 							fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(*event.Approval, workspace))
 						}
 						continue
 					}
 					if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(*event.Approval, workspace)); err != nil {
-						runtime.Interrupt(submission.ExecutionID)
+						runtime.Interrupt(executionID)
 						continue
 					}
 					if pendingKey != nil {
 						handled, err := handleCLIApprovalKey(runtime, *event.Approval, workspace, *pendingKey, stderr)
 						pendingKey = nil
 						if err != nil {
-							runtime.Interrupt(submission.ExecutionID)
+							runtime.Interrupt(executionID)
 							continue
 						}
 						if handled {
@@ -1703,7 +1791,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 						}
 					}
 					if err := resolveCLIApprovalKeys(runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
-						runtime.Interrupt(submission.ExecutionID)
+						runtime.Interrupt(executionID)
 					}
 				}
 			case core.EventUserQuestionRequired, core.EventUserInteractionRequired,
@@ -1717,7 +1805,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 				continue
 			}
 			if key.escape {
-				interrupted = runtime.Interrupt(submission.ExecutionID)
+				interrupted = runtime.Interrupt(executionID)
 				if interrupted {
 					slog.Warn("task interrupted by user", "source", "escape")
 				}
@@ -1731,6 +1819,270 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 			pendingKey = &buffered
 		}
 	}
+}
+
+func subscribeAfterPausedExecution(runtime cliRuntime, executionID string) (<-chan core.Event, context.CancelFunc, error) {
+	replayCtx, stopReplay := context.WithCancel(context.Background())
+	replay, err := runtime.SubscribeEvents(replayCtx, 0)
+	if err != nil {
+		stopReplay()
+		return nil, func() {}, err
+	}
+	var cursor int64
+	found := false
+	for event := range replay {
+		if event.Cursor > cursor {
+			cursor = event.Cursor
+		}
+		if event.Kind == core.EventTaskFinished && event.Status == core.TaskPaused && event.ExecutionID == executionID {
+			found = true
+			break
+		}
+	}
+	stopReplay()
+	if !found {
+		return nil, func() {}, fmt.Errorf("could not locate the pause point for execution %s", executionID)
+	}
+	streamCtx, stopStream := context.WithCancel(context.Background())
+	events, err := runtime.SubscribeEvents(streamCtx, cursor)
+	if err != nil {
+		stopStream()
+		return nil, func() {}, err
+	}
+	return events, stopStream, nil
+}
+
+func resumePausedTaskCLI(runtime cliRuntime, reader *bufio.Reader, workspace string, requests []core.PendingRequest, watchKeys keyEventWatcher, stdout, stderr io.Writer) (core.TurnResult, error, bool) {
+	ctx := context.Background()
+	for attempts := 0; attempts < 8; attempts++ {
+		if len(requests) == 0 {
+			result, err, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{}, true, watchKeys, stderr)
+			if result.Status != core.TaskPaused {
+				return result, err, interrupted
+			}
+			requests, err = runtime.PendingRequests(ctx)
+			if err != nil {
+				return result, fmt.Errorf("inspect resumed task: %w", err), interrupted
+			}
+			if len(requests) == 0 {
+				return result, errors.New("task remains paused without a recoverable request; use the TUI for diagnostics"), interrupted
+			}
+			continue
+		}
+
+		state, err := runtime.State(ctx)
+		if err != nil {
+			return core.TurnResult{}, fmt.Errorf("inspect paused execution: %w", err), false
+		}
+		executionID := state.Task.ExecutionID
+		if executionID == "" {
+			return core.TurnResult{}, errors.New("paused task has no execution ID"), false
+		}
+		request := requests[0]
+		if request.Kind == core.PendingUserInteraction || request.Kind == core.PendingExecutionBlocker {
+			fmt.Fprintf(stderr, "This paused task requires %s, which the CLI cannot resolve. Resume it in the TUI or use /discard.\n", request.Kind)
+			return core.TurnResult{ExecutionID: executionID, Status: core.TaskPaused}, core.ErrTaskPaused, false
+		}
+
+		events, stopStream, err := subscribeAfterPausedExecution(runtime, executionID)
+		if err != nil {
+			return core.TurnResult{}, fmt.Errorf("watch paused execution: %w", err), false
+		}
+		var keyEvents <-chan cliInputEvent
+		stopWatching := func() {}
+		watchingStarted := false
+		startWatching := func() {
+			if watchKeys == nil || watchingStarted {
+				return
+			}
+			watchingStarted = true
+			keyEvents, stopWatching, err = watchKeys()
+			if stopWatching == nil {
+				stopWatching = func() {}
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "warning: keyboard input unavailable: %v\n", err)
+				keyEvents = nil
+			}
+		}
+
+		switch request.Kind {
+		case core.PendingUserQuestion:
+			if request.UserQuestion == nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, errors.New("pending user question has no payload"), false
+			}
+			answer, readErr := readCLIUserQuestion(reader, *request.UserQuestion, stdout)
+			if readErr != nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, readErr, false
+			}
+			runtime.SetUserInteractionAvailable(false)
+			startWatching()
+			if err := runtime.ResolveUserQuestion(ctx, answer); err != nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, fmt.Errorf("submit user answers: %w", err), false
+			}
+			executionID = request.UserQuestion.ExecutionID
+		case core.PendingModelRecoveryRequest:
+			if request.ModelRecovery == nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, errors.New("pending model recovery has no payload"), false
+			}
+			failure := request.ModelRecovery.Failure
+			fmt.Fprintf(stdout, "Model request failed (%s). Retry after %s? [r]etry / [d]iscard: ", failure.Category, failure.RetryNotBefore.Format(time.RFC3339))
+			choice, readErr := readCLIRecoveryLine(reader)
+			if readErr != nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, readErr, false
+			}
+			if !strings.EqualFold(choice, "r") && !strings.EqualFold(choice, "retry") {
+				if strings.EqualFold(choice, "d") || strings.EqualFold(choice, "discard") {
+					_, discardErr := runtime.DiscardPaused(ctx)
+					stopWatching()
+					stopStream()
+					if discardErr != nil {
+						return core.TurnResult{}, fmt.Errorf("discard paused task: %w", discardErr), false
+					}
+					fmt.Fprintln(stdout, "Interrupted task discarded.")
+					return core.TurnResult{ExecutionID: executionID, Status: core.TaskCancelled}, nil, false
+				}
+				stopWatching()
+				stopStream()
+				return core.TurnResult{ExecutionID: executionID, Status: core.TaskPaused}, core.ErrTaskPaused, false
+			}
+			if delay := time.Until(failure.RetryNotBefore); delay > 0 {
+				fmt.Fprintf(stdout, "Waiting %s for the model retry window...\n", delay.Round(time.Second))
+				timer := time.NewTimer(delay)
+				<-timer.C
+			}
+			runtime.SetUserInteractionAvailable(false)
+			startWatching()
+			var submission core.TurnSubmission
+			submission, err = runtime.Recover(ctx)
+			if err == nil {
+				executionID = submission.ExecutionID
+			}
+		case core.PendingToolRecovery:
+			if request.ToolRecovery == nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, errors.New("pending tool recovery has no payload"), false
+			}
+			tool := cleanCLIInlineText(request.ToolRecovery.Tool)
+			fmt.Fprintf(stdout, "The outcome of %s is unknown. [r]etry / [s]kip: ", tool)
+			choice, readErr := readCLIRecoveryLine(reader)
+			if readErr != nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, readErr, false
+			}
+			decision := core.ToolRecoverySkip
+			if strings.EqualFold(choice, "r") || strings.EqualFold(choice, "retry") {
+				decision = core.ToolRecoveryRetry
+			} else if !strings.EqualFold(choice, "s") && !strings.EqualFold(choice, "skip") {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{ExecutionID: executionID, Status: core.TaskPaused}, core.ErrTaskPaused, false
+			}
+			runtime.SetUserInteractionAvailable(false)
+			startWatching()
+			if err = runtime.ResolveToolRecovery(ctx, request.ToolRecovery.InvocationID, decision); err == nil {
+				var submission core.TurnSubmission
+				submission, err = runtime.Recover(ctx)
+				if err == nil {
+					executionID = submission.ExecutionID
+				}
+			}
+		case core.PendingApproval:
+			if request.Approval == nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, errors.New("pending approval has no payload"), false
+			}
+			fmt.Fprintf(stdout, "%s\nAllow this tool call? [y/N]: ", formatCLIToolApproval(*request.Approval, workspace))
+			choice, readErr := readCLIRecoveryLine(reader)
+			if readErr != nil {
+				stopWatching()
+				stopStream()
+				return core.TurnResult{}, readErr, false
+			}
+			allowed := strings.EqualFold(choice, "y") || strings.EqualFold(choice, "yes")
+			runtime.SetUserInteractionAvailable(false)
+			startWatching()
+			err = runtime.ResolveApproval(request.Approval.ID, allowed)
+		default:
+			stopWatching()
+			stopStream()
+			return core.TurnResult{}, fmt.Errorf("unsupported paused request %q", request.Kind), false
+		}
+		if err != nil {
+			stopWatching()
+			stopStream()
+			return core.TurnResult{}, fmt.Errorf("resolve paused request: %w", err), false
+		}
+		result, waitErr, interrupted := awaitCoreExecution(runtime, workspace, executionID, events, keyEvents, stderr)
+		stopWatching()
+		stopStream()
+		if result.Status != core.TaskPaused {
+			return result, waitErr, interrupted
+		}
+		requests, err = runtime.PendingRequests(ctx)
+		if err != nil {
+			return result, fmt.Errorf("inspect resumed task decisions: %w", err), interrupted
+		}
+	}
+	return core.TurnResult{}, errors.New("paused task exceeded the CLI recovery step limit"), false
+}
+
+func readCLIUserQuestion(reader *bufio.Reader, question core.UserQuestionRequest, stdout io.Writer) (core.UserQuestionAnswer, error) {
+	answers := make([]core.UserQuestionResponse, 0, len(question.Questions))
+	for index, item := range question.Questions {
+		fmt.Fprintf(stdout, "Question %d/%d: %s\n", index+1, len(question.Questions), cleanCLIInlineText(item.Question))
+		for optionIndex, option := range item.Options {
+			fmt.Fprintf(stdout, "  %d. %s", optionIndex+1, cleanCLIInlineText(option.Label))
+			if option.Description != "" {
+				fmt.Fprintf(stdout, " — %s", cleanCLIInlineText(option.Description))
+			}
+			fmt.Fprintln(stdout)
+		}
+		for {
+			fmt.Fprint(stdout, "Answer with an option number or your own text: ")
+			answer, err := readCLIRecoveryLine(reader)
+			if err != nil {
+				return core.UserQuestionAnswer{}, err
+			}
+			if choice, parseErr := strconv.Atoi(answer); parseErr == nil && choice > 0 && choice <= len(item.Options) {
+				answer = item.Options[choice-1].Label
+			}
+			if strings.TrimSpace(answer) == "" {
+				fmt.Fprintln(stdout, "An answer is required.")
+				continue
+			}
+			answers = append(answers, core.UserQuestionResponse{QuestionID: item.ID, Answer: answer})
+			break
+		}
+	}
+	return core.UserQuestionAnswer{
+		ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID,
+		CallID: question.CallID, Answers: answers,
+	}, nil
+}
+
+func readCLIRecoveryLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read recovery input: %w", err)
+	}
+	if errors.Is(err, io.EOF) && strings.TrimSpace(line) == "" {
+		return "", io.EOF
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDetails) {
@@ -1755,6 +2107,9 @@ func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDeta
 }
 
 func compactCLITokens(tokens int64) string {
+	if tokens >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	}
 	if tokens >= 1000 {
 		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
 	}

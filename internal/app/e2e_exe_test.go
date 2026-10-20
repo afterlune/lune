@@ -33,7 +33,7 @@ func buildLuneExeForTest(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Dir(exePath), 0755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
 	}
-	cmd := exec.Command("go", "build", "-o", exePath, "./cmd")
+	cmd := exec.Command("go", "build", "-trimpath", "-o", exePath, "./cmd")
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build bin/lune.exe failed: %v\n%s", err, string(out))

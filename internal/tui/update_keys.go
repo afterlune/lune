@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -173,6 +174,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "shift+tab":
 		if !m.planMode {
+			if m.client == nil {
+				m.addSystemEntry("Permission management is unavailable.")
+				return m, nil
+			}
 			// Cycle permission mode: read-only -> workspace -> ask -> full-access -> read-only
 			nextMode := core.PermissionWorkspace
 			switch m.permissionMode {
@@ -185,8 +190,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			case core.PermissionFullAccess:
 				nextMode = core.PermissionReadOnly
 			}
-			_ = m.client.SetPermissionMode(nextMode)
-			m.permissionMode = nextMode
+			if err := m.client.SetPermissionMode(nextMode); err != nil {
+				m.addSystemEntry("Failed to set permission mode: " + err.Error())
+			} else {
+				m.permissionMode = nextMode
+				m.addSystemEntry(fmt.Sprintf("Permission mode set to `%s`.", nextMode))
+			}
 			m.updateLayout()
 		}
 		return m, nil
@@ -198,7 +207,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openDiffModal("")
 
 	case "ctrl+o":
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
 			return m, nil
 		}
@@ -619,6 +628,13 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if val == "" {
 			return m, nil
 		}
+		if strings.HasPrefix(val, "/") {
+			if reason := m.slashCommandUnavailable(val); reason != "" {
+				m.addSystemEntry(reason)
+				m.updateLayout()
+				return m, nil
+			}
+		}
 		m.composer.Reset()
 		m.autocompleteOpen = false
 		m.updateLayout()
@@ -636,7 +652,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.pendingMemoryAdd {
 		m.autocompleteOpen = false
 	} else if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
-		items := filterCommands(val)
+		items := m.commandsForAutocomplete(val)
 		if len(items) > 0 {
 			m.autocompleteOpen = true
 			m.autocompleteMode = AutocompleteModeCommand

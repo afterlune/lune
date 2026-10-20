@@ -166,16 +166,23 @@ func (m *tuiModel) handleStopCommand(parts []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		var stopped []string
+		var failed []string
 		for _, cmd := range active {
-			if _, err := m.runtime.StopCommand(ctx, cmd.ID); err == nil {
-				shortID := cmd.ID
-				if len(shortID) > 8 {
-					shortID = shortID[:8]
-				}
-				stopped = append(stopped, shortID)
+			shortID := cmd.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
 			}
+			if _, err := m.runtime.StopCommand(ctx, cmd.ID); err != nil {
+				failed = append(failed, shortID+": "+err.Error())
+				continue
+			}
+			stopped = append(stopped, shortID)
 		}
-		m.addSystemEntry(fmt.Sprintf("Stopped %d active background process(es): %s", len(stopped), strings.Join(stopped, ", ")))
+		lines := []string{fmt.Sprintf("Stopped %d of %d active background process(es): %s", len(stopped), len(active), strings.Join(stopped, ", "))}
+		for _, failure := range failed {
+			lines = append(lines, "Failed to stop process ["+failure+"]")
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
 		return m, nil
 	}
 

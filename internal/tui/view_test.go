@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -267,12 +269,18 @@ func TestAutocompleteFiltering(t *testing.T) {
 }
 
 func TestModelUpdateKeys(t *testing.T) {
-	m := &tuiModel{
-		workspace:      "D:\\test",
-		permissionMode: core.PermissionWorkspace,
-		composer:       newTUIModel(nil, nil, "test-sess").composer,
-		viewport:       newTUIModel(nil, nil, "test-sess").viewport,
+	workspace := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
 	}
+	client, err := core.New(core.Config{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	m := newTUIModel(client, nil, "test-sess")
+	m.workspace = client.Workspace()
 	m.width = 100
 	m.height = 30
 	m.updateLayout()
@@ -914,13 +922,13 @@ func TestToolExpandAndCollapseHint(t *testing.T) {
 	}
 
 	renderedCollapsed := renderEntry(toolEntry, 80)
-	if !strings.Contains(renderedCollapsed, "+ 3 lines (ctrl+t to expand)") {
+	if !strings.Contains(renderedCollapsed, "+ 3 lines (click to expand · Ctrl+T for full output)") {
 		t.Errorf("expected expand hint, got: %s", renderedCollapsed)
 	}
 
 	toolEntry.ToolExpanded = true
 	renderedExpanded := renderEntry(toolEntry, 80)
-	if !strings.Contains(renderedExpanded, "collapse 6 lines (ctrl+t)") {
+	if !strings.Contains(renderedExpanded, "collapse 6 lines (click)") {
 		t.Errorf("expected collapse hint, got: %s", renderedExpanded)
 	}
 }

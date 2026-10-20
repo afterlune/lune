@@ -12,39 +12,45 @@ import (
 	core "github.com/afterlune/luneCore"
 )
 
-var builtinCommands = []AutocompleteItem{
+type builtinCommandSpec struct {
+	Command             string
+	Description         string
+	AvailableDuringTask bool
+}
+
+var builtinCommands = []builtinCommandSpec{
 	{Command: "/new", Description: "start a new chat during a conversation"},
 	{Command: "/clear", Description: "clear transcript history from the current view"},
 	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
-	{Command: "/permissions", Description: "choose a permission mode: read-only, workspace, ask, full-access"},
-	{Command: "/model", Description: "choose an active model profile"},
-	{Command: "/effort", Description: "choose the reasoning effort level interactively"},
-	{Command: "/theme", Description: "choose a persisted theme: auto, dark, light"},
-	{Command: "/memory", Description: "view and manage workspace long-term memories"},
-	{Command: "/agents", Description: "inspect live agents and their context, cache, speed, and usage"},
-	{Command: "/ps", Description: "list background processes and daemon commands in session"},
-	{Command: "/stop", Description: "choose a running process to stop, or use /stop <id|all>"},
-	{Command: "/logs", Description: "choose a process to inspect, or use /logs <id>"},
-	{Command: "/sessions", Description: "open session switcher modal or search: /sessions [query]"},
+	{Command: "/permissions", Description: "choose a permission mode: read-only, workspace, ask, full-access", AvailableDuringTask: true},
+	{Command: "/model", Description: "choose an active model profile", AvailableDuringTask: true},
+	{Command: "/effort", Description: "choose the reasoning effort level interactively", AvailableDuringTask: true},
+	{Command: "/theme", Description: "choose a persisted theme: auto, dark, light", AvailableDuringTask: true},
+	{Command: "/memory", Description: "view and manage workspace long-term memories", AvailableDuringTask: true},
+	{Command: "/agents", Description: "inspect live agents and their context, cache, speed, and usage", AvailableDuringTask: true},
+	{Command: "/ps", Description: "list background processes and daemon commands in session", AvailableDuringTask: true},
+	{Command: "/stop", Description: "choose a running process to stop, or use /stop <id|all>", AvailableDuringTask: true},
+	{Command: "/logs", Description: "choose a process to inspect, or use /logs <id>", AvailableDuringTask: true},
+	{Command: "/sessions", Description: "list or search recent sessions in this workspace", AvailableDuringTask: true},
 	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
 	{Command: "/drop", Description: "choose a saved session to delete with confirmation"},
-	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)"},
-	{Command: "/title", Description: "view or set custom title for this session"},
+	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)", AvailableDuringTask: true},
+	{Command: "/title", Description: "view or set custom title for this session", AvailableDuringTask: true},
 	{Command: "/export", Description: "export session transcript: /export [md|html|jsonl] [file]"},
-	{Command: "/context", Description: "show context window budget, system rules, and capabilities"},
-	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)"},
+	{Command: "/context", Description: "show context window budget, system rules, and capabilities", AvailableDuringTask: true},
+	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)", AvailableDuringTask: true},
 	{Command: "/review", Description: "run a read-only model review of workspace changes"},
-	{Command: "/mcp", Description: "list and interactively manage external MCP servers"},
-	{Command: "/cancel-queue", Description: "cancel the most recently queued task"},
+	{Command: "/mcp", Description: "list and interactively manage external MCP servers", AvailableDuringTask: true},
+	{Command: "/cancel-queue", Description: "cancel the most recently queued task", AvailableDuringTask: true},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind session history: /rewind [N] or /rewind preview [N]"},
-	{Command: "/status", Description: "show session, model and token status"},
-	{Command: "/resume", Description: "resume paused task or switch session: /resume [id]"},
+	{Command: "/status", Description: "show session, model and token status", AvailableDuringTask: true},
+	{Command: "/resume", Description: "resume the paused task in this session"},
 	{Command: "/discard", Description: "discard the paused task in this session"},
-	{Command: "/shortcuts", Description: "display keyboard shortcuts help"},
-	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block (Ctrl+R)"},
-	{Command: "/help", Description: "list all available slash commands"},
+	{Command: "/shortcuts", Description: "display keyboard shortcuts help", AvailableDuringTask: true},
+	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block (Ctrl+R)", AvailableDuringTask: true},
+	{Command: "/help", Description: "list all available slash commands", AvailableDuringTask: true},
 	{Command: "/exit", Description: "exit the chat session"},
 }
 
@@ -53,14 +59,102 @@ func filterCommands(prefix string) []AutocompleteItem {
 	var matches []AutocompleteItem
 	for _, item := range builtinCommands {
 		if strings.HasPrefix(strings.ToLower(item.Command), prefix) {
-			matches = append(matches, item)
+			matches = append(matches, AutocompleteItem{Command: item.Command, Description: item.Description})
 		}
 	}
 	return matches
 }
 
+func (m *tuiModel) commandsForAutocomplete(prefix string) []AutocompleteItem {
+	items := filterCommands(prefix)
+	if !m.taskBusy() {
+		return items
+	}
+	var available []AutocompleteItem
+	for _, item := range items {
+		if item.Command == "/memory" || item.Command == "/mcp" {
+			available = append(available, item)
+			continue
+		}
+		for _, spec := range builtinCommands {
+			if spec.Command == item.Command && spec.AvailableDuringTask {
+				available = append(available, item)
+				break
+			}
+		}
+	}
+	return available
+}
+
+func (m *tuiModel) taskBusy() bool {
+	return m.running || len(m.queuedTurns) > 0
+}
+
+func (m *tuiModel) slashCommandUnavailable(raw string) string {
+	if !m.taskBusy() {
+		return ""
+	}
+	parts := strings.Fields(raw)
+	if len(parts) == 0 {
+		return ""
+	}
+	name := strings.ToLower(parts[0])
+	var spec *builtinCommandSpec
+	for i := range builtinCommands {
+		if builtinCommands[i].Command == name {
+			spec = &builtinCommands[i]
+			break
+		}
+	}
+	if spec == nil || spec.AvailableDuringTask {
+		switch name {
+		case "/mcp":
+			if len(parts) == 1 || strings.EqualFold(parts[1], "list") {
+				return ""
+			}
+			return "Only `/mcp list` is available while a task is running."
+		case "/memory":
+			if len(parts) == 1 {
+				return ""
+			}
+			switch strings.ToLower(parts[1]) {
+			case "add", "remove", "clear":
+				return "Workspace memory changes are unavailable while a task is running."
+			default:
+				return ""
+			}
+		}
+	}
+	if spec != nil && spec.AvailableDuringTask {
+		return ""
+	}
+	switch name {
+	case "/rewind":
+		return "Cannot rewind while a task is running."
+	case "/open":
+		return "Cannot switch sessions while a task is running. Cancel or wait for it to finish."
+	case "/drop":
+		return "Cannot delete sessions while a task is running."
+	case "/new":
+		return "Cannot start a new session while a task is running."
+	case "/fork":
+		return "Cannot fork a session while a task is running."
+	case "/resume":
+		return "A task is already running."
+	case "/discard":
+		return "Cannot discard a paused task while another task is running."
+	case "/exit":
+		return "Interrupt the active task before exiting."
+	}
+	return fmt.Sprintf("`%s` is unavailable while a task is running. Interrupt the task or wait for it to finish.", name)
+}
+
 // handleSlashCommand executes slash commands entered by the user.
 func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
+	if reason := m.slashCommandUnavailable(raw); reason != "" {
+		m.addSystemEntry(reason)
+		return m, nil
+	}
 	parts := strings.Fields(raw)
 	if len(parts) == 0 {
 		return m, nil
@@ -83,7 +177,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/new":
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("Cannot start a new session while a task is running.")
 			return m, nil
 		}
@@ -127,9 +221,12 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/detail":
 		target := -1
 		if len(parts) > 1 {
-			if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
-				target = n - 1
+			n, err := strconv.Atoi(parts[1])
+			if err != nil || n < 1 || len(parts) > 2 {
+				m.addSystemEntry("Usage: `/detail [positive-index]`.")
+				return m, nil
 			}
+			target = n - 1
 		}
 		return m.openToolPager(target)
 
@@ -201,9 +298,10 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/resume":
 		if len(parts) > 1 {
-			return m.handleOpenCommand(parts)
+			m.addSystemEntry("Usage: `/resume` resumes a paused task. Use `/open <id>` to switch sessions.")
+			return m, nil
 		}
-		if m.running {
+		if m.taskBusy() {
 			m.addSystemEntry("A task is already running.")
 			return m, nil
 		}
@@ -224,7 +322,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m.openSessionsModal()
+		m.addSystemEntry("No paused task to resume. Use `/open` to switch sessions.")
+		return m, nil
 
 	case "/discard":
 		return m.discardPausedTask(discardSourceCommand)

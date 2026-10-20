@@ -14,10 +14,10 @@ $appPath = Join-Path $outputDirectory $appName
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 Push-Location $workspaceRoot
 try {
-	& go build -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
+	& go build -trimpath -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune-sandbox.' }
 
-	& go build -o $appPath ./cmd
+	& go build -trimpath -o $appPath ./cmd
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune.' }
 
 	Write-Output "Built $appPath and $helperPath"

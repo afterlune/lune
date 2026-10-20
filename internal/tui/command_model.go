@@ -15,16 +15,32 @@ func (m *tuiModel) handlePlanCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Usage: `/plan` to toggle Plan mode.")
 		return m, nil
 	}
-	m.planMode = !m.planMode
+	if m.taskBusy() {
+		m.addSystemEntry("Plan mode can only be changed after the current and queued tasks finish.")
+		return m, nil
+	}
+	if m.client == nil {
+		m.addSystemEntry("Plan mode is unavailable without a Core client.")
+		return m, nil
+	}
 	if m.planMode {
-		m.savedMode = m.permissionMode
-		_ = m.client.SetPermissionMode(core.PermissionReadOnly)
-		m.permissionMode = core.PermissionReadOnly
-		m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
-	} else {
-		_ = m.client.SetPermissionMode(m.savedMode)
+		if err := m.client.SetPermissionMode(m.savedMode); err != nil {
+			m.addSystemEntry("Failed to restore permissions; Plan mode remains active: " + err.Error())
+			return m, nil
+		}
+		m.planMode = false
 		m.permissionMode = m.savedMode
 		m.addSystemEntry("Exited **Plan mode** (permissions restored).")
+	} else {
+		savedMode := m.client.PermissionMode()
+		if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+			m.addSystemEntry("Failed to enter Plan mode: " + err.Error())
+			return m, nil
+		}
+		m.savedMode = savedMode
+		m.permissionMode = core.PermissionReadOnly
+		m.planMode = true
+		m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
 	}
 	m.updateLayout()
 	return m, nil

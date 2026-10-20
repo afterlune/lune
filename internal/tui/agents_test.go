@@ -317,7 +317,7 @@ func TestCodexExecutionTimelineAlignment(t *testing.T) {
 	if strings.Contains(renderedFailed, "line 1 setup") {
 		t.Fatalf("expected collapsed preview to show tail lines rather than line 1, got:\n%s", renderedFailed)
 	}
-	if !strings.Contains(renderedFailed, "[build failed]") || !strings.Contains(renderedFailed, "+ 3 lines (ctrl+t to expand)") {
+	if !strings.Contains(renderedFailed, "[build failed]") || !strings.Contains(renderedFailed, "+ 3 lines (click to expand") {
 		t.Fatalf("expected tail error lines and expand hint, got:\n%s", renderedFailed)
 	}
 

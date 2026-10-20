@@ -36,7 +36,9 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 
 	// Apply plan mode if provided
 	if flags.PlanMode {
-		_ = client.SetPermissionMode(core.PermissionReadOnly)
+		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+			return fmt.Errorf("set Plan mode permissions: %w", err)
+		}
 	}
 
 	// Open session runtime
@@ -67,6 +69,9 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 
 	submission, err := runtime.SubmitTurn(ctx, turnReq, core.StartIfIdle)
 	if err != nil {
+		if errors.Is(err, core.ErrTaskPaused) {
+			return oneShotPausedTaskError(sessionID)
+		}
 		return fmt.Errorf("submit task: %w", err)
 	}
 
@@ -85,6 +90,9 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 	for {
 		select {
 		case res := <-done:
+			if res.result.Status == core.TaskPaused || errors.Is(res.err, core.ErrTaskPaused) {
+				return oneShotPausedTaskError(sessionID)
+			}
 			if res.err != nil {
 				return res.err
 			}
@@ -93,9 +101,6 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 					return fmt.Errorf("task execution failed: %s (code=%s)", res.result.ModelFailure.Category, res.result.ModelFailure.Code)
 				}
 				return errors.New("task execution failed")
-			}
-			if res.result.Status == core.TaskPaused {
-				return errors.New("task paused for user approval or decision; run interactively with 'lune' or use '--permission full-access'")
 			}
 			// Print final response if not streamed as deltas
 			if streamText.Len() == 0 && len(res.result.Response) > 0 {
@@ -135,11 +140,15 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
-					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; use --permission full-access to permit execution without prompt\n", event.Approval.Tool)
+					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /resume\n", event.Approval.Tool, sessionID)
 				}
 			}
 		}
 	}
+}
+
+func oneShotPausedTaskError(sessionID string) error {
+	return fmt.Errorf("task paused for approval or a decision in session %s; continue with `lune --session %s --cli` and use /resume", sessionID, sessionID)
 }
 
 func applyOneShotModelProfile(ctx context.Context, client *core.Core, sessionID, profile string) error {

@@ -92,10 +92,14 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 		return m.cancelActivePlanReview()
 	}
 
+	permissionMode := m.savedMode
+	if err := m.client.SetPermissionMode(permissionMode); err != nil {
+		m.addSystemEntry("Failed to restore permissions; plan implementation was not started: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
 	m.activePlanReview = nil
 	m.planMode = false
-	permissionMode := m.savedMode
-	_ = m.client.SetPermissionMode(m.savedMode)
 	m.permissionMode = m.savedMode
 	m.updateLayout()
 

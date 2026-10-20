@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/afterlune/lune/internal/settings"
+	"github.com/afterlune/lune/internal/workspacereview"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -35,6 +36,54 @@ func TestTitleCommand(t *testing.T) {
 	lastSys2 := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys2, "Session title updated to `Refactor Architecture`") {
 		t.Errorf("expected update notification, got: %s", lastSys2)
+	}
+}
+
+func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
+	m := newTUIModel(nil, nil, "task-session")
+	m.running = true
+	allowed := []string{
+		"/permissions ask", "/model", "/effort", "/theme", "/memory", "/memory list",
+		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
+		"/logs process", "/sessions", "/detail", "/title In progress", "/context", "/diff",
+		"/mcp", "/mcp list", "/cancel-queue", "/status", "/shortcuts", "/thought", "/help",
+	}
+	for _, command := range allowed {
+		if reason := m.slashCommandUnavailable(command); reason != "" {
+			t.Errorf("%s was blocked during a task: %s", command, reason)
+		}
+	}
+	blocked := []string{
+		"/new", "/open", "/drop", "/export", "/review", "/compact", "/fork", "/rewind",
+		"/resume", "/discard", "/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear",
+	}
+	for _, command := range blocked {
+		if reason := m.slashCommandUnavailable(command); reason == "" {
+			t.Errorf("%s was allowed during a task", command)
+		}
+	}
+	suggested := map[string]bool{}
+	for _, item := range m.commandsForAutocomplete("/") {
+		suggested[item.Command] = true
+	}
+	for _, command := range []string{"/new", "/open", "/review", "/export", "/resume", "/discard"} {
+		if suggested[command] {
+			t.Errorf("autocomplete suggested unavailable command %s during a task", command)
+		}
+	}
+	for _, command := range []string{"/status", "/permissions", "/memory", "/mcp", "/cancel-queue"} {
+		if !suggested[command] {
+			t.Errorf("autocomplete omitted command %s that remains available during a task", command)
+		}
+	}
+
+	m.running = false
+	m.queuedTurns = []QueuedItem{{ExecutionID: "queued-task"}}
+	if reason := m.slashCommandUnavailable("/new"); reason == "" {
+		t.Fatal("command should remain unavailable while a queued turn is pending")
+	}
+	if reason := m.slashCommandUnavailable("/status"); reason != "" {
+		t.Fatalf("read-only status should remain available while a queued turn is pending: %s", reason)
 	}
 }
 
@@ -124,6 +173,15 @@ func TestReviewCommand(t *testing.T) {
 
 func TestCollectReviewMaterialsIncludesTextChangesAndExcludesIgnoredBinary(t *testing.T) {
 	workspace := initReviewGitRepo(t)
+	trackedBinary := filepath.Join(workspace, "tracked.bin")
+	if err := os.WriteFile(trackedBinary, []byte{0, 'b', 'i', 'n', 'a', 'r', 'y'}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	runReviewGit(t, workspace, "add", "tracked.bin")
+	runReviewGit(t, workspace, "commit", "-m", "add binary fixture")
+	if err := os.WriteFile(trackedBinary, []byte{0, 'b', 'i', 'n', 'a', 'r', 'y', '2'}, 0644); err != nil {
+		t.Fatal(err)
+	}
 	tracked := filepath.Join(workspace, "tracked.txt")
 	if err := os.WriteFile(tracked, []byte("staged line\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -141,8 +199,7 @@ func TestCollectReviewMaterialsIncludesTextChangesAndExcludesIgnoredBinary(t *te
 	if err := os.WriteFile(filepath.Join(workspace, "image.bin"), []byte{1, 'B', 'I', 'N', 'A', 'R', 'Y'}, 0644); err != nil {
 		t.Fatal(err)
 	}
-
-	materials, changed, err := collectReviewMaterials(workspace, "")
+	materials, changed, err := workspacereview.CollectMaterials(workspace, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,20 +211,20 @@ func TestCollectReviewMaterialsIncludesTextChangesAndExcludesIgnoredBinary(t *te
 			t.Errorf("review materials missing %q", want)
 		}
 	}
-	for _, unwanted := range []string{"ignored secret content", "BINARY"} {
+	for _, unwanted := range []string{"ignored secret content", "BINARY", "binary fixture"} {
 		if strings.Contains(materials, unwanted) {
 			t.Errorf("review materials unexpectedly include %q", unwanted)
 		}
 	}
 
-	pathMaterials, pathChanged, err := collectReviewMaterials(workspace, "tracked.txt")
+	pathMaterials, pathChanged, err := workspacereview.CollectMaterials(workspace, "tracked.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !pathChanged || !strings.Contains(pathMaterials, "staged line") || strings.Contains(pathMaterials, "untracked review content") {
 		t.Fatalf("path-scoped materials were not limited to tracked.txt: changed=%v materials=%q", pathChanged, pathMaterials)
 	}
-	if _, _, err := collectReviewMaterials(workspace, "../outside.txt"); err == nil {
+	if _, _, err := workspacereview.CollectMaterials(workspace, "../outside.txt"); err == nil {
 		t.Fatal("review accepted a path outside the workspace")
 	}
 }

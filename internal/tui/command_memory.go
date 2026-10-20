@@ -42,6 +42,11 @@ func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd
 	if m.memoryClearConfirm {
 		switch strings.ToLower(keyStr) {
 		case "y":
+			if m.taskBusy() {
+				m.addSystemEntry("Workspace memory changes are unavailable while a task is running.")
+				m.updateLayout()
+				return m, nil
+			}
 			m.memoryClearConfirm = false
 			if err := m.client.ClearMemories(context.Background()); err != nil {
 				m.addSystemEntry("Failed to clear memories: " + err.Error())
@@ -69,6 +74,11 @@ func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd
 		m.memoryPicker.Selected = (m.memoryPicker.Selected + 1) % len(m.memoryPicker.Items)
 		m.updateLayout()
 	case "enter":
+		if m.taskBusy() {
+			m.addSystemEntry("Workspace memory changes are unavailable while a task is running.")
+			m.updateLayout()
+			return m, nil
+		}
 		item := m.memoryPicker.Items[m.memoryPicker.Selected]
 		m.memoryPicker = nil
 		if err := m.client.DeleteMemory(context.Background(), item.ID); err != nil {
@@ -95,6 +105,10 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 	subcmd := "list"
 	if len(parts) > 1 {
 		subcmd = strings.ToLower(parts[1])
+	}
+	if m.taskBusy() && (subcmd == "add" || subcmd == "remove" || subcmd == "clear") {
+		m.addSystemEntry("Workspace memory changes are unavailable while a task is running.")
+		return m, nil
 	}
 
 	switch subcmd {
@@ -186,7 +200,7 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry(fmt.Sprintf("Added workspace memory `[%s]` (**%s**): %s", shortID, item.Category, item.Content))
 		return m, nil
 
-	case "remove", "delete":
+	case "remove":
 		if len(parts) < 3 {
 			return m.openMemoryPicker()
 		}
@@ -233,7 +247,7 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 	case "clear":
 		hasForce := false
 		for _, p := range parts[2:] {
-			if p == "--force" || p == "confirm" || p == "-f" {
+			if p == "--force" {
 				hasForce = true
 				break
 			}

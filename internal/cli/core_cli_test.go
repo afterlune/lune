@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,25 +21,29 @@ import (
 )
 
 type fakeCLICore struct {
-	inputs         []core.TurnRequest
-	firstErr       error
-	responses      int
-	pending        bool
-	resumes        int
-	discarded      int
-	compact        int
-	mode           core.PermissionMode
-	latest         core.Session
-	initialTitle   string
-	initialHistory json.RawMessage
-	sessions       []core.Session
-	sequence       int
-	resolved       []bool
-	resolveErr     error
-	runtime        *fakeCLIRuntime
-	memories       []memory.Item
-	memSeq         int
-	settingsErr    error
+	inputs          []core.TurnRequest
+	firstErr        error
+	responses       int
+	pending         bool
+	resumes         int
+	discarded       int
+	compact         int
+	mode            core.PermissionMode
+	latest          core.Session
+	initialTitle    string
+	initialHistory  json.RawMessage
+	sessions        []core.Session
+	sequence        int
+	resolved        []bool
+	resolveErr      error
+	runtime         *fakeCLIRuntime
+	memories        []memory.Item
+	memSeq          int
+	settingsErr     error
+	permissionErr   error
+	pendingRequests []core.PendingRequest
+	questionAnswers []core.UserQuestionAnswer
+	toolDecisions   []core.ToolRecoveryDecision
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -105,6 +110,9 @@ func (f *fakeCLICore) PermissionMode() core.PermissionMode {
 }
 
 func (f *fakeCLICore) SetPermissionMode(mode core.PermissionMode) error {
+	if f.permissionErr != nil {
+		return f.permissionErr
+	}
 	switch mode {
 	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
 		f.mode = mode
@@ -180,6 +188,10 @@ func (f *fakeCLICore) ListModelProfiles() []core.ModelOption {
 
 func (f *fakeCLICore) ModelForSession(_ context.Context, sessionID string) string {
 	return "mock-model"
+}
+
+func (f *fakeCLICore) ProjectContextDefaults() core.ContextDefaults {
+	return core.ContextDefaults{}
 }
 
 func (f *fakeCLICore) SetSessionSettings(_ context.Context, sessionID string, settings core.SessionSettings) error {
@@ -400,9 +412,12 @@ func (r *fakeCLIRuntime) WaitTurn(ctx context.Context, id string) (core.TurnResu
 	}
 }
 
-func (r *fakeCLIRuntime) SubscribeEvents(ctx context.Context, _ int64) (<-chan core.Event, error) {
+func (r *fakeCLIRuntime) SubscribeEvents(ctx context.Context, afterCursor int64) (<-chan core.Event, error) {
 	events := make(chan core.Event, 4)
 	r.events = events
+	if afterCursor == 0 && r.client.pending {
+		events <- core.Event{Kind: core.EventTaskFinished, ExecutionID: "execution-paused", Status: core.TaskPaused, Cursor: 1}
+	}
 	go func() { <-ctx.Done(); close(events) }()
 	return events, nil
 }
@@ -413,6 +428,7 @@ func (r *fakeCLIRuntime) State(context.Context) (core.RuntimeState, error) {
 	r.mu.Unlock()
 	if r.client.pending {
 		status = core.TaskPaused
+		active = "execution-paused"
 	}
 	return core.RuntimeState{Task: core.TaskState{SessionID: r.sessionID, Status: status, ExecutionID: active}}, nil
 }
@@ -431,6 +447,7 @@ func (r *fakeCLIRuntime) Interrupt(id string) bool {
 func (r *fakeCLIRuntime) Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error) {
 	r.client.resumes++
 	r.client.pending = false
+	r.client.pendingRequests = nil
 	r.mu.Lock()
 	r.sequence++
 	id := fmt.Sprintf("execution-%d", r.sequence)
@@ -452,8 +469,24 @@ func (r *fakeCLIRuntime) DiscardPaused(context.Context) (bool, error) {
 }
 
 func (*fakeCLIRuntime) SetUserInteractionAvailable(bool) {}
-func (*fakeCLIRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
-	return nil, nil
+func (r *fakeCLIRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
+	return append([]core.PendingRequest(nil), r.client.pendingRequests...), nil
+}
+func (r *fakeCLIRuntime) ResolveUserQuestion(_ context.Context, answer core.UserQuestionAnswer) error {
+	r.client.questionAnswers = append(r.client.questionAnswers, answer)
+	r.client.pending = false
+	r.client.pendingRequests = nil
+	turn := fakeCLITurn{done: make(chan struct{}), result: core.TurnResult{ExecutionID: answer.ExecutionID, Status: core.TaskCompleted, Response: cliResponse("answered")}}
+	r.mu.Lock()
+	r.turns[answer.ExecutionID] = turn
+	close(turn.done)
+	r.mu.Unlock()
+	r.client.resumes++
+	return nil
+}
+func (r *fakeCLIRuntime) ResolveToolRecovery(_ context.Context, _ string, decision core.ToolRecoveryDecision) error {
+	r.client.toolDecisions = append(r.client.toolDecisions, decision)
+	return nil
 }
 func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
 	if r.client.resolveErr != nil {
@@ -810,6 +843,57 @@ func TestChatLoopResumesExplicitlyAndWarnsAboutReplay(t *testing.T) {
 	}
 }
 
+func TestCLIResumeAnswersUserQuestionBatch(t *testing.T) {
+	question := &core.UserQuestionRequest{
+		ID: "question-1", RunID: "run-1", InvocationID: "invocation-1", CallID: "call-1", ExecutionID: "execution-paused",
+		Questions: []core.UserQuestionItem{
+			{ID: "q1", Question: "Choose a strategy", Options: []core.UserQuestionOption{{Label: "Fast"}, {Label: "Safe"}}},
+			{ID: "q2", Question: "Any constraints?"},
+		},
+	}
+	client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: question}}}
+	stdout, stderr := runCLI(t, client, "/resume\n2\nKeep the API stable\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if len(client.questionAnswers) != 1 {
+		t.Fatalf("resolved answers = %#v, want one batch", client.questionAnswers)
+	}
+	answer := client.questionAnswers[0]
+	if answer.ExecutionID != "execution-paused" || answer.RunID != "run-1" || answer.InvocationID != "invocation-1" || answer.CallID != "call-1" || len(answer.Answers) != 2 {
+		t.Fatalf("question identity or batch was not preserved: %#v", answer)
+	}
+	if answer.Answers[0] != (core.UserQuestionResponse{QuestionID: "q1", Answer: "Safe"}) || answer.Answers[1] != (core.UserQuestionResponse{QuestionID: "q2", Answer: "Keep the API stable"}) {
+		t.Fatalf("answers = %#v, want ordered option and free-text answers", answer.Answers)
+	}
+	if !strings.Contains(stdout, "answered") || !strings.Contains(stdout, "Question 2/2") {
+		t.Fatalf("stdout = %q, want question prompts and resumed output", stdout)
+	}
+}
+
+func TestCLIResumeHandlesModelAndToolRecovery(t *testing.T) {
+	t.Run("model", func(t *testing.T) {
+		modelRecovery := &core.PendingModelRecovery{ExecutionID: "execution-paused", Failure: core.ModelFailure{RetryNotBefore: time.Now().Add(-time.Second)}}
+		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingModelRecoveryRequest, ModelRecovery: modelRecovery}}}
+		stdout, stderr := runCLI(t, client, "/resume\nr\n/exit\n", nil)
+		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
+			t.Fatalf("stdout=%q stderr=%q resumes=%d, want retry", stdout, stderr, client.resumes)
+		}
+	})
+
+	t.Run("tool skip", func(t *testing.T) {
+		toolRecovery := &core.ToolRecoveryRequest{InvocationID: "invocation-2", Tool: "run_command"}
+		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingToolRecovery, ToolRecovery: toolRecovery}}}
+		stdout, stderr := runCLI(t, client, "/resume\ns\n/exit\n", nil)
+		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
+			t.Fatalf("stdout=%q stderr=%q resumes=%d, want skip and recover", stdout, stderr, client.resumes)
+		}
+		if len(client.toolDecisions) != 1 || client.toolDecisions[0] != core.ToolRecoverySkip {
+			t.Fatalf("tool decisions = %#v, want one skip", client.toolDecisions)
+		}
+	})
+}
+
 func TestChatLoopBlocksNewInputUntilPendingTaskIsResumedOrDiscarded(t *testing.T) {
 	client := &fakeCLICore{pending: true}
 	stdout, stderr := runCLI(t, client, "must not run\n/discard\nnew task\n/exit\n", nil)
@@ -904,6 +988,20 @@ func TestCLIPlanMode(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Exited Plan mode (permissions restored).") {
 		t.Fatalf("stdout = %q, want Plan mode exit message", stdout)
+	}
+}
+
+func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
+	client := &fakeCLICore{mode: core.PermissionAsk, permissionErr: errors.New("permission store unavailable")}
+	stdout, stderr := runCLI(t, client, "/plan\n/status\n/exit\n", nil)
+	if client.PermissionMode() != core.PermissionAsk {
+		t.Fatalf("permission mode changed after rejected Plan transition: %s", client.PermissionMode())
+	}
+	if !strings.Contains(stderr, "error: enter Plan mode: permission store unavailable") {
+		t.Fatalf("stderr = %q, want permission failure", stderr)
+	}
+	if !strings.Contains(stdout, "Permissions: ask (Plan mode: false)") {
+		t.Fatalf("stdout = %q, want original mode and Plan state", stdout)
 	}
 }
 
@@ -1052,6 +1150,64 @@ func TestCLIContext(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, missing %q", stdout, want)
 		}
+	}
+
+	window := int64(1_000_000)
+	client.latest = core.Session{
+		ID: "sess-ctx-1", Title: "Context CLI Test", Settings: core.SessionSettings{ModelProfile: "primary"},
+		SessionUsage:  core.UsageTotals{Input: 900, Cached: 300, Output: 120, Requests: 2},
+		UsageRequests: []core.UsageRecord{{Purpose: core.UsagePurposeMain, AgentID: "lead", ContextWindow: window, Usage: core.Usage{InputTokens: 540, InputTokensDetails: core.TokenInputDetails{CachedTokens: 200}}}},
+	}
+	var diagnostics bytes.Buffer
+	handleCoreCLIContext(client, "sess-ctx-1", "Context CLI Test", false, &diagnostics)
+	for _, want := range []string{"Configured:  1.0M tokens", "Last prompt: 540 input tokens (200 cached)", "Input:       900 (cached: 300)"} {
+		if !strings.Contains(diagnostics.String(), want) {
+			t.Errorf("context diagnostics %q missing %q", diagnostics.String(), want)
+		}
+	}
+}
+
+func TestCLIReviewSubmitsReadOnlyReviewIntoCurrentSession(t *testing.T) {
+	workspace := t.TempDir()
+	runCLITestGit(t, workspace, "init")
+	runCLITestGit(t, workspace, "config", "user.email", "cli-review@example.invalid")
+	runCLITestGit(t, workspace, "config", "user.name", "CLI Review Test")
+	file := filepath.Join(workspace, "reviewed.txt")
+	if err := os.WriteFile(file, []byte("before\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runCLITestGit(t, workspace, "add", "reviewed.txt")
+	runCLITestGit(t, workspace, "commit", "-m", "initial")
+	if err := os.WriteFile(file, []byte("after\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeCLICore{}
+	runtime, err := client.OpenSessionRuntime(context.Background(), "review-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := handleCoreCLIReview(runtime, workspace, "/review", nil, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.inputs) != 1 || client.inputs[0].PermissionMode != core.PermissionReadOnly {
+		t.Fatalf("review requests = %#v, want one read-only turn", client.inputs)
+	}
+	if !strings.Contains(string(client.inputs[0].Input.Raw), "reviewed.txt") || !strings.Contains(string(client.inputs[0].Input.Raw), "after") {
+		t.Fatalf("review prompt does not contain changed file materials: %s", client.inputs[0].Input.Raw)
+	}
+	if !strings.Contains(stdout.String(), "reply") || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want review response", stdout.String(), stderr.String())
+	}
+}
+
+func runCLITestGit(t *testing.T, workspace string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workspace
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 }
 
@@ -1208,13 +1364,13 @@ func TestCLIDropCommand(t *testing.T) {
 		}
 	}
 
-	// 4. Also verify /delete alias
+	// 4. Removed aliases should be rejected rather than silently duplicating commands.
 	stdout, stderr = runCLI(t, client, "/delete sess-103\n/exit\n", nil)
-	if stderr != "" {
-		t.Fatalf("unexpected stderr: %s", stderr)
+	if !strings.Contains(stderr, "Unknown command \"/delete sess-103\"") {
+		t.Fatalf("stderr = %q, want removed alias to be rejected", stderr)
 	}
-	if !strings.Contains(stdout, "Deleted session sess-103-database.") {
-		t.Fatalf("stdout = %q, want deleted confirmation for /delete", stdout)
+	if strings.Contains(stdout, "Deleted session sess-103-database.") {
+		t.Fatalf("stdout = %q, removed alias unexpectedly deleted a session", stdout)
 	}
 }
 

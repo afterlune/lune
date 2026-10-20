@@ -161,7 +161,7 @@ func (m *tuiModel) handleRewindExecute(turns int) (tea.Model, tea.Cmd) {
 
 // handleOpenCommand handles switching to a session by ID/prefix or opening the modal.
 func (m *tuiModel) handleOpenCommand(parts []string) (tea.Model, tea.Cmd) {
-	if m.running {
+	if m.taskBusy() {
 		m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
 		return m, nil
 	}
@@ -262,7 +262,7 @@ func (m *tuiModel) resolveSessionID(prefix string) (string, []core.Session, erro
 
 // handleDropCommand deletes a saved session matching the target prefix or ID.
 func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
-	if m.running {
+	if m.taskBusy() {
 		m.addSystemEntry("Cannot delete sessions while a task is running.")
 		return m, nil
 	}
@@ -360,6 +360,10 @@ func (m *tuiModel) filterSessions() {
 
 // switchToSession switches to the specified session runtime and refreshes TUI state.
 func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
+	if m.taskBusy() {
+		m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
+		return m, nil
+	}
 	ctx := context.Background()
 	if err := m.bindSessionRuntime(ctx, targetID); err != nil {
 		m.addSystemEntry("Failed to open session: " + err.Error())
@@ -372,36 +376,57 @@ func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
 
 // handleSessionsCommand handles the /sessions command.
 func (m *tuiModel) handleSessionsCommand(parts []string) (tea.Model, tea.Cmd) {
-	if m.running {
-		m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
-		return m, nil
-	}
 	if m.client == nil {
 		m.addSystemEntry("Session management unavailable.")
 		return m, nil
 	}
-	if len(parts) < 2 {
-		return m.openSessionsModal()
+	query := ""
+	if len(parts) > 1 {
+		query = strings.ToLower(strings.TrimSpace(strings.Join(parts[1:], " ")))
 	}
-	query := strings.TrimSpace(strings.Join(parts[1:], " "))
-	targetID, _, err := m.resolveSessionID(query)
+	sessions, err := m.client.ListSessions(context.Background(), 100, false)
 	if err != nil {
-		m.addSystemEntry("Failed to query sessions: " + err.Error())
+		m.addSystemEntry("Failed to list sessions: " + err.Error())
 		return m, nil
 	}
-	if targetID != "" {
-		if targetID == m.sessionID {
-			m.addSystemEntry("Already in session: " + targetID)
-			return m, nil
-		}
-		return m.switchToSession(targetID)
+	var lines []string
+	if query == "" {
+		lines = append(lines, fmt.Sprintf("**Recent sessions (%d):**", len(sessions)))
+	} else {
+		lines = append(lines, fmt.Sprintf("**Sessions matching %q:**", query))
 	}
-	return m.openSessionsModalWithFilter(query)
+	count := 0
+	for _, session := range sessions {
+		if query != "" && !strings.Contains(strings.ToLower(session.ID), query) && !strings.Contains(strings.ToLower(session.Title), query) {
+			continue
+		}
+		shortID := session.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		title := session.Title
+		if title == "" {
+			title = "<untitled>"
+		}
+		marker := "  "
+		if session.ID == m.sessionID {
+			marker = "› "
+		}
+		lines = append(lines, fmt.Sprintf("%s`%s` %s · %s", marker, shortID, title, session.UpdatedAt.Format("2006-01-02 15:04")))
+		count++
+	}
+	if count == 0 {
+		m.addSystemEntry("No matching sessions found.")
+		return m, nil
+	}
+	lines = append(lines, "\nUse `/open <id>` or `Ctrl+O` to switch sessions.")
+	m.addSystemEntry(strings.Join(lines, "\n"))
+	return m, nil
 }
 
 // handleRewindCommand handles the /rewind command.
 func (m *tuiModel) handleRewindCommand(parts []string) (tea.Model, tea.Cmd) {
-	if m.running {
+	if m.taskBusy() {
 		m.addSystemEntry("Cannot rewind while a task is running.")
 		return m, nil
 	}

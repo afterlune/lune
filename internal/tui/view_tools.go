@@ -94,11 +94,11 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 	if len(outLines) > previewCount && !entry.ToolExpanded {
 		remaining := len(outLines) - previewCount
 		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
-			Render(fmt.Sprintf("  + %d lines (ctrl+t to expand)", remaining))
+			Render(fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", remaining))
 		bodyLines = append(bodyLines, expandHint)
 	} else if entry.ToolExpanded && len(outLines) > 3 {
 		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
-			Render(fmt.Sprintf("  - collapse %d lines (ctrl+t)", len(outLines)))
+			Render(fmt.Sprintf("  - collapse %d lines (click)", len(outLines)))
 		bodyLines = append(bodyLines, collapseHint)
 	}
 

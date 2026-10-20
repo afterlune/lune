@@ -161,46 +161,26 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	m.height = 30
 	m.updateLayout()
 
-	// 1. /sessions without arguments opens the modal
+	// 1. /sessions without arguments lists sessions without switching modes.
 	mod, _ := m.handleSlashCommand("/sessions")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
-		t.Fatalf("expected /sessions without args to open sessions modal")
-	}
-	if m.sessionsFilter != "" {
-		t.Fatalf("expected filter to be empty, got %q", m.sessionsFilter)
+	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, s2.ID[:12]) {
+		t.Fatalf("expected /sessions to list the second session without opening a modal: modal=%v entry=%q", m.sessionsModalOpen, m.entries[len(m.entries)-1].Text)
 	}
 
-	// Close modal with Esc
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
-	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
-		t.Fatalf("expected modal to close on Esc")
-	}
-
-	// 2. /sessions with query that matches ambiguous/non-unique string opens modal pre-filtered
+	// 2. /sessions with a query lists matching sessions without switching.
 	mod, _ = m.handleSlashCommand("/sessions Beta")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
-		t.Fatalf("expected /sessions Beta to open pre-filtered modal")
-	}
-	if m.sessionsFilter != "Beta" {
-		t.Fatalf("expected sessionsFilter to be 'Beta', got %q", m.sessionsFilter)
-	}
-	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s2.ID {
-		t.Fatalf("expected filtered to match s2, got %d items", len(m.sessionsFiltered))
+	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "Sessions matching \"beta\"") || m.sessionID != s1.ID {
+		t.Fatalf("expected /sessions Beta to list matches without switching: modal=%v session=%s entry=%q", m.sessionsModalOpen, m.sessionID, m.entries[len(m.entries)-1].Text)
 	}
 
-	// Close modal
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
-	m = mod.(*tuiModel)
-
-	// 3. /sessions with exact session ID or unique prefix switches directly
+	// 3. /open with a unique prefix switches directly.
 	s2Prefix := s2.ID
 	if len(s2Prefix) > 8 {
 		s2Prefix = s2Prefix[:8]
 	}
-	mod, _ = m.handleSlashCommand("/sessions " + s2Prefix)
+	mod, _ = m.handleSlashCommand("/open " + s2Prefix)
 	m = mod.(*tuiModel)
 	if m.sessionsModalOpen {
 		t.Fatalf("expected direct switch instead of opening modal for unique prefix")
@@ -209,22 +189,22 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 		t.Fatalf("expected session to switch to s2 (%s), got %s", s2.ID, m.sessionID)
 	}
 
-	// 4. /resume with session prefix switches to session
+	// 4. /resume does not switch sessions; use /open instead.
 	s1Prefix := s1.ID
 	if len(s1Prefix) > 8 {
 		s1Prefix = s1Prefix[:8]
 	}
 	mod, _ = m.handleSlashCommand("/resume " + s1Prefix)
 	m = mod.(*tuiModel)
-	if m.sessionID != s1.ID {
-		t.Fatalf("expected /resume with prefix to switch to s1 (%s), got %s", s1.ID, m.sessionID)
+	if m.sessionID != s2.ID || !strings.Contains(m.entries[len(m.entries)-1].Text, "Use `/open <id>`") {
+		t.Fatalf("expected /resume with an ID to recommend /open, session=%s entry=%q", m.sessionID, m.entries[len(m.entries)-1].Text)
 	}
 
-	// 5. /resume without arguments when no paused task opens sessions modal
+	// 5. /resume without a paused task reports that no recovery is available.
 	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
-		t.Fatalf("expected /resume without args to open sessions modal when idle")
+	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to resume") {
+		t.Fatalf("expected /resume to report no paused task without opening a modal")
 	}
 }
 
@@ -618,8 +598,29 @@ func TestActiveToolRecoveryDetailsAndShortcuts(t *testing.T) {
 }
 
 func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
-	m := newTUIModel(nil, nil, "plan-sess")
-	m.workspace = t.TempDir()
+	workspace := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.SetPermissionMode(core.PermissionAsk); err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUIModel(client, runtime, session.ID)
+	m.workspace = workspace
 	m.planMode = true
 	m.savedMode = core.PermissionAsk
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "1. Read code\n2. Run tests", Selected: 0}

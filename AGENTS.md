@@ -63,6 +63,8 @@ Approved commands and commands run under `full-access` have network access enabl
 
 ## Conventions / 约定
 
+- Every Go build that produces a repository binary must pass `-trimpath`, including development builds and test helpers that compile executables. Keep scripts and documented build commands consistent.
+  所有会生成仓库二进制文件的 Go 构建均需传入 `-trimpath`，包括开发构建和会编译可执行文件的测试辅助代码。脚本与文档中的构建命令需保持一致。
 - Register each tool with metadata for its category, permission class, and read-only behavior; an empty category means the tool is not discovered by category. Keep permission decisions and Plan mode filtering based on this metadata rather than tool names.
   注册工具时统一声明类别、权限类别和只读属性；类别为空表示该工具不参与按类别发现。权限判断和 Plan 模式筛选均读取元数据，不按工具名称判断。
 - Unclassified tools are blocked in `read-only` and `workspace` modes; `workspace` does not prompt for missing metadata. `ask` prompts for unclassified tools, while `full-access` allows every registered tool.
