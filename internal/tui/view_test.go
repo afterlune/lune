@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -971,6 +972,32 @@ func TestRenderCardSurfacePreservesBackground(t *testing.T) {
 	rendered := renderCardSurface(card, inner)
 	if strings.Contains(rendered, "\x1b[0m After") || strings.Contains(rendered, "\x1b[m After") {
 		t.Errorf("expected card background SGR to be re-asserted after inner reset, got %q", rendered)
+	}
+}
+
+func TestComposerBandUsesThemeCardBackground(t *testing.T) {
+	previousMode := CurrentThemeMode()
+	t.Cleanup(func() { SetThemeMode(previousMode) })
+
+	for _, test := range []struct {
+		mode ThemeMode
+		bg   string
+	}{
+		{mode: ThemeModeLight, bg: LightTheme.CardBg},
+		{mode: ThemeModeDark, bg: DarkTheme.CardBg},
+	} {
+		SetThemeMode(test.mode)
+		m := newTUIModel(nil, nil, "test-sess")
+		m.composer.SetWidth(40)
+		rendered := renderComposerBand(m.composer.View(), 40)
+		r, g, b, ok := parseHexRGB(test.bg)
+		if !ok {
+			t.Fatalf("invalid test background %q", test.bg)
+		}
+		want := fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+		if !strings.Contains(rendered, want) {
+			t.Errorf("%s composer band does not contain its theme background %q: %q", test.mode, test.bg, rendered)
+		}
 	}
 }
 

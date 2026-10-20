@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/afterlune/luneCore v0.1.1-0.20261018061542-59ff5e1ce562
 	github.com/atotto/clipboard v0.1.4
+	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
@@ -20,7 +21,6 @@ require (
 require (
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151 // indirect
-	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -38,6 +39,13 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.refreshViewportContent()
 		m.updateLayout()
 		return m, nil
+
+	case tea.ColorProfileMsg:
+		commands := terminalColorProfileProbeCommands(msg.Profile, os.Getenv("TERM_PROGRAM"))
+		if len(commands) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(commands...)
 
 	case tea.PasteMsg:
 		if m.activeQuestion != nil && m.activeQuestion.Submitting {
