@@ -380,7 +380,11 @@ func (m *tuiModel) View() tea.View {
 	moveScrollPillBeforePlan := m.activePlanReview != nil && m.scrolledUp && !copyFeedbackActive
 	gapLine := ""
 	if copyFeedbackActive {
-		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(m.copyFeedback)
+		color := activeTheme().AccentBlue
+		if m.copyFeedbackError {
+			color = activeTheme().WarningAmber
+		}
+		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(m.copyFeedback)
 		leftPad := max(0, contentWidth-lipgloss.Width(styled))
 		gapLine = strings.Repeat(" ", leftPad) + styled
 	} else if m.scrolledUp {

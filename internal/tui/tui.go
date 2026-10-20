@@ -89,9 +89,9 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	// Apply model profile if provided
 	if opts.ModelProfile != "" {
-		_ = client.SetSessionSettings(ctx, sessionID, core.SessionSettings{
-			ModelProfile: opts.ModelProfile,
-		})
+		if err := applySessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
+			return fmt.Errorf("set model profile: %w", err)
+		}
 	}
 
 	// Apply permission mode if provided
@@ -140,7 +140,7 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 		model.permissionMode = core.PermissionReadOnly
 	}
 	if opts.ModelProfile != "" {
-		model.currentModel = opts.ModelProfile
+		model.currentModel = client.ModelForSession(ctx, sessionID)
 	}
 
 	runtime.SetUserInteractionAvailable(true)

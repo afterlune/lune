@@ -2,10 +2,8 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
@@ -13,6 +11,9 @@ import (
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
+	if m.discardInFlight {
+		return m, nil
+	}
 	if m.activeQuestion != nil && m.activeQuestion.Submitting && keyStr != "ctrl+c" {
 		return m, nil
 	}
@@ -64,15 +65,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.copyTextToClipboard(m.selectedText)
 		}
 		if m.activeQuestion != nil {
-			delete(m.questionSubmissions, m.questionKey(m.activeQuestion.Request))
-			m.activeQuestion = nil
-			if m.runtime != nil {
-				_, _ = m.runtime.DiscardPaused(context.Background())
-			}
-			m.running = false
-			m.addSystemEntry("Question cancelled.")
-			m.updateLayout()
-			return m, nil
+			return m.discardPausedTask(discardSourceQuestion)
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			return m.interruptRunningTask()
@@ -138,30 +131,14 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.activeRecovery != nil {
-			m.activeRecovery = nil
-			m.pausedCheckpoint = nil
-			if m.runtime != nil {
-				_, _ = m.runtime.DiscardPaused(context.Background())
-			}
-			m.running = false
-			m.addSystemEntry("Model recovery discarded.")
-			m.updateLayout()
-			return m, nil
+			return m.discardPausedTask(discardSourceRecovery)
 		}
 		if m.activeToolRecovery != nil {
 			m.activeToolRecovery.Selected = 1
 			return m.resolveActiveToolRecovery()
 		}
 		if m.activeQuestion != nil {
-			m.activeQuestion = nil
-			m.pausedCheckpoint = nil
-			if m.runtime != nil {
-				_, _ = m.runtime.DiscardPaused(context.Background())
-			}
-			m.running = false
-			m.addSystemEntry("Question cancelled.")
-			m.updateLayout()
-			return m, nil
+			return m.discardPausedTask(discardSourceQuestion)
 		}
 		if m.activeApproval != nil {
 			m.activeApproval.Selected = 1
@@ -179,9 +156,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.scrolledUp = false
 			m.viewport.GotoBottom()
 			return m, nil
-		}
-		if len(m.queuedTurns) > 0 {
-			return m.cancelQueuedTurn()
 		}
 		if m.running && m.runtime != nil && m.runningExecution != "" {
 			return m.interruptRunningTask()
@@ -322,14 +296,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case "2", "d":
 			m.activeRecovery.Selected = 1
-			m.activeRecovery = nil
-			m.pausedCheckpoint = nil
-			m.running = false
-			m.updateLayout()
-			return m, func() tea.Msg {
-				ok, err := m.runtime.DiscardPaused(context.Background())
-				return taskDiscardedMsg{discarded: ok, err: err}
-			}
+			return m.discardPausedTask(discardSourceRecovery)
 		case "enter":
 			if m.activeRecovery.Selected == 0 {
 				m.activeRecovery = nil
@@ -343,14 +310,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
 				}
 			} else {
-				m.activeRecovery = nil
-				m.pausedCheckpoint = nil
-				m.running = false
-				m.updateLayout()
-				return m, func() tea.Msg {
-					ok, err := m.runtime.DiscardPaused(context.Background())
-					return taskDiscardedMsg{discarded: ok, err: err}
-				}
+				return m.discardPausedTask(discardSourceRecovery)
 			}
 		}
 		return m, nil
@@ -714,20 +674,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.updateLayout()
 
 	return m, cmd
-}
-
-func (m *tuiModel) copyTextToClipboard(text string) tea.Cmd {
-	if text == "" {
-		return nil
-	}
-	text, _ = writeClipboardText(text)
-	count := utf8.RuneCountInString(text)
-	m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
-	m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-	expiresAt := m.copyFeedbackExpiresAt
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return clearCopyFeedbackMsg{at: expiresAt}
-	})
 }
 
 func (m *tuiModel) cursorOffset() int {

@@ -506,6 +506,7 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 
 func TestToolPagerModalInteractions(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-tool-pager")
+	m.clipboardWriter = func(string) error { return nil }
 	m.width = 100
 	m.height = 30
 	m.updateLayout()
@@ -741,6 +742,7 @@ index 3333333..4444444 100644
 
 	// 2. Setup model with diff files
 	m := newTUIModel(nil, nil, "test-sess")
+	m.clipboardWriter = func(string) error { return nil }
 	m.width = 100
 	m.height = 30
 	m.diffModalOpen = true

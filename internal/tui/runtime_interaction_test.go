@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -315,18 +318,16 @@ func TestEscCancelsActiveQuestion(t *testing.T) {
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 
-	if m.activeQuestion != nil {
-		t.Errorf("expected activeQuestion to be nil after Esc")
+	if m.activeQuestion == nil {
+		t.Fatal("question should remain visible until Core confirms the discard")
 	}
-	foundCancelled := false
-	for _, entry := range m.entries {
-		if strings.Contains(entry.Text, "Question cancelled") {
-			foundCancelled = true
-			break
-		}
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Paused-task management is unavailable") {
+		t.Fatalf("missing unavailable-runtime feedback: %+v", m.entries)
 	}
-	if !foundCancelled {
-		t.Errorf("expected 'Question cancelled' system message in entries, got %+v", m.entries)
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceQuestion, discarded: true})
+	m = mod.(*tuiModel)
+	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Question cancelled") {
+		t.Fatalf("confirmed discard did not cancel question: active=%+v entries=%+v", m.activeQuestion, m.entries)
 	}
 }
 
@@ -435,15 +436,20 @@ func TestActiveRecoveryModalNavigationAndEsc(t *testing.T) {
 		t.Errorf("expected selection 0 after up arrow, got %+v", m.activeRecovery)
 	}
 
-	// Esc discards recovery
+	// Esc requests discard but keeps the card until Core confirms it.
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.activeRecovery != nil {
-		t.Errorf("expected activeRecovery to be nil after Esc")
+	if m.activeRecovery == nil {
+		t.Fatal("expected activeRecovery to remain until Core confirmation")
 	}
 	lastSys := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "Model recovery discarded") {
-		t.Errorf("expected 'Model recovery discarded' system entry, got: %s", lastSys)
+	if !strings.Contains(lastSys, "Paused-task management is unavailable") {
+		t.Errorf("expected unavailable-runtime message, got: %s", lastSys)
+	}
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceRecovery, discarded: true})
+	m = mod.(*tuiModel)
+	if m.activeRecovery != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Model recovery discarded") {
+		t.Errorf("confirmed discard did not close recovery panel: recovery=%+v entries=%+v", m.activeRecovery, m.entries)
 	}
 }
 
@@ -554,12 +560,18 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 		t.Errorf("expected queued entry to be promoted to KindUser")
 	}
 
-	// 4. Test cancel queued turn
+	// 4. Cancellation is not reflected until Core confirms it.
 	m.queuedTurns = append(m.queuedTurns, QueuedItem{ExecutionID: "exec-q2"})
 	m.entries = append(m.entries, TranscriptEntry{Kind: KindQueued, ToolCallID: "exec-q2", Text: "Cancel me"})
 	m.cancelQueuedTurn()
+	if len(m.queuedTurns) != 1 {
+		t.Fatalf("queued turn was removed before Core confirmation: %+v", m.queuedTurns)
+	}
+	m.cancelingQueuedExecution = "exec-q2"
+	mod, _ = m.Update(queuedTurnCancelledMsg{executionID: "exec-q2"})
+	m = mod.(*tuiModel)
 	if len(m.queuedTurns) != 0 {
-		t.Errorf("expected queued turns to be empty after cancellation")
+		t.Fatalf("confirmed queued turn was not removed: %+v", m.queuedTurns)
 	}
 	cancelledFound := false
 	for _, e := range m.entries {
@@ -570,5 +582,87 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	}
 	if !cancelledFound {
 		t.Errorf("expected entry to be marked as cancelled")
+	}
+}
+
+func TestQueuedTurnCancellationErrorsDoNotClaimSuccess(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.queuedTurns = []QueuedItem{{ExecutionID: "exec-q1"}, {ExecutionID: "exec-q2"}}
+	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "exec-q1", Text: "first"}, {Kind: KindQueued, ToolCallID: "exec-q2", Text: "latest"}}
+	m.cancelingQueuedExecution = "exec-q2"
+	mod, _ := m.Update(queuedTurnCancelledMsg{executionID: "exec-q2", err: core.ErrQueuedTurnStarted})
+	m = mod.(*tuiModel)
+	if len(m.queuedTurns) != 2 || m.entries[1].Kind != KindQueued || m.cancelingQueuedExecution != "" {
+		t.Fatalf("failed cancellation changed queue state: queue=%+v entry=%+v pending=%q", m.queuedTurns, m.entries[1], m.cancelingQueuedExecution)
+	}
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "already started") {
+		t.Fatalf("missing started-task feedback: %+v", m.entries)
+	}
+
+	m.cancelingQueuedExecution = "exec-q2"
+	mod, _ = m.Update(queuedTurnCancelledMsg{executionID: "exec-q2", err: core.ErrTurnNotFound})
+	m = mod.(*tuiModel)
+	if len(m.queuedTurns) != 1 || m.entries[1].Kind != KindUser {
+		t.Fatalf("missing queued item was not reconciled: queue=%+v entry=%+v", m.queuedTurns, m.entries[1])
+	}
+}
+
+func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T) {
+	workspace := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	})
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTUIModel(client, runtime, session.ID)
+	m.running = true
+	m.runningExecution = "active-exec"
+	m.queuedTurns = []QueuedItem{{ExecutionID: "queued-exec"}}
+	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "queued-exec", Text: "waiting"}}
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if m.running || m.pausedCheckpoint == nil || len(m.queuedTurns) != 1 || m.cancelingQueuedExecution != "" {
+		t.Fatalf("Esc did not interrupt active work independently of queued work: running=%t checkpoint=%+v queue=%+v canceling=%q", m.running, m.pausedCheckpoint, m.queuedTurns, m.cancelingQueuedExecution)
+	}
+}
+
+func TestDiscardResultKeepsRecoveryOnErrorAndReportsMissingTask(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.activeRecovery = &ActiveRecovery{ExecutionID: "paused-exec"}
+	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused-exec"}
+	m.discardInFlight = true
+	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceRecovery, err: errors.New("database locked")})
+	m = mod.(*tuiModel)
+	if m.activeRecovery == nil || m.pausedCheckpoint == nil || m.discardInFlight {
+		t.Fatalf("failed discard lost recovery state: recovery=%+v checkpoint=%+v pending=%t", m.activeRecovery, m.pausedCheckpoint, m.discardInFlight)
+	}
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "database locked") {
+		t.Fatalf("discard error not shown: %+v", m.entries)
+	}
+
+	m.discardInFlight = true
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceRecovery, discarded: false})
+	m = mod.(*tuiModel)
+	if m.activeRecovery != nil || m.pausedCheckpoint != nil || m.running {
+		t.Fatalf("missing paused task left stale recovery state: recovery=%+v checkpoint=%+v running=%t", m.activeRecovery, m.pausedCheckpoint, m.running)
+	}
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
+		t.Fatalf("missing-task outcome not reported: %+v", m.entries)
 	}
 }

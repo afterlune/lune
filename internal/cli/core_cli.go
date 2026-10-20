@@ -71,6 +71,16 @@ type cliCommandHelp struct {
 	description string
 }
 
+func applyCLISessionModelProfile(ctx context.Context, client cliCore, sessionID, profile string) error {
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	settings := saved.Settings
+	settings.ModelProfile = profile
+	return client.SetSessionSettings(ctx, sessionID, settings)
+}
+
 var cliCommands = []cliCommandHelp{
 	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
@@ -176,9 +186,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 
 	// Apply model profile if provided
 	if opts.ModelProfile != "" {
-		_ = client.SetSessionSettings(ctx, sessionID, core.SessionSettings{
-			ModelProfile: opts.ModelProfile,
-		})
+		if err := applyCLISessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
+			return fmt.Errorf("set model profile: %w", err)
+		}
 	}
 
 	// Apply permission mode if provided
@@ -451,7 +461,7 @@ func handleCoreCLIModel(client cliCore, sessionID, line string, stdout, stderr i
 		fmt.Fprintf(stderr, "Unknown model profile %q. Available profiles: %s\n", fields[1], strings.Join(names, ", "))
 		return
 	}
-	if err := client.SetSessionSettings(ctx, sessionID, core.SessionSettings{ModelProfile: target}); err != nil {
+	if err := applyCLISessionModelProfile(ctx, client, sessionID, target); err != nil {
 		fmt.Fprintf(stderr, "error: set model: %v\n", err)
 		return
 	}

@@ -492,7 +492,12 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	}
 
 	// Discard paused task
-	mod, _ = m.handleSlashCommand("/discard")
+	mod, cmd := m.handleSlashCommand("/discard")
+	m = mod.(*tuiModel)
+	if cmd == nil {
+		t.Fatal("expected /discard to request a Core result")
+	}
+	mod, _ = m.Update(cmd())
 	m = mod.(*tuiModel)
 	if m.pausedCheckpoint != nil {
 		t.Fatalf("expected pausedCheckpoint to be nil after /discard")
@@ -559,11 +564,11 @@ func TestActiveRecoveryCountdownAndShortcuts(t *testing.T) {
 		t.Errorf("expected Selected=0 after 'k', got %d", m.activeRecovery.Selected)
 	}
 
-	// Esc discards recovery
+	// Esc cannot discard recovery without a runtime.
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.activeRecovery != nil {
-		t.Fatalf("expected activeRecovery to be cleared after Esc")
+	if m.activeRecovery == nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Paused-task management is unavailable") {
+		t.Fatalf("Esc should preserve recovery and explain the missing runtime: recovery=%+v entries=%+v", m.activeRecovery, m.entries)
 	}
 }
 

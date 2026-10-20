@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
@@ -306,16 +304,11 @@ func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr stri
 			return m, nil
 
 		case "c", "ctrl+c":
-			outText := entry.ToolOutput
-			outText, _ = writeClipboardText(outText)
-			count := utf8.RuneCountInString(outText)
-			m.copyFeedback = fmt.Sprintf("Copied %d chars of tool output to clipboard", count)
-			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-			expiresAt := m.copyFeedbackExpiresAt
-			m.updateLayout()
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearCopyFeedbackMsg{at: expiresAt}
+			cmd := m.copyTextToClipboardAs(entry.ToolOutput, func(count int) string {
+				return fmt.Sprintf("Copied %d chars of tool output to clipboard", count)
 			})
+			m.updateLayout()
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -417,27 +410,18 @@ func (m *tuiModel) handleDiffModalKeyPress(msg tea.KeyPressMsg, keyStr string) (
 				allDiffs = append(allDiffs, f.RawDiff)
 			}
 			fullText := strings.Join(allDiffs, "\n\n")
-			fullText, _ = writeClipboardText(fullText)
-			count := utf8.RuneCountInString(fullText)
-			m.copyFeedback = fmt.Sprintf("Copied all diffs (%d chars) to clipboard", count)
-			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-			expiresAt := m.copyFeedbackExpiresAt
-			m.updateLayout()
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearCopyFeedbackMsg{at: expiresAt}
+			cmd := m.copyTextToClipboardAs(fullText, func(count int) string {
+				return fmt.Sprintf("Copied all diffs (%d chars) to clipboard", count)
 			})
+			m.updateLayout()
+			return m, cmd
 
 		case "c", "ctrl+c":
-			diffText := file.RawDiff
-			diffText, _ = writeClipboardText(diffText)
-			count := utf8.RuneCountInString(diffText)
-			m.copyFeedback = fmt.Sprintf("Copied %d chars of diff to clipboard", count)
-			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-			expiresAt := m.copyFeedbackExpiresAt
-			m.updateLayout()
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearCopyFeedbackMsg{at: expiresAt}
+			cmd := m.copyTextToClipboardAs(file.RawDiff, func(count int) string {
+				return fmt.Sprintf("Copied %d chars of diff to clipboard", count)
 			})
+			m.updateLayout()
+			return m, cmd
 		}
 		return m, nil
 	}

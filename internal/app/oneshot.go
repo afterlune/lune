@@ -22,9 +22,9 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 
 	// Apply model profile if provided
 	if flags.ModelProfile != "" {
-		_ = client.SetSessionSettings(ctx, sessionID, core.SessionSettings{
-			ModelProfile: flags.ModelProfile,
-		})
+		if err := applyOneShotModelProfile(ctx, client, sessionID, flags.ModelProfile); err != nil {
+			return fmt.Errorf("set model profile: %w", err)
+		}
 	}
 
 	// Apply permission mode if provided
@@ -140,6 +140,16 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 			}
 		}
 	}
+}
+
+func applyOneShotModelProfile(ctx context.Context, client *core.Core, sessionID, profile string) error {
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	settings := saved.Settings
+	settings.ModelProfile = profile
+	return client.SetSessionSettings(ctx, sessionID, settings)
 }
 
 func resolveSessionID(ctx context.Context, client *core.Core, requestedID string) (string, error) {

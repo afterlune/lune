@@ -227,21 +227,47 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(planCmds...)
 
 	case taskDiscardedMsg:
+		m.discardInFlight = false
+		if msg.err != nil {
+			m.addSystemEntry("Discard failed: " + msg.err.Error())
+			m.updateLayout()
+			return m, nil
+		}
+		if m.activeQuestion != nil {
+			delete(m.questionSubmissions, m.questionKey(m.activeQuestion.Request))
+		}
 		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
+		m.activeQuestion = nil
 		m.running = false
-		if msg.err != nil {
-			m.addSystemEntry("Discard failed: " + msg.err.Error())
+		if !msg.discarded {
+			if msg.source == discardSourceQuestion {
+				m.addSystemEntry("The question was already resolved; no paused task remained to discard.")
+			} else {
+				m.addSystemEntry("No interrupted task to discard.")
+			}
 		} else {
-			m.addSystemEntry("Discarded paused task.")
+			switch msg.source {
+			case discardSourceRecovery:
+				m.addSystemEntry("Model recovery discarded.")
+			case discardSourceQuestion:
+				m.addSystemEntry("Question cancelled.")
+			default:
+				m.addSystemEntry("Discarded paused task.")
+			}
 		}
 		m.updateLayout()
 		return m, nil
 
+	case queuedTurnCancelledMsg:
+		m.settleQueuedTurnCancellation(msg)
+		return m, nil
+
 	case clearCopyFeedbackMsg:
-		if !time.Now().Before(msg.at) {
+		if msg.at.Equal(m.copyFeedbackExpiresAt) && !time.Now().Before(msg.at) {
 			m.copyFeedback = ""
+			m.copyFeedbackError = false
 		}
 		return m, nil
 

@@ -24,55 +24,57 @@ const (
 )
 
 type tuiModel struct {
-	client                 *core.Core
-	runtime                *core.SessionRuntime
-	workspace              string
-	sessionID              string
-	sessionTitle           string
-	currentModel           string
-	currentModelProfile    string
-	permissionMode         core.PermissionMode
-	planMode               bool
-	savedMode              core.PermissionMode
-	width                  int
-	height                 int
-	composer               textarea.Model
-	viewport               viewport.Model
-	entries                []TranscriptEntry
-	terminalTitle          *terminalTitleManager
-	running                bool
-	taskStartedAt          time.Time
-	activeQuestion         *ActiveQuestion
-	activeApproval         *ActiveApproval
-	activePlanReview       *ActivePlanReview
-	effortPicker           *ActiveEffortPicker
-	themePicker            *ActiveThemePicker
-	modelPicker            *ActiveModelPicker
-	permissionPicker       *ActivePermissionPicker
-	activeRecovery         *ActiveRecovery
-	activeToolRecovery     *ActiveToolRecovery
-	pausedCheckpoint       *PausedCheckpoint
-	queuedTurns            []QueuedItem
-	autocompleteOpen       bool
-	autocompleteMode       AutocompleteMode
-	autocompleteItems      []AutocompleteItem
-	autocompleteIndex      int
-	autocompleteStart      int
-	autocompleteEnd        int
-	fileScanner            *WorkspaceFileScanner
-	scrolledUp             bool
-	runningExecution       string
-	runtimeCancel          context.CancelFunc
-	awaitingTurns          map[string]uint64
-	waitGeneration         uint64
-	taskSnapshot           core.TaskState
-	questionSubmissions    map[questionWaitKey]questionSubmissionState
-	terminalEvents         map[string]core.Event
-	currentStreamText      string
-	currentReasoningText   string
-	reasoningStartTime     time.Time
-	reasoningLiveCollapsed bool
-	thinking               bool
+	client                   *core.Core
+	runtime                  *core.SessionRuntime
+	workspace                string
+	sessionID                string
+	sessionTitle             string
+	currentModel             string
+	currentModelProfile      string
+	permissionMode           core.PermissionMode
+	planMode                 bool
+	savedMode                core.PermissionMode
+	width                    int
+	height                   int
+	composer                 textarea.Model
+	viewport                 viewport.Model
+	entries                  []TranscriptEntry
+	terminalTitle            *terminalTitleManager
+	running                  bool
+	taskStartedAt            time.Time
+	activeQuestion           *ActiveQuestion
+	activeApproval           *ActiveApproval
+	activePlanReview         *ActivePlanReview
+	effortPicker             *ActiveEffortPicker
+	themePicker              *ActiveThemePicker
+	modelPicker              *ActiveModelPicker
+	permissionPicker         *ActivePermissionPicker
+	activeRecovery           *ActiveRecovery
+	activeToolRecovery       *ActiveToolRecovery
+	pausedCheckpoint         *PausedCheckpoint
+	queuedTurns              []QueuedItem
+	cancelingQueuedExecution string
+	discardInFlight          bool
+	autocompleteOpen         bool
+	autocompleteMode         AutocompleteMode
+	autocompleteItems        []AutocompleteItem
+	autocompleteIndex        int
+	autocompleteStart        int
+	autocompleteEnd          int
+	fileScanner              *WorkspaceFileScanner
+	scrolledUp               bool
+	runningExecution         string
+	runtimeCancel            context.CancelFunc
+	awaitingTurns            map[string]uint64
+	waitGeneration           uint64
+	taskSnapshot             core.TaskState
+	questionSubmissions      map[questionWaitKey]questionSubmissionState
+	terminalEvents           map[string]core.Event
+	currentStreamText        string
+	currentReasoningText     string
+	reasoningStartTime       time.Time
+	reasoningLiveCollapsed   bool
+	thinking                 bool
 
 	// Viewport transcript cache
 	cachedBlocks     []string
@@ -115,7 +117,9 @@ type tuiModel struct {
 	selectEndY             int
 	selectedText           string
 	copyFeedback           string
+	copyFeedbackError      bool
 	copyFeedbackExpiresAt  time.Time
+	clipboardWriter        func(string) error
 	shortcutsOpen          bool
 	sessionsModalOpen      bool
 	sessionsItems          []core.Session
@@ -300,6 +304,8 @@ func (m *tuiModel) resetSessionState() {
 	m.reasoningEffort = ""
 	m.running = false
 	m.runningExecution = ""
+	m.cancelingQueuedExecution = ""
+	m.discardInFlight = false
 	m.taskStartedAt = time.Time{}
 	m.queuedTurns = nil
 	m.entries = []TranscriptEntry{}

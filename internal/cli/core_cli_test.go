@@ -20,24 +20,25 @@ import (
 )
 
 type fakeCLICore struct {
-	inputs     []core.TurnRequest
-	firstErr   error
-	responses  int
-	pending    bool
-	resumes    int
-	discarded  int
-	compact    int
-	mode       core.PermissionMode
+	inputs         []core.TurnRequest
+	firstErr       error
+	responses      int
+	pending        bool
+	resumes        int
+	discarded      int
+	compact        int
+	mode           core.PermissionMode
 	latest         core.Session
 	initialTitle   string
 	initialHistory json.RawMessage
 	sessions       []core.Session
 	sequence       int
-	resolved   []bool
-	resolveErr error
-	runtime    *fakeCLIRuntime
-	memories   []memory.Item
-	memSeq     int
+	resolved       []bool
+	resolveErr     error
+	runtime        *fakeCLIRuntime
+	memories       []memory.Item
+	memSeq         int
+	settingsErr    error
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -182,6 +183,29 @@ func (f *fakeCLICore) ModelForSession(_ context.Context, sessionID string) strin
 }
 
 func (f *fakeCLICore) SetSessionSettings(_ context.Context, sessionID string, settings core.SessionSettings) error {
+	if f.settingsErr != nil {
+		return f.settingsErr
+	}
+	if settings.ModelProfile != "" {
+		valid := false
+		for _, profile := range f.ListModelProfiles() {
+			if profile.Profile == settings.ModelProfile {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("unknown model profile %q", settings.ModelProfile)
+		}
+	}
+	if f.latest.ID == sessionID {
+		f.latest.Settings = settings
+	}
+	for i := range f.sessions {
+		if f.sessions[i].ID == sessionID {
+			f.sessions[i].Settings = settings
+		}
+	}
 	return nil
 }
 
@@ -838,6 +862,37 @@ func TestCLIStatusAndModel(t *testing.T) {
 	}
 }
 
+func TestCLIModelProfilePreservesSessionSettings(t *testing.T) {
+	window := int64(1_000_000)
+	reserve := int64(32_000)
+	autoCompact := true
+	threshold := 0.82
+	client := &fakeCLICore{latest: core.Session{ID: "session-1", Settings: core.SessionSettings{
+		ModelProfile: "primary", ReasoningEffort: "high", Goal: "keep this goal",
+		ContextWindow: &window, ReserveOutputTokens: &reserve, AutoCompact: &autoCompact, AutoCompactThreshold: &threshold,
+	}}}
+	var stdout, stderr bytes.Buffer
+	handleCoreCLIModel(client, "session-1", "/model fast", &stdout, &stderr)
+	if got := client.latest.Settings; got.ModelProfile != "fast" || got.ReasoningEffort != "high" || got.Goal != "keep this goal" || got.ContextWindow == nil || *got.ContextWindow != window || got.ReserveOutputTokens == nil || *got.ReserveOutputTokens != reserve || got.AutoCompact == nil || !*got.AutoCompact || got.AutoCompactThreshold == nil || *got.AutoCompactThreshold != threshold {
+		t.Fatalf("model switch replaced unrelated session settings: %+v", got)
+	}
+	if stderr.Len() != 0 || !strings.Contains(stdout.String(), "Active model set to") {
+		t.Fatalf("stdout=%q stderr=%q, want successful model switch", stdout.String(), stderr.String())
+	}
+}
+
+func TestCLIStartupRejectsUnknownModelProfile(t *testing.T) {
+	client := &fakeCLICore{}
+	var stdout, stderr bytes.Buffer
+	err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader("/exit\n")), &stdout, &stderr, nil, LaunchOptions{ModelProfile: "missing"})
+	if err == nil || !strings.Contains(err.Error(), `unknown model profile "missing"`) {
+		t.Fatalf("runCoreChatLoopWithOptions error = %v, want unknown model profile error", err)
+	}
+	if client.responses != 0 {
+		t.Fatalf("responses = %d, want no task started", client.responses)
+	}
+}
+
 func TestCLIPlanMode(t *testing.T) {
 	client := &fakeCLICore{}
 	stdout, stderr := runCLI(t, client, "/plan\n/permissions workspace\n/plan\n/exit\n", nil)
@@ -1224,6 +1279,3 @@ func TestCLIDetailCommand(t *testing.T) {
 		t.Fatalf("stderr = %q, want out of range error", stderr)
 	}
 }
-
-
-

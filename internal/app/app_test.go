@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -60,6 +61,58 @@ func TestRunWithStreamsInvalidFlags(t *testing.T) {
 	err = RunWithStreams([]string{"-p", "invalid-perm"}, nil, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for invalid permission, got nil")
+	}
+}
+
+func newModelProfileTestCore(t *testing.T) *core.Core {
+	t.Helper()
+	workspace := t.TempDir()
+	config := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"primary-model"},"fast":{"provider":"host","model":"fast-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := newCore(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	})
+	return client
+}
+
+func TestRunOneShotRejectsUnknownModelProfile(t *testing.T) {
+	client := newModelProfileTestCore(t)
+	err := RunOneShot(client, "do not send this prompt", CLIFlags{ModelProfile: "missing"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `unknown model profile "missing"`) {
+		t.Fatalf("RunOneShot error = %v, want unknown model profile error", err)
+	}
+}
+
+func TestOneShotModelProfilePreservesSessionSettings(t *testing.T) {
+	client := newModelProfileTestCore(t)
+	ctx := context.Background()
+	session, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := int64(1_000_000)
+	if err := client.SetSessionSettings(ctx, session.ID, core.SessionSettings{
+		ModelProfile: "primary", ReasoningEffort: "high", Goal: "preserve this goal", ContextWindow: &window,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyOneShotModelProfile(ctx, client, session.ID, "fast"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := client.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Settings.ModelProfile != "fast" || saved.Settings.ReasoningEffort != "high" || saved.Settings.Goal != "preserve this goal" || saved.Settings.ContextWindow == nil || *saved.Settings.ContextWindow != window {
+		t.Fatalf("model profile update lost session settings: %+v", saved.Settings)
 	}
 }
 

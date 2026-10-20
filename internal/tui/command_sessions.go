@@ -34,8 +34,22 @@ type sessionCreatedMsg struct {
 }
 
 type taskDiscardedMsg struct {
+	source    discardSource
 	discarded bool
 	err       error
+}
+
+type discardSource uint8
+
+const (
+	discardSourceCommand discardSource = iota
+	discardSourceRecovery
+	discardSourceQuestion
+)
+
+type queuedTurnCancelledMsg struct {
+	executionID string
+	err         error
 }
 
 // handleRewindPreview displays a non-destructive summary of which turns would be rewound.

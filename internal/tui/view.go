@@ -111,7 +111,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render("⏳ ")
 		label := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Bold(true).Render("Queued › ")
 		content := styleTextPrimary().Render(strings.TrimSpace(entry.Text))
-		hint := styleTextMuted().Render(" (/cancel-queue to cancel)")
+		hint := styleTextMuted().Render(" (/cancel-queue cancels latest waiting task)")
 		row := icon + label + content + hint
 		pad := max(0, width-lipgloss.Width(row))
 		cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -34,7 +35,7 @@ var builtinCommands = []AutocompleteItem{
 	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)"},
 	{Command: "/review", Description: "run a read-only model review of workspace changes"},
 	{Command: "/mcp", Description: "list and interactively manage external MCP servers"},
-	{Command: "/cancel-queue", Description: "cancel waiting queued tasks"},
+	{Command: "/cancel-queue", Description: "cancel the most recently queued task"},
 	{Command: "/compact", Description: "compact older conversation history"},
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind session history: /rewind [N] or /rewind preview [N]"},
@@ -226,15 +227,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m.openSessionsModal()
 
 	case "/discard":
-		if m.runtime != nil {
-			m.pausedCheckpoint = nil
-			m.activeRecovery = nil
-			m.activeToolRecovery = nil
-			return m, func() tea.Msg {
-				ok, err := m.runtime.DiscardPaused(context.Background())
-				return taskDiscardedMsg{discarded: ok, err: err}
-			}
-		}
+		return m.discardPausedTask(discardSourceCommand)
 
 	case "/shortcuts":
 		m.shortcutsOpen = true
@@ -251,24 +244,88 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("No queued tasks to cancel.")
 		return m, nil
 	}
-	lastIdx := len(m.queuedTurns) - 1
-	target := m.queuedTurns[lastIdx]
-	m.queuedTurns = m.queuedTurns[:lastIdx]
-	for i := len(m.entries) - 1; i >= 0; i-- {
-		if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == target.ExecutionID || m.entries[i].ToolCallID == "") {
-			m.entries[i].Text += " (cancelled)"
-			m.invalidateEntryCache()
-			break
+	if m.cancelingQueuedExecution != "" {
+		m.addSystemEntry("A queued-task cancellation is already in progress.")
+		return m, nil
+	}
+	target := m.queuedTurns[len(m.queuedTurns)-1]
+	if m.runtime == nil || target.ExecutionID == "" {
+		m.addSystemEntry("This queued task is not ready to cancel yet.")
+		return m, nil
+	}
+	m.cancelingQueuedExecution = target.ExecutionID
+	m.addSystemEntry("Cancelling the most recently queued task…")
+	m.updateLayout()
+	runtime := m.runtime
+	executionID := target.ExecutionID
+	return m, func() tea.Msg {
+		err := runtime.CancelQueuedTurn(context.Background(), executionID)
+		return queuedTurnCancelledMsg{executionID: executionID, err: err}
+	}
+}
+
+func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) {
+	if m.discardInFlight {
+		return m, nil
+	}
+	if m.runtime == nil {
+		m.addSystemEntry("Paused-task management is unavailable.")
+		m.updateLayout()
+		return m, nil
+	}
+	m.discardInFlight = true
+	m.addSystemEntry("Discarding paused task…")
+	m.updateLayout()
+	runtime := m.runtime
+	return m, func() tea.Msg {
+		discarded, err := runtime.DiscardPaused(context.Background())
+		return taskDiscardedMsg{source: source, discarded: discarded, err: err}
+	}
+}
+
+func (m *tuiModel) settleQueuedTurnCancellation(msg queuedTurnCancelledMsg) {
+	if m.cancelingQueuedExecution == msg.executionID {
+		m.cancelingQueuedExecution = ""
+	}
+
+	removeQueuedTurn := func() {
+		for i, item := range m.queuedTurns {
+			if item.ExecutionID == msg.executionID {
+				m.queuedTurns = append(m.queuedTurns[:i], m.queuedTurns[i+1:]...)
+				break
+			}
 		}
+	}
+	updateEntry := func(kind EntryKind, suffix string) {
+		for i := len(m.entries) - 1; i >= 0; i-- {
+			if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == msg.executionID {
+				m.entries[i].Kind = kind
+				m.entries[i].ToolCallID = msg.executionID
+				if suffix != "" {
+					m.entries[i].Text += suffix
+				}
+				m.invalidateEntryCache()
+				break
+			}
+		}
+	}
+
+	switch {
+	case msg.err == nil:
+		removeQueuedTurn()
+		updateEntry(KindQueued, " (cancelled)")
+		m.addSystemEntry("Cancelled the most recently queued task.")
+	case errors.Is(msg.err, core.ErrTurnNotFound):
+		removeQueuedTurn()
+		updateEntry(KindUser, "")
+		m.addSystemEntry("The queued task was already removed from Core.")
+	case errors.Is(msg.err, core.ErrQueuedTurnStarted):
+		m.addSystemEntry("The task has already started; `/cancel-queue` only cancels waiting tasks.")
+	default:
+		m.addSystemEntry("Failed to cancel queued task: " + msg.err.Error())
 	}
 	m.refreshViewportContent()
 	m.updateLayout()
-	if m.runtime != nil && target.ExecutionID != "" {
-		ctx := context.Background()
-		_ = m.runtime.CancelQueuedTurn(ctx, target.ExecutionID)
-	}
-	m.addSystemEntry("Cancelled queued task.")
-	return m, nil
 }
 
 func (m *tuiModel) addSystemEntry(text string) {

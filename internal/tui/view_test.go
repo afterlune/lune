@@ -560,6 +560,7 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 	m := &tuiModel{
 		viewport: newTUIModel(nil, nil, "test-sess").viewport,
 	}
+	m.clipboardWriter = func(string) error { return nil }
 	m.width = 80
 	m.height = 24
 	m.viewport.SetWidth(80)
@@ -614,6 +615,7 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 
 func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
+	m.clipboardWriter = func(string) error { return nil }
 	m.width = 80
 	m.height = 24
 	m.composer.SetValue("copy me")
@@ -701,6 +703,7 @@ func TestComposerMouseSelectionAcrossLinesAndSoftWrap(t *testing.T) {
 
 func TestComposerKeyboardSelectionAndCtrlCPrecedence(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
+	m.clipboardWriter = func(string) error { return nil }
 	m.composer.SetValue("hello")
 	m.composer.CursorStart()
 	for range 2 {

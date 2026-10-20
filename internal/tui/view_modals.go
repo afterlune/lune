@@ -441,7 +441,11 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 
 	// Footer hint or copy feedback
 	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
+		mark, color := "✓", th.SuccessGreen
+		if m.copyFeedbackError {
+			mark, color = "!", th.WarningAmber
+		}
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.copyFeedback))
 	} else {
 		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] switch tool · c copy · esc/q/ctrl+t close")
 		lines = append(lines, hint)
@@ -569,7 +573,11 @@ func renderDiffModal(m *tuiModel, width int) string {
 
 	// Footer hint or copy feedback
 	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render("✓ "+m.copyFeedback))
+		mark, color := "✓", th.SuccessGreen
+		if m.copyFeedbackError {
+			mark, color = "!", th.WarningAmber
+		}
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.copyFeedback))
 	} else {
 		hint := styleTextMuted().Render("1-9 jump · [/] or tab switch · c copy · esc/q close")
 		lines = append(lines, hint)
