@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -99,26 +100,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	}
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(qItem.Question)
 
-	var optionsRows []string
-	for i, opt := range qItem.Options {
-		num := fmt.Sprintf("%d. ", i+1)
-		label := opt.Label
-		desc := opt.Description
-		marker := "  "
-		if i == q.Selected {
-			marker = "› "
-		}
-		raw := fmt.Sprintf("%s%s%-24s %s", marker, num, label, desc)
-		if i == q.Selected {
-			pad := max(0, width-lipgloss.Width(raw)-4)
-			optionsRows = append(optionsRows, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
-		} else {
-			numStyled := styleTextPrimary().Render(marker + num)
-			lblStyled := styleTextPrimary().Bold(true).Render(fmt.Sprintf("%-24s ", label))
-			descStyled := styleTextMuted().Render(desc)
-			optionsRows = append(optionsRows, numStyled+lblStyled+descStyled)
-		}
-	}
+	optionsRows := renderQuestionOptionRows(qItem.Options, q.Selected, max(1, max(20, width)-4))
 
 	noneIdx := len(qItem.Options)
 	noneMarker := "  "
@@ -161,6 +143,131 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		Width(max(20, width))
 
 	return renderCardSurface(cardStyle, panelContent)
+}
+
+const minInlineQuestionDescriptionWidth = 24
+
+func renderQuestionOptionRows(options []core.UserQuestionOption, selected, width int) []string {
+	if len(options) == 0 {
+		return nil
+	}
+	width = max(1, width)
+
+	labels := make([]string, len(options))
+	descriptions := make([]string, len(options))
+	prefixWidth := 0
+	labelWidth := 0
+	hasDescription := false
+	for i, option := range options {
+		labels[i] = singleLineQuestionText(option.Label)
+		descriptions[i] = singleLineQuestionText(option.Description)
+		if descriptions[i] != "" {
+			hasDescription = true
+		}
+		labelWidth = max(labelWidth, lipgloss.Width(labels[i]))
+		prefixWidth = max(prefixWidth, lipgloss.Width("› "+fmt.Sprintf("%d. ", i+1)))
+	}
+
+	descriptionColumn := prefixWidth + labelWidth + 1
+	inlineDescriptionWidth := width - descriptionColumn
+	inline := hasDescription && inlineDescriptionWidth >= minInlineQuestionDescriptionWidth
+	if !inline {
+		labelWidth = max(0, width-prefixWidth)
+	}
+
+	var rows []string
+	for i := range options {
+		marker := "  "
+		if i == selected {
+			marker = "› "
+		}
+		prefix := marker + fmt.Sprintf("%d. ", i+1)
+		prefix += strings.Repeat(" ", max(0, prefixWidth-lipgloss.Width(prefix)))
+		label := labels[i]
+		description := descriptions[i]
+
+		if inline {
+			if description == "" {
+				rows = append(rows, renderQuestionOptionLine(prefix, label, "", "", i == selected, width))
+				continue
+			}
+			gap := strings.Repeat(" ", max(1, labelWidth-lipgloss.Width(label)+1))
+			descriptionLines := wrapQuestionText(description, inlineDescriptionWidth)
+			rows = append(rows, renderQuestionOptionLine(prefix, label, gap, descriptionLines[0], i == selected, width))
+			for _, line := range descriptionLines[1:] {
+				rows = append(rows, renderQuestionOptionLine("", "", strings.Repeat(" ", descriptionColumn), line, i == selected, width))
+			}
+			continue
+		}
+
+		labelLines := wrapQuestionText(label, labelWidth)
+		rows = append(rows, renderQuestionOptionLine(prefix, labelLines[0], "", "", i == selected, width))
+		for _, line := range labelLines[1:] {
+			rows = append(rows, renderQuestionOptionLine("", line, strings.Repeat(" ", prefixWidth), "", i == selected, width))
+		}
+		if description == "" {
+			continue
+		}
+		descriptionIndent := strings.Repeat(" ", prefixWidth)
+		descriptionLines := wrapQuestionText(description, max(1, width-prefixWidth))
+		for _, line := range descriptionLines {
+			rows = append(rows, renderQuestionOptionLine("", "", descriptionIndent, line, i == selected, width))
+		}
+	}
+	return rows
+}
+
+func singleLineQuestionText(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func wrapQuestionText(value string, width int) []string {
+	if value == "" {
+		return []string{""}
+	}
+	wrapped := ansi.Wrap(value, max(1, width), " ")
+	return strings.Split(wrapped, "\n")
+}
+
+func renderQuestionOptionLine(prefix, label, gap, description string, selected bool, width int) string {
+	labelText := prefix + label + gap
+	lineWidth := lipgloss.Width(labelText + description)
+	if selected {
+		style := styleSelectedRow()
+		var line strings.Builder
+		if labelText != "" {
+			line.WriteString(style.Render(labelText))
+		}
+		if description != "" {
+			line.WriteString(questionDescriptionStyle(true).Render(description))
+		}
+		if pad := max(0, width-lineWidth); pad > 0 {
+			line.WriteString(style.Render(strings.Repeat(" ", pad)))
+		}
+		return line.String()
+	}
+
+	var line strings.Builder
+	if prefix != "" {
+		line.WriteString(styleTextPrimary().Render(prefix))
+	}
+	if label != "" {
+		line.WriteString(styleTextPrimary().Bold(true).Render(label))
+	}
+	if gap != "" {
+		line.WriteString(styleTextPrimary().Render(gap))
+	}
+	if description != "" {
+		line.WriteString(questionDescriptionStyle(false).Render(description))
+	}
+	return line.String()
+}
+
+func questionDescriptionStyle(selected bool) lipgloss.Style {
+	if selected {
+		return styleSelectedRow().Faint(true)
+	}
+	return styleTextMuted().Faint(true)
 }
 
 // renderEffortPicker renders the interactive reasoning-effort selector.

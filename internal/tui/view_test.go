@@ -121,6 +121,85 @@ func TestQuestionPanelRendering(t *testing.T) {
 	}
 }
 
+func TestQuestionPanelAlignsDescriptionsByTerminalCellWidth(t *testing.T) {
+	q := &ActiveQuestion{
+		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
+			ID: "alignment",
+			Options: []core.UserQuestionOption{
+				{Label: "短", Description: "ALIGN_DESC_SHORT"},
+				{Label: "较长 mixed 标签 123", Description: "ALIGN_DESC_LONG"},
+				{Label: "无说明"},
+			},
+		}}},
+	}
+
+	var expectedShort, expectedLong int
+	for selected := range q.Request.Questions[0].Options {
+		q.Selected = selected
+		view := ansi.Strip(renderQuestionPanel(q, 100))
+		columns := map[string]int{}
+		for _, line := range strings.Split(view, "\n") {
+			for _, description := range []string{"ALIGN_DESC_SHORT", "ALIGN_DESC_LONG"} {
+				if index := strings.Index(line, description); index >= 0 {
+					columns[description] = lipgloss.Width(line[:index])
+				}
+			}
+		}
+		shortColumn, shortOK := columns["ALIGN_DESC_SHORT"]
+		longColumn, longOK := columns["ALIGN_DESC_LONG"]
+		if !shortOK || !longOK {
+			t.Fatalf("question panel lost an option description:\n%s", view)
+		}
+		if shortColumn != longColumn {
+			t.Fatalf("option descriptions do not share a display column: short=%d long=%d\n%s", shortColumn, longColumn, view)
+		}
+		if selected == 0 {
+			expectedShort, expectedLong = shortColumn, longColumn
+		} else if shortColumn != expectedShort || longColumn != expectedLong {
+			t.Fatalf("description columns changed with selected option: got %d/%d, want %d/%d", shortColumn, longColumn, expectedShort, expectedLong)
+		}
+	}
+
+	if !questionDescriptionStyle(false).GetFaint() || !questionDescriptionStyle(true).GetFaint() {
+		t.Fatal("option descriptions should use faint styling for selected and unselected rows")
+	}
+}
+
+func TestQuestionPanelWrapsDescriptionsBelowLabelsWhenNarrow(t *testing.T) {
+	const width = 48
+	q := &ActiveQuestion{
+		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
+			ID: "narrow",
+			Options: []core.UserQuestionOption{{
+				Label:       "较长的选项标签 mixed 123456789",
+				Description: "NARROW_DESCRIPTION wraps below the label and remains visible on the narrow panel",
+			}},
+		}}},
+		Selected: 0,
+	}
+
+	view := ansi.Strip(renderQuestionPanel(q, width))
+	lines := strings.Split(view, "\n")
+	labelLine, descriptionLine := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, q.Request.Questions[0].Options[0].Label) {
+			labelLine = i
+		}
+		if strings.Contains(line, "NARROW_DESCRIPTION") {
+			descriptionLine = i
+		}
+		if lineWidth := lipgloss.Width(line); lineWidth > width {
+			t.Fatalf("question panel line exceeds its width (%d > %d): %q", lineWidth, width, line)
+		}
+	}
+	if labelLine < 0 || descriptionLine <= labelLine {
+		t.Fatalf("narrow panel should put the description below its label:\n%s", view)
+	}
+	if !strings.Contains(view, "remains visible") || !strings.Contains(view, "panel") {
+		t.Fatalf("narrow panel truncated the option description:\n%s", view)
+	}
+}
+
 func TestPlanReviewPanelRendering(t *testing.T) {
 	review := &ActivePlanReview{
 		ExecutionID: "exec-1",
