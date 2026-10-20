@@ -136,6 +136,36 @@ func TestPlanReviewPanelRendering(t *testing.T) {
 	}
 }
 
+func TestScrollPillAppearsBetweenPlanAndReviewOptions(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 120
+	m.height = 32
+	m.entries = []TranscriptEntry{{Kind: KindAssistant, Text: "plan-body-marker"}}
+	m.activePlanReview = &ActivePlanReview{Text: "plan", Selected: 0}
+	m.scrolledUp = true
+	m.transcriptDirty = true
+	m.updateLayout()
+
+	view := ansi.Strip(m.View().Content)
+	planIndex := strings.Index(view, "plan-body-marker")
+	pillIndex := strings.Index(view, "Back to bottom")
+	optionsIndex := strings.Index(view, "Implement this plan?")
+	if planIndex < 0 || pillIndex < 0 || optionsIndex < 0 {
+		t.Fatalf("expected plan, scroll pill, and review options in view:\n%s", view)
+	}
+	if !(planIndex < pillIndex && pillIndex < optionsIndex) {
+		t.Fatalf("scroll pill should separate plan content from review options (indexes %d, %d, %d):\n%s", planIndex, pillIndex, optionsIndex, view)
+	}
+
+	expectedHeight := lipgloss.Height(renderHeader(m.workspace)) + m.viewport.Height() +
+		lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, max(20, m.width-4))) + 1 +
+		lipgloss.Height(renderComposerBand(m.composer.View(), max(20, m.width-4))) +
+		lipgloss.Height(renderFooter(m, max(20, m.width-4)))
+	if got := lipgloss.Height(view); got != expectedHeight {
+		t.Fatalf("moving the scroll pill changed the layout height: got %d, want %d", got, expectedHeight)
+	}
+}
+
 func TestAutocompleteFiltering(t *testing.T) {
 	items := filterCommands("/p")
 	if len(items) == 0 {
@@ -617,6 +647,11 @@ func TestComposerKeyboardSelectionAndCtrlCPrecedence(t *testing.T) {
 	m = mod.(*tuiModel)
 	if got := m.composer.SelectedText(); got != "hello" {
 		t.Fatalf("expected Ctrl+G to select all input, got %q", got)
+	}
+	mod, cmd = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl | tea.ModShift})
+	m = mod.(*tuiModel)
+	if cmd == nil || m.copyFeedback != "Copied 5 chars to host clipboard" {
+		t.Fatalf("Ctrl+Shift+C did not use the safe composer copy path: cmd=%v feedback=%q", cmd != nil, m.copyFeedback)
 	}
 	mod, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mod.(*tuiModel)

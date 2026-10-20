@@ -357,6 +357,23 @@ func (m *tuiModel) View() tea.View {
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
 
+	// Keep the scroll control between plan content and its review choices.
+	copyFeedbackActive := m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt)
+	moveScrollPillBeforePlan := m.activePlanReview != nil && m.scrolledUp && !copyFeedbackActive
+	gapLine := ""
+	if copyFeedbackActive {
+		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(m.copyFeedback)
+		leftPad := max(0, contentWidth-lipgloss.Width(styled))
+		gapLine = strings.Repeat(" ", leftPad) + styled
+	} else if m.scrolledUp {
+		gapLine = renderScrollPill(contentWidth)
+	} else if m.hasPausedTask() && !m.running {
+		gapLine = renderPausedBanner(contentWidth)
+	}
+	if moveScrollPillBeforePlan {
+		sections = append(sections, gapLine)
+	}
+
 	// 3. Modal (Shortcuts / Sessions / Recovery / Question / Approval / Plan Review / Autocomplete)
 	if m.shortcutsOpen {
 		sections = append(sections, renderShortcutsPanel(contentWidth))
@@ -385,17 +402,9 @@ func (m *tuiModel) View() tea.View {
 	}
 
 	// 4. Composer gap (shared with copy feedback, scroll pill, paused task banner, or blank line)
-	gapLine := ""
-	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
-		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(m.copyFeedback)
-		leftPad := max(0, contentWidth-lipgloss.Width(styled))
-		gapLine = strings.Repeat(" ", leftPad) + styled
-	} else if m.scrolledUp {
-		gapLine = renderScrollPill(contentWidth)
-	} else if m.hasPausedTask() && !m.running {
-		gapLine = renderPausedBanner(contentWidth)
+	if !moveScrollPillBeforePlan {
+		sections = append(sections, gapLine)
 	}
-	sections = append(sections, gapLine)
 
 	// 5. Composer
 	sections = append(sections, renderComposerBand(m.composer.View(), contentWidth))

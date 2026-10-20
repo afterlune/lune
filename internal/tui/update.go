@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
-	"github.com/atotto/clipboard"
 )
 
 type planImplementedMsg struct {
@@ -306,14 +304,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isSelecting = false
 			if strings.TrimSpace(text) != "" {
 				m.selectedText = text
-				_ = clipboard.WriteAll(text)
-				count := utf8.RuneCountInString(text)
-				m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
-				m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-				expiresAt := m.copyFeedbackExpiresAt
-				return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-					return clearCopyFeedbackMsg{at: expiresAt}
-				})
+				return m, m.copyTextToClipboard(text)
 			}
 			if msg.X == m.selectStartX && msg.Y == m.selectStartY {
 				headerHeight := 3

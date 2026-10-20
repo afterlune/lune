@@ -75,6 +75,26 @@ func TestRenderMarkdownComplete(t *testing.T) {
 	}
 }
 
+func TestFormatInlineRestoresNestedTokens(t *testing.T) {
+	input := "**Bold `inline code`** then `plain code` and internal/tui/view.go"
+	rendered := formatInline(input)
+	if strings.Contains(rendered, "\x00") || strings.Contains(rendered, "TOKEN_") {
+		t.Fatalf("inline formatter leaked an internal token: %q", rendered)
+	}
+	if got, want := ansi.Strip(rendered), "Bold inline code then plain code and internal/tui/view.go"; got != want {
+		t.Fatalf("unexpected rendered inline text: got %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeClipboardTextRemovesNUL(t *testing.T) {
+	if got, want := sanitizeClipboardText("before\x00TOKEN_0\x00after"), "beforeTOKEN_0after"; got != want {
+		t.Fatalf("sanitizeClipboardText() = %q, want %q", got, want)
+	}
+	if got, want := sanitizeClipboardText("计划内容和 `code`"), "计划内容和 `code`"; got != want {
+		t.Fatalf("sanitizeClipboardText changed ordinary text: got %q, want %q", got, want)
+	}
+}
+
 func TestStripProposedPlan(t *testing.T) {
 	// Preamble + plan + suffix
 	t1 := "Thinking notes.\n<proposed_plan>## Step 1\nRun tests</proposed_plan>\nFollow-up question."

@@ -354,10 +354,11 @@ func formatInlineWithStyles(line string, codeStyle, boldStyle, fileStyle lipglos
 		})
 	}
 
-	// 4. Restore tokens in a single pass so ANSI escape codes are never scanned by downstream regexes
-	for idx, rendered := range renderedTokens {
+	// 4. Restore outer tokens first. A bold token can contain an earlier
+	// inline-code token, so descending order also restores nested placeholders.
+	for idx := len(renderedTokens) - 1; idx >= 0; idx-- {
 		placeholder := "\x00TOKEN_" + itoaByte(idx) + "\x00"
-		line = strings.ReplaceAll(line, placeholder, rendered)
+		line = strings.ReplaceAll(line, placeholder, renderedTokens[idx])
 	}
 
 	return line

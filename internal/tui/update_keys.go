@@ -9,7 +9,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
-	"github.com/atotto/clipboard"
 )
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -64,6 +63,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.interruptRunningTask()
 		}
 		return m, tea.Quit
+
+	case "ctrl+shift+c":
+		if m.composer.HasSelection() {
+			return m, m.copyTextToClipboard(m.composer.SelectedText())
+		}
 
 	case "esc":
 		if m.shortcutsOpen {
@@ -667,7 +671,7 @@ func (m *tuiModel) copyTextToClipboard(text string) tea.Cmd {
 	if text == "" {
 		return nil
 	}
-	_ = clipboard.WriteAll(text)
+	text, _ = writeClipboardText(text)
 	count := utf8.RuneCountInString(text)
 	m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
 	m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)

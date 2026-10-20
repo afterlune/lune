@@ -9,7 +9,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
-	"github.com/atotto/clipboard"
 )
 
 func (m *tuiModel) handleShortcutModalKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
@@ -296,7 +295,7 @@ func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr stri
 
 		case "c", "ctrl+c":
 			outText := entry.ToolOutput
-			_ = clipboard.WriteAll(outText)
+			outText, _ = writeClipboardText(outText)
 			count := utf8.RuneCountInString(outText)
 			m.copyFeedback = fmt.Sprintf("Copied %d chars of tool output to clipboard", count)
 			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
@@ -406,7 +405,7 @@ func (m *tuiModel) handleDiffModalKeyPress(msg tea.KeyPressMsg, keyStr string) (
 				allDiffs = append(allDiffs, f.RawDiff)
 			}
 			fullText := strings.Join(allDiffs, "\n\n")
-			_ = clipboard.WriteAll(fullText)
+			fullText, _ = writeClipboardText(fullText)
 			count := utf8.RuneCountInString(fullText)
 			m.copyFeedback = fmt.Sprintf("Copied all diffs (%d chars) to clipboard", count)
 			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
@@ -418,7 +417,7 @@ func (m *tuiModel) handleDiffModalKeyPress(msg tea.KeyPressMsg, keyStr string) (
 
 		case "c", "ctrl+c":
 			diffText := file.RawDiff
-			_ = clipboard.WriteAll(diffText)
+			diffText, _ = writeClipboardText(diffText)
 			count := utf8.RuneCountInString(diffText)
 			m.copyFeedback = fmt.Sprintf("Copied %d chars of diff to clipboard", count)
 			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
