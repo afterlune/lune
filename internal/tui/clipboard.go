@@ -14,10 +14,6 @@ func sanitizeClipboardText(text string) string {
 	return strings.ReplaceAll(text, "\x00", "")
 }
 
-func writeClipboardText(text string) (string, error) {
-	return writeClipboardTextWith(text, clipboard.WriteAll)
-}
-
 func writeClipboardTextWith(text string, writeAll func(string) error) (string, error) {
 	text = sanitizeClipboardText(text)
 	return text, writeAll(text)

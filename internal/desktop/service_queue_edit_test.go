@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,37 +70,6 @@ func desktopLatestUserInput(input *publicmodel.ResponseInput) string {
 type gatedDesktopProvider struct {
 	entered chan string
 	release chan struct{}
-}
-
-type planThenCompleteDesktopProvider struct{ calls atomic.Int32 }
-
-func (p *planThenCompleteDesktopProvider) Name() string { return "host" }
-
-func (p *planThenCompleteDesktopProvider) CreateResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
-	return p.respond(ctx, nil)
-}
-
-func (p *planThenCompleteDesktopProvider) StreamResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
-	return p.respond(ctx, emit)
-}
-
-func (p *planThenCompleteDesktopProvider) respond(ctx context.Context, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-	text := "实现已完成。"
-	if p.calls.Add(1) == 1 {
-		text = "<proposed_plan>\n## 实施方案\n- 完成用户批准的改动。\n</proposed_plan>"
-	}
-	response := desktopTextResponse(text)
-	if emit != nil {
-		if err := emit(publicmodel.ModelStreamEvent{Type: publicmodel.ModelStreamCompleted, Response: response}); err != nil {
-			return nil, err
-		}
-	}
-	return response, nil
 }
 
 func (p *gatedDesktopProvider) Name() string { return "host" }
