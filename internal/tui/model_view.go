@@ -29,6 +29,32 @@ func (m *tuiModel) updateLayout() {
 	composerBandHeight := m.composer.Height() + 2
 	footerHeight := 2
 
+	modalHeight := m.modalHeight(contentWidth)
+
+	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
+	vpHeight := max(3, m.height-occupied)
+
+	widthChanged := (contentWidth != m.viewport.Width())
+	heightChanged := (vpHeight != m.viewport.Height())
+
+	if widthChanged {
+		m.viewport.SetWidth(contentWidth)
+	}
+	if heightChanged {
+		m.viewport.SetHeight(vpHeight)
+		if !m.scrolledUp {
+			m.viewport.GotoBottom()
+		}
+	}
+
+	entriesChanged := (len(m.entries) != m.cachedEntryCount)
+	needRefresh := widthChanged || entriesChanged || m.cachedDirty || m.transcriptDirty
+	if needRefresh {
+		m.refreshViewportContent()
+	}
+}
+
+func (m *tuiModel) modalHeight(contentWidth int) int {
 	var modalHeight int
 	if m.shortcutsOpen {
 		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
@@ -56,28 +82,7 @@ func (m *tuiModel) updateLayout() {
 		visibleCount := min(len(m.autocompleteItems), maxVisibleAutocomplete)
 		modalHeight = visibleCount + 1
 	}
-
-	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
-	vpHeight := max(3, m.height-occupied)
-
-	widthChanged := (contentWidth != m.viewport.Width())
-	heightChanged := (vpHeight != m.viewport.Height())
-
-	if widthChanged {
-		m.viewport.SetWidth(contentWidth)
-	}
-	if heightChanged {
-		m.viewport.SetHeight(vpHeight)
-		if !m.scrolledUp {
-			m.viewport.GotoBottom()
-		}
-	}
-
-	entriesChanged := (len(m.entries) != m.cachedEntryCount)
-	needRefresh := widthChanged || entriesChanged || m.cachedDirty || m.transcriptDirty
-	if needRefresh {
-		m.refreshViewportContent()
-	}
+	return modalHeight
 }
 
 // refreshViewportContent builds the entire transcript text and updates the viewport.

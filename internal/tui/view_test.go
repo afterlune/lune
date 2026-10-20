@@ -503,6 +503,140 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 	}
 }
 
+func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+	m.composer.SetValue("copy me")
+	m.updateLayout()
+
+	x, y := m.composerMouseOffset()
+	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+	if y >= len(lines) || !strings.HasPrefix(lines[y], " "+ansi.Strip(m.composer.View())) {
+		t.Fatalf("composer mouse offset (%d, %d) does not point to rendered composer", x, y)
+	}
+
+	textStart := x + lipgloss.Width(m.composer.Prompt)
+	mod, _ := m.Update(tea.MouseClickMsg{X: textStart, Y: y, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if !m.composerMouseSelecting {
+		t.Fatal("expected a composer selection to start")
+	}
+
+	mod, _ = m.Update(tea.MouseMotionMsg{X: textStart + 4, Y: y})
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 4, Y: y, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if m.composerMouseSelecting {
+		t.Fatal("expected composer selection to end on mouse release")
+	}
+	if got := m.composer.SelectedText(); got != "copy" {
+		t.Fatalf("expected composer selection %q, got %q", "copy", got)
+	}
+
+	mod, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+	if cmd == nil {
+		t.Fatal("expected Ctrl+C to schedule copy feedback")
+	}
+	if got := m.copyFeedback; got != "Copied 4 chars to host clipboard" {
+		t.Fatalf("expected copy feedback for composer selection, got %q", got)
+	}
+
+	mod, _ = m.Update(tea.MouseClickMsg{X: 10, Y: 3, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if m.composer.HasSelection() {
+		t.Fatal("expected clicking outside the composer to clear its selection")
+	}
+}
+
+func TestComposerMouseSelectionAcrossLinesAndSoftWrap(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+	m.composer.SetValue("第一行\nsecond line")
+	m.updateLayout()
+
+	x, y := m.composerMouseOffset()
+	textStart := x + lipgloss.Width(m.composer.Prompt)
+	mod, _ := m.Update(tea.MouseClickMsg{X: textStart, Y: y, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.MouseMotionMsg{X: textStart + 3, Y: y + 1})
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 3, Y: y + 1, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if got := m.composer.SelectedText(); got != "第一行\nsec" {
+		t.Fatalf("expected multiline selection %q, got %q", "第一行\nsec", got)
+	}
+
+	m = newTUIModel(nil, nil, "test-sess")
+	m.width = 24 // The composer is 20 columns wide, forcing this line to wrap.
+	m.height = 24
+	m.composer.SetValue("abcdefghijklmnopqrst")
+	m.updateLayout()
+	x, y = m.composerMouseOffset()
+	textStart = x + lipgloss.Width(m.composer.Prompt)
+	mod, _ = m.Update(tea.MouseClickMsg{X: textStart + 16, Y: y, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if !m.composerMouseSelecting {
+		t.Fatal("expected soft-wrap composer selection to start")
+	}
+	mod, _ = m.Update(tea.MouseMotionMsg{X: textStart + 2, Y: y + 1})
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 2, Y: y + 1, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	if got := m.composer.SelectedText(); got != "qrst" {
+		t.Fatalf("expected selection across soft wrap %q, got %q", "qrst", got)
+	}
+}
+
+func TestComposerKeyboardSelectionAndCtrlCPrecedence(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.composer.SetValue("hello")
+	m.composer.CursorStart()
+	for range 2 {
+		mod, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModShift})
+		m = mod.(*tuiModel)
+	}
+	if got := m.composer.SelectedText(); got != "he" {
+		t.Fatalf("expected keyboard selection %q, got %q", "he", got)
+	}
+
+	// The composer is the active copy target when both selection stores happen
+	// to contain text.
+	m.selectedText = "transcript selection"
+	mod, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+	if cmd == nil || m.copyFeedback != "Copied 2 chars to host clipboard" {
+		t.Fatalf("Ctrl+C did not copy the composer selection: cmd=%v feedback=%q", cmd != nil, m.copyFeedback)
+	}
+
+	m.composer.ClearSelection()
+	m.composer.CursorStart()
+	mod, _ = m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+	if got := m.composer.SelectedText(); got != "hello" {
+		t.Fatalf("expected Ctrl+G to select all input, got %q", got)
+	}
+	mod, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mod.(*tuiModel)
+	if m.composer.HasSelection() || m.composer.Value() != "hello" {
+		t.Fatalf("Esc should clear the input selection without changing its content: value=%q selected=%t", m.composer.Value(), m.composer.HasSelection())
+	}
+}
+
+func TestCtrlCWithoutComposerSelectionKeepsQuitBehavior(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	mod, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if mod != m || cmd == nil {
+		t.Fatal("Ctrl+C without a selection should keep the existing quit command")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Fatalf("expected Ctrl+C to quit without a selection, got %T", msg)
+	}
+}
+
 func TestShortcutsPanelRendering(t *testing.T) {
 	renderedWide := renderShortcutsPanel(100)
 	strippedWide := ansi.Strip(renderedWide)
@@ -512,7 +646,7 @@ func TestShortcutsPanelRendering(t *testing.T) {
 	if !strings.Contains(strippedWide, "Compose") || !strings.Contains(strippedWide, "Session") || !strings.Contains(strippedWide, "Transcript") {
 		t.Errorf("expected 3 column titles, got: %s", strippedWide)
 	}
-	if !strings.Contains(strippedWide, "Shift+Enter") || !strings.Contains(strippedWide, "Shift+Tab") || !strings.Contains(strippedWide, "Mouse Drag") {
+	if !strings.Contains(strippedWide, "Shift+Enter") || !strings.Contains(strippedWide, "Shift+Tab") || !strings.Contains(strippedWide, "Mouse Drag") || !strings.Contains(strippedWide, "Select all input") {
 		t.Errorf("expected shortcut keys, got: %s", strippedWide)
 	}
 	if !strings.Contains(strippedWide, "esc or ? to close") {

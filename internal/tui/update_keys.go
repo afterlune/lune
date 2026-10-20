@@ -43,15 +43,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// 1. Interrupt / Quit / Esc
 	switch keyStr {
 	case "ctrl+c":
+		if m.composer.HasSelection() {
+			return m, m.copyTextToClipboard(m.composer.SelectedText())
+		}
 		if m.selectedText != "" {
-			_ = clipboard.WriteAll(m.selectedText)
-			count := utf8.RuneCountInString(m.selectedText)
-			m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
-			m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-			expiresAt := m.copyFeedbackExpiresAt
-			return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-				return clearCopyFeedbackMsg{at: expiresAt}
-			})
+			return m, m.copyTextToClipboard(m.selectedText)
 		}
 		if m.activeQuestion != nil {
 			delete(m.questionSubmissions, m.questionKey(m.activeQuestion.Request))
@@ -93,8 +89,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
-		if m.selectedText != "" || m.hasSelection() {
+		if m.selectedText != "" || m.hasSelection() || m.composer.HasSelection() {
 			m.isSelecting = false
+			m.composerMouseSelecting = false
+			m.composer.ClearSelection()
 			m.selectedText = ""
 			m.selectStartX = 0
 			m.selectEndX = 0
@@ -663,6 +661,20 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.updateLayout()
 
 	return m, cmd
+}
+
+func (m *tuiModel) copyTextToClipboard(text string) tea.Cmd {
+	if text == "" {
+		return nil
+	}
+	_ = clipboard.WriteAll(text)
+	count := utf8.RuneCountInString(text)
+	m.copyFeedback = fmt.Sprintf("Copied %d chars to host clipboard", count)
+	m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+	expiresAt := m.copyFeedbackExpiresAt
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return clearCopyFeedbackMsg{at: expiresAt}
+	})
 }
 
 func (m *tuiModel) cursorOffset() int {

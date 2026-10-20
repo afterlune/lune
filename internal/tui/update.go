@@ -239,6 +239,17 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if msg.Button == tea.MouseLeft && m.isComposerMousePoint(msg.X, msg.Y) {
+			m.isSelecting = false
+			m.selectedText = ""
+			m.composerMouseSelecting = true
+			m.composer.Focus()
+			x, y := m.composerMousePosition(msg.X, msg.Y)
+			m.composer.BeginSelection(x, y)
+			return m, nil
+		}
+		m.composerMouseSelecting = false
+		m.composer.ClearSelection()
 		headerHeight := 3
 		vpEnd := headerHeight + m.viewport.Height()
 		if msg.Button == tea.MouseLeft {
@@ -271,6 +282,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMotionMsg:
+		if m.composerMouseSelecting {
+			x, y := m.composerMousePosition(msg.X, msg.Y)
+			m.composer.ExtendSelection(x, y)
+			return m, nil
+		}
 		if m.isSelecting {
 			m.selectEndX = msg.X
 			m.selectEndY = msg.Y
@@ -278,6 +294,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseReleaseMsg:
+		if m.composerMouseSelecting {
+			m.composerMouseSelecting = false
+			m.composer.EndSelection()
+			return m, nil
+		}
 		if m.isSelecting {
 			m.selectEndX = msg.X
 			m.selectEndY = msg.Y

@@ -107,22 +107,23 @@ type tuiModel struct {
 	output io.Writer
 
 	// Mouse text selection and copy feedback
-	isSelecting           bool
-	selectStartX          int
-	selectStartY          int
-	selectEndX            int
-	selectEndY            int
-	selectedText          string
-	copyFeedback          string
-	copyFeedbackExpiresAt time.Time
-	shortcutsOpen         bool
-	sessionsModalOpen     bool
-	sessionsItems         []core.Session
-	sessionsFiltered      []core.Session
-	sessionsFilter        string
-	sessionsIndex         int
-	sessionsConfirmDelete bool
-	sessionsDeletingID    string
+	isSelecting            bool
+	composerMouseSelecting bool
+	selectStartX           int
+	selectStartY           int
+	selectEndX             int
+	selectEndY             int
+	selectedText           string
+	copyFeedback           string
+	copyFeedbackExpiresAt  time.Time
+	shortcutsOpen          bool
+	sessionsModalOpen      bool
+	sessionsItems          []core.Session
+	sessionsFiltered       []core.Session
+	sessionsFilter         string
+	sessionsIndex          int
+	sessionsConfirmDelete  bool
+	sessionsDeletingID     string
 
 	// Tool output pager modal
 	toolPagerOpen    bool

@@ -373,7 +373,10 @@ func renderShortcutsPanel(width int) string {
 		{"/clear", "Clear view"},
 		{"Up / Down", "Prompt history"},
 		{"Shift+Enter", "New line"},
-		{"Ctrl+C", "Interrupt / Quit"},
+		{"Mouse Drag", "Select input text"},
+		{"Shift+←/→", "Select input text"},
+		{"Ctrl+G", "Select all input"},
+		{"Ctrl+C", "Copy / stop / quit"},
 	}
 
 	col2Title := styleTextPrimary().Bold(true).Underline(true).Render("Session")
