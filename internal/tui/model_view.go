@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
@@ -107,6 +108,10 @@ func (m *tuiModel) modalHeight(contentWidth int) int {
 // refreshViewportContent builds the entire transcript text and updates the viewport.
 func (m *tuiModel) refreshViewportContent() {
 	contentWidth := max(20, m.width-4)
+	viewportWidth := max(1, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
+	if m.viewport.LeftGutterFunc != nil {
+		viewportWidth = max(1, viewportWidth-ansi.StringWidth(m.viewport.LeftGutterFunc(viewport.GutterContext{})))
+	}
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
 	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" && m.currentReasoningText == "" {
@@ -115,12 +120,15 @@ func (m *tuiModel) refreshViewportContent() {
 		m.cachedDirty = false
 		m.transcriptDirty = false
 		m.entryLineRanges = nil
+		m.viewport.SoftWrap = false
 		m.viewport.SetContent("")
 		return
 	}
 
 	curThemeBg := activeTheme().CardBg
-	if m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount {
+	rebuildEntryCache := m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount
+	if rebuildEntryCache {
+		m.viewport.SoftWrap = false
 		m.cachedBlocks = make([]string, len(m.entries))
 		for i, entry := range m.entries {
 			if !isRoundMember(m.entries, i) {
@@ -250,12 +258,38 @@ func (m *tuiModel) refreshViewportContent() {
 		}
 	}
 
+	if !m.viewport.SoftWrap {
+		m.viewport.SoftWrap = transcriptNeedsSoftWrap(blocks, viewportWidth)
+	}
 	fullText := strings.Join(blocks, "\n\n")
 	m.viewport.SetContent(fullText)
 	if !m.scrolledUp {
 		m.viewport.GotoBottom()
 	}
 	m.transcriptDirty = false
+}
+
+func transcriptNeedsSoftWrap(blocks []string, width int) bool {
+	if width <= 0 {
+		return true
+	}
+	for _, block := range blocks {
+		for start := 0; start < len(block); {
+			relativeEnd := strings.IndexByte(block[start:], '\n')
+			end := len(block)
+			if relativeEnd >= 0 {
+				end = start + relativeEnd
+			}
+			if ansi.StringWidth(block[start:end]) > width {
+				return true
+			}
+			if relativeEnd < 0 {
+				break
+			}
+			start = end + 1
+		}
+	}
+	return false
 }
 
 func (m *tuiModel) hasSelection() bool {
