@@ -25,7 +25,7 @@ type WorkspaceFile struct {
 	NameLower  string // Pre-lowercased name for zero-allocation fuzzy matching
 	Size       int64  // File size in bytes
 	ModTime    time.Time
-	IsModified bool   // True if modified/untracked in git status
+	IsModified bool // True if modified/untracked in git status
 }
 
 // WorkspaceFileScanner scans and caches workspace files for fuzzy matching.

@@ -69,5 +69,7 @@ Approved commands and commands run under `full-access` have network access enabl
   注册工具时统一声明类别、权限类别和只读属性；类别为空表示该工具不参与按类别发现。权限判断和 Plan 模式筛选均读取元数据，不按工具名称判断。
 - Unclassified tools are blocked in `read-only` and `workspace` modes; `workspace` does not prompt for missing metadata. `ask` prompts for unclassified tools, while `full-access` allows every registered tool.
   未分类工具在 `read-only` 和 `workspace` 模式下会被阻止；`workspace` 不会为缺失元数据弹出授权。`ask` 会请求授权，`full-access` 允许所有已注册工具。
+- Follow [the engineering maintenance guide](docs/maintenance.md) for dependency updates, validation commands, generated files, and release builds.
+  依赖更新、验证命令、生成文件和发布构建按[工程维护指南](docs/maintenance.md)执行。
 - Keep the Chinese and English text in this file in sync.
   本文件的中英文需保持同步。

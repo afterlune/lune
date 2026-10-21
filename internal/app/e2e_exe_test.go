@@ -298,6 +298,7 @@ func TestLuneExeTUIWithConPTY(t *testing.T) {
 
 	if err := attrList.Update(
 		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+		// Win32 expects the HPCON handle value itself for this attribute.
 		unsafe.Pointer(hpc),
 		unsafe.Sizeof(hpc),
 	); err != nil {

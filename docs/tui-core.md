@@ -38,7 +38,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 Run the command entry point:
 
 ```powershell
-go run ./cmd
+go run -trimpath ./cmd
 ```
 
 Build the native executable and Linux amd64/arm64 executables and sandbox helpers:
@@ -47,12 +47,12 @@ Build the native executable and Linux amd64/arm64 executables and sandbox helper
 ./scripts/build.ps1
 ```
 
-The Linux targets are written to `bin/linux-amd64/` and `bin/linux-arm64/`. A direct `go build` command still builds only the selected Go target.
+The Linux targets are written to `bin/linux-amd64/` and `bin/linux-arm64/`. A direct `go build -trimpath` command still builds only the selected Go target.
 
 ## Verify
 
 ```powershell
-go test ./...
+go test -trimpath ./...
 ```
 
 

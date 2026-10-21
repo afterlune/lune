@@ -3,7 +3,11 @@
 /.tmp-go-cache/
 /config.json
 .luneagent/
+/agent.log
+/sessions.db
 /bin/
+/frontend/
+/cmd/desktop/frontend/.desktop-pre-extract.svelte
 /go.work
 /go.work.sum
 /go.pinned.mod

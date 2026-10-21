@@ -4,10 +4,10 @@
 
 ## 构建和运行
 
-安装 Go 1.26.9、Node.js 和仓库固定的 Wails CLI：
+安装 Go 1.27.1、Node.js 22.12+、npm 和仓库固定的 Wails CLI：
 
 ```powershell
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.30
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
 ./scripts/build.ps1
 ./scripts/build-desktop.ps1
 ```
@@ -101,7 +101,7 @@ Desktop 会记住上次打开的工作区、活动会话和窗口尺寸（DIP）
 
 ```powershell
 cd cmd/desktop/frontend
-npm install
+npm ci
 npm run dev
 ```
 

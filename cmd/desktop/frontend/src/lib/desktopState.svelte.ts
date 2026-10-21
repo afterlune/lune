@@ -2,10 +2,19 @@ import { createDesktopPreview } from './desktopPreview';
 import { onMount, tick } from 'svelte';
 import { Events } from '@wailsio/runtime';
 import * as Desktop from './desktopApi';
+import { createDesktopSettingsState, defaultAppearance } from './desktopSettingsState.svelte';
+import {
+  activityDetail, activityFromView, activityRunStatusLabel, formatArguments, toolLabel,
+} from './desktopActivity';
+import { createDesktopProcessState } from './desktopProcessState.svelte';
+import type {
+  Activity, ActivityRun, DesktopProcess, DesktopProcessSession, ExecutionState, ExecutionTimelineBlock,
+  LocalMessage, StoredActivityRun,
+} from './desktopStateTypes';
 import { TaskStatus } from '../../bindings/github.com/afterlune/luneCore/internal/runtime/models';
 import type {
-    AppearanceView, Bootstrap, CommandToolchainCandidate, ConversationMessage, MCPServerConfigInput, MCPServerView, ModelProfileInput, ModelSettingsView, WallpaperSelection,
-    SessionControlsView, SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, ProviderInput, SessionSearchResult, SessionSummary, WorkspaceConfigInput, WorkspaceConfigView,
+    Bootstrap, ConversationMessage, ModelSettingsView,
+    SessionControlsView, SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, SessionSearchResult, SessionSummary,
     WorkspaceOpenResult, WorkspaceState,
   } from '../../bindings/github.com/afterlune/lune/internal/desktop/models';
 
@@ -21,64 +30,15 @@ export function createDesktopState() {
   
   
 
-  type LocalMessage = ConversationMessage & {
-    local?: boolean; canonicalID?: string; deliveryState?: 'sending' | 'queued' | 'submitted' | 'failed' | 'cancelled';
-    deliveryError?: string; request?: SubmitInput; executionID?: string; userMessageIndex?: number; queuePosition?: number; interrupted?: boolean;
-  };
-  type Activity = {
-    id: string; invocationId: string; agentId?: string; label: string; detail: string;
-    arguments?: unknown; details?: { output?: string; command?: { text: string; output?: string; status?: string; exitCode?: number | null; truncated?: boolean; error?: string }; changes?: { path: string; added: number; removed: number; lines?: { kind: string; oldLine?: number; newLine?: number; text: string }[]; truncated?: boolean }[]; truncated?: boolean };
-    truncated?: boolean;
-    status: 'running' | 'done' | 'failed' | 'cancelled' | 'info' | 'waiting';
-    durationMs?: number; error?: string;
-  };
-  type ActivityRun = {
-    key: string; executionId: string; userMessageIndex: number; status: string; statusLabel: string;
-    startedAt: string; finishedAt?: string | null; tools: Activity[]; expanded: boolean; elapsedSeconds?: number;
-    queuePosition?: number; messageText?: string; messageImages?: string[];
-  };
-  type ExecutionTimelineBlock = {
-    key: string; executionId: string; userMessageIndex: number; userMessage: LocalMessage | null;
-    assistantMessages: LocalMessage[]; activityRuns: ActivityRun[]; pendingRequests: PendingRequestView[];
-    planReview?: { executionID: string; text: string }; streamText: string;
-  };
-  type StoredActivityRun = NonNullable<WorkspaceState['executionHistory']>[number];
-  type StoredActivityTool = NonNullable<StoredActivityRun['tools']>[number];
-  type ExecutionState = 'idle' | 'submitting' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'disconnected';
-  type ProviderForm = ProviderInput & { hasAPIKey: boolean };
-  type MCPEnvironmentForm = { name: string; value: string; hasValue: boolean };
-  type MCPServerForm = Omit<MCPServerConfigInput, 'args' | 'env'> & { args: string[]; argsText: string; env: MCPEnvironmentForm[] };
-  type WorkspaceSettingsForm = Omit<WorkspaceConfigView, 'mcpServers' | 'commandToolchainPaths'> & { mcpServers: MCPServerForm[]; commandToolchainPaths: string[] };
   type Modal = 'settings' | 'switch' | 'close' | 'edit' | 'rename-session' | 'delete-session' | 'mcp' | null;
   type EditDraft = { messageID: string; targetID: string; userMessageIndex: number; wasQueued: boolean; previousText: string; previousAttachments: { name: string; mediaType: string; data: string; preview: string }[] };
   type EditConfirmation = { draft: EditDraft; request: SubmitInput; pendingAtConfirm: boolean };
   type PendingSessionSummary = Omit<PendingSessionSummaryView, 'requests'> & { requests: NonNullable<PendingSessionSummaryView['requests']> };
-  type DesktopProcess = {
-    id: string; sessionId: string; sessionTitle: string; workingDirectory: string;
-    executionId: string; command: string; status: string; startedAt: string; finishedAt?: string | null; exitCode?: number | null;
-  };
-  type DesktopProcessSession = { id: string; title: string; workingDirectory: string; status: string; reason: string };
-  type DesktopProcessOutput = {
-    sessionId: string; commandId: string; command: string; status: string; output: string;
-    cursor: number; nextCursor: number; endCursor: number; truncated: boolean; error?: string; exitCode?: number | null;
-  };
-  type DesktopProcessList = { processes: DesktopProcess[]; unavailableSessions: DesktopProcessSession[] };
   type ElicitationResponse = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
-  type SettingsTab = 'models' | 'appearance';
 
   const unsubscribeEvents: (() => void)[] = [];
   const previewVariant = new URLSearchParams(location.search).get('preview') || '';
   const previewMode = previewVariant !== '';
-  let theme = $state('system');
-  const defaultAppearance: AppearanceView = { theme: 'system', wallpaperType: 'static', wallpaperFile: '', wallpaperName: '', wallpaperURL: '', panelOpacity: 80 };
-  let appearance = $state<AppearanceView>({ ...defaultAppearance });
-  let appearanceDraft = $state<AppearanceView>({ ...defaultAppearance });
-  let settingsTab = $state<SettingsTab>('models');
-  let wallpaperCandidateFile = $state('');
-  let wallpaperObjectURL = $state('');
-  let wallpaperURL = $state('');
-  let activeWallpaperType = $state('static');
-  let wallpaperVideo = $state<HTMLVideoElement>();
   let appVisible = $state(true);
   let reducedMotion = $state(false);
   let systemPrefersDark = $state(false);
@@ -112,24 +72,6 @@ export function createDesktopState() {
   let pendingSessionsLoading = $state(false);
   let pendingSessionsError = $state('');
   let pendingSessionsRequest = 0;
-  let desktopProcesses = $state<DesktopProcess[]>([]);
-  let unavailableProcessSessions = $state<DesktopProcessSession[]>([]);
-  let desktopProcessesLoading = $state(false);
-  let desktopProcessesError = $state('');
-  let desktopProcessesRequest = 0;
-  let selectedDesktopProcessKey = $state('');
-  let processPopoverOpen = $state(false);
-  let processOutput = $state('');
-  let processOutputError = $state('');
-  let processOutputLoading = $state(false);
-  let processOutputTruncated = $state(false);
-  let processOutputStatus = $state('');
-  let processOutputRequest = 0;
-  let processOutputCursor = $state(0);
-  let processOutputEndCursor = $state(0);
-  let processLogView = $state<HTMLElement>();
-  let processLogPinned = true;
-  let stoppingDesktopProcessKey = $state('');
   let messages = $state<LocalMessage[]>([]);
   let activities = $state<Activity[]>([]);
   let activityHistory = $state<ActivityRun[]>([]);
@@ -161,42 +103,44 @@ export function createDesktopState() {
   let deferredPlanReviews = $state<{ sessionId: string; executionID: string; text: string }[]>([]);
   let answerValues = $state<Record<string, string>>({});
   let noteValues = $state<Record<string, string>>({});
-  let providerForms = $state<ProviderForm[]>([]);
-  let profileForms = $state<ModelProfileInput[]>([]);
-  let defaultModel = $state('');
-  let maxParallelAgents = $state(4);
-  let modelSettingsSnapshot = $state('');
-  let settingsSaving = $state(false);
   let editDraft = $state<EditDraft | null>(null);
   let editConfirmation = $state<EditConfirmation | null>(null);
   let applyingEdit = $state(false);
-  let mcpServers = $state<MCPServerView[]>([]);
-  let mcpUpdatingServer = $state('');
-  let workspaceSettingsForm = $state<WorkspaceSettingsForm>({
-    contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
-    maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, commandToolchainPaths: [], mcpServers: [],
-  });
-  let workspaceSettingsSaving = $state(false);
-  let toolchainCandidates = $state<CommandToolchainCandidate[]>([]);
-  let toolchainDetectionLoading = $state(false);
   let cancellingQueuedExecution = $state('');
   const cancelledPreviewExecutions = new Set<string>();
+  const processState = createDesktopProcessState({
+    workspace: () => workspace,
+    previewMode: () => previewMode,
+  });
+  const settingsState = createDesktopSettingsState({
+    previewMode: () => previewMode,
+    models: () => models,
+    setModels: (value) => { models = value; },
+    workspace: () => workspace,
+    sessionID: () => session?.id || '',
+    workOutstanding: () => workOutstanding,
+    hasPendingRequests: () => pending.length > 0,
+    appVisible: () => appVisible,
+    reducedMotion: () => reducedMotion,
+    setModal: (value) => { modal = value; },
+    clearError: () => { errorMessage = ''; },
+    showError,
+    openWorkspace,
+    installWorkspaceState,
+    completeWorkspaceOpen,
+  });
 
   const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const canWrite = $derived(models.configured && !controlsPending && !switchingSession && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
   const canEditMessages = $derived(models.configured && !controlsPending && !switchingSession && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
-  const appearanceDirty = $derived(appearanceKey(appearanceDraft) !== appearanceKey(appearance));
-  const modelSettingsDirty = $derived(serializeModelSettings() !== modelSettingsSnapshot);
-  const effectiveDarkTheme = $derived(theme === 'dark' || (theme === 'system' && systemPrefersDark));
+  const effectiveDarkTheme = $derived(settingsState.theme === 'dark' || (settingsState.theme === 'system' && systemPrefersDark));
   const pageTitle = $derived(!workspace ? '桌面工作区' : sidebarView === 'pending' ? '待处理' : session?.title || '新会话');
   const queuedMessageCount = $derived(messages.filter((message) => message.deliveryState === 'queued' || message.deliveryState === 'sending').length);
   const workOutstanding = $derived(running || queuedMessageCount > 0);
   const workspaceHasOutstanding = $derived(workOutstanding || sessions.some((item) => ['running', 'queued', 'waiting'].includes(item.status ?? '')));
   const visibleSessions = $derived(sessions.filter((item) => item.title.toLowerCase().includes(sessionFilter.trim().toLowerCase())));
   const pendingRequestCount = $derived(pendingSessions.reduce((count, item) => count + item.requests.length, 0));
-  const activeDesktopProcessCount = $derived(desktopProcesses.filter((item) => processStatusActive(item.status)).length);
-  const selectedDesktopProcess = $derived(desktopProcesses.find((item) => desktopProcessKey(item) === selectedDesktopProcessKey) ?? null);
   const executionTimeline = $derived.by(() => {
     const leadingMessages: LocalMessage[] = [];
     const blocks: ExecutionTimelineBlock[] = [];
@@ -286,49 +230,6 @@ export function createDesktopState() {
   function executionBlockStateClass(block: ExecutionTimelineBlock) {
     return `execution-state-${executionBlockState(block)}`;
   }
-
-  function applyTheme(value: string) {
-    theme = value;
-    document.documentElement.dataset.theme = value;
-  }
-
-  function applyAppearanceState(value: AppearanceView) {
-    applyTheme(value.theme || 'system');
-    activeWallpaperType = value.wallpaperType || 'static';
-    wallpaperURL = value.wallpaperURL || '';
-    document.documentElement.style.setProperty('--anime-panel-opacity', String((value.panelOpacity || 80) / 100));
-  }
-
-  function appearanceKey(value: AppearanceView) {
-    return JSON.stringify({
-      theme: value.theme, wallpaperType: value.wallpaperType,
-      wallpaperFile: value.wallpaperFile, wallpaperName: value.wallpaperName,
-      panelOpacity: value.panelOpacity,
-      wallpaperURL: value.wallpaperURL,
-    });
-  }
-
-  function appearanceSettingsInput(value: AppearanceView) {
-    return {
-      theme: value.theme, wallpaperType: value.wallpaperType,
-      wallpaperFile: value.wallpaperFile, wallpaperName: value.wallpaperName,
-      panelOpacity: value.panelOpacity,
-    };
-  }
-
-  function previewAppearanceDraft(value: AppearanceView) {
-    appearanceDraft = { ...value };
-    applyAppearanceState(appearanceDraft);
-  }
-
-  $effect(() => {
-    const video = wallpaperVideo;
-    if (!video) return;
-    const play = theme === 'anime' && activeWallpaperType === 'dynamic' &&
-      /\.(mp4|webm)(?:$|\?)/i.test(wallpaperURL) && appVisible && !reducedMotion;
-    if (play) void video.play().catch(() => {});
-    else video.pause();
-  });
 
   function sameMessageContent(left: ConversationMessage, right: ConversationMessage) {
     const leftImages = left.images ?? [];
@@ -473,47 +374,6 @@ export function createDesktopState() {
     return [...merged, ...unmatchedLocal];
   }
 
-  function activityFromView(activity: StoredActivityTool): Activity {
-    return {
-      id: activity.id,
-      invocationId: activity.invocationId,
-      agentId: activity.agentId,
-      label: toolLabel(activity.name),
-      detail: activityDetail(activity.name, activity.arguments),
-      arguments: activity.arguments,
-      details: activity.details ? {
-        output: activity.details.output,
-        command: activity.details.command ? {
-          text: activity.details.command.text,
-          output: activity.details.command.output,
-          status: activity.details.command.status,
-          exitCode: activity.details.command.exitCode,
-          truncated: activity.details.command.truncated,
-          error: activity.details.command.error,
-        } : undefined,
-        changes: activity.details.changes?.map((change) => ({
-          path: change.path, added: change.added, removed: change.removed,
-          lines: change.lines ?? undefined, truncated: change.truncated,
-        })) ?? undefined,
-        truncated: activity.details.truncated,
-      } : undefined,
-      status: activity.status === 'running' ? 'running' : activity.status === 'failed' ? 'failed' : activity.status === 'cancelled' ? 'cancelled' : 'done',
-      durationMs: activity.durationMs,
-      error: activity.error,
-      truncated: activity.truncated,
-    };
-  }
-
-  function activityRunStatusLabel(status: string) {
-    if (status === 'queued') return '任务排队中';
-    if (status === 'completed') return '任务已完成';
-    if (status === 'failed') return '任务执行失败';
-    if (status === 'cancelled') return '排队消息已撤回';
-    if (status === 'interrupted' || status === 'discarded') return '任务已中断';
-    if (status === 'paused') return '任务已暂停';
-    return '正在处理请求';
-  }
-
   function currentUserMessageIndex() {
     const message = messages.find((item) => item.executionID === executionID);
     if (message?.userMessageIndex !== undefined) return message.userMessageIndex;
@@ -616,45 +476,6 @@ export function createDesktopState() {
     scrollToLatest();
   }
 
-  function toolLabel(name: string) {
-    const labels: Record<string, string> = {
-      read_file: '读取文件', list_dir: '列出目录', glob: '查找文件', grep: '搜索文件内容',
-      edit_file: '编辑文件', write_file: '写入文件', command: '运行命令',
-      command_status: '检查命令状态', command_stop: '停止命令', web_search: '搜索网页', web_fetch: '读取网页',
-    };
-    return labels[name] ?? `运行工具 ${name || '操作'}`;
-  }
-
-  function compactActivityDetail(value: unknown) {
-    const detail = compactArguments(value).replace(/\s+/g, ' ').trim();
-    return detail.length > 180 ? `${detail.slice(0, 177)}…` : detail;
-  }
-
-  function activityDetail(name: string, value: unknown) {
-    if (name === 'command_status' || name === 'command_stop') return '';
-    return compactActivityDetail(value);
-  }
-
-  function activitySummary(activity: Activity) {
-    const raw = activity.arguments;
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (parsed && typeof parsed === 'object') {
-        const record = parsed as Record<string, unknown>;
-        for (const key of ['command', 'path', 'pattern', 'glob', 'query', 'directory', 'dir', 'url', 'file']) {
-          const value = record[key];
-          if (typeof value === 'string' && value.trim()) return value.trim();
-        }
-      }
-    } catch { /* compactActivityDetail handles opaque arguments. */ }
-    return compactActivityDetail(raw);
-  }
-
-  function formatActivityArguments(value: unknown) {
-    try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
-    catch { return String(value ?? ''); }
-  }
-
   function toggleActivityRun(key: string) {
     activityHistory = activityHistory.map((run) => run.key === key ? { ...run, expanded: !run.expanded } : run);
   }
@@ -689,207 +510,12 @@ export function createDesktopState() {
     }
   }
 
-  function desktopProcessKey(process: Pick<DesktopProcess, 'sessionId' | 'id'>) {
-    return `${process.sessionId}::${process.id}`;
-  }
-
-  function processStatusActive(status: string) {
-    return status === 'running' || status === 'stopping';
-  }
-
-  function processStatusLabel(status: string) {
-    switch (status) {
-      case 'running': return '运行中';
-      case 'stopping': return '正在停止';
-      case 'succeeded': return '已完成';
-      case 'failed': return '失败';
-      case 'cancelled': return '已取消';
-      case 'timed_out': return '超时';
-      case 'interrupted': return '已中断';
-      default: return status || '未知';
-    }
-  }
-
-  function unavailableProcessStatusLabel(status: string) {
-    switch (status) {
-      case 'missing': return '目录缺失';
-      case 'in use': return '被其他实例占用';
-      default: return '不可用';
-    }
-  }
-
-  function clearDesktopProcesses() {
-    desktopProcessesRequest++;
-    processOutputRequest++;
-    desktopProcesses = [];
-    unavailableProcessSessions = [];
-    desktopProcessesLoading = false;
-    desktopProcessesError = '';
-    selectedDesktopProcessKey = '';
-    processOutput = '';
-    processOutputError = '';
-    processOutputStatus = '';
-    processOutputCursor = 0;
-    processOutputEndCursor = 0;
-    processOutputLoading = false;
-  }
-
-  function previewDesktopProcessList(): DesktopProcessList {
-    const now = '2026-10-18T01:52:00+08:00';
-    return {
-      processes: desktopProcesses.length ? desktopProcesses : [
-        { id: 'process-active', sessionId: 'session-main', sessionTitle: '重构桌面端提问流程', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-active', command: 'go test ./internal/desktop -run TestListDesktopProcesses', status: 'running', startedAt: now },
-        { id: 'process-failed', sessionId: 'session-main', sessionTitle: '重构桌面端提问流程', workingDirectory: 'D:\\Git\\luneAgent', executionId: 'exec-failed', command: 'npm run check', status: 'failed', startedAt: '2026-10-17T10:26:00+08:00', exitCode: 1 },
-        { id: 'process-done', sessionId: 'session-docs', sessionTitle: '文档更新', workingDirectory: 'D:\\Git\\luneAgent\\docs', executionId: 'exec-done', command: 'git status --short', status: 'succeeded', startedAt: '2026-10-17T10:21:00+08:00', exitCode: 0 },
-      ],
-      unavailableSessions: [{ id: 'session-unavailable', title: '无法打开的会话', workingDirectory: 'D:\\Git\\luneAgent\\offline', status: 'unavailable', reason: '此会话的运行时未加载。' }],
-    };
-  }
-
-  async function refreshDesktopProcesses() {
-    const request = ++desktopProcessesRequest;
-    const requestWorkspace = workspace;
-    if (!requestWorkspace) {
-      desktopProcesses = [];
-      unavailableProcessSessions = [];
-      desktopProcessesError = '';
-      desktopProcessesLoading = false;
-      selectedDesktopProcessKey = '';
-      processOutputRequest++;
-      processOutput = '';
-      return;
-    }
-    desktopProcessesLoading = true;
-    desktopProcessesError = '';
-    try {
-      const raw = previewMode ? previewDesktopProcessList() : await Desktop.ListDesktopProcesses();
-      if (request !== desktopProcessesRequest || workspace !== requestWorkspace) return;
-      desktopProcesses = raw.processes ?? [];
-      unavailableProcessSessions = raw.unavailableSessions ?? [];
-      const selected = desktopProcesses.find((item) => desktopProcessKey(item) === selectedDesktopProcessKey);
-      if (selected) {
-        if (!selectedDesktopProcessKey) void selectDesktopProcess(selected);
-      } else if (desktopProcesses.length) {
-        void selectDesktopProcess(desktopProcesses[0]);
-      } else {
-        selectedDesktopProcessKey = '';
-        processOutputRequest++;
-        processOutput = '';
-        processOutputStatus = '';
-      }
-    } catch (cause) {
-      if (request === desktopProcessesRequest && workspace === requestWorkspace) {
-        desktopProcesses = [];
-        unavailableProcessSessions = [];
-        desktopProcessesError = String(cause);
-      }
-    } finally {
-      if (request === desktopProcessesRequest) desktopProcessesLoading = false;
-    }
-  }
-
   function selectSidebarView(view: typeof sidebarView) {
     if (!workspace && view !== 'sessions') return;
     sidebarView = view;
     workspaceMenuOpen = false;
     if (window.matchMedia('(max-width: 960px)').matches) sidebarCollapsed = false;
     if (view === 'pending') void refreshPendingSessions();
-  }
-
-  async function selectDesktopProcess(process: DesktopProcess, force = false) {
-    const key = desktopProcessKey(process);
-    if (!force && key === selectedDesktopProcessKey) return;
-    selectedDesktopProcessKey = key;
-    processOutputRequest++;
-    const request = processOutputRequest;
-    processOutput = '';
-    processOutputError = '';
-    processOutputTruncated = false;
-    processOutputCursor = 0;
-    processOutputEndCursor = 0;
-    processOutputStatus = process.status;
-    processLogPinned = true;
-    processOutputLoading = true;
-    if (previewMode) {
-      processOutput = previewProcessOutput(process);
-      processOutputCursor = new TextEncoder().encode(processOutput).length;
-      processOutputEndCursor = processOutputCursor;
-      processOutputLoading = false;
-      await tick();
-      scrollProcessOutputToEnd();
-      return;
-    }
-
-    let cursor = 0;
-    try {
-      while (request === processOutputRequest && selectedDesktopProcessKey === key && processPopoverOpen) {
-        const shouldWait = processStatusActive(processOutputStatus) && cursor >= processOutputEndCursor;
-        const result = await Desktop.ReadDesktopProcessOutput(process.sessionId, process.id, cursor, shouldWait);
-        if (request !== processOutputRequest || selectedDesktopProcessKey !== key) return;
-        if (result.output) processOutput += result.output;
-        processOutputTruncated ||= result.truncated;
-        processOutputCursor = result.nextCursor;
-        processOutputEndCursor = result.endCursor;
-        processOutputStatus = result.status;
-        cursor = result.nextCursor;
-        if (result.error) processOutputError = result.error;
-        updateDesktopProcessStatus(process.sessionId, process.id, result.status, result.exitCode);
-        if (result.output && processLogPinned) {
-          await tick();
-          scrollProcessOutputToEnd();
-        }
-        if (result.error || (cursor >= result.endCursor && !processStatusActive(result.status))) break;
-        if (cursor >= result.endCursor && !result.output && !processStatusActive(result.status)) break;
-        if (processStatusActive(result.status)) continue;
-        if (cursor >= result.endCursor || cursor === result.cursor && !result.output) break;
-      }
-    } catch (cause) {
-      if (request === processOutputRequest) processOutputError = String(cause);
-    } finally {
-      if (request === processOutputRequest) processOutputLoading = false;
-    }
-  }
-
-  function previewProcessOutput(process: DesktopProcess) {
-    if (process.id === 'process-failed') return '$ npm run check\n\n> frontend@0.0.0 check\n> svelte-check --tsconfig ./tsconfig.json\n\nsrc/App.svelte: error: Type \'string\' is not assignable to type \'number\'.\n\nProcess exited with code 1.\n';
-    if (process.id === 'process-done') return '$ git status --short\n M internal/desktop/process_center.go\n M cmd/desktop/frontend/src/App.svelte\n';
-    if (process.id === 'process-cancelled') return '$ npm run build\n\n> frontend@0.0.0 build\n> vite build --mode production\n\n^C\nProcess cancelled.\n';
-    return '$ go test ./internal/desktop -run TestListDesktopProcesses\n\nok  github.com/afterlune/lune/internal/desktop\n';
-  }
-
-  function updateDesktopProcessStatus(sessionID: string, processID: string, status: string, exitCode?: number | null) {
-    desktopProcesses = desktopProcesses.map((item) => item.sessionId === sessionID && item.id === processID
-      ? { ...item, status, exitCode }
-      : item);
-  }
-
-  function handleProcessLogScroll() {
-    if (!processLogView) return;
-    processLogPinned = processLogView.scrollHeight - processLogView.scrollTop - processLogView.clientHeight < 28;
-  }
-
-  function scrollProcessOutputToEnd() {
-    if (processLogView && processLogPinned) processLogView.scrollTop = processLogView.scrollHeight;
-  }
-
-  async function stopDesktopProcess(process: DesktopProcess) {
-    const key = desktopProcessKey(process);
-    stoppingDesktopProcessKey = key;
-    processOutputError = '';
-    try {
-      if (previewMode) {
-        updateDesktopProcessStatus(process.sessionId, process.id, 'cancelled');
-        processOutputStatus = 'cancelled';
-        await refreshDesktopProcesses();
-        return;
-      }
-      await Desktop.StopDesktopProcess(process.sessionId, process.id);
-      await refreshDesktopProcesses();
-    } catch (cause) {
-      processOutputError = String(cause);
-    } finally {
-      stoppingDesktopProcessKey = '';
-    }
   }
 
   function pendingKindLabel(kind: string) {
@@ -1055,16 +681,12 @@ export function createDesktopState() {
   async function initialize() {
     if (previewMode) {
       await new Promise((resolve) => setTimeout(resolve, 80));
-      appearance = { ...previewBootstrap.appearance };
-      appearanceDraft = { ...appearance };
-      applyAppearanceState(appearance);
+      settingsState.applyAppearance(previewBootstrap.appearance);
       recent = previewBootstrap.recentWorkspaces;
       models = previewBootstrap.models;
       const variant = previewVariant;
       if (variant === 'anime') {
-        appearance = { ...appearance, theme: 'anime' };
-        appearanceDraft = { ...appearance };
-        applyAppearanceState(appearance);
+        settingsState.applyAppearance({ ...settingsState.appearance, theme: 'anime' });
       }
       if (variant === 'welcome') {
         workspace = '';
@@ -1189,17 +811,15 @@ export function createDesktopState() {
         installWorkspaceState(refreshedState, true);
       }
       if (variant.startsWith('processes')) {
-        processPopoverOpen = true;
-        void refreshDesktopProcesses();
+        processState.processPopoverOpen = true;
+        void processState.refreshDesktopProcesses();
       }
       loading = false;
       return;
     }
     try {
       const data = await Desktop.Bootstrap();
-      appearance = data.appearance ?? { ...defaultAppearance, theme: data.theme || 'system' };
-      appearanceDraft = { ...appearance };
-      applyAppearanceState(appearance);
+      settingsState.applyAppearance(data.appearance ?? { ...defaultAppearance, theme: data.theme || 'system' });
       recent = data.recentWorkspaces ?? [];
       models = data.models;
       workspace = data.workspace;
@@ -1215,7 +835,7 @@ export function createDesktopState() {
         await restoreLastWorkspace(data.lastWorkspace, data.lastSessionId || '');
       }
       void refreshPendingSessions();
-      void refreshDesktopProcesses();
+      void processState.refreshDesktopProcesses();
     } catch (error) {
       showError(error);
     } finally {
@@ -1356,7 +976,7 @@ export function createDesktopState() {
   function onAgentEvent(event: AgentEvent) {
     if (previewMode && cancelledPreviewExecutions.has(event.executionId)) return;
     if (event.kind === 'command_started' || event.kind === 'command_finished') {
-      if (!previewMode) void refreshDesktopProcesses();
+      if (!previewMode) void processState.refreshDesktopProcesses();
       return;
     }
     updateSessionStatusFromEvent(event);
@@ -1484,274 +1104,9 @@ export function createDesktopState() {
     deferredPlanReviews = deferredPlanReviews.filter((_, itemIndex) => itemIndex !== index);
   }
 
-  function compactArguments(value: unknown) {
-    try {
-      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-      if (typeof parsed === 'string') return parsed;
-      if (parsed && typeof parsed === 'object') {
-        const record = parsed as Record<string, unknown>;
-        for (const key of ['command', 'path', 'pattern', 'glob', 'query', 'directory', 'dir', 'url', 'file']) {
-          const target = record[key];
-          if (typeof target === 'string' && target.trim()) return target;
-        }
-      }
-      return JSON.stringify(parsed);
-    } catch { return String(value); }
-  }
-
-  function formatArguments(value: unknown) {
-    try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
-    catch { return String(value); }
-  }
-
   function showError(error: unknown) {
     errorMessage = error instanceof Error ? error.message : String(error);
     window.setTimeout(() => { if (errorMessage) errorMessage = ''; }, 6500);
-  }
-
-  function setSettingsForm() {
-    providerForms = (models.providers ?? []).map((provider) => ({ ...provider, apiKey: '' }));
-    profileForms = (models.profiles ?? []).map((profile) => ({ ...profile }));
-    if (providerForms.length === 0) providerForms = [{ name: 'deepseek', protocol: 'responses', baseURL: 'https://api.deepseek.com', apiKey: '', hasAPIKey: false, serverCompaction: false }];
-    if (profileForms.length === 0) profileForms = [{ name: 'default', provider: providerForms[0].name, model: '', maxOutputTokens: 0, supportsInputAudio: false }];
-    defaultModel = models.defaultModel || profileForms[0]?.name || 'default';
-    maxParallelAgents = models.maxParallelAgents || 4;
-    modelSettingsSnapshot = serializeModelSettings();
-    appearanceDraft = { ...appearance };
-    settingsTab = 'models';
-    wallpaperCandidateFile = '';
-    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
-    wallpaperObjectURL = '';
-    modal = 'settings';
-  }
-
-  function modelSettingsInput() {
-    return {
-      providers: providerForms.map(({ name, protocol, baseURL, apiKey, serverCompaction }) => ({ name, protocol, baseURL, apiKey, serverCompaction })),
-      profiles: profileForms.map(({ name, provider, model, maxOutputTokens, supportsInputAudio }) => ({ name, provider, model, maxOutputTokens, supportsInputAudio })),
-      defaultModel, maxParallelAgents,
-    };
-  }
-
-  function serializeModelSettings() {
-    return JSON.stringify(modelSettingsInput());
-  }
-
-  function cancelSettings() {
-    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
-    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
-    wallpaperCandidateFile = '';
-    wallpaperObjectURL = '';
-    appearanceDraft = { ...appearance };
-    applyAppearanceState(appearance);
-    modal = null;
-  }
-
-  function setWallpaperType(type: 'static' | 'dynamic') {
-    if (appearanceDraft.wallpaperType === type) return;
-    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
-    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
-    wallpaperCandidateFile = '';
-    wallpaperObjectURL = '';
-    previewAppearanceDraft({ ...appearanceDraft, wallpaperType: type, wallpaperFile: '', wallpaperName: '', wallpaperURL: '' });
-  }
-
-  function resetWallpaper() {
-    if (wallpaperCandidateFile && !previewMode) void Desktop.DiscardWallpaper(wallpaperCandidateFile).catch(() => {});
-    if (wallpaperObjectURL && wallpaperObjectURL !== appearance.wallpaperURL) URL.revokeObjectURL(wallpaperObjectURL);
-    wallpaperCandidateFile = '';
-    wallpaperObjectURL = '';
-    previewAppearanceDraft({ ...appearanceDraft, wallpaperType: 'static', wallpaperFile: '', wallpaperName: '', wallpaperURL: '' });
-  }
-
-  async function chooseWallpaper() {
-    if (previewMode) {
-      document.getElementById('wallpaper-picker')?.click();
-      return;
-    }
-    try {
-      const selected: WallpaperSelection = await Desktop.PickWallpaper(appearanceDraft.wallpaperType);
-      if (!selected.file) return;
-      if (wallpaperCandidateFile && wallpaperCandidateFile !== appearance.wallpaperFile) {
-        await Desktop.DiscardWallpaper(wallpaperCandidateFile);
-      }
-      wallpaperCandidateFile = selected.file;
-      previewAppearanceDraft({
-        ...appearanceDraft, wallpaperType: selected.type,
-        wallpaperFile: selected.file, wallpaperName: selected.name, wallpaperURL: selected.url,
-      });
-    } catch (error) { showError(error); }
-  }
-
-  function previewBrowserWallpaper(file: File) {
-    const extension = file.name.toLowerCase().split('.').pop() || '';
-    const allowed = appearanceDraft.wallpaperType === 'static'
-      ? ['png', 'jpg', 'jpeg', 'webp'] : ['gif', 'mp4', 'webm'];
-    if (!allowed.includes(extension)) { showError('文件格式与所选壁纸类型不匹配'); return; }
-    if (!file.size || file.size > 100 * 1024 * 1024) { showError('壁纸文件不能超过 100 MiB'); return; }
-    if (wallpaperObjectURL) URL.revokeObjectURL(wallpaperObjectURL);
-    const url = URL.createObjectURL(file);
-    wallpaperObjectURL = url;
-    wallpaperCandidateFile = file.name;
-    previewAppearanceDraft({ ...appearanceDraft, wallpaperFile: file.name, wallpaperName: file.name, wallpaperURL: url });
-  }
-
-  function workspaceSettingsFromView(config: WorkspaceConfigView): WorkspaceSettingsForm {
-    return {
-      contextWindow: config.contextWindow,
-      autoCompact: config.autoCompact,
-      autoCompactThreshold: config.autoCompactThreshold,
-      reserveOutputTokens: config.reserveOutputTokens,
-      maxAttachmentFiles: config.maxAttachmentFiles,
-      maxAttachmentBytes: config.maxAttachmentBytes,
-      maxTotalBytes: config.maxTotalBytes,
-      commandToolchainPaths: [...(config.commandToolchainPaths ?? [])],
-      mcpServers: (config.mcpServers ?? []).map((server) => ({
-        name: server.name, originalName: server.name, transport: server.transport, command: server.command,
-        args: server.args ?? [], argsText: (server.args ?? []).join('\n'),
-        url: server.url, clientMetadataURL: server.clientMetadataURL,
-        env: (server.env ?? []).map((item) => ({ name: item.name, value: '', hasValue: item.hasValue })),
-      })),
-    };
-  }
-
-  function addMCPServer() {
-    const name = 'server-' + (workspaceSettingsForm.mcpServers.length + 1);
-    workspaceSettingsForm.mcpServers = [...workspaceSettingsForm.mcpServers, {
-      name, originalName: '', transport: 'stdio', command: '', args: [], argsText: '', url: '', clientMetadataURL: '', env: [],
-    }];
-  }
-
-  function addMCPEnvironment(server: MCPServerForm) {
-    server.env = [...server.env, { name: '', value: '', hasValue: false }];
-  }
-
-  function toolchainPathAuthorized(path: string) {
-    return workspaceSettingsForm.commandToolchainPaths.some((item) => item.toLowerCase() === path.toLowerCase());
-  }
-
-  function addToolchainPath(path: string) {
-    const normalized = path.trim();
-    if (!normalized || toolchainPathAuthorized(normalized)) return;
-    workspaceSettingsForm.commandToolchainPaths = [...workspaceSettingsForm.commandToolchainPaths, normalized];
-  }
-
-  function removeToolchainPath(path: string) {
-    workspaceSettingsForm.commandToolchainPaths = workspaceSettingsForm.commandToolchainPaths.filter((item) => item.toLowerCase() !== path.toLowerCase());
-  }
-
-  async function detectCommandToolchains() {
-    if (previewMode || toolchainDetectionLoading) return;
-    toolchainDetectionLoading = true;
-    try { toolchainCandidates = await Desktop.DetectCommandToolchains() ?? []; }
-    catch (error) { showError(error); }
-    finally { toolchainDetectionLoading = false; }
-  }
-
-  async function pickCommandToolchainFolder() {
-    if (previewMode) return;
-    try {
-      const path = await Desktop.PickCommandToolchainFolder();
-      if (path) addToolchainPath(path);
-    } catch (error) { showError(error); }
-  }
-
-  function mcpStatus(name: string) {
-    return mcpServers.find((server) => server.name === name);
-  }
-
-  async function saveWorkspaceSettings() {
-    if (workspaceSettingsSaving || workOutstanding || pending.length || mcpUpdatingServer) return;
-    workspaceSettingsSaving = true;
-    try {
-      const input: WorkspaceConfigInput = {
-        contextWindow: workspaceSettingsForm.contextWindow,
-        autoCompact: workspaceSettingsForm.autoCompact,
-        autoCompactThreshold: workspaceSettingsForm.autoCompactThreshold,
-        reserveOutputTokens: workspaceSettingsForm.reserveOutputTokens,
-        maxAttachmentFiles: workspaceSettingsForm.maxAttachmentFiles,
-        maxAttachmentBytes: workspaceSettingsForm.maxAttachmentBytes,
-        maxTotalBytes: workspaceSettingsForm.maxTotalBytes,
-        commandToolchainPaths: [...workspaceSettingsForm.commandToolchainPaths],
-        mcpServers: workspaceSettingsForm.mcpServers.map((server) => {
-          const stdio = server.transport === 'stdio';
-          return {
-            name: server.name, originalName: server.originalName, transport: server.transport,
-            command: stdio ? server.command : '',
-            args: stdio ? server.argsText.split(/\r?\n/).filter((argument) => argument.length > 0) : [],
-            url: stdio ? '' : server.url, clientMetadataURL: stdio ? '' : server.clientMetadataURL,
-            env: stdio ? server.env.filter((item) => item.name.trim()).map(({ name, value }) => ({ name, value })) : [],
-          };
-        }),
-      };
-      if (previewMode) {
-        workspaceSettingsForm = { ...workspaceSettingsForm, mcpServers: workspaceSettingsForm.mcpServers.map((server) => ({ ...server, args: server.argsText.split(/\r?\n/).filter(Boolean) })) };
-      } else {
-        const saved = await Desktop.SaveWorkspaceConfig(input);
-        workspaceSettingsForm = workspaceSettingsFromView(saved);
-        mcpServers = await Desktop.ListMCPServers(session?.id || '') ?? [];
-      }
-      errorMessage = '';
-    } catch (error) { showError(error); }
-    finally { workspaceSettingsSaving = false; }
-  }
-
-  function addProvider() {
-    providerForms = [...providerForms, { name: `provider-${providerForms.length + 1}`, protocol: 'responses', baseURL: 'https://api.openai.com/v1', apiKey: '', hasAPIKey: false, serverCompaction: false }];
-  }
-
-  function addProfile() {
-    profileForms = [...profileForms, { name: `model-${profileForms.length + 1}`, provider: providerForms[0]?.name ?? '', model: '', maxOutputTokens: 0, supportsInputAudio: false }];
-  }
-
-  async function saveSettings() {
-    if (settingsSaving) return;
-    settingsSaving = true;
-    try {
-      if (appearanceKey(appearanceDraft) !== appearanceKey(appearance)) {
-        if (previewMode) appearance = { ...appearanceDraft };
-        else appearance = await Desktop.SaveAppearanceSettings(appearanceSettingsInput(appearanceDraft));
-        appearanceDraft = { ...appearance };
-        applyAppearanceState(appearance);
-        wallpaperCandidateFile = '';
-        wallpaperObjectURL = '';
-      }
-      if (serializeModelSettings() !== modelSettingsSnapshot) {
-        const selectedSessionID = session?.id;
-        const input = modelSettingsInput();
-        if (!previewMode) models = await Desktop.SaveModelSettings(input);
-        else models = { ...models, configured: true, defaultModel };
-        modelSettingsSnapshot = serializeModelSettings();
-        if (workspace && !previewMode) {
-          if (selectedSessionID) installWorkspaceState(await Desktop.OpenSession(selectedSessionID));
-          else await completeWorkspaceOpen(await Desktop.OpenWorkspace(workspace));
-        }
-      }
-      modal = null;
-    } catch (error) { showError(error); }
-    finally { settingsSaving = false; }
-  }
-
-  async function changeTheme(value: string) {
-    const next = { ...appearance, theme: value };
-    applyAppearanceState(next);
-    if (previewMode) { appearance = next; appearanceDraft = { ...next }; return; }
-    try {
-      await Desktop.SetTheme(value);
-      appearance = next;
-      appearanceDraft = { ...next };
-    } catch (error) {
-      applyAppearanceState(appearance);
-      showError(error);
-    }
-  }
-
-  async function openFolderPicker() {
-    if (previewMode) return;
-    try {
-      const path = await Desktop.PickWorkspace();
-      if (path) await openWorkspace(path);
-    } catch (error) { showError(error); }
   }
 
   async function openWorkspace(path: string, preferredSessionID = '') {
@@ -1776,7 +1131,7 @@ export function createDesktopState() {
     if (preferred) await openSession(preferred.id);
     else if (!previewMode) installWorkspaceState(await Desktop.CreateSession());
     else installWorkspaceState({ ...previewState, workspace: result.workspace });
-    void refreshDesktopProcesses();
+    void processState.refreshDesktopProcesses();
   }
 
   async function confirmWorkspaceSwitch() {
@@ -1785,7 +1140,7 @@ export function createDesktopState() {
     try {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       workspace = '';
-      clearDesktopProcesses();
+      processState.clearDesktopProcesses();
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -1806,7 +1161,7 @@ export function createDesktopState() {
       catch (error) { showError(error); return; }
     }
     workspace = '';
-    clearDesktopProcesses();
+    processState.clearDesktopProcesses();
     pendingSessions = [];
     pendingSessionsError = '';
     session = null;
@@ -1822,7 +1177,7 @@ export function createDesktopState() {
       if (!previewMode) await Desktop.CloseWorkspace(true);
       clearSessionSearch();
       workspace = '';
-      clearDesktopProcesses();
+      processState.clearDesktopProcesses();
       pendingSessions = [];
       pendingSessionsError = '';
       session = null;
@@ -1997,52 +1352,6 @@ export function createDesktopState() {
       sessionActionTarget = null;
     } catch (error) { showError(error); }
     finally { busy = false; }
-  }
-
-  async function openMCPManager() {
-    if (!workspace) return;
-    if (previewMode) {
-      mcpServers = [];
-      workspaceSettingsForm = {
-        contextWindow: 0, autoCompact: true, autoCompactThreshold: 0.8, reserveOutputTokens: 0,
-        maxAttachmentFiles: 0, maxAttachmentBytes: 0, maxTotalBytes: 0, commandToolchainPaths: [], mcpServers: [],
-      };
-      toolchainCandidates = [];
-      modal = 'mcp';
-      return;
-    }
-    try {
-      workspaceSettingsForm = workspaceSettingsFromView(await Desktop.GetWorkspaceConfig());
-      mcpServers = await Desktop.ListMCPServers(session?.id || '') ?? [];
-      toolchainCandidates = await Desktop.DetectCommandToolchains() ?? [];
-      modal = 'mcp';
-    } catch (error) { showError(error); }
-  }
-
-  async function setMCPServerEnabled(server: MCPServerView, enabled: boolean) {
-    if (workOutstanding || pending.length || mcpUpdatingServer) return;
-    mcpUpdatingServer = server.name;
-    try {
-      if (!previewMode) {
-        await Desktop.SetMCPServerEnabled(session?.id || '', server.name, enabled);
-        mcpServers = await Desktop.ListMCPServers(session?.id || '') ?? [];
-      } else {
-        mcpServers = mcpServers.map((item) => item.name === server.name ? { ...item, enabled, connected: enabled } : item);
-      }
-    } catch (error) { showError(error); }
-    finally { mcpUpdatingServer = ''; }
-  }
-
-  async function authenticateMCPServer(server: MCPServerView) {
-    if (workOutstanding || pending.length || mcpUpdatingServer) return;
-    mcpUpdatingServer = server.name;
-    try {
-      if (!previewMode) {
-        await Desktop.AuthenticateMCPServer(session?.id || '', server.name);
-        mcpServers = await Desktop.ListMCPServers(session?.id || '') ?? [];
-      }
-    } catch (error) { showError(error); }
-    finally { mcpUpdatingServer = ''; }
   }
 
   function installControls(controls: SessionControlsView) {
@@ -2629,18 +1938,18 @@ export function createDesktopState() {
       motionPreference.removeEventListener('change', syncMotionPreference);
       compactViewport.removeEventListener('change', syncCompactViewport);
       document.removeEventListener('visibilitychange', syncVisibility);
-      if (wallpaperObjectURL) URL.revokeObjectURL(wallpaperObjectURL);
+      settingsState.dispose();
     };
   });
 
 return {
 get previewMode() { return previewMode; },
-get theme() { return theme; }, set theme(value: typeof theme) { theme = value; },
-get appearanceDraft() { return appearanceDraft; }, set appearanceDraft(value: typeof appearanceDraft) { appearanceDraft = value; },
-get settingsTab() { return settingsTab; }, set settingsTab(value: typeof settingsTab) { settingsTab = value; },
-get wallpaperURL() { return wallpaperURL; }, set wallpaperURL(value: typeof wallpaperURL) { wallpaperURL = value; },
-get activeWallpaperType() { return activeWallpaperType; }, set activeWallpaperType(value: typeof activeWallpaperType) { activeWallpaperType = value; },
-get wallpaperVideo() { return wallpaperVideo; }, set wallpaperVideo(value: typeof wallpaperVideo) { wallpaperVideo = value; },
+get theme() { return settingsState.theme; }, set theme(value: string) { settingsState.theme = value; },
+get appearanceDraft() { return settingsState.appearanceDraft; }, set appearanceDraft(value) { settingsState.appearanceDraft = value; },
+get settingsTab() { return settingsState.settingsTab; }, set settingsTab(value) { settingsState.settingsTab = value; },
+get wallpaperURL() { return settingsState.wallpaperURL; }, set wallpaperURL(value) { settingsState.wallpaperURL = value; },
+get activeWallpaperType() { return settingsState.activeWallpaperType; }, set activeWallpaperType(value) { settingsState.activeWallpaperType = value; },
+get wallpaperVideo() { return settingsState.wallpaperVideo; }, set wallpaperVideo(value) { settingsState.wallpaperVideo = value; },
 get appVisible() { return appVisible; }, set appVisible(value: typeof appVisible) { appVisible = value; },
 get reducedMotion() { return reducedMotion; }, set reducedMotion(value: typeof reducedMotion) { reducedMotion = value; },
 get copiedMessageID() { return copiedMessageID; }, set copiedMessageID(value: typeof copiedMessageID) { copiedMessageID = value; },
@@ -2649,7 +1958,7 @@ get models() { return models; }, set models(value: typeof models) { models = val
 get workspace() { return workspace; }, set workspace(value: typeof workspace) { workspace = value; },
 get workspaceMenuOpen() { return workspaceMenuOpen; }, set workspaceMenuOpen(value: typeof workspaceMenuOpen) { workspaceMenuOpen = value; },
 get sidebarCollapsed() { return sidebarCollapsed; }, set sidebarCollapsed(value: typeof sidebarCollapsed) { sidebarCollapsed = value; },
-get processPopoverOpen() { return processPopoverOpen; }, set processPopoverOpen(value: typeof processPopoverOpen) { processPopoverOpen = value; },
+get processPopoverOpen() { return processState.processPopoverOpen; }, set processPopoverOpen(value: boolean) { processState.processPopoverOpen = value; },
 get sessionFilter() { return sessionFilter; }, set sessionFilter(value: typeof sessionFilter) { sessionFilter = value; },
 get sessionSearchResults() { return sessionSearchResults; }, set sessionSearchResults(value: typeof sessionSearchResults) { sessionSearchResults = value; },
 get sessionSearchLoading() { return sessionSearchLoading; }, set sessionSearchLoading(value: typeof sessionSearchLoading) { sessionSearchLoading = value; },
@@ -2668,19 +1977,19 @@ get pending() { return pending; }, set pending(value: typeof pending) { pending 
 get pendingSessions() { return pendingSessions; }, set pendingSessions(value: typeof pendingSessions) { pendingSessions = value; },
 get pendingSessionsLoading() { return pendingSessionsLoading; }, set pendingSessionsLoading(value: typeof pendingSessionsLoading) { pendingSessionsLoading = value; },
 get pendingSessionsError() { return pendingSessionsError; }, set pendingSessionsError(value: typeof pendingSessionsError) { pendingSessionsError = value; },
-get desktopProcesses() { return desktopProcesses; }, set desktopProcesses(value: typeof desktopProcesses) { desktopProcesses = value; },
-get unavailableProcessSessions() { return unavailableProcessSessions; }, set unavailableProcessSessions(value: typeof unavailableProcessSessions) { unavailableProcessSessions = value; },
-get desktopProcessesLoading() { return desktopProcessesLoading; }, set desktopProcessesLoading(value: typeof desktopProcessesLoading) { desktopProcessesLoading = value; },
-get desktopProcessesError() { return desktopProcessesError; }, set desktopProcessesError(value: typeof desktopProcessesError) { desktopProcessesError = value; },
-get selectedDesktopProcessKey() { return selectedDesktopProcessKey; }, set selectedDesktopProcessKey(value: typeof selectedDesktopProcessKey) { selectedDesktopProcessKey = value; },
-get processOutput() { return processOutput; }, set processOutput(value: typeof processOutput) { processOutput = value; },
-get processOutputError() { return processOutputError; }, set processOutputError(value: typeof processOutputError) { processOutputError = value; },
-get processOutputLoading() { return processOutputLoading; }, set processOutputLoading(value: typeof processOutputLoading) { processOutputLoading = value; },
-get processOutputTruncated() { return processOutputTruncated; }, set processOutputTruncated(value: typeof processOutputTruncated) { processOutputTruncated = value; },
-get processOutputStatus() { return processOutputStatus; }, set processOutputStatus(value: typeof processOutputStatus) { processOutputStatus = value; },
-get processOutputEndCursor() { return processOutputEndCursor; }, set processOutputEndCursor(value: typeof processOutputEndCursor) { processOutputEndCursor = value; },
-get processLogView() { return processLogView; }, set processLogView(value: typeof processLogView) { processLogView = value; },
-get stoppingDesktopProcessKey() { return stoppingDesktopProcessKey; }, set stoppingDesktopProcessKey(value: typeof stoppingDesktopProcessKey) { stoppingDesktopProcessKey = value; },
+get desktopProcesses() { return processState.desktopProcesses; }, set desktopProcesses(value: DesktopProcess[]) { processState.desktopProcesses = value; },
+get unavailableProcessSessions() { return processState.unavailableProcessSessions; }, set unavailableProcessSessions(value: DesktopProcessSession[]) { processState.unavailableProcessSessions = value; },
+get desktopProcessesLoading() { return processState.desktopProcessesLoading; }, set desktopProcessesLoading(value: boolean) { processState.desktopProcessesLoading = value; },
+get desktopProcessesError() { return processState.desktopProcessesError; }, set desktopProcessesError(value: string) { processState.desktopProcessesError = value; },
+get selectedDesktopProcessKey() { return processState.selectedDesktopProcessKey; }, set selectedDesktopProcessKey(value: string) { processState.selectedDesktopProcessKey = value; },
+get processOutput() { return processState.processOutput; }, set processOutput(value: string) { processState.processOutput = value; },
+get processOutputError() { return processState.processOutputError; }, set processOutputError(value: string) { processState.processOutputError = value; },
+get processOutputLoading() { return processState.processOutputLoading; }, set processOutputLoading(value: boolean) { processState.processOutputLoading = value; },
+get processOutputTruncated() { return processState.processOutputTruncated; }, set processOutputTruncated(value: boolean) { processState.processOutputTruncated = value; },
+get processOutputStatus() { return processState.processOutputStatus; }, set processOutputStatus(value: string) { processState.processOutputStatus = value; },
+get processOutputEndCursor() { return processState.processOutputEndCursor; }, set processOutputEndCursor(value: number) { processState.processOutputEndCursor = value; },
+get processLogView() { return processState.processLogView; }, set processLogView(value: HTMLElement | undefined) { processState.processLogView = value; },
+get stoppingDesktopProcessKey() { return processState.stoppingDesktopProcessKey; }, set stoppingDesktopProcessKey(value: string) { processState.stoppingDesktopProcessKey = value; },
 get messages() { return messages; }, set messages(value: typeof messages) { messages = value; },
 get activities() { return activities; }, set activities(value: typeof activities) { activities = value; },
 get running() { return running; }, set running(value: typeof running) { running = value; },
@@ -2696,24 +2005,25 @@ get modal() { return modal; }, set modal(value: typeof modal) { modal = value; }
 get planReview() { return planReview; }, set planReview(value: typeof planReview) { planReview = value; },
 get answerValues() { return answerValues; }, set answerValues(value: typeof answerValues) { answerValues = value; },
 get noteValues() { return noteValues; }, set noteValues(value: typeof noteValues) { noteValues = value; },
-get providerForms() { return providerForms; }, set providerForms(value: typeof providerForms) { providerForms = value; },
-get profileForms() { return profileForms; }, set profileForms(value: typeof profileForms) { profileForms = value; },
-get defaultModel() { return defaultModel; }, set defaultModel(value: typeof defaultModel) { defaultModel = value; },
-get maxParallelAgents() { return maxParallelAgents; }, set maxParallelAgents(value: typeof maxParallelAgents) { maxParallelAgents = value; },
-get settingsSaving() { return settingsSaving; }, set settingsSaving(value: typeof settingsSaving) { settingsSaving = value; },
+get providerForms() { return settingsState.providerForms; }, set providerForms(value) { settingsState.providerForms = value; },
+get profileForms() { return settingsState.profileForms; }, set profileForms(value) { settingsState.profileForms = value; },
+get defaultModel() { return settingsState.defaultModel; }, set defaultModel(value) { settingsState.defaultModel = value; },
+get maxParallelAgents() { return settingsState.maxParallelAgents; }, set maxParallelAgents(value) { settingsState.maxParallelAgents = value; },
+get settingsSaving() { return settingsState.settingsSaving; }, set settingsSaving(value) { settingsState.settingsSaving = value; },
 get editDraft() { return editDraft; }, set editDraft(value: typeof editDraft) { editDraft = value; },
 get editConfirmation() { return editConfirmation; }, set editConfirmation(value: typeof editConfirmation) { editConfirmation = value; },
-get mcpUpdatingServer() { return mcpUpdatingServer; }, set mcpUpdatingServer(value: typeof mcpUpdatingServer) { mcpUpdatingServer = value; },
-get workspaceSettingsForm() { return workspaceSettingsForm; }, set workspaceSettingsForm(value: typeof workspaceSettingsForm) { workspaceSettingsForm = value; },
-get workspaceSettingsSaving() { return workspaceSettingsSaving; }, set workspaceSettingsSaving(value: typeof workspaceSettingsSaving) { workspaceSettingsSaving = value; },
-get toolchainCandidates() { return toolchainCandidates; }, set toolchainCandidates(value: typeof toolchainCandidates) { toolchainCandidates = value; },
-get toolchainDetectionLoading() { return toolchainDetectionLoading; }, set toolchainDetectionLoading(value: typeof toolchainDetectionLoading) { toolchainDetectionLoading = value; },
+get mcpServers() { return settingsState.mcpServers; }, set mcpServers(value) { settingsState.mcpServers = value; },
+get mcpUpdatingServer() { return settingsState.mcpUpdatingServer; }, set mcpUpdatingServer(value) { settingsState.mcpUpdatingServer = value; },
+get workspaceSettingsForm() { return settingsState.workspaceSettingsForm; }, set workspaceSettingsForm(value) { settingsState.workspaceSettingsForm = value; },
+get workspaceSettingsSaving() { return settingsState.workspaceSettingsSaving; }, set workspaceSettingsSaving(value) { settingsState.workspaceSettingsSaving = value; },
+get toolchainCandidates() { return settingsState.toolchainCandidates; }, set toolchainCandidates(value) { settingsState.toolchainCandidates = value; },
+get toolchainDetectionLoading() { return settingsState.toolchainDetectionLoading; }, set toolchainDetectionLoading(value) { settingsState.toolchainDetectionLoading = value; },
 get cancellingQueuedExecution() { return cancellingQueuedExecution; }, set cancellingQueuedExecution(value: typeof cancellingQueuedExecution) { cancellingQueuedExecution = value; },
 get canWrite() { return canWrite; },
 get canSend() { return canSend; },
 get canEditMessages() { return canEditMessages; },
-get appearanceDirty() { return appearanceDirty; },
-get modelSettingsDirty() { return modelSettingsDirty; },
+get appearanceDirty() { return settingsState.appearanceDirty; },
+get modelSettingsDirty() { return settingsState.modelSettingsDirty; },
 get effectiveDarkTheme() { return effectiveDarkTheme; },
 get pageTitle() { return pageTitle; },
 get queuedMessageCount() { return queuedMessageCount; },
@@ -2721,47 +2031,47 @@ get workOutstanding() { return workOutstanding; },
 get workspaceHasOutstanding() { return workspaceHasOutstanding; },
 get visibleSessions() { return visibleSessions; },
 get pendingRequestCount() { return pendingRequestCount; },
-get activeDesktopProcessCount() { return activeDesktopProcessCount; },
-get selectedDesktopProcess() { return selectedDesktopProcess; },
+get activeDesktopProcessCount() { return processState.activeDesktopProcessCount; },
+get selectedDesktopProcess() { return processState.selectedDesktopProcess; },
 get executionTimeline() { return executionTimeline; },
 executionBlockState,
 executionBlockLabel,
 executionBlockStateClass,
-previewAppearanceDraft,
+previewAppearanceDraft: settingsState.previewAppearanceDraft,
 toggleActivityRun,
 refreshPendingSessions,
-desktopProcessKey,
-processStatusActive,
-processStatusLabel,
-unavailableProcessStatusLabel,
-refreshDesktopProcesses,
+desktopProcessKey: processState.desktopProcessKey,
+processStatusActive: processState.processStatusActive,
+processStatusLabel: processState.processStatusLabel,
+unavailableProcessStatusLabel: processState.unavailableProcessStatusLabel,
+refreshDesktopProcesses: processState.refreshDesktopProcesses,
 selectSidebarView,
-selectDesktopProcess,
-handleProcessLogScroll,
-stopDesktopProcess,
+selectDesktopProcess: processState.selectDesktopProcess,
+handleProcessLogScroll: processState.handleProcessLogScroll,
+stopDesktopProcess: processState.stopDesktopProcess,
 pendingKindLabel,
 formatArguments,
 showError,
-setSettingsForm,
-cancelSettings,
-setWallpaperType,
-resetWallpaper,
-chooseWallpaper,
-previewBrowserWallpaper,
-addMCPServer,
-addMCPEnvironment,
-toolchainPathAuthorized,
-addToolchainPath,
-removeToolchainPath,
-detectCommandToolchains,
-pickCommandToolchainFolder,
-mcpStatus,
-saveWorkspaceSettings,
-addProvider,
-addProfile,
-saveSettings,
-changeTheme,
-openFolderPicker,
+setSettingsForm: settingsState.setSettingsForm,
+cancelSettings: settingsState.cancelSettings,
+setWallpaperType: settingsState.setWallpaperType,
+resetWallpaper: settingsState.resetWallpaper,
+chooseWallpaper: settingsState.chooseWallpaper,
+previewBrowserWallpaper: settingsState.previewBrowserWallpaper,
+addMCPServer: settingsState.addMCPServer,
+addMCPEnvironment: settingsState.addMCPEnvironment,
+toolchainPathAuthorized: settingsState.toolchainPathAuthorized,
+addToolchainPath: settingsState.addToolchainPath,
+removeToolchainPath: settingsState.removeToolchainPath,
+detectCommandToolchains: settingsState.detectCommandToolchains,
+pickCommandToolchainFolder: settingsState.pickCommandToolchainFolder,
+mcpStatus: settingsState.mcpStatus,
+saveWorkspaceSettings: settingsState.saveWorkspaceSettings,
+addProvider: settingsState.addProvider,
+addProfile: settingsState.addProfile,
+saveSettings: settingsState.saveSettings,
+changeTheme: settingsState.changeTheme,
+openFolderPicker: settingsState.openFolderPicker,
 openWorkspace,
 confirmWorkspaceSwitch,
 closeWorkspace,
@@ -2775,9 +2085,9 @@ beginRenameSession,
 beginDeleteSession,
 saveSessionTitle,
 confirmDeleteSession,
-openMCPManager,
-setMCPServerEnabled,
-authenticateMCPServer,
+openMCPManager: settingsState.openMCPManager,
+setMCPServerEnabled: settingsState.setMCPServerEnabled,
+authenticateMCPServer: settingsState.authenticateMCPServer,
 setPermission,
 setSessionModel,
 setPlanMode,

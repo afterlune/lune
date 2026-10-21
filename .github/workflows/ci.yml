@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: off
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cmd/desktop/frontend/package-lock.json
+      - name: Check Go formatting
+        shell: pwsh
+        run: |
+          $files = git ls-files '*.go'
+          $unformatted = gofmt -l $files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($unformatted) { $unformatted; exit 1 }
+      - name: Vet Go packages
+        # The ConPTY test passes an opaque HPCON handle as lpValue, as required by Win32.
+        # The unsafeptr analyzer cannot distinguish that API contract from an invalid Go pointer conversion.
+        run: go vet -unsafeptr=false ./...
+      - name: Test Go packages
+        run: go test -trimpath ./...
+      - name: Check and test frontend
+        shell: pwsh
+        working-directory: cmd/desktop/frontend
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          npx playwright install chromium
+          npm run test:screenshots
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
+          Add-Content -Path $env:GITHUB_PATH -Value "$(go env GOPATH)\bin"
+      - name: Build desktop app
+        shell: pwsh
+        run: ./scripts/build-desktop.ps1
+      - name: Check generated files are current
+        shell: pwsh
+        run: git diff --exit-code
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Vet supported Go packages
+        run: go vet ./internal/app ./internal/cli ./internal/tui ./internal/settings ./internal/workspacereview
+      - name: Test supported Go packages
+        run: go test -trimpath ./internal/app ./internal/cli ./internal/tui ./internal/settings ./internal/workspacereview
+      - name: Cross-build Linux binaries
+        shell: bash
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/lune-$arch" ./cmd
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/lune-sandbox-$arch" github.com/afterlune/luneCore/cmd/lune-sandbox
+          done

@@ -25,6 +25,16 @@ export interface ExecutionOptions {
     "team_quorum"?: number;
 
     /**
+     * MaxTeamChildrenPerAgent caps all direct children dispatched by one agent; zero inherits the host default.
+     */
+    "max_team_children_per_agent"?: number;
+
+    /**
+     * MaxTeamDepth counts the root as depth zero; zero inherits the host default.
+     */
+    "max_team_depth"?: number;
+
+    /**
      * TokenBudget caps total input and output tokens across the whole execution.
      * Zero means unlimited when effective; task overrides inherit the host
      * default at zero. Recovery may raise or replace this absolute total cap.

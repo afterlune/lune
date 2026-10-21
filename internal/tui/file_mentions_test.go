@@ -348,4 +348,3 @@ func TestGitModifiedFilesBoost(t *testing.T) {
 		t.Errorf("expected top search result to be modified file, got: %+v", rankedSearch[0])
 	}
 }
-

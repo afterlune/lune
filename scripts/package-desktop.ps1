@@ -10,7 +10,7 @@ $sysoPath = Join-Path $desktopProject 'lune_desktop_package_windows_amd64.syso'
 
 $wails = Get-Command wails3 -ErrorAction SilentlyContinue
 if ($null -eq $wails) {
-	throw 'Install the pinned Wails CLI: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.30'
+	throw 'Install the pinned Wails CLI: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34'
 }
 
 $go = Get-Command go -ErrorAction SilentlyContinue
