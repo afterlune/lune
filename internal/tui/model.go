@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/afterlune/lune/internal/settings"
+	"github.com/afterlune/lune/internal/tui/filemention"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -61,7 +62,7 @@ type tuiModel struct {
 	autocompleteIndex        int
 	autocompleteStart        int
 	autocompleteEnd          int
-	fileScanner              *WorkspaceFileScanner
+	fileScanner              *filemention.Scanner
 	scrolledUp               bool
 	runningExecution         string
 	runtimeCancel            context.CancelFunc
@@ -196,7 +197,7 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		currentModel: currentModel, currentModelProfile: currentModel,
 		permissionMode: permMode, savedMode: permMode,
 		composer: comp, viewport: vp, entries: []TranscriptEntry{},
-		fileScanner: NewWorkspaceFileScanner(workspace), reasoningLiveCollapsed: true,
+		fileScanner: filemention.NewScanner(workspace), reasoningLiveCollapsed: true,
 		transcriptDirty: true,
 		awaitingTurns:   map[string]uint64{}, terminalEvents: map[string]core.Event{},
 		agentMetrics: map[string]*agentRuntimeMetrics{},
@@ -435,13 +436,13 @@ func (m *tuiModel) invalidateEntryCache() {
 	m.transcriptDirty = true
 }
 
-func (m *tuiModel) getFileScanner() *WorkspaceFileScanner {
+func (m *tuiModel) getFileScanner() *filemention.Scanner {
 	if m.fileScanner == nil {
 		ws := m.workspace
 		if ws == "" && m.client != nil {
 			ws = m.client.Workspace()
 		}
-		m.fileScanner = NewWorkspaceFileScanner(ws)
+		m.fileScanner = filemention.NewScanner(ws)
 	}
 	return m.fileScanner
 }

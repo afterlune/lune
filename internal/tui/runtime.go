@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/tui/filemention"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -180,10 +181,10 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		}
 	}
 
-	attachments := []FileAttachment(nil)
+	attachments := []filemention.Attachment(nil)
 	augmentedText := text
 	if expandMentions {
-		attachments, augmentedText = ExpandFileMentions(text, m.workspace)
+		attachments, augmentedText = filemention.Expand(text, m.workspace)
 	}
 	var attachedLabels []string
 	for _, att := range attachments {

@@ -1,4 +1,4 @@
-package tui
+package markdown
 
 import (
 	"regexp"
@@ -7,6 +7,16 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// Palette contains the theme colors used by terminal Markdown rendering.
+type Palette struct {
+	TextPrimary  string
+	TextMuted    string
+	AccentBlue   string
+	InlineCodeFg string
+	CodeBlockBg  string
+	Border       string
+}
 
 var (
 	reBold       = regexp.MustCompile(`\*\*(.*?)\*\*`)
@@ -20,6 +30,20 @@ const (
 	escapedPipePlaceholder = "\x00PIPE\x00"
 	wrapBreakpoints        = " ,.:;!?、。，；！？"
 )
+
+func itoaByte(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [3]byte
+	i := len(buf)
+	for v > 0 && i > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
+}
 
 func isBoxDrawingLine(s string) bool {
 	for _, r := range s {
@@ -65,7 +89,7 @@ func splitCodeComment(line string) (string, string) {
 	return line, ""
 }
 
-func renderCodeBlockRow(line string, blockWidth int, th Theme) string {
+func renderCodeBlockRow(line string, blockWidth int, th Palette) string {
 	codeStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(th.TextPrimary))
 	if th.CodeBlockBg != "" {
@@ -91,8 +115,8 @@ func renderCodeBlockRow(line string, blockWidth int, th Theme) string {
 	return b.String()
 }
 
-// RenderMarkdown renders markdown text using terminal styles, wrapping lines to fit width.
-func RenderMarkdown(text string, width int) string {
+// Render renders markdown text with terminal styles, wrapping lines to fit width.
+func Render(text string, width int, palette Palette) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -103,7 +127,7 @@ func RenderMarkdown(text string, width int) string {
 	result := make([]string, 0, len(lines))
 	inCodeBlock := false
 
-	th := activeTheme()
+	th := palette
 	h1Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	h3Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextMuted))
@@ -208,7 +232,7 @@ func RenderMarkdown(text string, width int) string {
 				rowLines = append(rowLines, lines[i])
 				i++
 			}
-			tableLines := renderMarkdownTable(headerLine, rowLines, width)
+			tableLines := renderMarkdownTable(headerLine, rowLines, width, th)
 			result = append(result, tableLines...)
 			continue
 		}
@@ -306,8 +330,7 @@ func RenderMarkdown(text string, width int) string {
 	return strings.Join(result, "\n")
 }
 
-func formatInline(line string) string {
-	th := activeTheme()
+func formatInline(line string, th Palette) string {
 	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.InlineCodeFg))
 	boldStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	fileRefStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
@@ -404,14 +427,14 @@ func isTableDelimiterRow(line string) bool {
 }
 
 // renderMarkdownTable renders a clean, borderless horizontal-divider table (Codex style).
-func renderMarkdownTable(headerLine string, rowLines []string, width int) []string {
+func renderMarkdownTable(headerLine string, rowLines []string, width int, th Palette) []string {
 	headers := splitTableRow(headerLine)
 	numCols := len(headers)
 	if numCols == 0 {
 		return nil
 	}
 	for i := range headers {
-		headers[i] = formatInline(headers[i])
+		headers[i] = formatInline(headers[i], th)
 	}
 
 	var rows [][]string
@@ -424,7 +447,7 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int) []stri
 			rowCells = rowCells[:numCols]
 		}
 		for i := range rowCells {
-			rowCells[i] = formatInline(rowCells[i])
+			rowCells[i] = formatInline(rowCells[i], th)
 		}
 		rows = append(rows, rowCells)
 	}
@@ -478,7 +501,6 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int) []stri
 		}
 	}
 
-	th := activeTheme()
 	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border))
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
 	cellStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary))
@@ -537,9 +559,9 @@ var (
 	reProposedPlanBlock = regexp.MustCompile(`(?is)<proposed_plan>.*?</proposed_plan>`)
 )
 
-// cleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text,
+// CleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text,
 // but preserves inline code mentions like `<proposed_plan>`.
-func cleanProposedPlanTags(s string) string {
+func CleanProposedPlanTags(s string) string {
 	if !strings.Contains(strings.ToLower(s), "proposed_plan") {
 		return strings.TrimSpace(s)
 	}
@@ -556,10 +578,10 @@ func cleanProposedPlanTags(s string) string {
 	return strings.TrimSpace(stripped)
 }
 
-// stripProposedPlan removes complete <proposed_plan>...</proposed_plan> blocks
+// StripProposedPlan removes complete <proposed_plan>...</proposed_plan> blocks
 // (their content is rendered separately in the plan review card) and any dangling
 // standalone tags, while preserving inline code mentions like `<proposed_plan>`.
-func stripProposedPlan(text string) string {
+func StripProposedPlan(text string) string {
 	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
 		return strings.TrimSpace(text)
 	}
@@ -573,15 +595,15 @@ func stripProposedPlan(text string) string {
 	for idx, token := range codeTokens {
 		stripped = strings.ReplaceAll(stripped, "\x00CODE_"+itoaByte(idx)+"\x00", token)
 	}
-	return cleanProposedPlanTags(stripped)
+	return CleanProposedPlanTags(stripped)
 }
 
-// extractProposedPlan extracts one complete, non-empty <proposed_plan> block and
+// ExtractProposedPlan extracts one complete, non-empty <proposed_plan> block and
 // the remaining assistant text. A dangling open tag is not a plan. Inline mentions
 // like `<proposed_plan>` are preserved.
-func extractProposedPlan(text string) (string, string) {
+func ExtractProposedPlan(text string) (string, string) {
 	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
-		return "", cleanProposedPlanTags(text)
+		return "", CleanProposedPlanTags(text)
 	}
 	var codeTokens []string
 	protected := reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
@@ -593,27 +615,27 @@ func extractProposedPlan(text string) (string, string) {
 	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
 	start := strings.Index(protected, openTag)
 	if start < 0 {
-		return "", cleanProposedPlanTags(text)
+		return "", CleanProposedPlanTags(text)
 	}
 	innerStart := start + len(openTag)
 	relEnd := strings.Index(protected[innerStart:], closeTag)
 	if relEnd < 0 {
 		// Unclosed tag: keep the prose after the tag, but do not produce a plan.
-		return "", stripProposedPlan(text)
+		return "", StripProposedPlan(text)
 	}
 	end := innerStart + relEnd + len(closeTag)
 	rawPlan := protected[innerStart : innerStart+relEnd]
 	for idx, token := range codeTokens {
 		rawPlan = strings.ReplaceAll(rawPlan, "\x00CODE_"+itoaByte(idx)+"\x00", token)
 	}
-	planText := cleanProposedPlanTags(rawPlan)
+	planText := CleanProposedPlanTags(rawPlan)
 	if planText == "" || strings.Contains(protected[innerStart:], openTag) || strings.Contains(protected[end:], closeTag) {
-		return "", stripProposedPlan(text)
+		return "", StripProposedPlan(text)
 	}
 
 	restProtected := protected[:start] + protected[end:]
 	for idx, token := range codeTokens {
 		restProtected = strings.ReplaceAll(restProtected, "\x00CODE_"+itoaByte(idx)+"\x00", token)
 	}
-	return planText, cleanProposedPlanTags(restProtected)
+	return planText, CleanProposedPlanTags(restProtected)
 }

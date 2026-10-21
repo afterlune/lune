@@ -1011,7 +1011,7 @@ func TestComposerBandUsesThemeCardBackground(t *testing.T) {
 
 func TestMarkdownInlineCodeProtectsFileRefsAndBold(t *testing.T) {
 	md := "Check `internal/tui/view.go:100` and `__init__.py` in `cmd/main.go`."
-	rendered := RenderMarkdown(md, 80)
+	rendered := renderMarkdown(md, 80)
 	stripped := ansi.Strip(rendered)
 	if !strings.Contains(stripped, "internal/tui/view.go:100") {
 		t.Errorf("expected inline code file path to remain intact, got %q", stripped)
@@ -1174,26 +1174,16 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 }
 
 func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
-	// 1. splitCodeComment separates trailing # and // comments while respecting quotes
-	code, comment := splitCodeComment("gofmt -l internal/desktop # 期望无输出")
-	if code != "gofmt -l internal/desktop " || comment != "# 期望无输出" {
-		t.Fatalf("unexpected splitCodeComment result: code=%q, comment=%q", code, comment)
-	}
-	quotedCode, quotedComment := splitCodeComment(`git commit -m "fix #123 issue" # trailing comment`)
-	if quotedCode != `git commit -m "fix #123 issue" ` || quotedComment != "# trailing comment" {
-		t.Fatalf("expected # inside quotes to be preserved, got code=%q, comment=%q", quotedCode, quotedComment)
-	}
-
-	// 2. Wide terminal prose wraps to fit the terminal width naturally without artificial cutoff
+	// Wide terminal prose wraps to fit the terminal width naturally without artificial cutoff.
 	longProse := strings.Repeat("这是一段非常长的技术方案说明文字，用于测试在超宽两百列终端下自动根据宽度自然排版换行。", 4)
-	renderedProse := RenderMarkdown(longProse, 220)
+	renderedProse := renderMarkdown(longProse, 220)
 	for _, line := range strings.Split(renderedProse, "\n") {
 		if w := ansi.StringWidth(line); w > 220 {
 			t.Fatalf("expected prose line width <= 220 on 220-col terminal, got %d: %q", w, ansi.Strip(line))
 		}
 	}
 
-	// 3. KindPlan renders with single left rail │ and clean code block indent (no double │ │ rail)
+	// KindPlan renders with single left rail │ and clean code block indent (no double │ │ rail).
 	planEntry := TranscriptEntry{
 		Kind: KindPlan,
 		Text: "5. **验证**\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
@@ -1207,19 +1197,6 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 	}
 	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
 		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)
-	}
-}
-
-func TestInlineMarkdownTokenizationSafety(t *testing.T) {
-	// Verify that bold file names like **TUI.md** do not corrupt ANSI escape codes (no '218mTUI.md')
-	input := "请检查 **TUI.md** 以及 `go test -v ./...` 的输出。"
-	formatted := formatInline(input)
-	stripped := ansi.Strip(formatted)
-	if strings.Contains(stripped, "218m") {
-		t.Fatalf("corrupted ANSI sequence leaked into text: %q", stripped)
-	}
-	if !strings.Contains(stripped, "TUI.md") {
-		t.Fatalf("expected stripped output to contain TUI.md, got %q", stripped)
 	}
 }
 

@@ -1,4 +1,4 @@
-package tui
+package filemention
 
 import (
 	"context"
@@ -17,31 +17,31 @@ import (
 	"unicode/utf8"
 )
 
-// WorkspaceFile represents a project file available for @ mentions.
-type WorkspaceFile struct {
+// File represents a project file available for @ mentions.
+type File struct {
 	Path       string // Relative slash-separated path, e.g. "internal/tui/tui.go"
-	PathLower  string // Pre-lowercased path for zero-allocation fuzzy matching
+	pathLower  string // Pre-lowercased path for zero-allocation fuzzy matching
 	Name       string // Base file name, e.g. "tui.go"
-	NameLower  string // Pre-lowercased name for zero-allocation fuzzy matching
+	nameLower  string // Pre-lowercased name for zero-allocation fuzzy matching
 	Size       int64  // File size in bytes
 	ModTime    time.Time
 	IsModified bool // True if modified/untracked in git status
 }
 
-// WorkspaceFileScanner scans and caches workspace files for fuzzy matching.
-type WorkspaceFileScanner struct {
+// Scanner scans and caches workspace files for fuzzy matching.
+type Scanner struct {
 	workspace string
 	ttl       time.Duration
 	maxFiles  int
 
 	mu       sync.RWMutex
-	files    []WorkspaceFile
+	files    []File
 	cachedAt time.Time
 }
 
-// NewWorkspaceFileScanner creates a scanner for the given workspace root.
-func NewWorkspaceFileScanner(workspace string) *WorkspaceFileScanner {
-	return &WorkspaceFileScanner{
+// NewScanner creates a scanner for the given workspace root.
+func NewScanner(workspace string) *Scanner {
+	return &Scanner{
 		workspace: workspace,
 		ttl:       8 * time.Second,
 		maxFiles:  5000,
@@ -49,7 +49,7 @@ func NewWorkspaceFileScanner(workspace string) *WorkspaceFileScanner {
 }
 
 // Files returns the cached list of workspace files, refreshing if expired.
-func (s *WorkspaceFileScanner) Files() []WorkspaceFile {
+func (s *Scanner) Files() []File {
 	if s == nil || s.workspace == "" {
 		return nil
 	}
@@ -76,9 +76,9 @@ func (s *WorkspaceFileScanner) Files() []WorkspaceFile {
 }
 
 // Search returns up to limit files matching the query, ranked by relevance.
-func (s *WorkspaceFileScanner) Search(query string, limit int) []WorkspaceFile {
+func (s *Scanner) Search(query string, limit int) []File {
 	files := s.Files()
-	return FuzzyMatchFiles(files, query, limit)
+	return FuzzyMatch(files, query, limit)
 }
 
 // isIgnoredDirectory checks if a directory should be skipped during scanning.
@@ -106,7 +106,7 @@ func isIgnoredExtension(ext string) bool {
 }
 
 // gitModifiedFiles returns a set of relative file paths currently modified according to git status.
-func (s *WorkspaceFileScanner) gitModifiedFiles() map[string]bool {
+func (s *Scanner) gitModifiedFiles() map[string]bool {
 	if s.workspace == "" {
 		return nil
 	}
@@ -137,13 +137,13 @@ func (s *WorkspaceFileScanner) gitModifiedFiles() map[string]bool {
 }
 
 // scanWorkspace walks the workspace directory and collects matching files.
-func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
+func (s *Scanner) scanWorkspace() []File {
 	if s.workspace == "" {
 		return nil
 	}
 
 	modifiedMap := s.gitModifiedFiles()
-	var results []WorkspaceFile
+	var results []File
 	root := s.workspace
 
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -175,11 +175,11 @@ func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
 		}
 
 		slashPath := filepath.ToSlash(relPath)
-		results = append(results, WorkspaceFile{
+		results = append(results, File{
 			Path:       slashPath,
-			PathLower:  strings.ToLower(slashPath),
+			pathLower:  strings.ToLower(slashPath),
 			Name:       d.Name(),
-			NameLower:  strings.ToLower(d.Name()),
+			nameLower:  strings.ToLower(d.Name()),
 			Size:       info.Size(),
 			ModTime:    info.ModTime(),
 			IsModified: modifiedMap[slashPath],
@@ -195,12 +195,12 @@ func (s *WorkspaceFileScanner) scanWorkspace() []WorkspaceFile {
 }
 
 type scoredFile struct {
-	file  WorkspaceFile
+	file  File
 	score int
 }
 
-// FuzzyMatchFiles filters and ranks workspace files against a search query.
-func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []WorkspaceFile {
+// FuzzyMatch filters and ranks workspace files against a search query.
+func FuzzyMatch(files []File, query string, limit int) []File {
 	if limit <= 0 {
 		limit = 8
 	}
@@ -210,7 +210,7 @@ func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []Workspace
 
 	if q == "" {
 		// No query: return modified files first, then sorted alphabetically by path
-		result := make([]WorkspaceFile, len(files))
+		result := make([]File, len(files))
 		copy(result, files)
 		sort.Slice(result, func(i, j int) bool {
 			if result[i].IsModified != result[j].IsModified {
@@ -246,19 +246,19 @@ func FuzzyMatchFiles(files []WorkspaceFile, query string, limit int) []Workspace
 	})
 
 	count := min(limit, len(scored))
-	out := make([]WorkspaceFile, count)
+	out := make([]File, count)
 	for i := 0; i < count; i++ {
 		out[i] = scored[i].file
 	}
 	return out
 }
 
-func calculateMatchScore(f WorkspaceFile, q string) int {
-	nameLower := f.NameLower
+func calculateMatchScore(f File, q string) int {
+	nameLower := f.nameLower
 	if nameLower == "" {
 		nameLower = strings.ToLower(f.Name)
 	}
-	pathLower := f.PathLower
+	pathLower := f.pathLower
 	if pathLower == "" {
 		pathLower = strings.ToLower(f.Path)
 	}
@@ -429,8 +429,8 @@ func parseLineRangeSuffix(token string) (cleanPath string, startLine, endLine in
 	return token, 0, 0
 }
 
-// FileAttachment represents a workspace file referenced via @mention with its loaded content.
-type FileAttachment struct {
+// Attachment represents a workspace file referenced via @mention with its loaded content.
+type Attachment struct {
 	Path      string // Relative slash path, e.g. "internal/tui/view.go"
 	StartLine int    // 1-indexed start line, 0 if full file
 	EndLine   int    // 1-indexed end line, 0 if full file
@@ -442,15 +442,15 @@ type FileAttachment struct {
 // maxAttachmentSizeBytes is the limit per file to prevent blowing up the context window.
 const maxAttachmentSizeBytes = 120 * 1024 // 120 KB
 
-// ExpandFileMentions parses @workspace/path mentions from the input prompt, verifies their
+// Expand parses @workspace/path mentions from the input prompt, verifies their
 // existence within workspace, extracts content (and line ranges if specified), and returns
 // both the attachments and the augmented prompt text with structured context blocks.
-func ExpandFileMentions(text string, workspace string) ([]FileAttachment, string) {
+func Expand(text string, workspace string) ([]Attachment, string) {
 	if workspace == "" || !strings.Contains(text, "@") {
 		return nil, text
 	}
 
-	var attachments []FileAttachment
+	var attachments []Attachment
 	seen := make(map[string]bool)
 
 	// Scan through text for @ tokens
@@ -554,7 +554,7 @@ func ExpandFileMentions(text string, workspace string) ([]FileAttachment, string
 		}
 
 		seen[dedupKey] = true
-		attachments = append(attachments, FileAttachment{
+		attachments = append(attachments, Attachment{
 			Path:      cleanPath,
 			StartLine: startLine,
 			EndLine:   endLine,

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 )
 
 func (m *tuiModel) flushReasoningEntry() {
@@ -44,7 +46,7 @@ func (m *tuiModel) flushStreamTextEntry() {
 	if m.currentStreamText == "" {
 		return
 	}
-	text := stripProposedPlan(m.currentStreamText)
+	text := tuiMarkdown.StripProposedPlan(m.currentStreamText)
 	m.currentStreamText = ""
 	if strings.TrimSpace(text) == "" {
 		return
@@ -87,7 +89,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	// <proposed_plan>...</proposed_plan> block. Never infer a plan from a dangling
 	// or literal tag in the assistant text: that used to turn ordinary replies
 	// (including greetings that merely mention the tag) into empty plan reviews.
-	proposedPlan = cleanProposedPlanTags(proposedPlan)
+	proposedPlan = tuiMarkdown.CleanProposedPlanTags(proposedPlan)
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindUser {
 			break
@@ -95,14 +97,14 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		if m.entries[i].Kind != KindAssistant || !strings.Contains(strings.ToLower(m.entries[i].Text), "proposed_plan") {
 			continue
 		}
-		m.entries[i].Text = stripProposedPlan(m.entries[i].Text)
+		m.entries[i].Text = tuiMarkdown.StripProposedPlan(m.entries[i].Text)
 		if strings.TrimSpace(m.entries[i].Text) == "" {
 			m.entries = append(m.entries[:i], m.entries[i+1:]...)
 		}
 		m.invalidateEntryCache()
 	}
 
-	text = stripProposedPlan(text)
+	text = tuiMarkdown.StripProposedPlan(text)
 
 	var turnDur time.Duration
 	assistantIndex := m.assistantEntryIndex(executionID)

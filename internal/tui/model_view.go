@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -237,7 +238,7 @@ func (m *tuiModel) refreshViewportContent() {
 		if m.currentStreamText != "" {
 			streamEntry := TranscriptEntry{
 				Kind: KindAssistant,
-				Text: stripProposedPlan(m.currentStreamText),
+				Text: tuiMarkdown.StripProposedPlan(m.currentStreamText),
 			}
 			if strings.TrimSpace(streamEntry.Text) != "" {
 				blocks = append(blocks, renderEntry(streamEntry, contentWidth))

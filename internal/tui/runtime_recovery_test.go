@@ -65,45 +65,6 @@ func BenchmarkRefreshViewportContent_Uncached(b *testing.B) {
 	}
 }
 
-func BenchmarkRenderMarkdown(b *testing.B) {
-	sample := `# System Architecture
-This document outlines the **core design** of the system.
-Here are the primary components:
-- Storage engine with SQLite and WAL mode
-- Transport layer with WebSocket and JSON-RPC
-- Terminal user interface with Lipgloss styling
-
-` + "```go\nfunc Process(ctx context.Context) error {\n\treturn nil\n}\n```\n" + `
-Please refer to ` + "`internal/tui/model.go`" + ` for details.`
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = RenderMarkdown(sample, 80)
-	}
-}
-
-func BenchmarkFuzzyMatchFiles_5000(b *testing.B) {
-	files := make([]WorkspaceFile, 5000)
-	for i := 0; i < 5000; i++ {
-		p := fmt.Sprintf("internal/pkg%d/submodule/service_%d_handler.go", i%20, i)
-		name := fmt.Sprintf("service_%d_handler.go", i)
-		files[i] = WorkspaceFile{
-			Path:      p,
-			PathLower: strings.ToLower(p),
-			Name:      name,
-			NameLower: strings.ToLower(name),
-			Size:      int64(1024 + i),
-		}
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = FuzzyMatchFiles(files, "service_12", 10)
-	}
-}
-
 func TestFormatRelativeTime(t *testing.T) {
 	if got := formatRelativeTime(time.Time{}); got != "-" {
 		t.Errorf("expected '-', got %q", got)

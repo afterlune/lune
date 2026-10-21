@@ -1,4 +1,4 @@
-package tui
+package markdown
 
 import (
 	"strings"
@@ -8,6 +8,24 @@ import (
 	"charm.land/lipgloss/v2/table"
 	"github.com/charmbracelet/x/ansi"
 )
+
+func testPalette() Palette {
+	return Palette{
+		TextPrimary: "#E6EDF3", TextMuted: "#8B949E", AccentBlue: "#58A6FF",
+		InlineCodeFg: "#79C0FF", CodeBlockBg: "#161B22", Border: "#30363D",
+	}
+}
+
+func TestSplitCodeComment(t *testing.T) {
+	code, comment := splitCodeComment("gofmt -l internal/desktop # 期望无输出")
+	if code != "gofmt -l internal/desktop " || comment != "# 期望无输出" {
+		t.Fatalf("unexpected splitCodeComment result: code=%q, comment=%q", code, comment)
+	}
+	quotedCode, quotedComment := splitCodeComment(`git commit -m "fix #123 issue" # trailing comment`)
+	if quotedCode != `git commit -m "fix #123 issue" ` || quotedComment != "# trailing comment" {
+		t.Fatalf("expected # inside quotes to be preserved, got code=%q, comment=%q", quotedCode, quotedComment)
+	}
+}
 
 func TestLipglossTableWrapping(t *testing.T) {
 	headers := []string{"阶段", "模块", "关键动作", "交付物"}
@@ -63,7 +81,7 @@ func TestRenderMarkdownComplete(t *testing.T) {
 ---
 ` + "```go\nfunc main() {\n\tprintln(\"hello world\")\n}\n```"
 
-	rendered := RenderMarkdown(md, 70)
+	rendered := Render(md, 70, testPalette())
 	t.Logf("Rendered Markdown (width 70):\n%s\n", rendered)
 
 	lines := strings.Split(rendered, "\n")
@@ -77,7 +95,7 @@ func TestRenderMarkdownComplete(t *testing.T) {
 
 func TestFormatInlineRestoresNestedTokens(t *testing.T) {
 	input := "**Bold `inline code`** then `plain code` and internal/tui/view.go"
-	rendered := formatInline(input)
+	rendered := formatInline(input, testPalette())
 	if strings.Contains(rendered, "\x00") || strings.Contains(rendered, "TOKEN_") {
 		t.Fatalf("inline formatter leaked an internal token: %q", rendered)
 	}
@@ -86,54 +104,45 @@ func TestFormatInlineRestoresNestedTokens(t *testing.T) {
 	}
 }
 
-func TestSanitizeClipboardTextRemovesNUL(t *testing.T) {
-	if got, want := sanitizeClipboardText("before\x00TOKEN_0\x00after"), "beforeTOKEN_0after"; got != want {
-		t.Fatalf("sanitizeClipboardText() = %q, want %q", got, want)
-	}
-	if got, want := sanitizeClipboardText("计划内容和 `code`"), "计划内容和 `code`"; got != want {
-		t.Fatalf("sanitizeClipboardText changed ordinary text: got %q, want %q", got, want)
-	}
-}
-
 func TestStripProposedPlan(t *testing.T) {
 	// Preamble + plan + suffix
 	t1 := "Thinking notes.\n<proposed_plan>## Step 1\nRun tests</proposed_plan>\nFollow-up question."
-	if got := stripProposedPlan(t1); got != "Thinking notes.\n\nFollow-up question." && got != "Thinking notes.\nFollow-up question." {
+	if got := StripProposedPlan(t1); got != "Thinking notes.\n\nFollow-up question." && got != "Thinking notes.\nFollow-up question." {
 		t.Errorf("Unexpected strip result: %q", got)
 	}
 
 	// Only plan
 	t2 := "<proposed_plan>## Step 1\nRun tests</proposed_plan>"
-	if got := stripProposedPlan(t2); got != "" {
+	if got := StripProposedPlan(t2); got != "" {
 		t.Errorf("Expected empty string for plan-only text, got: %q", got)
 	}
 
 	// Unclosed tag: the dangling tag is removed, but following prose is kept.
 	t3 := "Preamble.\n<proposed_plan>## Incomplete plan"
-	if got := stripProposedPlan(t3); got != "Preamble.\n## Incomplete plan" {
+	if got := StripProposedPlan(t3); got != "Preamble.\n## Incomplete plan" {
 		t.Errorf("Expected preamble and following prose, got: %q", got)
 	}
 
 	// A literal tag mention in ordinary prose must not swallow the sentence.
 	t5 := "我会先阅读相关代码，再用 <proposed_plan> 给你完整方案。"
-	if got := stripProposedPlan(t5); got != "我会先阅读相关代码，再用  给你完整方案。" {
+	if got := StripProposedPlan(t5); got != "我会先阅读相关代码，再用  给你完整方案。" {
 		t.Errorf("Expected prose preserved, got: %q", got)
 	}
 
 	// extractProposedPlan must ignore dangling tags.
-	if plan, _ := extractProposedPlan(t3); plan != "" {
+	if plan, _ := ExtractProposedPlan(t3); plan != "" {
 		t.Errorf("Expected no plan from unclosed tag, got: %q", plan)
 	}
 
 	// No tag
 	t4 := "Just plain message."
-	if got := stripProposedPlan(t4); got != t4 {
+	if got := StripProposedPlan(t4); got != t4 {
 		t.Errorf("Expected unchanged message, got: %q", got)
 	}
 }
 
 func TestExtractProposedPlanRequiresOneCompleteBlock(t *testing.T) {
-	plan, remaining := extractProposedPlan("Intro.\n<proposed_plan>## Steps\n1. Do it</proposed_plan>\nOutro.")
+	plan, remaining := ExtractProposedPlan("Intro.\n<proposed_plan>## Steps\n1. Do it</proposed_plan>\nOutro.")
 	if plan != "## Steps\n1. Do it" {
 		t.Fatalf("unexpected plan: %q", plan)
 	}
@@ -147,55 +156,20 @@ func TestExtractProposedPlanRequiresOneCompleteBlock(t *testing.T) {
 		"<proposed_plan>one</proposed_plan><proposed_plan>two</proposed_plan>",
 		"</proposed_plan>orphaned",
 	} {
-		if plan, _ := extractProposedPlan(text); plan != "" {
+		if plan, _ := ExtractProposedPlan(text); plan != "" {
 			t.Errorf("extractProposedPlan(%q) = %q, want no plan", text, plan)
 		}
 	}
 }
 
-func TestAutocompleteScrolling(t *testing.T) {
-	items := make([]AutocompleteItem, 25)
-	for i := 0; i < 25; i++ {
-		items[i] = AutocompleteItem{
-			Command:     strings.Repeat("/cmd", 1) + string(rune('a'+i)),
-			Description: "Description for item",
-		}
+func TestInlineMarkdownTokenizationSafety(t *testing.T) {
+	input := "请检查 **TUI.md** 以及 `go test -v ./...` 的输出。"
+	formatted := formatInline(input, testPalette())
+	stripped := ansi.Strip(formatted)
+	if strings.Contains(stripped, "218m") {
+		t.Fatalf("corrupted ANSI sequence leaked into text: %q", stripped)
 	}
-
-	// When selected is 0: shows top 7 items
-	rendered0 := renderAutocompletePopup(items, 0, 80)
-	lines0 := strings.Split(rendered0, "\n")
-	if len(lines0) != maxVisibleAutocomplete {
-		t.Fatalf("Expected %d lines, got %d", maxVisibleAutocomplete, len(lines0))
-	}
-	if !strings.Contains(lines0[0], "› /cmda") {
-		t.Errorf("Expected first line to be selected /cmda, got: %s", lines0[0])
-	}
-
-	// When selected is 12 (middle): shows 7 items centered around 12
-	rendered12 := renderAutocompletePopup(items, 12, 80)
-	lines12 := strings.Split(rendered12, "\n")
-	if len(lines12) != maxVisibleAutocomplete {
-		t.Fatalf("Expected %d lines, got %d", maxVisibleAutocomplete, len(lines12))
-	}
-	hasSelected12 := false
-	for _, l := range lines12 {
-		if strings.Contains(l, "› ") {
-			hasSelected12 = true
-		}
-	}
-	if !hasSelected12 {
-		t.Errorf("Expected selected marker in lines12")
-	}
-
-	// When selected is 24 (last item): shows bottom 7 items
-	rendered24 := renderAutocompletePopup(items, 24, 80)
-	lines24 := strings.Split(rendered24, "\n")
-	if len(lines24) != maxVisibleAutocomplete {
-		t.Fatalf("Expected %d lines, got %d", maxVisibleAutocomplete, len(lines24))
-	}
-	lastLine := lines24[len(lines24)-1]
-	if !strings.Contains(lastLine, "› ") {
-		t.Errorf("Expected last line to be selected, got: %s", lastLine)
+	if !strings.Contains(stripped, "TUI.md") {
+		t.Fatalf("expected stripped output to contain TUI.md, got %q", stripped)
 	}
 }

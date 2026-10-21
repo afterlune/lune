@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -43,7 +44,7 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				kind = KindUser
 			}
 			if kind == KindAssistant && strings.Contains(text, "<proposed_plan>") {
-				planText, surrounding := extractProposedPlan(text)
+				planText, surrounding := tuiMarkdown.ExtractProposedPlan(text)
 				if surrounding != "" {
 					entries = append(entries, TranscriptEntry{
 						ID:        fmt.Sprintf("hist-%d", i),
@@ -63,7 +64,7 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 				continue
 			}
 			if kind == KindAssistant {
-				text = cleanProposedPlanTags(text)
+				text = tuiMarkdown.CleanProposedPlanTags(text)
 			}
 			entries = append(entries, TranscriptEntry{
 				ID:        fmt.Sprintf("hist-%d", i),

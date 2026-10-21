@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
 
 func TestPlanTagStripping(t *testing.T) {
 	raw := "Here is the proposal:\n<proposed_plan>\n1. Step One\n2. Step Two\n</proposed_plan>\nLet me know!"
-	extracted, cleaned := extractProposedPlan(raw)
+	extracted, cleaned := tuiMarkdown.ExtractProposedPlan(raw)
 	if strings.Contains(extracted, "<proposed_plan>") || strings.Contains(extracted, "</proposed_plan>") {
 		t.Fatalf("extracted plan contains raw tags: %q", extracted)
 	}
@@ -22,14 +23,14 @@ func TestPlanTagStripping(t *testing.T) {
 		t.Fatalf("cleaned surrounding contains raw tags: %q", cleaned)
 	}
 
-	stripped := stripProposedPlan(raw)
+	stripped := tuiMarkdown.StripProposedPlan(raw)
 	if strings.Contains(stripped, "<proposed_plan>") || strings.Contains(stripped, "</proposed_plan>") {
-		t.Fatalf("stripProposedPlan leaked raw tags: %q", stripped)
+		t.Fatalf("tuiMarkdown.StripProposedPlan leaked raw tags: %q", stripped)
 	}
 
 	// Test that inline code mentioning <proposed_plan> in markdown tables or prose is preserved
 	tableWithInlineTag := "| # | 问题 | 证据 |\n|---|---|---|\n| 4 | `<proposed_plan>` 处理两套实现 | markdown.go |\n\n## 五、候选方向\n\n<proposed_plan>\n## 目标\n修复缺陷\n</proposed_plan>"
-	extractedPlan, restText := extractProposedPlan(tableWithInlineTag)
+	extractedPlan, restText := tuiMarkdown.ExtractProposedPlan(tableWithInlineTag)
 	if extractedPlan != "## 目标\n修复缺陷" {
 		t.Fatalf("unexpected extracted plan: %q", extractedPlan)
 	}
@@ -39,12 +40,12 @@ func TestPlanTagStripping(t *testing.T) {
 	if !strings.Contains(restText, "## 五、候选方向") {
 		t.Fatalf("subsequent markdown sections were swallowed: %q", restText)
 	}
-	strippedText := stripProposedPlan(tableWithInlineTag)
+	strippedText := tuiMarkdown.StripProposedPlan(tableWithInlineTag)
 	if !strings.Contains(strippedText, "`<proposed_plan>` 处理两套实现") || !strings.Contains(strippedText, "## 五、候选方向") {
-		t.Fatalf("stripProposedPlan swallowed table row or sections: %q", strippedText)
+		t.Fatalf("tuiMarkdown.StripProposedPlan swallowed table row or sections: %q", strippedText)
 	}
 	if strings.Contains(strippedText, "## 目标") {
-		t.Fatalf("stripProposedPlan should remove the plan block body: %q", strippedText)
+		t.Fatalf("tuiMarkdown.StripProposedPlan should remove the plan block body: %q", strippedText)
 	}
 
 	// Test renderEntry for KindPlan and KindAssistant

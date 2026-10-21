@@ -1,4 +1,4 @@
-package tui
+package filemention
 
 import (
 	"os"
@@ -120,7 +120,7 @@ func TestDetectAtQuery(t *testing.T) {
 }
 
 func TestFuzzyMatchFiles(t *testing.T) {
-	files := []WorkspaceFile{
+	files := []File{
 		{Path: "internal/tui/tui.go", Name: "tui.go", Size: 1024},
 		{Path: "internal/tui/model.go", Name: "model.go", Size: 2048},
 		{Path: "internal/tui/update.go", Name: "update.go", Size: 3072},
@@ -129,31 +129,31 @@ func TestFuzzyMatchFiles(t *testing.T) {
 	}
 
 	// 1. Exact file name match
-	matches := FuzzyMatchFiles(files, "model.go", 5)
+	matches := FuzzyMatch(files, "model.go", 5)
 	if len(matches) == 0 || matches[0].Name != "model.go" {
 		t.Fatalf("expected model.go to rank #1, got: %#v", matches)
 	}
 
 	// 2. Prefix match
-	matches = FuzzyMatchFiles(files, "tu", 5)
+	matches = FuzzyMatch(files, "tu", 5)
 	if len(matches) == 0 || matches[0].Name != "tui.go" {
 		t.Fatalf("expected tui.go to rank #1 for 'tu', got: %#v", matches)
 	}
 
 	// 3. Path substring match
-	matches = FuzzyMatchFiles(files, "internal/app", 5)
+	matches = FuzzyMatch(files, "internal/app", 5)
 	if len(matches) == 0 || matches[0].Path != "internal/app/app.go" {
 		t.Fatalf("expected app.go to rank #1 for 'internal/app', got: %#v", matches)
 	}
 
 	// 4. Subsequence match "itt" -> internal/tui/tui.go
-	matches = FuzzyMatchFiles(files, "itt", 5)
+	matches = FuzzyMatch(files, "itt", 5)
 	if len(matches) == 0 || matches[0].Path != "internal/tui/tui.go" {
 		t.Fatalf("expected internal/tui/tui.go for 'itt', got: %#v", matches)
 	}
 
 	// 5. Empty query returns files sorted by path
-	matches = FuzzyMatchFiles(files, "", 3)
+	matches = FuzzyMatch(files, "", 3)
 	if len(matches) != 3 {
 		t.Fatalf("expected 3 items for empty query, got %d", len(matches))
 	}
@@ -178,7 +178,7 @@ func TestWorkspaceFileScanner(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tempDir, "bin", "tool.exe"), []byte("binary"), 0644)
 	_ = os.WriteFile(filepath.Join(tempDir, "image.png"), []byte("png"), 0644)
 
-	scanner := NewWorkspaceFileScanner(tempDir)
+	scanner := NewScanner(tempDir)
 	files := scanner.Files()
 
 	if len(files) != 2 {
@@ -269,7 +269,7 @@ func TestExpandFileMentions(t *testing.T) {
 
 	// 1. Single file mention
 	p1 := "Please inspect @main.go and explain."
-	atts, aug := ExpandFileMentions(p1, tempDir)
+	atts, aug := Expand(p1, tempDir)
 	if len(atts) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(atts))
 	}
@@ -282,7 +282,7 @@ func TestExpandFileMentions(t *testing.T) {
 
 	// 2. Line range mention
 	p2 := "Check @main.go#L3-L4 for syntax"
-	atts2, aug2 := ExpandFileMentions(p2, tempDir)
+	atts2, aug2 := Expand(p2, tempDir)
 	if len(atts2) != 1 {
 		t.Fatalf("expected 1 attachment for line range, got %d", len(atts2))
 	}
@@ -298,35 +298,35 @@ func TestExpandFileMentions(t *testing.T) {
 
 	// 3. Multiple file mentions
 	p3 := "Compare @main.go with @config.json please"
-	atts3, _ := ExpandFileMentions(p3, tempDir)
+	atts3, _ := Expand(p3, tempDir)
 	if len(atts3) != 2 {
 		t.Fatalf("expected 2 attachments, got %d", len(atts3))
 	}
 
 	// 4. Email address should NOT attach
 	p4 := "Contact support@example.com for issues"
-	atts4, aug4 := ExpandFileMentions(p4, tempDir)
+	atts4, aug4 := Expand(p4, tempDir)
 	if len(atts4) != 0 || aug4 != p4 {
 		t.Errorf("expected email to not trigger attachment, got %d attachments", len(atts4))
 	}
 
 	// 5. Directory traversal should be rejected
 	p5 := "Inspect @../secret.txt"
-	atts5, _ := ExpandFileMentions(p5, tempDir)
+	atts5, _ := Expand(p5, tempDir)
 	if len(atts5) != 0 {
 		t.Errorf("expected path traversal to be rejected, got %d attachments", len(atts5))
 	}
 
 	// 6. Non-existent file should be skipped
 	p6 := "Look at @nonexistent.go please"
-	atts6, aug6 := ExpandFileMentions(p6, tempDir)
+	atts6, aug6 := Expand(p6, tempDir)
 	if len(atts6) != 0 || aug6 != p6 {
 		t.Errorf("expected non-existent file to be skipped")
 	}
 }
 
 func TestGitModifiedFilesBoost(t *testing.T) {
-	files := []WorkspaceFile{
+	files := []File{
 		{Path: "cmd/main.go", Name: "main.go", Size: 500, IsModified: false},
 		{Path: "internal/tui/view.go", Name: "view.go", Size: 2000, IsModified: true},
 		{Path: "internal/tui/model.go", Name: "model.go", Size: 1500, IsModified: false},
@@ -334,7 +334,7 @@ func TestGitModifiedFilesBoost(t *testing.T) {
 	}
 
 	// Empty query: modified files must rank first
-	rankedEmpty := FuzzyMatchFiles(files, "", 4)
+	rankedEmpty := FuzzyMatch(files, "", 4)
 	if len(rankedEmpty) != 4 {
 		t.Fatalf("expected 4 files, got %d", len(rankedEmpty))
 	}
@@ -343,7 +343,7 @@ func TestGitModifiedFilesBoost(t *testing.T) {
 	}
 
 	// Query matching both: modified file gets score boost
-	rankedSearch := FuzzyMatchFiles(files, "go", 4)
+	rankedSearch := FuzzyMatch(files, "go", 4)
 	if len(rankedSearch) == 0 || !rankedSearch[0].IsModified {
 		t.Errorf("expected top search result to be modified file, got: %+v", rankedSearch[0])
 	}

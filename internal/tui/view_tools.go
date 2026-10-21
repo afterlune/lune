@@ -401,7 +401,7 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 			return header
 		}
 		thoughtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true)
-		wrapped := RenderMarkdown(bodyText, max(20, width-4))
+		wrapped := renderMarkdown(bodyText, max(20, width-4))
 		var out []string
 		out = append(out, header)
 		for _, l := range strings.Split(wrapped, "\n") {
@@ -458,7 +458,7 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		}
 		header := prefix + action + nameStyled + roleStyled + durStyled
 		if entry.SubagentExpanded && strings.TrimSpace(entry.Text) != "" {
-			rendered := RenderMarkdown(strings.TrimSpace(entry.Text), max(20, width-4))
+			rendered := renderMarkdown(strings.TrimSpace(entry.Text), max(20, width-4))
 			var out []string
 			out = append(out, header)
 			for _, l := range strings.Split(rendered, "\n") {

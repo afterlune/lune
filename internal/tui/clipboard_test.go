@@ -10,6 +10,15 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestSanitizeClipboardTextRemovesNUL(t *testing.T) {
+	if got, want := sanitizeClipboardText("before\x00TOKEN_0\x00after"), "beforeTOKEN_0after"; got != want {
+		t.Fatalf("sanitizeClipboardText() = %q, want %q", got, want)
+	}
+	if got, want := sanitizeClipboardText("计划内容和 `code`"), "计划内容和 `code`"; got != want {
+		t.Fatalf("sanitizeClipboardText changed ordinary text: got %q, want %q", got, want)
+	}
+}
+
 func TestClipboardCopyFeedbackReportsSuccessAndFailure(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	successText := func(count int) string { return fmt.Sprintf("Copied %d chars", count) }

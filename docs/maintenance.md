@@ -62,4 +62,4 @@ Playwright 截图基线在 Windows runner 上验证。发布版本以 `cmd/deskt
 
 按职责、状态所有权和变化原因拆文件，不设机械行数上限。拆分时保持外部命令、Go API、DesktopState 接口与运行行为不变；测试跟随清晰的功能边界移动，职责集中的测试无需仅为缩短文件而拆分。
 
-当前边界如下：`internal/cli/core_cli.go` 保留 TUI 命令入口与调度；CLI 执行、授权、状态查询、进程操作、会话操作和项目集成各有独立文件。`internal/settings/store.go` 负责 SQLite 初始化与通用设置访问，模型、外观、工作区配置和恢复状态各自持久化。`internal/desktop/workspace_lifecycle.go` 管理工作区生命周期，会话搜索位于 `workspace_search.go`。桌面前端的 `desktopState.svelte.ts` 协调对话与会话；执行活动、桌面进程、设置和共享类型分别由相邻模块持有。新增职责优先归入对应模块；若需要跨模块传递大量可变状态，应先收敛状态所有权，而不是只移动函数。
+当前边界如下：`internal/cli/core_cli.go` 保留 TUI 命令入口与调度；CLI 执行、授权、状态查询、进程操作、会话操作和项目集成各有独立文件。`internal/settings/store.go` 负责 SQLite 初始化与通用设置访问，模型、外观、工作区配置和恢复状态各自持久化。`internal/desktop/workspace_lifecycle.go` 管理工作区生命周期，会话搜索位于 `workspace_search.go`。`internal/tui` 保留共享 `tuiModel` 的交互协调；工作区文件提及和 Markdown／计划标签处理分别位于独立子包，渲染主题通过调色板参数传入。桌面前端的 `desktopState.svelte.ts` 协调对话与会话；执行活动、桌面进程、设置和共享类型分别由相邻模块持有。新增职责优先归入对应模块；若需要跨模块传递大量可变状态，应先收敛状态所有权，而不是只移动函数。

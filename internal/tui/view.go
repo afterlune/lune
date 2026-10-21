@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -42,8 +43,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindAssistant:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		cleanText := cleanProposedPlanTags(entry.Text)
-		rendered := RenderMarkdown(cleanText, width-4)
+		cleanText := tuiMarkdown.CleanProposedPlanTags(entry.Text)
+		rendered := renderMarkdown(cleanText, width-4)
 		lines := strings.Split(rendered, "\n")
 		var out []string
 		for i, line := range lines {
@@ -84,8 +85,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("• ")
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
-		cleanPlan := cleanProposedPlanTags(entry.Text)
-		rendered := RenderMarkdown(cleanPlan, max(20, width-6))
+		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
+		rendered := renderMarkdown(cleanPlan, max(20, width-6))
 		var outLines []string
 		outLines = append(outLines, bullet+title)
 		for _, line := range strings.Split(rendered, "\n") {
@@ -95,7 +96,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 
 	case KindSystem:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-		rendered := RenderMarkdown(entry.Text, width-4)
+		rendered := renderMarkdown(entry.Text, width-4)
 		lines := strings.Split(rendered, "\n")
 		var out []string
 		for i, line := range lines {
@@ -172,7 +173,7 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 
 	if entry.SubagentExpanded && strings.TrimSpace(entry.Text) != "" {
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
-		rendered := RenderMarkdown(strings.TrimSpace(entry.Text), max(20, width-6))
+		rendered := renderMarkdown(strings.TrimSpace(entry.Text), max(20, width-6))
 		var outLines []string
 		outLines = append(outLines, header+styleTextMuted().Render(" (click to collapse)"))
 		for _, l := range strings.Split(rendered, "\n") {
@@ -254,7 +255,7 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 	thoughtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true)
 
 	contentWidth := max(20, width-4)
-	wrapped := RenderMarkdown(bodyText, contentWidth)
+	wrapped := renderMarkdown(bodyText, contentWidth)
 	lines := strings.Split(wrapped, "\n")
 
 	var outLines []string

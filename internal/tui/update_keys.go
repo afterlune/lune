@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/tui/filemention"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -661,7 +662,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.autocompleteOpen = false
 		}
-	} else if query, start, end, ok := DetectAtQuery(val, m.cursorOffset()); ok {
+	} else if query, start, end, ok := filemention.DetectAtQuery(val, m.cursorOffset()); ok {
 		matches := m.getFileScanner().Search(query, 50)
 		if len(matches) > 0 {
 			m.autocompleteOpen = true
@@ -671,7 +672,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.autocompleteIndex = 0
 			var items []AutocompleteItem
 			for _, match := range matches {
-				desc := FormatFileSize(match.Size)
+				desc := filemention.FormatFileSize(match.Size)
 				if match.IsModified {
 					desc += " · modified"
 				}

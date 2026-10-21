@@ -323,7 +323,7 @@ func TestCodexExecutionTimelineAlignment(t *testing.T) {
 
 	// 3. Borderless horizontal-rule Markdown table
 	mdTable := "| 领域 | 功能 |\n| --- | --- |\n| 会话 | 多会话并行、历史搜索 |\n| 对话 | 流式回复、消息排队 |"
-	renderedTable := ansi.Strip(RenderMarkdown(mdTable, 80))
+	renderedTable := ansi.Strip(renderMarkdown(mdTable, 80))
 	if strings.Contains(renderedTable, "╭") || strings.Contains(renderedTable, "│") {
 		t.Fatalf("expected borderless horizontal-rule table without vertical box borders, got:\n%s", renderedTable)
 	}

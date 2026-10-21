@@ -13,6 +13,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/afterlune/lune/internal/settings"
+	"github.com/afterlune/lune/internal/tui/filemention"
 	"github.com/afterlune/lune/internal/workspacereview"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
@@ -524,7 +525,7 @@ func TestFileMentionAutocomplete(t *testing.T) {
 
 	m := &tuiModel{
 		workspace:   tempDir,
-		fileScanner: NewWorkspaceFileScanner(tempDir),
+		fileScanner: filemention.NewScanner(tempDir),
 	}
 	m.composer = textarea.New()
 	m.composer.Focus()
