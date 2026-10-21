@@ -297,7 +297,12 @@ func (s *DesktopService) watchTurnLocked(runtime *core.SessionRuntime, sessionID
 	s.workers.Add(1)
 	go func() {
 		defer s.workers.Done()
-		defer func() { s.mu.Lock(); delete(s.waiting, executionID); s.mu.Unlock() }()
+		defer func() {
+			s.mu.Lock()
+			delete(s.waiting, executionID)
+			s.mu.Unlock()
+			s.releaseInactiveSessionRuntime(sessionID)
+		}()
 		ctx, cancel := context.WithTimeout(base, 24*time.Hour)
 		defer cancel()
 		result, err := runtime.WaitTurn(ctx, executionID)

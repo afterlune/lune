@@ -51,8 +51,8 @@ type PendingRequestView struct {
 }
 
 func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
-	s.workspaceMu.RLock()
-	defer s.workspaceMu.RUnlock()
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	return s.openSession(sessionID, false)
 }
 
@@ -78,16 +78,32 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 			return WorkspaceState{}, fmt.Errorf("读取会话: %w", err)
 		}
 		sessionContext = &desktopSessionContext{
-			core: localCore, sessionID: sessionID, workspace: workspace,
+			permissionMode: core.PermissionWorkspace, core: localCore, sessionID: sessionID, workspace: workspace,
 		}
-		if err := s.attachSessionRuntime(sessionContext); err != nil {
-			return WorkspaceState{}, err
+		s.mu.Lock()
+		if s.sessionContexts == nil {
+			s.sessionContexts = make(map[string]*desktopSessionContext)
 		}
+		s.sessionContexts[sessionID] = sessionContext
+		s.mu.Unlock()
 	}
 	s.mu.Lock()
+	previous := s.activeContext
 	s.setActiveSessionContextLocked(sessionContext)
 	models := s.projectModelsView()
 	s.mu.Unlock()
+	sessionContext.opMu.Lock()
+	defer sessionContext.opMu.Unlock()
+	if sessionContext.runtime == nil {
+		if err := s.attachSessionRuntime(sessionContext); err != nil {
+			s.mu.Lock()
+			if s.activeContext == sessionContext {
+				s.activeContext = previous
+			}
+			s.mu.Unlock()
+			return WorkspaceState{}, err
+		}
+	}
 
 	ctx := context.Background()
 	saved, err := sessionContext.core.GetSession(ctx, sessionID)
@@ -116,6 +132,9 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	controls := sessionControls(sessionContext)
 	s.watchTurnLocked(runtime, sessionID, state.Task.ExecutionID)
 	s.mu.Unlock()
+	if previous != nil && previous != sessionContext {
+		s.releaseInactiveSessionRuntime(previous.sessionID)
+	}
 	s.rememberSession(sessionID)
 	return WorkspaceState{
 		Workspace: sessionContext.workspace,
@@ -166,6 +185,16 @@ func (s *DesktopService) RefreshSession(sessionID string) (WorkspaceState, error
 	s.mu.Unlock()
 	if sessionContext == nil {
 		return WorkspaceState{}, errors.New("没有打开会话")
+	}
+	sessionContext.opMu.Lock()
+	defer func() {
+		sessionContext.opMu.Unlock()
+		s.releaseInactiveSessionRuntime(sessionID)
+	}()
+	if sessionContext.runtime == nil {
+		if err := s.attachSessionRuntime(sessionContext); err != nil {
+			return WorkspaceState{}, err
+		}
 	}
 	ctx := context.Background()
 	saved, err := sessionContext.core.GetSession(ctx, sessionContext.sessionID)

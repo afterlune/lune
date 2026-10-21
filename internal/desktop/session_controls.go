@@ -40,7 +40,7 @@ func (s *DesktopService) sessionOperation(id string) (*desktopSessionContext, fu
 	c := s.sessionContexts[id]
 	reconfiguring := s.reconfiguring
 	s.mu.Unlock()
-	if id == "" || c == nil || c.runtime == nil || reconfiguring {
+	if id == "" || c == nil || reconfiguring {
 		s.workspaceMu.RUnlock()
 		return nil, nil, errors.New("会话不可用，请重新打开会话")
 	}
@@ -53,7 +53,18 @@ func (s *DesktopService) sessionOperation(id string) (*desktopSessionContext, fu
 		s.workspaceMu.RUnlock()
 		return nil, nil, errors.New("会话已关闭")
 	}
-	return c, func() { c.opMu.Unlock(); s.workspaceMu.RUnlock() }, nil
+	if c.runtime == nil {
+		if err := s.attachSessionRuntime(c); err != nil {
+			c.opMu.Unlock()
+			s.workspaceMu.RUnlock()
+			return nil, nil, err
+		}
+	}
+	return c, func() {
+		c.opMu.Unlock()
+		s.workspaceMu.RUnlock()
+		s.releaseInactiveSessionRuntime(id)
+	}, nil
 }
 
 func idleSession(c *desktopSessionContext) error {

@@ -283,15 +283,17 @@ func TestSeparateSessionRuntimesCanRunInParallelAndSwitchWhileRunning(t *testing
 	if err != nil || secondState.Task.Status != core.TaskRunning {
 		t.Fatalf("second task state after switching = %#v, error=%v", secondState.Task, err)
 	}
+	executionIDs := map[string]string{
+		localSessionID:   localState.Task.ExecutionID,
+		secondSession.ID: secondState.Task.ExecutionID,
+	}
 
 	close(provider.release)
 	for _, sessionID := range []string{localSessionID, secondSession.ID} {
-		runtime := service.sessionContexts[sessionID].runtime
-		state, err := runtime.State(context.Background())
-		if err != nil {
-			t.Fatal(err)
+		if _, err := service.OpenSession(sessionID); err != nil {
+			t.Fatalf("reopen completed session %q: %v", sessionID, err)
 		}
-		if _, err := runtime.WaitTurn(context.Background(), state.Task.ExecutionID); err != nil {
+		if _, err := service.sessionContexts[sessionID].runtime.WaitTurn(context.Background(), executionIDs[sessionID]); err != nil {
 			t.Fatalf("wait for session %q: %v", sessionID, err)
 		}
 	}

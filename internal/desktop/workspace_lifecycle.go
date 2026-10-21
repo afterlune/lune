@@ -122,9 +122,6 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 	}
 	created, err := core.New(config)
 	if err != nil {
-		if errors.Is(err, core.ErrStateDirInUse) {
-			return errors.New("这个 Desktop 工作区的本地会话状态已被另一个 Desktop 实例打开")
-		}
 		return fmt.Errorf("打开工作区失败: %w", err)
 	}
 	activityStore, err := OpenActivityStore(stateRoot)
@@ -162,23 +159,32 @@ func (s *DesktopService) restoreSessionContexts() error {
 	if localCore == nil {
 		return errors.New("没有打开工作区")
 	}
+	s.mu.Lock()
+	if s.sessionContexts == nil {
+		s.sessionContexts = make(map[string]*desktopSessionContext)
+	}
 	localSessions, err := localCore.ListSessions(context.Background(), 1000, true)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("读取 Desktop 本地会话: %w", err)
 	}
 	for _, saved := range localSessions {
-		if err := s.attachSessionRuntime(&desktopSessionContext{
-			core: localCore, sessionID: saved.ID, workspace: workspace,
-		}); err != nil {
-			return err
+		if s.sessionContexts[saved.ID] == nil {
+			s.sessionContexts[saved.ID] = &desktopSessionContext{
+				permissionMode: core.PermissionWorkspace, core: localCore, sessionID: saved.ID, workspace: workspace,
+			}
 		}
 	}
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionContext, replayFromStart ...bool) error {
 	if sessionContext == nil || sessionContext.core == nil || sessionContext.sessionID == "" {
 		return errors.New("会话运行时信息无效")
+	}
+	if sessionContext.runtime != nil {
+		return nil
 	}
 	runtime, err := sessionContext.core.OpenSessionRuntime(context.Background(), sessionContext.sessionID)
 	if err != nil {
@@ -188,6 +194,8 @@ func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionCont
 	sessionContext.runtime = runtime
 	state, err := runtime.State(context.Background())
 	if err != nil {
+		_ = runtime.Close()
+		sessionContext.runtime = nil
 		return err
 	}
 	s.mu.Lock()
@@ -208,9 +216,51 @@ func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionCont
 	return nil
 }
 
+func (s *DesktopService) releaseInactiveSessionRuntime(sessionID string) {
+	s.mu.Lock()
+	sessionContext := s.sessionContexts[sessionID]
+	active := sessionContext != nil && s.activeContext == sessionContext
+	s.mu.Unlock()
+	if sessionContext == nil || active {
+		return
+	}
+	sessionContext.opMu.Lock()
+	defer sessionContext.opMu.Unlock()
+
+	s.mu.Lock()
+	if s.sessionContexts[sessionID] != sessionContext || s.activeContext == sessionContext || sessionContext.runtime == nil {
+		s.mu.Unlock()
+		return
+	}
+	runtime := sessionContext.runtime
+	s.mu.Unlock()
+	state, err := runtime.State(context.Background())
+	if err != nil || state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || len(state.Queue) > 0 {
+		return
+	}
+	runtime.SetUserInteractionAvailable(false)
+	if err := runtime.Close(); err != nil {
+		return
+	}
+
+	s.mu.Lock()
+	if s.sessionContexts[sessionID] == sessionContext && sessionContext.runtime == runtime {
+		sessionContext.runtime = nil
+	}
+	cancel, done := sessionContext.eventCancel, sessionContext.eventDone
+	sessionContext.eventCancel, sessionContext.eventDone = nil, nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
 func sessionContextStatus(sessionContext *desktopSessionContext) string {
 	if sessionContext == nil || sessionContext.runtime == nil {
-		return "unavailable"
+		return "idle"
 	}
 	state, err := sessionContext.runtime.State(context.Background())
 	if err != nil {
@@ -369,10 +419,16 @@ func (s *DesktopService) stopWorkspaceSessions(contexts []*desktopSessionContext
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	for _, sessionContext := range contexts {
-		if sessionContext == nil || sessionContext.runtime == nil {
+		if sessionContext == nil {
+			continue
+		}
+		sessionContext.opMu.Lock()
+		if sessionContext.runtime == nil {
+			sessionContext.opMu.Unlock()
 			continue
 		}
 		state, requests, err := workspaceSessionActivity(ctx, sessionContext)
+		sessionContext.opMu.Unlock()
 		if err != nil {
 			return err
 		}
@@ -390,20 +446,29 @@ func (s *DesktopService) stopWorkspaceSessions(contexts []*desktopSessionContext
 		}
 		busyIDs := make([]string, 0)
 		for _, sessionContext := range contexts {
-			if sessionContext == nil || sessionContext.runtime == nil {
+			if sessionContext == nil {
+				continue
+			}
+			sessionContext.opMu.Lock()
+			if sessionContext.runtime == nil {
+				sessionContext.opMu.Unlock()
 				continue
 			}
 			state, requests, err := workspaceSessionActivity(ctx, sessionContext)
 			if err != nil {
+				sessionContext.opMu.Unlock()
 				return err
 			}
 			if !workspaceActivityBusy(state, requests) {
+				sessionContext.opMu.Unlock()
 				continue
 			}
 			busyIDs = append(busyIDs, fmt.Sprintf("%s:%s(queue=%d requests=%d)", sessionContext.sessionID, state.Task.Status, len(state.Queue), len(requests)))
 			if err := cancelWorkspaceSession(ctx, sessionContext, state, requests); err != nil {
+				sessionContext.opMu.Unlock()
 				return err
 			}
+			sessionContext.opMu.Unlock()
 		}
 		if len(busyIDs) == 0 {
 			return nil

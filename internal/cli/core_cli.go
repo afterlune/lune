@@ -14,6 +14,7 @@ import (
 )
 
 type cliRuntime interface {
+	Close() error
 	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
 	WaitTurn(context.Context, string) (core.TurnResult, error)
 	SubscribeEvents(context.Context, int64) (<-chan core.Event, error)
@@ -206,6 +207,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
 	}
+	defer func() { _ = runtime.Close() }()
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -234,6 +236,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 						fmt.Fprintf(stderr, "error: remove unused session %s: %v\n", created.ID, cleanupErr)
 					}
 				} else {
+					_ = runtime.Close()
 					sessionID, sessionTitle, workspace, runtime = created.ID, created.Title, created.Workspace, newRuntime
 					fmt.Fprintln(stdout, "New session.")
 				}
@@ -281,6 +284,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			if openErr != nil {
 				fmt.Fprintf(stderr, "error: open session: %v\n", openErr)
 			} else if newRuntime != nil {
+				_ = runtime.Close()
 				sessionID = newID
 				runtime = newRuntime
 				if s, err := client.GetSession(ctx, sessionID); err == nil {
@@ -322,6 +326,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 						fmt.Fprintf(stderr, "error: remove unused fork %s: %v\n", newSession.ID, cleanupErr)
 					}
 				} else {
+					_ = runtime.Close()
 					sessionID, sessionTitle, workspace, runtime = newSession.ID, newSession.Title, newSession.Workspace, newRuntime
 					fmt.Fprintf(stdout, "Forked to new session: %s\n", sessionID)
 				}

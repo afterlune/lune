@@ -20,6 +20,12 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	if err != nil {
 		return err
 	}
+	keepRuntime := false
+	defer func() {
+		if !keepRuntime {
+			_ = rt.Close()
+		}
+	}()
 	saved, err := m.client.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
@@ -33,15 +39,19 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 		return err
 	}
 
+	if m.runtime != nil {
+		if err := m.runtime.Close(); err != nil {
+			return err
+		}
+		m.runtime.SetUserInteractionAvailable(false)
+	}
 	if m.runtimeCancel != nil {
 		m.runtimeCancel()
 		m.runtimeCancel = nil
 	}
-	if m.runtime != nil {
-		m.runtime.SetUserInteractionAvailable(false)
-	}
 	m.resetSessionState()
 	m.runtime = rt
+	keepRuntime = true
 	m.sessionID = sessionID
 	m.currentModel = m.client.ModelForSession(ctx, sessionID)
 	m.loadSessionSnapshot(saved)

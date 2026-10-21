@@ -332,6 +332,7 @@ func newFakeCLIRuntime(client *fakeCLICore, sessionID string, approval *approval
 		outputs: make(map[string]string)}
 }
 
+func (r *fakeCLIRuntime) Close() error      { return nil }
 func (r *fakeCLIRuntime) SessionID() string { return r.sessionID }
 
 func (r *fakeCLIRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
