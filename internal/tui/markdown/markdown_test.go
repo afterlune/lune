@@ -93,6 +93,25 @@ func TestRenderMarkdownComplete(t *testing.T) {
 	}
 }
 
+func TestRenderPlanPreservesStructureAndSpacing(t *testing.T) {
+	text := "# Title\n1. First item with enough text to wrap across the card width.\n2. Second item\n\n## Details\n- nested detail"
+	rendered := ansi.Strip(RenderPlan(text, 48, testPalette()))
+	if !strings.Contains(rendered, "# Title") || !strings.Contains(rendered, "## Details") {
+		t.Fatalf("plan headings lost their Markdown markers: %q", rendered)
+	}
+	if !strings.Contains(rendered, "# Title\n\n1. First") {
+		t.Fatalf("expected breathing room after a plan heading: %q", rendered)
+	}
+	if !strings.Contains(rendered, "1. First") || !strings.Contains(rendered, "2. Second") || !strings.Contains(rendered, "• nested detail") {
+		t.Fatalf("plan list structure was not preserved: %q", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if width := lipgloss.Width(line); width > 48 {
+			t.Fatalf("plan line exceeds render width 48 (%d): %q", width, line)
+		}
+	}
+}
+
 func TestFormatInlineRestoresNestedTokens(t *testing.T) {
 	input := "**Bold `inline code`** then `plain code` and internal/tui/view.go"
 	rendered := formatInline(input, testPalette())
@@ -149,16 +168,50 @@ func TestExtractProposedPlanRequiresOneCompleteBlock(t *testing.T) {
 	if remaining != "Intro.\n\nOutro." && remaining != "Intro.\nOutro." {
 		t.Fatalf("unexpected remaining text: %q", remaining)
 	}
+	compatPlan, compatRemaining := ExtractProposedPlan("Intro.\n<proposed_plan>## Steps\n1. Do it<proposed_plan_end/>\nOutro.")
+	if compatPlan != "## Steps\n1. Do it" {
+		t.Fatalf("unexpected compatibility plan: %q", compatPlan)
+	}
+	if compatRemaining != "Intro.\n\nOutro." && compatRemaining != "Intro.\nOutro." {
+		t.Fatalf("unexpected compatibility remaining text: %q", compatRemaining)
+	}
 
 	for _, text := range []string{
 		"<proposed_plan>unfinished",
 		"<proposed_plan></proposed_plan>",
 		"<proposed_plan>one</proposed_plan><proposed_plan>two</proposed_plan>",
+		"<proposed_plan>one</proposed_plan><proposed_plan_end/>",
 		"</proposed_plan>orphaned",
+		"<proposed_plan_end/>orphaned",
 	} {
 		if plan, _ := ExtractProposedPlan(text); plan != "" {
 			t.Errorf("extractProposedPlan(%q) = %q, want no plan", text, plan)
 		}
+	}
+}
+
+func TestSplitProposedPlanStreamStylesPartialAndCompatCompleteBlocks(t *testing.T) {
+	opening := SplitProposedPlanStream("Intro. <proposed_plan>")
+	if !opening.Found || opening.Complete || opening.Before != "Intro." || opening.Plan != "" {
+		t.Fatalf("opening marker did not immediately enter plan mode: %#v", opening)
+	}
+
+	partial := SplitProposedPlanStream("Intro.\n<proposed_plan>\n## Steps\n1. Fin")
+	if !partial.Found || partial.Complete || partial.Before != "Intro." || !strings.Contains(partial.Plan, "1. Fin") || partial.After != "" {
+		t.Fatalf("unexpected partial stream split: %#v", partial)
+	}
+
+	complete := SplitProposedPlanStream("Intro.\n<proposed_plan>\n## Steps\n1. Finish\n<proposed_plan_end/>\nOutro.")
+	if !complete.Found || !complete.Complete || complete.Before != "Intro." || !strings.Contains(complete.Plan, "1. Finish") || complete.After != "Outro." {
+		t.Fatalf("unexpected complete compatibility stream split: %#v", complete)
+	}
+	if strings.Contains(complete.Before+complete.Plan+complete.After, "proposed_plan_end") {
+		t.Fatalf("compatibility marker leaked from stream split: %#v", complete)
+	}
+
+	prose := SplitProposedPlanStream("Use `<proposed_plan>` in the documentation.")
+	if prose.Found || prose.Complete || !strings.Contains(prose.Before, "`<proposed_plan>`") {
+		t.Fatalf("inline tag mention was treated as a plan: %#v", prose)
 	}
 }
 

@@ -363,16 +363,29 @@ func responseText(raw json.RawMessage) string {
 }
 
 func stripProposedPlan(text string) string {
-	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
+	const openTag = "<proposed_plan>"
 	start := strings.Index(text, openTag)
 	if start < 0 {
 		return text
 	}
-	end := strings.Index(text[start+len(openTag):], closeTag)
+	innerStart := start + len(openTag)
+	canonical := strings.Index(text[innerStart:], "</proposed_plan>")
+	compat := strings.Index(text[innerStart:], "<proposed_plan_end/>")
+	end, closeLength := -1, 0
+	switch {
+	case canonical < 0 && compat < 0:
+		return text
+	case canonical < 0:
+		end, closeLength = compat, len("<proposed_plan_end/>")
+	case compat < 0 || canonical < compat:
+		end, closeLength = canonical, len("</proposed_plan>")
+	default:
+		end, closeLength = compat, len("<proposed_plan_end/>")
+	}
 	if end < 0 {
 		return text
 	}
-	end += start + len(openTag) + len(closeTag)
+	end += innerStart + closeLength
 	return strings.TrimSpace(text[:start] + text[end:])
 }
 

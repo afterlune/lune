@@ -115,8 +115,18 @@ func renderCodeBlockRow(line string, blockWidth int, th Palette) string {
 	return b.String()
 }
 
-// Render renders markdown text with terminal styles, wrapping lines to fit width.
+// Render renders ordinary Markdown text with terminal styles, wrapping lines to fit width.
 func Render(text string, width int, palette Palette) string {
+	return render(text, width, palette, false)
+}
+
+// RenderPlan renders Markdown using the more spacious, source-preserving
+// typography used inside the proposed-plan card.
+func RenderPlan(text string, width int, palette Palette) string {
+	return render(text, width, palette, true)
+}
+
+func render(text string, width int, palette Palette, planStyle bool) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -201,6 +211,9 @@ func Render(text string, width int, palette Palette) string {
 					result = append(result, "")
 				}
 				title := formatInlineWithStyles(strings.TrimSpace(trimmed[hashes+1:]), inlineCodeStyle, boldStyle, fileRefStyle)
+				if planStyle {
+					title = strings.Repeat("#", hashes) + " " + title
+				}
 				wrapped := ansi.Wrap(title, proseWidth, wrapBreakpoints)
 				var style lipgloss.Style
 				switch hashes {
@@ -213,6 +226,9 @@ func Render(text string, width int, palette Palette) string {
 				}
 				for _, wl := range strings.Split(wrapped, "\n") {
 					result = append(result, style.Render(wl))
+				}
+				if planStyle && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
+					result = append(result, "")
 				}
 				continue
 			}
@@ -279,12 +295,16 @@ func Render(text string, width int, palette Palette) string {
 			indent := strings.Repeat(" ", prefixWidth)
 
 			wrapped := ansi.Wrap(formatted, wrapWidth, wrapBreakpoints)
-			for j, wl := range strings.Split(wrapped, "\n") {
+			wrappedLines := strings.Split(wrapped, "\n")
+			for j, wl := range wrappedLines {
 				if j == 0 {
 					result = append(result, styledPrefix+wl)
 				} else {
 					result = append(result, indent+wl)
 				}
+			}
+			if planStyle && len(wrappedLines) > 1 {
+				result = append(result, "")
 			}
 			continue
 		}
@@ -305,12 +325,16 @@ func Render(text string, width int, palette Palette) string {
 			indent := strings.Repeat(" ", prefixWidth)
 
 			wrapped := ansi.Wrap(formatted, wrapWidth, wrapBreakpoints)
-			for j, wl := range strings.Split(wrapped, "\n") {
+			wrappedLines := strings.Split(wrapped, "\n")
+			for j, wl := range wrappedLines {
 				if j == 0 {
 					result = append(result, styledPrefix+wl)
 				} else {
 					result = append(result, indent+wl)
 				}
+			}
+			if planStyle && len(wrappedLines) > 1 {
+				result = append(result, "")
 			}
 			continue
 		}
@@ -555,11 +579,29 @@ func renderMarkdownTable(headerLine string, rowLines []string, width int, th Pal
 }
 
 var (
-	reProposedPlanTags  = regexp.MustCompile(`(?i)</?proposed_plan>`)
-	reProposedPlanBlock = regexp.MustCompile(`(?is)<proposed_plan>.*?</proposed_plan>`)
+	reProposedPlanTags  = regexp.MustCompile(`(?i)</?proposed_plan>|<proposed_plan_end/>`)
+	reProposedPlanBlock = regexp.MustCompile(`(?is)<proposed_plan>.*?(?:</proposed_plan>|<proposed_plan_end/>)`)
 )
 
-// CleanProposedPlanTags strips any raw <proposed_plan> or </proposed_plan> tags from text,
+const (
+	proposedPlanOpenTag  = "<proposed_plan>"
+	proposedPlanCloseTag = "</proposed_plan>"
+	// Keep the live renderer aligned with Core's observed provider alias.
+	proposedPlanCompatCloseTag = "<proposed_plan_end/>"
+)
+
+// ProposedPlanStream is the live rendering split for an assistant response.
+// Before and After are ordinary assistant text; Plan is rendered with the
+// proposed-plan style while the model is still streaming.
+type ProposedPlanStream struct {
+	Before   string
+	Plan     string
+	After    string
+	Found    bool
+	Complete bool
+}
+
+// CleanProposedPlanTags strips any raw proposed-plan tags from text,
 // but preserves inline code mentions like `<proposed_plan>`.
 func CleanProposedPlanTags(s string) string {
 	if !strings.Contains(strings.ToLower(s), "proposed_plan") {
@@ -578,7 +620,7 @@ func CleanProposedPlanTags(s string) string {
 	return strings.TrimSpace(stripped)
 }
 
-// StripProposedPlan removes complete <proposed_plan>...</proposed_plan> blocks
+// StripProposedPlan removes complete proposed-plan blocks
 // (their content is rendered separately in the plan review card) and any dangling
 // standalone tags, while preserving inline code mentions like `<proposed_plan>`.
 func StripProposedPlan(text string) string {
@@ -598,7 +640,7 @@ func StripProposedPlan(text string) string {
 	return CleanProposedPlanTags(stripped)
 }
 
-// ExtractProposedPlan extracts one complete, non-empty <proposed_plan> block and
+// ExtractProposedPlan extracts one complete, non-empty proposed-plan block and
 // the remaining assistant text. A dangling open tag is not a plan. Inline mentions
 // like `<proposed_plan>` are preserved.
 func ExtractProposedPlan(text string) (string, string) {
@@ -612,30 +654,91 @@ func ExtractProposedPlan(text string) (string, string) {
 		return "\x00CODE_" + itoaByte(idx) + "\x00"
 	})
 
-	const openTag, closeTag = "<proposed_plan>", "</proposed_plan>"
-	start := strings.Index(protected, openTag)
+	start := strings.Index(protected, proposedPlanOpenTag)
 	if start < 0 {
 		return "", CleanProposedPlanTags(text)
 	}
-	innerStart := start + len(openTag)
-	relEnd := strings.Index(protected[innerStart:], closeTag)
+	innerStart := start + len(proposedPlanOpenTag)
+	relEnd, closeLength := proposedPlanCloseIndex(protected[innerStart:])
 	if relEnd < 0 {
 		// Unclosed tag: keep the prose after the tag, but do not produce a plan.
 		return "", StripProposedPlan(text)
 	}
-	end := innerStart + relEnd + len(closeTag)
+	end := innerStart + relEnd + closeLength
 	rawPlan := protected[innerStart : innerStart+relEnd]
-	for idx, token := range codeTokens {
-		rawPlan = strings.ReplaceAll(rawPlan, "\x00CODE_"+itoaByte(idx)+"\x00", token)
-	}
+	rawPlan = restoreProposedPlanCodeTokens(rawPlan, codeTokens)
 	planText := CleanProposedPlanTags(rawPlan)
-	if planText == "" || strings.Contains(protected[innerStart:], openTag) || strings.Contains(protected[end:], closeTag) {
+	if planText == "" || strings.Contains(protected[innerStart:], proposedPlanOpenTag) || hasProposedPlanClose(protected[end:]) {
 		return "", StripProposedPlan(text)
 	}
 
 	restProtected := protected[:start] + protected[end:]
-	for idx, token := range codeTokens {
-		restProtected = strings.ReplaceAll(restProtected, "\x00CODE_"+itoaByte(idx)+"\x00", token)
-	}
+	restProtected = restoreProposedPlanCodeTokens(restProtected, codeTokens)
 	return planText, CleanProposedPlanTags(restProtected)
+}
+
+// SplitProposedPlanStream separates a live response into ordinary text and a
+// plan segment. An unclosed opening tag is a live plan immediately; inline-code
+// mentions remain protected and therefore do not start a plan.
+func SplitProposedPlanStream(text string) ProposedPlanStream {
+	if !strings.Contains(strings.ToLower(text), "proposed_plan") {
+		return ProposedPlanStream{Before: strings.TrimSpace(text)}
+	}
+	codeTokens := []string{}
+	protected := reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
+		idx := len(codeTokens)
+		codeTokens = append(codeTokens, m)
+		return "\x00CODE_" + itoaByte(idx) + "\x00"
+	})
+	start := strings.Index(protected, proposedPlanOpenTag)
+	if start < 0 {
+		return ProposedPlanStream{Before: CleanProposedPlanTags(text)}
+	}
+	innerStart := start + len(proposedPlanOpenTag)
+	relEnd, closeLength := proposedPlanCloseIndex(protected[innerStart:])
+	complete := relEnd >= 0
+	end := len(protected)
+	planEnd := len(protected)
+	if complete {
+		planEnd = innerStart + relEnd
+		end = innerStart + relEnd + closeLength
+	}
+	rawPlan := restoreProposedPlanCodeTokens(protected[innerStart:planEnd], codeTokens)
+	result := ProposedPlanStream{
+		Before:   CleanProposedPlanTags(restoreProposedPlanCodeTokens(protected[:start], codeTokens)),
+		Plan:     CleanProposedPlanTags(rawPlan),
+		After:    CleanProposedPlanTags(restoreProposedPlanCodeTokens(protected[end:], codeTokens)),
+		Found:    true,
+		Complete: complete,
+	}
+	return result
+}
+
+func proposedPlanCloseIndex(text string) (int, int) {
+	canonical := strings.Index(text, proposedPlanCloseTag)
+	compat := strings.Index(text, proposedPlanCompatCloseTag)
+	switch {
+	case canonical < 0 && compat < 0:
+		return -1, 0
+	case canonical < 0:
+		return compat, len(proposedPlanCompatCloseTag)
+	case compat < 0:
+		return canonical, len(proposedPlanCloseTag)
+	case canonical < compat:
+		return canonical, len(proposedPlanCloseTag)
+	default:
+		return compat, len(proposedPlanCompatCloseTag)
+	}
+}
+
+func hasProposedPlanClose(text string) bool {
+	index, _ := proposedPlanCloseIndex(text)
+	return index >= 0
+}
+
+func restoreProposedPlanCodeTokens(text string, tokens []string) string {
+	for idx, token := range tokens {
+		text = strings.ReplaceAll(text, "\x00CODE_"+itoaByte(idx)+"\x00", token)
+	}
+	return text
 }

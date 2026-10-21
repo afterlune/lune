@@ -104,46 +104,45 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		m.invalidateEntryCache()
 	}
 
-	text = tuiMarkdown.StripProposedPlan(text)
-
 	var turnDur time.Duration
-	assistantIndex := m.assistantEntryIndex(executionID)
-	if assistantIndex >= 0 {
+	if assistantIndex := m.assistantEntryIndex(executionID); assistantIndex >= 0 {
 		turnDur = m.entries[assistantIndex].TurnDuration
 	} else if !m.taskStartedAt.IsZero() {
 		turnDur = time.Since(m.taskStartedAt)
 	}
 
-	if strings.TrimSpace(text) != "" {
-		if assistantIndex >= 0 {
-			m.entries[assistantIndex].Text = text
-		} else {
-			id := fmt.Sprintf("asst-%d", time.Now().UnixNano())
+	stream := tuiMarkdown.SplitProposedPlanStream(text)
+	orderedPlan := strings.TrimSpace(proposedPlan) != "" && stream.Found && stream.Complete
+	if orderedPlan {
+		// Keep the response order visible: text before the marker, the formal plan
+		// panel, then any ordinary model text after the closing marker.
+		mainID := ""
+		postPlanID := ""
+		if executionID != "" {
+			mainID = assistantOutputID(executionID)
+			postPlanID = assistantPostPlanID(executionID)
+		}
+		m.upsertAssistantSegment(executionID, mainID, stream.Before, turnDur)
+		m.upsertPlanEntry(executionID, proposedPlan)
+		m.upsertAssistantSegment(executionID, postPlanID, stream.After, turnDur)
+	} else {
+		visibleText := tuiMarkdown.StripProposedPlan(text)
+		if strings.TrimSpace(visibleText) != "" {
+			id := ""
 			if executionID != "" {
 				id = assistantOutputID(executionID)
 			}
-			m.entries = append(m.entries, TranscriptEntry{
-				ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: text,
-				TurnDuration: turnDur, Timestamp: time.Now(),
-			})
+			m.upsertAssistantSegment(executionID, id, visibleText, turnDur)
+		} else if turnDur >= time.Second && len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && m.entries[len(m.entries)-1].TurnDuration == 0 {
+			m.entries[len(m.entries)-1].TurnDuration = turnDur
+			m.invalidateEntryCache()
 		}
-		m.invalidateEntryCache()
-	} else if turnDur >= time.Second && len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && m.entries[len(m.entries)-1].TurnDuration == 0 {
-		m.entries[len(m.entries)-1].TurnDuration = turnDur
-		m.invalidateEntryCache()
+		if strings.TrimSpace(proposedPlan) != "" {
+			m.upsertPlanEntry(executionID, proposedPlan)
+		}
 	}
 
 	if strings.TrimSpace(proposedPlan) != "" {
-		hasPlanEntry := len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindPlan && m.entries[len(m.entries)-1].Text == proposedPlan
-		if !hasPlanEntry {
-			m.entries = append(m.entries, TranscriptEntry{
-				ID:        fmt.Sprintf("plan-%d", time.Now().UnixNano()),
-				Kind:      KindPlan,
-				Text:      proposedPlan,
-				Timestamp: time.Now(),
-			})
-			m.invalidateEntryCache()
-		}
 		m.activePlanReview = &ActivePlanReview{
 			Text:        proposedPlan,
 			ExecutionID: executionID,
@@ -154,11 +153,67 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 
 func assistantOutputID(executionID string) string { return "asst-execution-" + executionID }
 
+func assistantPostPlanID(executionID string) string {
+	return assistantOutputID(executionID) + "-after-plan"
+}
+
+func (m *tuiModel) upsertAssistantSegment(executionID, id, text string, turnDur time.Duration) {
+	trimmed := strings.TrimSpace(text)
+	index := m.assistantEntryIndexByID(executionID, id)
+	if trimmed == "" {
+		if index >= 0 {
+			m.entries = append(m.entries[:index], m.entries[index+1:]...)
+			m.invalidateEntryCache()
+		}
+		return
+	}
+	if index >= 0 {
+		m.entries[index].Text = trimmed
+		if turnDur > 0 && m.entries[index].TurnDuration == 0 {
+			m.entries[index].TurnDuration = turnDur
+		}
+		m.invalidateEntryCache()
+		return
+	}
+	if id == "" {
+		id = fmt.Sprintf("asst-%d", time.Now().UnixNano())
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: trimmed,
+		TurnDuration: turnDur, Timestamp: time.Now(),
+	})
+	m.invalidateEntryCache()
+}
+
+func (m *tuiModel) upsertPlanEntry(executionID, text string) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return
+	}
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindPlan && m.entries[i].Text == trimmed &&
+			(executionID == "" || m.entries[i].ExecutionID == executionID) {
+			return
+		}
+	}
+	m.entries = append(m.entries, TranscriptEntry{
+		ID: fmt.Sprintf("plan-%d", time.Now().UnixNano()), ExecutionID: executionID,
+		Kind: KindPlan, Text: trimmed, Timestamp: time.Now(),
+	})
+	m.invalidateEntryCache()
+}
+
 func (m *tuiModel) assistantEntryIndex(executionID string) int {
 	if executionID == "" {
 		return -1
 	}
-	id := assistantOutputID(executionID)
+	return m.assistantEntryIndexByID(executionID, assistantOutputID(executionID))
+}
+
+func (m *tuiModel) assistantEntryIndexByID(executionID, id string) int {
+	if executionID == "" || id == "" {
+		return -1
+	}
 	// A resumed execution must render after the question answer that admitted
 	// it. The original assistant entry belongs to the pre-question turn and
 	// updating it would make the resumed response appear inside the old plan.

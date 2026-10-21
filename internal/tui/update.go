@@ -554,7 +554,8 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	m.terminalEvents[executionID] = event
 	m.taskSnapshot.Status = event.Status
 	m.thinking = false
-	m.finalizeTurnOutput("", nil, executionID)
+	// Keep the live transcript until WaitTurn supplies the authoritative response
+	// and ProposedPlan; finalizing here would briefly erase a completed plan.
 	if event.Status == core.TaskPaused {
 		if m.pausedCheckpoint == nil {
 			m.pausedCheckpoint = m.pausedCheckpointFor(executionID)

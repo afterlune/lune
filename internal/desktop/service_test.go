@@ -60,6 +60,14 @@ func TestStripProposedPlanLeavesIncompleteTagVisible(t *testing.T) {
 	}
 }
 
+func TestStripProposedPlanRemovesObservedCompatCloseTag(t *testing.T) {
+	got := stripProposedPlan("Before.\n<proposed_plan>## Steps\n- Inspect files<proposed_plan_end/>\nAfter.")
+	want := "Before.\n\nAfter."
+	if got != want {
+		t.Fatalf("stripProposedPlan() = %q, want %q", got, want)
+	}
+}
+
 func TestTranscriptMessagesStripsProposedPlanFromAssistantHistory(t *testing.T) {
 	input := json.RawMessage(`[
 		{"type":"message","id":"user-1","role":"user","content":[{"type":"input_text","text":"Make a plan"}]},

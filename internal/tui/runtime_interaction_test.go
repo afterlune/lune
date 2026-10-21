@@ -304,6 +304,30 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 	}
 }
 
+func TestPlanCompletionEventDefersFinalizationUntilWaiterResult(t *testing.T) {
+	const executionID = "exec-plan-completion"
+	response := json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."}]}]}`)
+	m := newTUIModel(nil, nil, "test-sess")
+	m.running = true
+	m.runningExecution = executionID
+	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect"
+	m.finishTurnEvent(core.Event{Kind: core.EventTaskFinished, ExecutionID: executionID, Status: core.TaskCompleted})
+	if m.currentStreamText == "" || m.activePlanReview != nil {
+		t.Fatalf("task event finalized the plan before the authoritative waiter result: stream=%q review=%#v", m.currentStreamText, m.activePlanReview)
+	}
+
+	m.finishTurn(turnFinishedMsg{
+		sessionID: "test-sess", executionID: executionID,
+		result: core.TurnResult{
+			ExecutionID: executionID, Status: core.TaskCompleted, Response: response,
+			ProposedPlan: &core.ProposedPlan{Text: "## Steps\n1. Inspect"},
+		},
+	})
+	if m.activePlanReview == nil || len(m.entries) != 3 || m.entries[1].Kind != KindPlan || m.entries[2].Text != "After." {
+		t.Fatalf("waiter result did not finalize plan ordering and review: review=%#v entries=%#v", m.activePlanReview, m.entries)
+	}
+}
+
 func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.running = true

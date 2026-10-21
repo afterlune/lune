@@ -244,16 +244,21 @@ func (m *tuiModel) refreshViewportContent() {
 			blocks = append(blocks, renderEntry(liveReasoning, contentWidth))
 		}
 		if m.currentStreamText != "" {
-			streamEntry := TranscriptEntry{
-				Kind: KindAssistant,
-				// Keep a complete plan block visible while it is still the live
-				// stream. StripProposedPlan removes the body as soon as the closing
-				// tag arrives, causing a visible flash before finalization appends the
-				// dedicated plan entry.
-				Text: tuiMarkdown.CleanProposedPlanTags(m.currentStreamText),
+			stream := tuiMarkdown.SplitProposedPlanStream(m.currentStreamText)
+			appendAssistant := func(text string) {
+				if strings.TrimSpace(text) == "" {
+					return
+				}
+				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, contentWidth))
 			}
-			if strings.TrimSpace(streamEntry.Text) != "" {
-				blocks = append(blocks, renderEntry(streamEntry, contentWidth))
+			if stream.Found {
+				appendAssistant(stream.Before)
+				// Render the live plan as a plan entry so the purple Proposed Plan
+				// marker remains visible before Core has returned the final result.
+				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindPlan, Text: stream.Plan}, contentWidth))
+				appendAssistant(stream.After)
+			} else {
+				appendAssistant(stream.Before)
 			}
 		}
 		if m.running {

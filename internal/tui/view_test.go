@@ -1223,20 +1223,33 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 		}
 	}
 
-	// KindPlan renders with single left rail │ and clean code block indent (no double │ │ rail).
+	// KindPlan renders as a padded card with source-preserving heading levels and clean code blocks.
 	planEntry := TranscriptEntry{
 		Kind: KindPlan,
-		Text: "5. **验证**\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
+		Text: "# 验证\n\n1. **运行测试**\n\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
 	}
-	renderedPlan := ansi.Strip(renderEntry(planEntry, 160))
+	rawRenderedPlan := renderEntry(planEntry, 160)
+	renderedPlan := ansi.Strip(rawRenderedPlan)
 	if !strings.Contains(renderedPlan, "• Proposed Plan") {
 		t.Fatalf("expected Proposed Plan header, got:\n%s", renderedPlan)
 	}
-	if strings.Contains(renderedPlan, "│ │") {
-		t.Fatalf("expected no double rail '│ │' in KindPlan code block, got:\n%s", renderedPlan)
+	cardR, cardG, cardB, ok := parseHexRGB(activeTheme().CardBg)
+	if !ok || !strings.Contains(rawRenderedPlan, fmt.Sprintf("48;2;%d;%d;%d", cardR, cardG, cardB)) {
+		t.Fatalf("expected plan body to use the card surface background, got: %q", rawRenderedPlan)
+	}
+	if !strings.Contains(renderedPlan, "# 验证") {
+		t.Fatalf("expected visible plan heading marker, got:\n%s", renderedPlan)
+	}
+	if strings.Contains(renderedPlan, "│ ") {
+		t.Fatalf("plan body should use card padding instead of a repeated rail, got:\n%s", renderedPlan)
 	}
 	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
 		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)
+	}
+	for _, line := range strings.Split(renderedPlan, "\n") {
+		if w := ansi.StringWidth(line); w > 160 {
+			t.Fatalf("plan card line exceeds width 160 (%d): %q", w, line)
+		}
 	}
 }
 

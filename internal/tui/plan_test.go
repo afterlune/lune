@@ -119,6 +119,33 @@ func TestCompleteCoreProposedPlanOpensPlanReview(t *testing.T) {
 	}
 }
 
+func TestCompatProposedPlanFinalizationHidesEndMarker(t *testing.T) {
+	m := newTUIModel(nil, nil, "compat-plan")
+	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
+	m.finalizeTurnOutput("## Steps\n1. Inspect", nil, "exec-compat-plan")
+
+	if m.activePlanReview == nil || m.activePlanReview.Text != "## Steps\n1. Inspect" {
+		t.Fatalf("expected compatibility plan review, got %#v", m.activePlanReview)
+	}
+	if len(m.entries) != 3 || m.entries[0].Kind != KindAssistant || m.entries[0].Text != "Before." ||
+		m.entries[1].Kind != KindPlan || m.entries[1].Text != "## Steps\n1. Inspect" ||
+		m.entries[2].Kind != KindAssistant || m.entries[2].Text != "After." {
+		t.Fatalf("plan and surrounding text were not ordered around the plan panel: %#v", m.entries)
+	}
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "proposed_plan_end") || strings.Contains(entry.Text, "<proposed_plan>") {
+			t.Fatalf("plan marker leaked into transcript: %#v", m.entries)
+		}
+	}
+
+	// A repeated finalization must update the three existing blocks in place.
+	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
+	m.finalizeTurnOutput("## Steps\n1. Inspect", nil, "exec-compat-plan")
+	if len(m.entries) != 3 || m.entries[2].Text != "After." {
+		t.Fatalf("repeated plan finalization duplicated transcript blocks: %#v", m.entries)
+	}
+}
+
 func TestPlanMarkupInTextWithoutCorePlanDoesNotOpenReview(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.currentStreamText = "Here you go:\n<proposed_plan>1. Do it</proposed_plan>"
@@ -188,16 +215,22 @@ func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
 	m.updateLayout()
 
 	for _, stream := range []string{
-		"<proposed_plan>\n## Steps\n1. Fin",
-		"<proposed_plan>\n## Steps\n1. Finish\n</proposed_plan>",
+		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Fin",
+		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Finish\n<proposed_plan_end/>\nAfter.",
 	} {
 		m.currentStreamText = stream
 		m.transcriptDirty = true
 		m.refreshViewportContent()
 		view := ansi.Strip(m.viewport.View())
-		if !strings.Contains(view, "Steps") || !strings.Contains(view, "1. Fin") {
+		if !strings.Contains(view, "Proposed Plan") || !strings.Contains(view, "Steps") || !strings.Contains(view, "1. Fin") || strings.Contains(view, "proposed_plan_end") {
 			t.Fatalf("live plan disappeared while the stream reached a complete block:\n%s", view)
 		}
+		if strings.HasSuffix(stream, "After.") && strings.Index(view, "Proposed Plan") >= strings.Index(view, "After.") {
+			t.Fatalf("text after the plan was rendered before the plan panel:\n%s", view)
+		}
+	}
+	if m.activePlanReview != nil {
+		t.Fatal("live plan output must not open the review card before the turn completes")
 	}
 	for _, entry := range m.entries {
 		if entry.Kind == KindPlan {

@@ -7,7 +7,15 @@ func renderMarkdown(text string, width int) string {
 }
 
 func renderPlanMarkdown(text string, width int) string {
-	return renderMarkdownWithAccent(text, width, activeTheme().AccentSoft)
+	theme := activeTheme()
+	return markdown.RenderPlan(text, width, markdown.Palette{
+		TextPrimary:  theme.TextPrimary,
+		TextMuted:    theme.TextMuted,
+		AccentBlue:   theme.AccentSoft,
+		InlineCodeFg: theme.InlineCodeFg,
+		CodeBlockBg:  theme.CodeBlockBg,
+		Border:       theme.Border,
+	})
 }
 
 func renderMarkdownWithAccent(text string, width int, accent string) string {
