@@ -41,11 +41,13 @@ Run the command entry point:
 go run ./cmd
 ```
 
-Build the standalone binary into `bin/`:
+Build the native executable and Linux amd64/arm64 executables and sandbox helpers:
 
 ```powershell
-go build -trimpath -o bin/lune.exe ./cmd
+./scripts/build.ps1
 ```
+
+The Linux targets are written to `bin/linux-amd64/` and `bin/linux-arm64/`. A direct `go build` command still builds only the selected Go target.
 
 ## Verify
 
