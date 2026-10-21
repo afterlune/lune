@@ -195,11 +195,19 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	} else {
 		lines = append(lines, "- Budget: Standard context window (no provider limit reported yet)")
 	}
-	lines = append(lines, fmt.Sprintf("- Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
+	lines = append(lines, fmt.Sprintf("- Session Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
 		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
 		formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
 	if m.lastInputTokens > 0 {
 		lines = append(lines, "- Last prompt cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
+		if m.lastRequestID != "" {
+			lines = append(lines, fmt.Sprintf("- Last main request: %s (attempt %d, input %s)", m.lastRequestID, m.lastRequestAttempt, formatTokens(m.lastInputTokens)))
+			changes := strings.Join(m.lastRequestChanges, ", ")
+			if changes == "" {
+				changes = "no local prefix changes"
+			}
+			lines = append(lines, "- Local request changes: "+changes+" (not provider cache eviction reasons)")
+		}
 	}
 
 	// 5. Conversation Metrics

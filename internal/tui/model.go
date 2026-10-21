@@ -92,6 +92,9 @@ type tuiModel struct {
 	reasoningTokens      int64
 	contextWindow        int64
 	lastInputTokens      int64
+	lastRequestID        string
+	lastRequestAttempt   int
+	lastRequestChanges   []string
 	lastCachedTokens     int64
 	estimatedInputTokens int64
 	seededSessionUsage   bool
@@ -230,6 +233,7 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 	m.lastInputTokens = 0
 	m.lastCachedTokens = 0
+	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
 	m.estimatedInputTokens = 0
 	m.contextWindow = 0
 	contextWindowConfigured := false
@@ -245,6 +249,8 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	if last, ok := latestLeadUsageRecord(saved.UsageRequests); ok {
 		m.lastInputTokens = last.Usage.InputTokens
 		m.lastCachedTokens = last.Usage.InputTokensDetails.CachedTokens
+		m.lastRequestID, m.lastRequestAttempt = last.RequestID, last.RequestAttempt
+		m.lastRequestChanges = append([]string(nil), last.RequestChanges...)
 		m.estimatedInputTokens = last.EstimatedInputTokens
 		if !contextWindowConfigured {
 			m.contextWindow = last.ContextWindow
@@ -303,6 +309,7 @@ func (m *tuiModel) resetSessionState() {
 	m.contextWindow = 0
 	m.lastInputTokens = 0
 	m.lastCachedTokens = 0
+	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
 	m.estimatedInputTokens = 0
 	m.seededSessionUsage = false
 	m.reasoningEffort = ""

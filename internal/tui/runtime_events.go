@@ -461,6 +461,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			m.lastInputTokens = event.Usage.InputTokens
 			m.lastCachedTokens = event.Usage.InputTokensDetails.CachedTokens
+			m.lastRequestID, m.lastRequestAttempt = event.RequestID, event.RequestAttempt
+			m.lastRequestChanges = append([]string(nil), event.RequestChanges...)
 			m.estimatedInputTokens = event.EstimatedInputTokens
 		}
 

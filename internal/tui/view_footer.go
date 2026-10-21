@@ -105,7 +105,7 @@ func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
 			cachePct = 100.0
 		}
 	}
-	cacheStr := fmt.Sprintf("Cache: %.0f%%", cachePct)
+	cacheStr := fmt.Sprintf("Cache: %.0f%% session", cachePct)
 
 	var speedStr string
 	if m.lastTokensPerSec > 0 {

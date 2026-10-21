@@ -390,10 +390,15 @@ func TestContextCommand(t *testing.T) {
 }
 
 func TestContextDiagnosticsShowsLastPromptCacheBreakdown(t *testing.T) {
-	model := tuiModel{lastInputTokens: 1000, lastCachedTokens: 320}
+	model := tuiModel{lastInputTokens: 1000, lastCachedTokens: 320, lastRequestID: "request-main", lastRequestAttempt: 2, lastRequestChanges: []string{"tools_changed"}}
 	diagnostics := model.renderContextDiagnostics()
 	if !strings.Contains(diagnostics, "Last prompt cache: 320 cached, 680 uncached (32.0% hit)") {
 		t.Fatalf("context diagnostics = %q, want per-request cache hit and miss", diagnostics)
+	}
+	for _, expected := range []string{"request-main", "attempt 2", "tools_changed", "not provider cache eviction reasons"} {
+		if !strings.Contains(diagnostics, expected) {
+			t.Fatalf("missing %q in %s", expected, diagnostics)
+		}
 	}
 }
 
