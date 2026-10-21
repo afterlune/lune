@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/afterlune/lune/internal/filemention"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -56,7 +57,8 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 		return fmt.Errorf("subscribe events: %w", err)
 	}
 
-	input, err := core.ParseTaskInput(prompt)
+	_, augmented := filemention.Expand(prompt, client.Workspace())
+	input, err := core.ParseTaskInput(augmented)
 	if err != nil {
 		return fmt.Errorf("parse prompt input: %w", err)
 	}

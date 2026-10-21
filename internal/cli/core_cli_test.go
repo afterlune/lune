@@ -21,29 +21,32 @@ import (
 )
 
 type fakeCLICore struct {
-	inputs          []core.TurnRequest
-	firstErr        error
-	responses       int
-	pending         bool
-	resumes         int
-	discarded       int
-	compact         int
-	mode            core.PermissionMode
-	latest          core.Session
-	initialTitle    string
-	initialHistory  json.RawMessage
-	sessions        []core.Session
-	sequence        int
-	resolved        []bool
-	resolveErr      error
-	runtime         *fakeCLIRuntime
-	memories        []memory.Item
-	memSeq          int
-	settingsErr     error
-	permissionErr   error
-	pendingRequests []core.PendingRequest
-	questionAnswers []core.UserQuestionAnswer
-	toolDecisions   []core.ToolRecoveryDecision
+	workspace         string
+	inputs            []core.TurnRequest
+	firstErr          error
+	responses         int
+	pending           bool
+	resumes           int
+	discarded         int
+	compact           int
+	mode              core.PermissionMode
+	latest            core.Session
+	initialTitle      string
+	initialHistory    json.RawMessage
+	initialSettings   core.SessionSettings
+	initialAgentUsage map[string]core.UsageTotals
+	sessions          []core.Session
+	sequence          int
+	resolved          []bool
+	resolveErr        error
+	runtime           *fakeCLIRuntime
+	memories          []memory.Item
+	memSeq            int
+	settingsErr       error
+	permissionErr     error
+	pendingRequests   []core.PendingRequest
+	questionAnswers   []core.UserQuestionAnswer
+	toolDecisions     []core.ToolRecoveryDecision
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -85,13 +88,25 @@ func (f *fakeCLICore) CreateSession(_ context.Context, history json.RawMessage) 
 	if (len(hist) == 0 || string(hist) == "null") && len(f.initialHistory) > 0 {
 		hist = f.initialHistory
 	}
-	f.latest = core.Session{ID: fmt.Sprintf("session-%d", f.sequence), Title: title, History: append(json.RawMessage(nil), hist...)}
+	f.latest = core.Session{
+		ID:         fmt.Sprintf("session-%d", f.sequence),
+		Title:      title,
+		Workspace:  f.workspace,
+		History:    append(json.RawMessage(nil), hist...),
+		Settings:   f.initialSettings,
+		AgentUsage: f.initialAgentUsage,
+	}
 	return f.latest, nil
 }
 
 func (f *fakeCLICore) Compact(context.Context, string) (int, error) { return f.compact, nil }
 
-func (f *fakeCLICore) Workspace() string { return `C:\workspace` }
+func (f *fakeCLICore) Workspace() string {
+	if f.workspace != "" {
+		return f.workspace
+	}
+	return `C:\workspace`
+}
 
 func (f *fakeCLICore) OpenSessionRuntime(_ context.Context, sessionID string) (cliRuntime, error) {
 	if f.runtime == nil {
@@ -1437,5 +1452,160 @@ func TestCLIDetailCommand(t *testing.T) {
 	_, stderr = runCLI(t, clientWithTools, "/detail 99\n/exit\n", nil)
 	if !strings.Contains(stderr, "error: tool index 99 out of range (1-2)") {
 		t.Fatalf("stderr = %q, want out of range error", stderr)
+	}
+}
+
+func TestCLIEffortAndAgentsCommands(t *testing.T) {
+	client := &fakeCLICore{
+		initialSettings: core.SessionSettings{ReasoningEffort: "low"},
+		initialAgentUsage: map[string]core.UsageTotals{
+			"lead":     {Requests: 5, Input: 1000, Output: 200},
+			"worker-1": {Requests: 2, Input: 400, Output: 80},
+		},
+	}
+
+	// 1. /effort views current effort
+	stdout, stderr := runCLI(t, client, "/effort\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Current reasoning effort: low") || !strings.Contains(stdout, "Available levels:") {
+		t.Fatalf("stdout = %q, want current effort", stdout)
+	}
+
+	// 2. /effort high sets effort
+	stdout, stderr = runCLI(t, client, "/effort high\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Reasoning effort set to high.") {
+		t.Fatalf("stdout = %q, want effort set confirmation", stdout)
+	}
+
+	// 3. /effort with invalid level
+	_, stderr = runCLI(t, client, "/effort invalid-level\n/exit\n", nil)
+	if !strings.Contains(stderr, "Invalid reasoning effort \"invalid-level\"") {
+		t.Fatalf("stderr = %q, want invalid effort error", stderr)
+	}
+
+	// 4. /agents lists all agents in session
+	stdout, stderr = runCLI(t, client, "/agents\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Session Agents") || !strings.Contains(stdout, "Main Agent") || !strings.Contains(stdout, "worker-1") {
+		t.Fatalf("stdout = %q, want agents list", stdout)
+	}
+
+	// 5. /agents for specific worker
+	stdout, stderr = runCLI(t, client, "/agents worker-1\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Agent [worker-1]:") || !strings.Contains(stdout, "Requests:  2") {
+		t.Fatalf("stdout = %q, want worker-1 stats", stdout)
+	}
+}
+
+func TestCLIExportHTMLAndJSONL(t *testing.T) {
+	tmpDir := t.TempDir()
+	client := &fakeCLICore{
+		workspace:    tmpDir,
+		initialTitle: "Export Test",
+		initialHistory: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"world"}]}
+		]`),
+	}
+
+	htmlFile := filepath.Join(tmpDir, "transcript.html")
+	jsonlFile := filepath.Join(tmpDir, "transcript.jsonl")
+
+	stdout, stderr := runCLI(t, client, fmt.Sprintf("/export html %s\n/export jsonl %s\n/exit\n", htmlFile, jsonlFile), nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Exported session transcript to") {
+		t.Fatalf("stdout = %q, want export confirmation", stdout)
+	}
+
+	// Verify HTML file was written and contains HTML tags
+	htmlBytes, err := os.ReadFile(htmlFile)
+	if err != nil {
+		t.Fatalf("read HTML file: %v", err)
+	}
+	if !strings.Contains(string(htmlBytes), "<!DOCTYPE html>") || !strings.Contains(string(htmlBytes), "Export Test") {
+		t.Fatalf("html content = %s, want valid HTML with title", string(htmlBytes))
+	}
+
+	// Verify JSONL file was written
+	jsonlBytes, err := os.ReadFile(jsonlFile)
+	if err != nil {
+		t.Fatalf("read JSONL file: %v", err)
+	}
+	if !strings.Contains(string(jsonlBytes), `"type":"message"`) {
+		t.Fatalf("jsonl content = %s, want JSON lines", string(jsonlBytes))
+	}
+}
+
+func TestCLIRewindPreview(t *testing.T) {
+	client := &fakeCLICore{
+		initialTitle: "Rewind Preview Test",
+		initialHistory: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"first turn"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"resp 1"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"second turn"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"resp 2"}]}
+		]`),
+	}
+
+	// /rewind preview 1 shows preview without executing rewind
+	stdout, stderr := runCLI(t, client, "/rewind preview 1\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "Rewind preview (would remove 1 turn(s)):") || !strings.Contains(stdout, "second turn") {
+		t.Fatalf("stdout = %q, want rewind preview", stdout)
+	}
+	if !strings.Contains(stdout, "Run '/rewind 1' to execute.") {
+		t.Fatalf("stdout = %q, want execute instruction", stdout)
+	}
+}
+
+func TestCLITUISpecificCommandsFriendlyGuide(t *testing.T) {
+	client := &fakeCLICore{}
+	_, stderr := runCLI(t, client, "/theme dark\n/shortcuts\n/thought\n/cancel-queue\n/exit\n", nil)
+	if !strings.Contains(stderr, "The /theme command is specific to full-screen interactive TUI mode") {
+		t.Fatalf("stderr = %q, want theme notice", stderr)
+	}
+	if !strings.Contains(stderr, "The /shortcuts command is specific to full-screen interactive TUI mode") {
+		t.Fatalf("stderr = %q, want shortcuts notice", stderr)
+	}
+	if !strings.Contains(stderr, "The /thought command is specific to full-screen interactive TUI mode") {
+		t.Fatalf("stderr = %q, want thought notice", stderr)
+	}
+	if !strings.Contains(stderr, "The /cancel-queue command is specific to full-screen interactive TUI mode") {
+		t.Fatalf("stderr = %q, want cancel-queue notice", stderr)
+	}
+}
+
+func TestCLIFileMentionExpansion(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetFile := filepath.Join(tmpDir, "example.txt")
+	if err := os.WriteFile(targetFile, []byte("file content for expansion"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakeCLICore{
+		workspace: tmpDir,
+	}
+
+	_, _ = runCLI(t, client, "please inspect @example.txt\n/exit\n", nil)
+	if len(client.inputs) == 0 {
+		t.Fatalf("expected at least 1 turn request")
+	}
+	submittedInput := string(client.inputs[0].Input.Raw)
+	if !strings.Contains(submittedInput, "file content for expansion") {
+		t.Fatalf("submitted input = %q, want expanded file content", submittedInput)
 	}
 }

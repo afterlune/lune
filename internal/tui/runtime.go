@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/afterlune/lune/internal/tui/filemention"
+	"github.com/afterlune/lune/internal/filemention"
 	core "github.com/afterlune/luneCore"
 )
 

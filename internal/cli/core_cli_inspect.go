@@ -487,3 +487,101 @@ func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) 
 		}
 	}
 }
+
+var validCLIEffortLevels = []string{"default", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+func normalizeCLIEffort(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "default", "unset", "clear", "reset", "off", "inherit":
+		return "", true
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(raw)), true
+	}
+	return "", false
+}
+
+func handleCoreCLIEffort(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	ctx := context.Background()
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: get session: %v\n", err)
+		return
+	}
+	current := saved.Settings.ReasoningEffort
+	if current == "" {
+		current = "default"
+	}
+	if len(fields) == 1 {
+		fmt.Fprintf(stdout, "Current reasoning effort: %s\nAvailable levels: %s\n", current, strings.Join(validCLIEffortLevels, ", "))
+		return
+	}
+	target, ok := normalizeCLIEffort(fields[1])
+	if !ok {
+		fmt.Fprintf(stderr, "Invalid reasoning effort %q. Available levels: %s\n", fields[1], strings.Join(validCLIEffortLevels, ", "))
+		return
+	}
+	settings := saved.Settings
+	settings.ReasoningEffort = target
+	if err := client.SetSessionSettings(ctx, sessionID, settings); err != nil {
+		fmt.Fprintf(stderr, "error: set reasoning effort: %v\n", err)
+		return
+	}
+	display := target
+	if display == "" {
+		display = "default"
+	}
+	fmt.Fprintf(stdout, "Reasoning effort set to %s.\n", display)
+}
+
+func handleCoreCLIAgents(client cliCore, runtime cliRuntime, sessionID, line string, stdout, stderr io.Writer) {
+	ctx := context.Background()
+	saved, err := client.GetSession(ctx, sessionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: get session: %v\n", err)
+		return
+	}
+	fields := strings.Fields(line)
+	targetAgent := ""
+	if len(fields) > 1 {
+		targetAgent = strings.ToLower(fields[1])
+	}
+
+	taskStatus := "idle"
+	if runtime != nil {
+		if state, stateErr := runtime.State(ctx); stateErr == nil && state.Task.Status != "" {
+			taskStatus = string(state.Task.Status)
+		}
+	}
+
+	leadUsage := saved.SessionUsage
+	if val, ok := saved.AgentUsage["lead"]; ok {
+		leadUsage = val
+	}
+
+	if targetAgent != "" && targetAgent != "lead" {
+		usage, ok := saved.AgentUsage[targetAgent]
+		if !ok {
+			fmt.Fprintf(stderr, "Agent %q not found in this session.\n", fields[1])
+			return
+		}
+		fmt.Fprintf(stdout, "Agent [%s]:\n", targetAgent)
+		fmt.Fprintf(stdout, "  Role:      worker\n")
+		fmt.Fprintf(stdout, "  Requests:  %d\n", usage.Requests)
+		fmt.Fprintf(stdout, "  Tokens:    %d in (%d cached), %d out (%d reasoning)\n",
+			usage.Input, usage.Cached, usage.Output, usage.Reasoning)
+		return
+	}
+
+	fmt.Fprintf(stdout, "Session Agents (current task: %s):\n", taskStatus)
+	fmt.Fprintf(stdout, "  - [lead] Main Agent (role: lead, requests: %d, in: %d, out: %d)\n",
+		leadUsage.Requests, leadUsage.Input, leadUsage.Output)
+
+	for id, usage := range saved.AgentUsage {
+		if id == "lead" {
+			continue
+		}
+		fmt.Fprintf(stdout, "  - [%s] Subagent (requests: %d, in: %d, out: %d)\n",
+			id, usage.Requests, usage.Input, usage.Output)
+	}
+}

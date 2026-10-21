@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/afterlune/lune/internal/filemention"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
 )
@@ -78,6 +79,7 @@ func applyCLISessionModelProfile(ctx context.Context, client cliCore, sessionID,
 }
 
 var cliCommands = []cliCommandHelp{
+	{name: "/agents", usage: "/agents [id]", description: "Inspect live agents and subagents in this session."},
 	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
 	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
 	{name: "/context", usage: "/context", description: "Show context window budget, system rules, and capabilities."},
@@ -85,8 +87,9 @@ var cliCommands = []cliCommandHelp{
 	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
 	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
 	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session."},
+	{name: "/effort", usage: "/effort [level]", description: "View or set model reasoning effort: default, none, minimal, low, medium, high, xhigh, max."},
 	{name: "/exit", usage: "/exit", description: "Exit the chat."},
-	{name: "/export", usage: "/export [path]", description: "Export session conversation transcript to a markdown file."},
+	{name: "/export", usage: "/export [md|html|jsonl] [path]", description: "Export session conversation transcript to a file."},
 	{name: "/fork", usage: "/fork", description: "Fork the current session."},
 	{name: "/help", usage: "/help", description: "Show available commands."},
 	{name: "/logs", usage: "/logs [id|prefix] [--tail N]", description: "View logs of a background process."},
@@ -100,7 +103,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/ps", usage: "/ps", description: "List background processes and daemon commands."},
 	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
 	{name: "/review", usage: "/review [path]", description: "Run a read-only model review of workspace changes in this session."},
-	{name: "/rewind", usage: "/rewind [N]", description: "Rewind conversation to a previous turn."},
+	{name: "/rewind", usage: "/rewind [N|preview [N]]", description: "Rewind conversation or preview turns to be removed."},
 	{name: "/sessions", usage: "/sessions [query]", description: "List or search recent sessions in this workspace."},
 	{name: "/status", usage: "/status", description: "Show session, model, and token status."},
 	{name: "/stop", usage: "/stop [id|all]", description: "Stop running background processes."},
@@ -275,6 +278,10 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIExport(client, sessionID, line, stdout, stderr)
 		case line == "/detail" || strings.HasPrefix(line, "/detail "):
 			handleCoreCLIDetail(client, runtime, sessionID, line, stdout, stderr)
+		case line == "/effort" || strings.HasPrefix(line, "/effort "):
+			handleCoreCLIEffort(client, sessionID, line, stdout, stderr)
+		case line == "/agents" || strings.HasPrefix(line, "/agents "):
+			handleCoreCLIAgents(client, runtime, sessionID, line, stdout, stderr)
 		case line == "/model" || strings.HasPrefix(line, "/model "):
 			handleCoreCLIModel(client, sessionID, line, stdout, stderr)
 		case line == "/sessions" || strings.HasPrefix(line, "/sessions "):
@@ -368,6 +375,14 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			} else {
 				fmt.Fprintf(stdout, "Compacted %d older user turn(s).\n", turns)
 			}
+		case line == "/theme" || strings.HasPrefix(line, "/theme "):
+			fmt.Fprintln(stderr, "The /theme command is specific to full-screen interactive TUI mode (run 'lune --tui').")
+		case line == "/shortcuts" || strings.HasPrefix(line, "/shortcuts "):
+			fmt.Fprintln(stderr, "The /shortcuts command is specific to full-screen interactive TUI mode (run 'lune --tui').")
+		case line == "/thought" || strings.HasPrefix(line, "/thought "):
+			fmt.Fprintln(stderr, "The /thought command is specific to full-screen interactive TUI mode (run 'lune --tui').")
+		case line == "/cancel-queue" || strings.HasPrefix(line, "/cancel-queue "):
+			fmt.Fprintln(stderr, "The /cancel-queue command is specific to full-screen interactive TUI mode (run 'lune --tui').")
 		case line == "":
 		case strings.HasPrefix(line, "/"):
 			fmt.Fprintf(stderr, "Unknown command %q. Available commands: %s\n", line, strings.Join(cliCommandNames(), " "))
@@ -380,7 +395,12 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			} else if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
 				fmt.Fprintln(stderr, "A turn is already running or queued in this session.")
 			} else {
-				input, err := core.ParseTaskInput(line)
+				effectiveWorkspace := workspace
+				if effectiveWorkspace == "" {
+					effectiveWorkspace = client.Workspace()
+				}
+				_, augmented := filemention.Expand(line, effectiveWorkspace)
+				input, err := core.ParseTaskInput(augmented)
 				if err != nil {
 					fmt.Fprintf(stderr, "error: %v\n", err)
 				} else {

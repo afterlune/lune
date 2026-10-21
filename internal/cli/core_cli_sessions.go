@@ -4,13 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	core "github.com/afterlune/luneCore"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	core "github.com/afterlune/luneCore"
 )
 
 func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
@@ -21,19 +23,49 @@ func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr 
 		return
 	}
 	fields := strings.Fields(line)
+	format := "md"
 	targetPath := ""
 	if len(fields) > 1 {
-		targetPath = strings.TrimSpace(strings.Join(fields[1:], " "))
+		first := strings.ToLower(fields[1])
+		switch first {
+		case "html", "htm":
+			format = "html"
+			if len(fields) > 2 {
+				targetPath = strings.TrimSpace(strings.Join(fields[2:], " "))
+			}
+		case "jsonl", "json":
+			format = "jsonl"
+			if len(fields) > 2 {
+				targetPath = strings.TrimSpace(strings.Join(fields[2:], " "))
+			}
+		case "md", "markdown":
+			format = "md"
+			if len(fields) > 2 {
+				targetPath = strings.TrimSpace(strings.Join(fields[2:], " "))
+			}
+		default:
+			targetPath = strings.TrimSpace(strings.Join(fields[1:], " "))
+			ext := strings.ToLower(filepath.Ext(targetPath))
+			switch ext {
+			case ".html", ".htm":
+				format = "html"
+			case ".jsonl", ".json":
+				format = "jsonl"
+			default:
+				format = "md"
+			}
+		}
 	}
+	shortID := sessionID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	if shortID == "" {
+		shortID = "current"
+	}
+	timestamp := time.Now().Format("20060102-150405")
 	if targetPath == "" {
-		shortID := sessionID
-		if len(shortID) > 8 {
-			shortID = shortID[:8]
-		}
-		if shortID == "" {
-			shortID = "current"
-		}
-		targetPath = fmt.Sprintf("export-%s-%s.md", shortID, time.Now().Format("20060102-150405"))
+		targetPath = fmt.Sprintf("export-%s-%s.%s", shortID, timestamp, format)
 	}
 	workspace := client.Workspace()
 	if !filepath.IsAbs(targetPath) && workspace != "" {
@@ -49,20 +81,135 @@ func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr 
 		model = "<default>"
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Session Transcript: %s\n\n", title))
-	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", sessionID))
-	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", workspace))
-	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", model))
-	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n", time.Now().Format(time.RFC3339)))
-	if saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 {
-		sb.WriteString(fmt.Sprintf("- **Token Usage:** %d in (cached: %d) · %d out (reasoning: %d)\n",
-			saved.SessionUsage.Input, saved.SessionUsage.Cached,
-			saved.SessionUsage.Output, saved.SessionUsage.Reasoning))
-	}
-	sb.WriteString("\n---\n\n")
-
+	var content []byte
 	entryCount := 0
+
+	switch format {
+	case "jsonl":
+		var lines []string
+		if len(saved.History) > 0 && string(saved.History) != "null" {
+			var items []json.RawMessage
+			if json.Unmarshal(saved.History, &items) == nil {
+				for _, item := range items {
+					lines = append(lines, string(item))
+					entryCount++
+				}
+			}
+		}
+		content = []byte(strings.Join(lines, "\n") + "\n")
+
+	case "html":
+		content = cliGenerateHTMLExport(saved, sessionID, title, model, workspace, &entryCount)
+
+	default: // "md"
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("# Session Transcript: %s\n\n", title))
+		sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", sessionID))
+		sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", workspace))
+		sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", model))
+		sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n", time.Now().Format(time.RFC3339)))
+		if saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 {
+			sb.WriteString(fmt.Sprintf("- **Token Usage:** %d in (cached: %d) · %d out (reasoning: %d)\n",
+				saved.SessionUsage.Input, saved.SessionUsage.Cached,
+				saved.SessionUsage.Output, saved.SessionUsage.Reasoning))
+		}
+		sb.WriteString("\n---\n\n")
+
+		if len(saved.History) > 0 && string(saved.History) != "null" {
+			var items []json.RawMessage
+			if json.Unmarshal(saved.History, &items) == nil {
+				for _, item := range items {
+					var val struct {
+						Type      string          `json:"type"`
+						Role      string          `json:"role"`
+						Name      string          `json:"name"`
+						Arguments json.RawMessage `json:"arguments"`
+						Content   json.RawMessage `json:"content"`
+					}
+					if json.Unmarshal(item, &val) != nil {
+						continue
+					}
+					switch val.Type {
+					case "message":
+						text := cliExtractMessageContent(val.Content)
+						if text == "" {
+							continue
+						}
+						entryCount++
+						role := "User"
+						if val.Role == "assistant" {
+							role = "Assistant"
+						}
+						sb.WriteString(fmt.Sprintf("### %s\n\n%s\n\n", role, text))
+					case "function_call":
+						entryCount++
+						args := string(val.Arguments)
+						if len(args) > 0 && args[0] == '"' {
+							var unquoted string
+							if json.Unmarshal(val.Arguments, &unquoted) == nil {
+								args = unquoted
+							}
+						}
+						sb.WriteString(fmt.Sprintf("<details>\n<summary>Tool: <code>%s</code></summary>\n\n", val.Name))
+						if args != "" && args != "null" {
+							sb.WriteString(fmt.Sprintf("**Arguments:**\n```json\n%s\n```\n\n", args))
+						}
+						sb.WriteString("</details>\n\n")
+					}
+				}
+			}
+		}
+		content = []byte(sb.String())
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		fmt.Fprintf(stderr, "error: create directory: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(targetPath, content, 0644); err != nil {
+		fmt.Fprintf(stderr, "error: write file: %v\n", err)
+		return
+	}
+	fmt.Fprintf(stdout, "Exported session transcript to %s (%d bytes, %d items).\n", targetPath, len(content), entryCount)
+}
+
+func cliGenerateHTMLExport(saved core.Session, sessionID, title, model, workspace string, entryCount *int) []byte {
+	var sb strings.Builder
+	sb.WriteString("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")
+	sb.WriteString("<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
+	sb.WriteString(fmt.Sprintf("<title>%s</title>\n", html.EscapeString(title)))
+	sb.WriteString(`<style>
+:root { --bg: #0f141c; --card: #18202c; --text: #e6edf3; --muted: #8b949e; --border: #30363d; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px; }
+.container { max-width: 900px; margin: 0 auto; }
+.header { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+h1 { margin: 0 0 12px 0; font-size: 24px; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 13px; color: var(--muted); }
+.message { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.role { font-weight: bold; margin-bottom: 8px; }
+.role-user { color: #58a6ff; }
+.role-assistant { color: #3fb950; }
+pre { background: #0d1117; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+code { font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; }
+details { background: #161b22; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="container">
+`)
+	sb.WriteString("<div class=\"header\">\n")
+	sb.WriteString(fmt.Sprintf("<h1>%s</h1>\n<div class=\"meta\">\n", html.EscapeString(title)))
+	sb.WriteString(fmt.Sprintf("<div><strong>Session ID:</strong> <code>%s</code></div>\n", html.EscapeString(sessionID)))
+	sb.WriteString(fmt.Sprintf("<div><strong>Workspace:</strong> <code>%s</code></div>\n", html.EscapeString(workspace)))
+	sb.WriteString(fmt.Sprintf("<div><strong>Model:</strong> %s</div>\n", html.EscapeString(model)))
+	sb.WriteString(fmt.Sprintf("<div><strong>Exported:</strong> %s</div>\n", time.Now().Format("2006-01-02 15:04:05")))
+	if saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 {
+		sb.WriteString(fmt.Sprintf("<div><strong>Tokens:</strong> %d in · %d out</div>\n", saved.SessionUsage.Input, saved.SessionUsage.Output))
+	}
+	sb.WriteString("</div>\n</div>\n\n")
+
+	count := 0
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var items []json.RawMessage
 		if json.Unmarshal(saved.History, &items) == nil {
@@ -83,14 +230,19 @@ func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr 
 					if text == "" {
 						continue
 					}
-					entryCount++
-					role := "User"
+					count++
+					roleClass := "role-user"
+					roleName := "👤 User"
 					if val.Role == "assistant" {
-						role = "Assistant"
+						roleClass = "role-assistant"
+						roleName = "🤖 Assistant"
 					}
-					sb.WriteString(fmt.Sprintf("### %s\n\n%s\n\n", role, text))
+					sb.WriteString("<div class=\"message\">\n")
+					sb.WriteString(fmt.Sprintf("<div class=\"role %s\">%s</div>\n", roleClass, roleName))
+					sb.WriteString(fmt.Sprintf("<div>%s</div>\n", html.EscapeString(text)))
+					sb.WriteString("</div>\n")
 				case "function_call":
-					entryCount++
+					count++
 					args := string(val.Arguments)
 					if len(args) > 0 && args[0] == '"' {
 						var unquoted string
@@ -98,26 +250,19 @@ func handleCoreCLIExport(client cliCore, sessionID, line string, stdout, stderr 
 							args = unquoted
 						}
 					}
-					sb.WriteString(fmt.Sprintf("<details>\n<summary>Tool: <code>%s</code></summary>\n\n", val.Name))
+					sb.WriteString("<details>\n")
+					sb.WriteString(fmt.Sprintf("<summary>🔧 Tool: <code>%s</code></summary>\n", html.EscapeString(val.Name)))
 					if args != "" && args != "null" {
-						sb.WriteString(fmt.Sprintf("**Arguments:**\n```json\n%s\n```\n\n", args))
+						sb.WriteString(fmt.Sprintf("<pre><code>%s</code></pre>\n", html.EscapeString(args)))
 					}
-					sb.WriteString("</details>\n\n")
+					sb.WriteString("</details>\n")
 				}
 			}
 		}
 	}
-
-	content := []byte(sb.String())
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		fmt.Fprintf(stderr, "error: create directory: %v\n", err)
-		return
-	}
-	if err := os.WriteFile(targetPath, content, 0644); err != nil {
-		fmt.Fprintf(stderr, "error: write file: %v\n", err)
-		return
-	}
-	fmt.Fprintf(stdout, "Exported session transcript to %s (%d bytes, %d items).\n", targetPath, len(content), entryCount)
+	sb.WriteString("</div>\n</body>\n</html>\n")
+	*entryCount = count
+	return []byte(sb.String())
 }
 
 func cliExtractMessageContent(content json.RawMessage) string {
@@ -410,15 +555,64 @@ func handleCoreCLITitle(client cliCore, sessionID, line string, stdout, stderr i
 func handleCoreCLIRewind(client cliCore, sessionID, line string, stdout, stderr io.Writer) {
 	fields := strings.Fields(line)
 	turns := 1
-	if len(fields) > 1 {
-		n, err := strconv.Atoi(fields[1])
-		if err != nil || n <= 0 {
-			fmt.Fprintf(stderr, "usage: /rewind [N] (N must be a positive integer)\n")
+	isPreview := false
+	for _, arg := range fields[1:] {
+		lower := strings.ToLower(arg)
+		if lower == "preview" || lower == "-p" || lower == "--preview" {
+			isPreview = true
+		} else if n, err := strconv.Atoi(arg); err == nil && n > 0 {
+			turns = n
+		} else {
+			fmt.Fprintf(stderr, "usage: /rewind [N] or /rewind preview [N] (N must be a positive integer)\n")
 			return
 		}
-		turns = n
 	}
 	ctx := context.Background()
+	if isPreview {
+		saved, err := client.GetSession(ctx, sessionID)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: get session: %v\n", err)
+			return
+		}
+		var userTurns []string
+		if len(saved.History) > 0 && string(saved.History) != "null" {
+			var items []json.RawMessage
+			if json.Unmarshal(saved.History, &items) == nil {
+				for _, item := range items {
+					var val struct {
+						Type    string          `json:"type"`
+						Role    string          `json:"role"`
+						Content json.RawMessage `json:"content"`
+					}
+					if json.Unmarshal(item, &val) == nil && val.Type == "message" && val.Role == "user" {
+						text := cliExtractMessageContent(val.Content)
+						if text != "" {
+							userTurns = append(userTurns, text)
+						}
+					}
+				}
+			}
+		}
+		if len(userTurns) == 0 {
+			fmt.Fprintln(stdout, "No user turns in session history.")
+			return
+		}
+		if turns > len(userTurns) {
+			turns = len(userTurns)
+		}
+		dropped := userTurns[len(userTurns)-turns:]
+		fmt.Fprintf(stdout, "Rewind preview (would remove %d turn(s)):\n", len(dropped))
+		for i, text := range dropped {
+			summary := text
+			if len(summary) > 60 {
+				summary = summary[:60] + "..."
+			}
+			summary = strings.ReplaceAll(summary, "\n", " ")
+			fmt.Fprintf(stdout, "  - Turn %d: %q\n", len(userTurns)-len(dropped)+i+1, summary)
+		}
+		fmt.Fprintf(stdout, "Run '/rewind %d' to execute.\n", turns)
+		return
+	}
 	removed, err := client.RewindSession(ctx, sessionID, turns)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: rewind session: %v\n", err)
