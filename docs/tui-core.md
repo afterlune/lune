@@ -30,6 +30,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 ## Permissions, Modes, and Themes
 
 - Four permission modes: `read-only`, `workspace` (default), `ask`, `full-access`. Cycled via `Shift+Tab` or set via `/permissions <mode>`.
+- `read-only` permits workspace reads and can approve external-directory reads; `ask` prompts for every operation except workspace reads; `workspace` permits workspace reads/writes and asks for external paths, commands, and web; `full-access` permits registered tools except the permanent extreme-danger command denylist. External file grants are per-session, cover a directory subtree with read or read/write access, survive reopening that session, and do not apply to shell commands.
 - Plan mode (`/plan`): Locks permissions to `read-only` while planning. Restores previous permission mode when implementation is chosen.
 - Theme Adaptability (`/theme`): Native background color negotiation via Bubble Tea v2 `tea.RequestBackgroundColor` and `tea.BackgroundColorMsg`, with manual override (`dark`, `light`, `auto`).
 

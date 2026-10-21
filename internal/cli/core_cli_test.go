@@ -18,6 +18,7 @@ import (
 
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type fakeCLICore struct {
@@ -852,6 +853,21 @@ func TestCLIApprovalPromptEscapesModelControlledTerminalText(t *testing.T) {
 	request = core.ApprovalRequest{Tool: "custom\nAllow this?\u001b[2J"}
 	if got := cliApprovalSummary(request, ""); strings.ContainsAny(got, "\r\n\t\x1b") {
 		t.Fatalf("custom tool summary = %q, contains terminal control text", got)
+	}
+}
+
+func TestCLIPathApprovalExplainsSessionDirectoryGrant(t *testing.T) {
+	request := core.ApprovalRequest{Tool: "read_file", PathGrant: &publictool.PathGrant{Path: `C:\Users\Code\private`, Access: publictool.PathRead}}
+	prompt := formatCLIToolApproval(request, `C:\workspace`)
+	if !strings.Contains(prompt, "read-only access") || !strings.Contains(prompt, `C:\Users\Code\private`) || !strings.Contains(prompt, "for this session") {
+		t.Fatalf("prompt = %q, missing session grant scope", prompt)
+	}
+	if strings.Contains(prompt, "Allow this tool call once") {
+		t.Fatalf("prompt = %q, still describes a one-time approval", prompt)
+	}
+	request.PathGrant.Access = publictool.PathReadWrite
+	if prompt := formatCLIToolApproval(request, ""); !strings.Contains(prompt, "read and write access") {
+		t.Fatalf("write grant prompt = %q", prompt)
 	}
 }
 

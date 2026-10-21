@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -567,6 +568,19 @@ func TestApprovalPanelRendering(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "1. Allow execution") {
 		t.Errorf("expected allow option, got: %s", rendered)
+	}
+}
+
+func TestApprovalPanelExplainsExternalDirectoryGrant(t *testing.T) {
+	appr := &ActiveApproval{Request: core.ApprovalRequest{
+		ID: "grant-approval", Tool: "read_file",
+		PathGrant: &publictool.PathGrant{Path: `/home/user/private`, Access: publictool.PathReadWrite},
+	}}
+	rendered := renderApprovalPanel(appr, 90)
+	for _, expected := range []string{"Session grant", "read and write", "Directory:", "/home", "private", "Grant for this session"} {
+		if !strings.Contains(rendered, expected) {
+			t.Errorf("approval panel is missing %q: %s", expected, rendered)
+		}
 	}
 }
 

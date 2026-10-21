@@ -203,7 +203,7 @@ func summarizeToolRound(entries []TranscriptEntry) string {
 			switch name {
 			case "list_dir":
 				dirs++
-			case "read_file":
+			case "read_file", "read_image":
 				files++
 			case "grep", "glob", "find_files", "search_files":
 				searches++
@@ -532,6 +532,9 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		case "read_file":
 			actionWord = "Read"
 			targetText = strings.TrimPrefix(targetText, "Read ")
+		case "read_image":
+			actionWord = "Viewed"
+			targetText = strings.TrimPrefix(targetText, "Viewed image ")
 		case "list_dir":
 			actionWord = "Listed"
 			targetText = strings.TrimPrefix(strings.TrimPrefix(targetText, "List "), "list_dir ")

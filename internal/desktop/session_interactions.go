@@ -138,7 +138,7 @@ func pendingRequestView(request core.PendingRequest) PendingRequestView {
 		if request.Approval == nil {
 			break
 		}
-		return PendingRequestView{Kind: string(request.Kind), ID: request.Approval.ID, Tool: request.Approval.Tool, Arguments: request.Approval.Arguments}
+		return PendingRequestView{Kind: string(request.Kind), ID: request.Approval.ID, Tool: request.Approval.Tool, Arguments: request.Approval.Arguments, PathGrant: request.Approval.PathGrant}
 	case core.PendingUserQuestion:
 		if request.UserQuestion == nil {
 			break

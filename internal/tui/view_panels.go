@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"charm.land/lipgloss/v2"
 	core "github.com/afterlune/luneCore"
@@ -574,10 +575,33 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		argsStr := sanitizeAndTruncateLine(string(approval.Request.Arguments), max(20, width-16))
 		lines = append(lines, styleTextMuted().Render("Arguments: "+argsStr))
 	}
+	pathGrant := approval.Request.PathGrant
+	if pathGrant != nil {
+		access := "read-only"
+		if pathGrant.Access == "read_write" {
+			access = "read and write"
+		}
+		lines = append(lines, styleTextMuted().Render(fmt.Sprintf("Session grant: %s access", access)))
+		safePath := strings.Map(func(char rune) rune {
+			if unicode.IsControl(char) {
+				return -1
+			}
+			return char
+		}, pathGrant.Path)
+		wrappedPath := ansi.Wrap("Directory: "+safePath, max(20, width-16), " /\\")
+		for _, line := range strings.Split(wrappedPath, "\n") {
+			lines = append(lines, styleTextMuted().Render(line))
+		}
+		lines = append(lines, styleTextMuted().Render("Includes subdirectories for this session"))
+	}
 
 	lines = append(lines, "")
 
-	options := []string{"1. Allow execution", "2. Deny"}
+	allowLabel := "1. Allow execution"
+	if pathGrant != nil {
+		allowLabel = "1. Grant for this session"
+	}
+	options := []string{allowLabel, "2. Deny"}
 	for i, opt := range options {
 		marker := "  "
 		if i == approval.Selected {
@@ -590,7 +614,11 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		}
 	}
 
-	hint := styleTextMuted().Render("\n1/y/enter allow · 2/n/esc deny")
+	hintText := "\n1/y/enter allow · 2/n/esc deny"
+	if pathGrant != nil {
+		hintText = "\nGrant covers this directory subtree for this session"
+	}
+	hint := styleTextMuted().Render(hintText)
 	lines = append(lines, hint)
 
 	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))

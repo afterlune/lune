@@ -9,6 +9,7 @@ import (
 
 	core "github.com/afterlune/luneCore"
 	publicmodel "github.com/afterlune/luneCore/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type ConversationMessage struct {
@@ -46,6 +47,7 @@ type PendingRequestView struct {
 	CallID       string                         `json:"callId"`
 	Tool         string                         `json:"tool"`
 	Arguments    json.RawMessage                `json:"arguments,omitempty"`
+	PathGrant    *publictool.PathGrant          `json:"pathGrant,omitempty"`
 	Questions    []publicmodel.UserQuestionItem `json:"questions,omitempty"`
 	Reason       string                         `json:"reason,omitempty"`
 }

@@ -96,6 +96,10 @@ func formatToolSummary(toolName, rawArgs, workspace string) string {
 			}
 			return "Read " + p
 		}
+	case "read_image":
+		if p := relPath(strField("path", "file_path", "file")); p != "" {
+			return "Viewed image " + p
+		}
 	case "write_file":
 		if p := relPath(strField("path", "file_path", "file")); p != "" {
 			return "Write " + p

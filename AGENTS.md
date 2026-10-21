@@ -43,20 +43,20 @@ Capability extension must go through the existing mechanisms instead:
 The tool permission setting has four modes:
 工具权限设置有四档：
 
-- `read-only`: workspace reads are allowed; web tools require approval; writes and commands are blocked.
-  `read-only`：允许读取工作区文件；web 工具需授权；写入与命令会被阻止。
-- `workspace`: workspace file operations are allowed; commands and web tools require approval.
-  `workspace`：允许工作区文件操作；命令和 web 工具需授权。
-- `ask`: workspace reads are allowed; every other tool requires approval.
-  `ask`：允许读取工作区文件；其他工具均需授权。
-- `full-access`: all registered tools run without approval; commands can access paths outside the workspace.
-  `full-access`：所有已注册工具均无需授权；命令可以访问工作区以外的路径。
+- `read-only`: workspace reads are allowed; reads outside the workspace and web tools require approval; writes and commands are blocked.
+  `read-only`：默认允许读取工作区；读取工作区外目录和 web 工具需授权；写入与命令会被阻止。
+- `ask`: workspace reads are allowed; all other tool operations require approval, including workspace writes and external-directory access.
+  `ask`：默认允许读取工作区；其他工具操作均需授权，包括工作区写入和工作区外目录访问。
+- `workspace`: workspace reads and writes are allowed; external filesystem access, commands, and web tools require approval.
+  `workspace`：默认允许读取和写入工作区；工作区外文件访问、命令和 web 工具需授权。
+- `full-access`: registered tools run without approval and may use current-user filesystem access; extremely dangerous commands are always blocked.
+  `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；极度危险命令始终被阻止。
 
 Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. In the TUI, `Shift+Tab` cycles through the four modes and `/permissions <mode>` selects one directly.
 自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。TUI 中按 `Shift+Tab` 循环切换四档，也可用 `/permissions <mode>` 直接选择。
 
-Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` and `Shift+Tab` cannot raise access while Plan mode is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. Read-only web tools still require approval.
-Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 和 `Shift+Tab` 均不能提高权限。在计划审查中选择实施时，会先退出 Plan 模式并恢复之前的档位，再启动实施。只读 web 工具仍需授权。
+Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` and `Shift+Tab` cannot raise access while Plan mode is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. External-directory reads and read-only web tools still require approval.
+Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 和 `Shift+Tab` 均不能提高权限。在计划审查中选择实施时，会先退出 Plan 模式并恢复之前的档位，再启动实施。工作区外目录读取和只读 web 工具仍需授权。
 
 Approved commands and commands run under `full-access` have network access enabled by default. `full-access` is also supported when running as root in container environments (e.g. Docker, Podman, WSL). When sandboxing causes container conflicts or native execution is preferred, the OS sandbox can be bypassed using the `--no-sandbox` flag or `LUNE_SANDBOX=off` environment variable.
 已批准的命令与 `full-access` 模式下的命令默认允许访问网络。在容器环境（如 Docker、Podman、WSL）中以 root 运行时亦支持 `full-access` 模式。当沙箱产生容器环境冲突或需要原生执行时，可通过 `--no-sandbox` 参数或 `LUNE_SANDBOX=off` 环境变量跳过 OS 沙箱。
@@ -69,6 +69,10 @@ Approved commands and commands run under `full-access` have network access enabl
   注册工具时统一声明类别、权限类别和只读属性；类别为空表示该工具不参与按类别发现。权限判断和 Plan 模式筛选均读取元数据，不按工具名称判断。
 - Unclassified tools are blocked in `read-only` and `workspace` modes; `workspace` does not prompt for missing metadata. `ask` prompts for unclassified tools, while `full-access` allows every registered tool.
   未分类工具在 `read-only` 和 `workspace` 模式下会被阻止；`workspace` 不会为缺失元数据弹出授权。`ask` 会请求授权，`full-access` 允许所有已注册工具。
+- Built-in file tools can request a session-scoped directory grant for paths outside the workspace. A grant covers that directory and descendants with either `read` or `read_write` access; a write grant also covers reads. Denials are not remembered, grants persist when reopening the same session, and new or forked sessions do not inherit them. Deleting a session deletes its grants. There is no separate grant-management UI. These grants apply only to built-in file tools, never to shell commands.
+  内置文件工具可为工作区外路径请求会话级目录授权。授权范围覆盖指定目录及其子目录，权限为 `read` 或 `read_write`；读写授权也包含读取。拒绝不会被记住；重新打开同一会话时授权继续有效；新会话和分叉会话不继承授权。删除会话即删除授权，不另设授权管理界面。目录授权只作用于内置文件工具，不作用于 Shell 命令。
+- Commands that can be approved interactively are not permanently denied just because they match a high-risk pattern. A narrow extreme-danger denylist remains blocked in every mode, including `full-access`; non-interactive plan execution still requires exact authorization for high-risk commands.
+  可交互授权的命令不会仅因匹配一般高风险模式而永久禁止。少数极度危险命令在所有档位（包括 `full-access`）下始终被阻止；非交互计划执行仍要求对高风险命令逐条精确授权。
 - Follow [the engineering maintenance guide](docs/maintenance.md) for dependency updates, validation commands, generated files, and release builds.
   依赖更新、验证命令、生成文件和发布构建按[工程维护指南](docs/maintenance.md)执行。
 - Keep the Chinese and English text in this file in sync.

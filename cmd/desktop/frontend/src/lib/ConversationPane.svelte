@@ -83,8 +83,9 @@ let { desktop }: { desktop: DesktopState } = $props();
                 {#each block.pendingRequests.filter((request) => request.kind === 'approval') as approval (approval.id)}
                   <section class="request-card approval-card execution-action-card">
                     <div class="request-heading"><span class="request-icon">!</span><div><strong>需要授权</strong><p>Agent 想要运行工具 <code>{approval.tool}</code></p></div></div>
+                    {#if approval.pathGrant}<p class="permission-grant-scope">授权目录：<code>{approval.pathGrant.path}</code>（{approval.pathGrant.access === 'read_write' ? '读写' : '只读'}，包含其子目录；保存到当前 session）</p>{/if}
                     {#if approval.arguments}<pre>{desktop.formatArguments(approval.arguments)}</pre>{/if}
-                    <div class="request-actions"><button class="quiet-button" onclick={() => void desktop.resolveApproval(approval, false)}>拒绝</button><button class="primary-button" onclick={() => void desktop.resolveApproval(approval, true)}>允许本次操作</button></div>
+                    <div class="request-actions"><button class="quiet-button" onclick={() => void desktop.resolveApproval(approval, false)}>拒绝</button><button class="primary-button" onclick={() => void desktop.resolveApproval(approval, true)}>{approval.pathGrant ? '授权此目录到本 session' : '允许本次操作'}</button></div>
                   </section>
                 {/each}
 

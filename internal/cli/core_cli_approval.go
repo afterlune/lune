@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func resolveCLIApproval(runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
@@ -66,7 +67,11 @@ func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, work
 		return true, fmt.Errorf("resolve approval: %w", err)
 	}
 	if allowed {
-		_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
+		if request.PathGrant != nil {
+			_, _ = fmt.Fprintln(stderr, "Granted directory access for this session.")
+		} else {
+			_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
+		}
 	} else {
 		_, _ = fmt.Fprintln(stderr, "Denied this tool call.")
 	}
@@ -74,6 +79,14 @@ func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, work
 }
 
 func formatCLIToolApproval(request core.ApprovalRequest, workspace string) string {
+	if request.PathGrant != nil {
+		access := "read-only"
+		if request.PathGrant.Access == publictool.PathReadWrite {
+			access = "read and write"
+		}
+		return fmt.Sprintf("Grant %s access to %s and its subdirectories for this session?\nPress Y to grant access, N to deny, or Esc to interrupt the task.",
+			access, cleanCLIInlineText(request.PathGrant.Path))
+	}
 	details := ""
 	warning := ""
 	if request.Tool == "command" {
@@ -97,7 +110,7 @@ func cliApprovalSummary(request core.ApprovalRequest, workspace string) string {
 	path := cliApprovalPath(pathValue, workspace)
 	summary := "Working on a tool request"
 	switch request.Tool {
-	case "read_file":
+	case "read_file", "read_image":
 		summary = cliApprovalPathSummary("Reading", path)
 	case "write_file":
 		summary = cliApprovalPathSummary("Writing", path)

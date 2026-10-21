@@ -726,6 +726,7 @@ button { transition: background-color .14s ease, border-color .14s ease, color .
 /* cards */
 .request-card, .plan-review, .mcp-interaction-card, .activity-report, .activity-review { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: none; }
 .request-card, .plan-review, .mcp-interaction-card { padding: 14px 16px; }
+.permission-grant-scope { margin: 10px 0; color: var(--muted-strong); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .plan-title { display: flex; align-items: center; justify-content: space-between; color: var(--text-soft); font-size: 12px; font-weight: 600; }
 .plan-badge { border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--muted); font-size: 9px; letter-spacing: .06em; }
 .plan-body { margin: 10px 0; color: var(--text); font-size: 13px; line-height: 1.7; }

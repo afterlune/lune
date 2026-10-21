@@ -231,6 +231,7 @@ export interface PendingRequestView {
     "callId": string;
     "tool": string;
     "arguments"?: json$0.RawMessage;
+    "pathGrant"?: { "path": string; "access": string };
     "questions"?: model$0.UserQuestionItem[] | null;
     "reason"?: string;
 }

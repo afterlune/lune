@@ -272,7 +272,7 @@ func sanitizeAndTruncateLine(line string, maxWidth int) string {
 
 func isExploreTool(toolName string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "read_file", "list_dir", "grep", "glob", "find_files", "search_files":
+	case "read_file", "read_image", "list_dir", "grep", "glob", "find_files", "search_files":
 		return true
 	default:
 		return false
