@@ -97,7 +97,7 @@ let { desktop }: { desktop: DesktopState } = $props();
                         {#if question.options?.length}
                           <div class="question-options">
                             {#each question.options as option (option.label)}
-                              <label class:selected-option={desktop.answerValues[question.id] === option.label} class="question-option"><input type="radio" name={question.id} value={option.label} bind:group={desktop.answerValues[question.id]} /><span class="radio-mark"></span><span><b>{option.label}</b>{#if option.description}<small>{option.description}</small>{/if}</span></label>
+                              <label class:selected-option={desktop.answerValues[question.id] === option.label} class="question-option"><input type="radio" name={question.id} value={option.label} bind:group={desktop.answerValues[question.id]} /><span class="radio-mark"></span><span class="question-option-content"><span class="question-option-heading"><b>{option.label}</b>{#if option.recommended}<span class="recommended-badge">推荐</span>{/if}</span>{#if option.description}<small>{option.description}</small>{/if}</span></label>
                             {/each}
                           </div>
                         {/if}

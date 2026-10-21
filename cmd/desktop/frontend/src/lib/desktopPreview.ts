@@ -47,7 +47,7 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
   const previewPendingRequests: Record<string, PendingRequestView[]> = {
     'session-background': [
       previewPendingRequest('approval', 'approval-preview', { tool: 'exec_command', arguments: { command: 'git status --short' } }),
-      previewPendingRequest('user_question', 'question-background', { questions: [{ id: 'next-step', question: '接下来优先检查哪一部分？', options: [{ label: '测试', description: '先确认当前改动的行为。' }, { label: '实现', description: '继续完成主要功能。' }] }] }),
+      previewPendingRequest('user_question', 'question-background', { questions: [{ id: 'next-step', question: '接下来优先检查哪一部分？', options: [{ label: '测试', description: '先确认当前改动的行为。', recommended: true }, { label: '实现', description: '继续完成主要功能。', recommended: false }] }] }),
       previewPendingRequest('model_recovery', 'model-background', { reason: 'rate_limit' }),
       previewPendingRequest('tool_recovery', 'tool-background', { tool: 'write_file', arguments: { path: 'docs/desktop.md' } }),
       previewPendingRequest('user_interaction', 'interaction-form', {

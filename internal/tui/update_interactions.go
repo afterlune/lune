@@ -59,7 +59,7 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 	// If there are more questions in this batch, advance to the next question
 	if currIdx+1 < len(q.Request.Questions) {
 		q.CurrentIndex = currIdx + 1
-		q.Selected = 0
+		q.Selected = recommendedQuestionOptionIndex(q.Request.Questions[q.CurrentIndex].Options)
 		q.Custom = ""
 		q.NoteText = ""
 		q.NotesOpen = false

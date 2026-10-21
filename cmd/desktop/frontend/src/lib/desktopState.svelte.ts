@@ -103,6 +103,7 @@ export function createDesktopState() {
   let deferredPlanReviews = $state<{ sessionId: string; executionID: string; text: string }[]>([]);
   let answerValues = $state<Record<string, string>>({});
   let noteValues = $state<Record<string, string>>({});
+  let questionRequestIDs = $state<Record<string, string>>({});
   let editDraft = $state<EditDraft | null>(null);
   let editConfirmation = $state<EditConfirmation | null>(null);
   let applyingEdit = $state(false);
@@ -546,7 +547,31 @@ export function createDesktopState() {
     }).filter((item) => item.requests.length > 0);
   }
 
+  function seedRecommendedAnswers(requests: PendingRequestView[]) {
+    const activeQuestionIDs = new Set<string>();
+    const activeQuestionRequests: Record<string, string> = {};
+    const nextAnswers: Record<string, string> = {};
+    const nextNotes: Record<string, string> = {};
+    for (const request of requests) {
+      if (request.kind !== 'user_question') continue;
+      for (const question of request.questions ?? []) {
+        activeQuestionIDs.add(question.id);
+        activeQuestionRequests[question.id] = request.id;
+        if (questionRequestIDs[question.id] === request.id && answerValues[question.id]) nextAnswers[question.id] = answerValues[question.id];
+        if (questionRequestIDs[question.id] === request.id && noteValues[question.id]) nextNotes[question.id] = noteValues[question.id];
+        if (!nextAnswers[question.id]) {
+          const recommended = question.options?.find((option) => option.recommended);
+          if (recommended) nextAnswers[question.id] = recommended.label;
+        }
+      }
+    }
+    answerValues = activeQuestionIDs.size ? nextAnswers : {};
+    noteValues = activeQuestionIDs.size ? nextNotes : {};
+    questionRequestIDs = activeQuestionRequests;
+  }
+
   function installWorkspaceState(state: WorkspaceState, preservePlanReview = false) {
+    const sameSession = session?.id === state.session.id;
     busy = false; interrupting = false; applyingEdit = false; controlsPending = false; interruptRequestedExecutionID = ""; cancellingQueuedExecution = "";
     if (session?.id !== state.session.id) { if (editDraft) cancelEditingMessage(); }
     if (planReview && session && session.id !== state.session.id) {
@@ -557,11 +582,13 @@ export function createDesktopState() {
     const nextWorkspace = state.workspace;
     if (workspace && nextWorkspace && workspace.toLowerCase() !== nextWorkspace.toLowerCase()) clearSessionSearch();
     workspace = nextWorkspace;
+    if (!sameSession) { answerValues = {}; noteValues = {}; questionRequestIDs = {}; }
     session = state.session;
     sessions = state.sessions ?? [];
     installControls(state.controls);
     if (state.models) models = state.models;
     pending = state.pending ?? [];
+    seedRecommendedAnswers(pending);
     messages = [...(state.session.messages ?? [])];
     activities = [];
     activityHistory = mergeExecutionHistory(state.executionHistory ?? [], []);
@@ -601,6 +628,7 @@ export function createDesktopState() {
     installControls(state.controls);
     if (state.models) models = state.models;
     pending = state.pending ?? [];
+    seedRecommendedAnswers(pending);
     messages = mergeMessagesFromSession(state.session.messages ?? [], messages);
     activityHistory = mergeExecutionHistory(state.executionHistory ?? [], activityHistory);
     attachQueuedState(state);
@@ -780,12 +808,13 @@ export function createDesktopState() {
           invocationId: 'invocation-preview', callId: 'call-preview', tool: '',
           questions: [{
             id: 'workspace-switch', question: '任务失败或取消后，Tab 标题怎么显示？', options: [
-              { label: '保留结果状态', description: '成功显示已完成，失败显示警告，取消恢复普通标题。' },
-              { label: '只标记成功', description: '失败和取消立即恢复普通标题。' },
-              { label: '全部恢复普通标题', description: '任何结果都立即显示普通任务标题。' },
+              { label: '保留结果状态', description: '成功显示已完成，失败显示警告，取消恢复普通标题。', recommended: true },
+              { label: '只标记成功', description: '失败和取消立即恢复普通标题。', recommended: false },
+              { label: '全部恢复普通标题', description: '任何结果都立即显示普通任务标题。', recommended: false },
             ],
           }],
         }];
+        seedRecommendedAnswers(pending);
       }
       if (variant === 'plan') {
         planMode = true;

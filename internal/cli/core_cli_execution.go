@@ -445,18 +445,30 @@ func readCLIUserQuestion(reader *bufio.Reader, question core.UserQuestionRequest
 	answers := make([]core.UserQuestionResponse, 0, len(question.Questions))
 	for index, item := range question.Questions {
 		fmt.Fprintf(stdout, "Question %d/%d: %s\n", index+1, len(question.Questions), cleanCLIInlineText(item.Question))
+		recommended := -1
 		for optionIndex, option := range item.Options {
 			fmt.Fprintf(stdout, "  %d. %s", optionIndex+1, cleanCLIInlineText(option.Label))
+			if option.Recommended {
+				recommended = optionIndex
+				fmt.Fprint(stdout, " [Recommended]")
+			}
 			if option.Description != "" {
 				fmt.Fprintf(stdout, " — %s", cleanCLIInlineText(option.Description))
 			}
 			fmt.Fprintln(stdout)
 		}
 		for {
-			fmt.Fprint(stdout, "Answer with an option number or your own text: ")
+			prompt := "Answer with an option number or your own text: "
+			if recommended >= 0 {
+				prompt = fmt.Sprintf("Answer with an option number or your own text (default: %s): ", cleanCLIInlineText(item.Options[recommended].Label))
+			}
+			fmt.Fprint(stdout, prompt)
 			answer, err := readCLIRecoveryLine(reader)
 			if err != nil {
 				return core.UserQuestionAnswer{}, err
+			}
+			if answer == "" && recommended >= 0 {
+				answer = item.Options[recommended].Label
 			}
 			if choice, parseErr := strconv.Atoi(answer); parseErr == nil && choice > 0 && choice <= len(item.Options) {
 				answer = item.Options[choice-1].Label

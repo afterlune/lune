@@ -11,11 +11,13 @@ export interface UserQuestionItem {
 }
 
 /**
- * UserQuestionOption is one suggested answer and its explanation.
+ * UserQuestionOption is one suggested answer and its explanation. At most one
+ * option in a question may be recommended.
  */
 export interface UserQuestionOption {
     "label": string;
     "description": string;
+    "recommended": boolean;
 }
 
 /**

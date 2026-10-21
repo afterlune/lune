@@ -848,12 +848,12 @@ func TestCLIResumeAnswersUserQuestionBatch(t *testing.T) {
 	question := &core.UserQuestionRequest{
 		ID: "question-1", RunID: "run-1", InvocationID: "invocation-1", CallID: "call-1", ExecutionID: "execution-paused",
 		Questions: []core.UserQuestionItem{
-			{ID: "q1", Question: "Choose a strategy", Options: []core.UserQuestionOption{{Label: "Fast"}, {Label: "Safe"}}},
+			{ID: "q1", Question: "Choose a strategy", Options: []core.UserQuestionOption{{Label: "Fast"}, {Label: "Safe", Recommended: true}}},
 			{ID: "q2", Question: "Any constraints?"},
 		},
 	}
 	client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: question}}}
-	stdout, stderr := runCLI(t, client, "/resume\n2\nKeep the API stable\n/exit\n", nil)
+	stdout, stderr := runCLI(t, client, "/resume\n\nKeep the API stable\n/exit\n", nil)
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
@@ -869,6 +869,9 @@ func TestCLIResumeAnswersUserQuestionBatch(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "answered") || !strings.Contains(stdout, "Question 2/2") {
 		t.Fatalf("stdout = %q, want question prompts and resumed output", stdout)
+	}
+	if !strings.Contains(stdout, "[Recommended]") || !strings.Contains(stdout, "default: Safe") {
+		t.Fatalf("stdout = %q, want recommendation marker and default prompt", stdout)
 	}
 }
 

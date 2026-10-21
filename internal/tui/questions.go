@@ -20,6 +20,15 @@ const (
 	questionAccepted
 )
 
+func recommendedQuestionOptionIndex(options []core.UserQuestionOption) int {
+	for index, option := range options {
+		if option.Recommended {
+			return index
+		}
+	}
+	return 0
+}
+
 type questionSubmittedMsg struct {
 	key questionWaitKey
 	err error

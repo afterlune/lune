@@ -292,6 +292,8 @@ test('new chat creates a local session without a mode menu', async ({ page }) =>
 test('question panel preview matches its baseline', async ({ page }) => {
   await page.goto('/?preview=question');
   await expect(page.getByText('任务失败或取消后，Tab 标题怎么显示？')).toBeVisible();
+  await expect(page.getByText('推荐', { exact: true })).toBeVisible();
+  await expect(page.locator('input[type="radio"][value="保留结果状态"]')).toBeChecked();
   await page.getByLabel('全部恢复普通标题').check({ force: true });
   await expect(page).toHaveScreenshot('desktop-question.png', { fullPage: true });
 });

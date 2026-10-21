@@ -64,6 +64,20 @@ func TestQuestionSubmissionRetainsAnswersAndRetriesWithoutDuplicates(t *testing.
 	}
 }
 
+func TestPendingQuestionDefaultsToRecommendedOption(t *testing.T) {
+	m := newTUIModel(nil, nil, "session")
+	request := questionFixture()
+	request.Questions[0].Options[1].Recommended = true
+	m.applyPendingRequests([]core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &request}})
+	if m.activeQuestion == nil || m.activeQuestion.Selected != 1 {
+		t.Fatalf("recommended option was not selected: %#v", m.activeQuestion)
+	}
+	_, cmd := m.resolveActiveQuestion()
+	if cmd == nil || m.entries[0].AnsweredQuestions[0].Answer != "Core" {
+		t.Fatalf("recommended answer was not submitted as the raw label: %#v", m.entries)
+	}
+}
+
 func TestAnsweredQuestionIdentityDoesNotHideNewQuestionWithSameText(t *testing.T) {
 	m := newTUIModel(nil, nil, "session")
 	request := questionFixture()

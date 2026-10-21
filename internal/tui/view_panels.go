@@ -160,6 +160,9 @@ func renderQuestionOptionRows(options []core.UserQuestionOption, selected, width
 	hasDescription := false
 	for i, option := range options {
 		labels[i] = singleLineQuestionText(option.Label)
+		if option.Recommended {
+			labels[i] += "  [Recommended]"
+		}
 		descriptions[i] = singleLineQuestionText(option.Description)
 		if descriptions[i] != "" {
 			hasDescription = true

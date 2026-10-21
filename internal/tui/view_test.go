@@ -100,7 +100,7 @@ func TestQuestionPanelRendering(t *testing.T) {
 					ID:       "q1",
 					Question: "这次分析希望回答什么问题？",
 					Options: []core.UserQuestionOption{
-						{Label: "整体代码审查 (推荐)", Description: "梳理架构并找高优先级问题"},
+						{Label: "整体代码审查", Description: "梳理架构并找高优先级问题", Recommended: true},
 						{Label: "定位运行故障", Description: "追查具体报错"},
 					},
 				},
@@ -116,7 +116,7 @@ func TestQuestionPanelRendering(t *testing.T) {
 	if !strings.Contains(rendered, "这次分析希望回答什么问题？") {
 		t.Errorf("expected question title, got: %s", rendered)
 	}
-	if !strings.Contains(rendered, "整体代码审查 (推荐)") {
+	if !strings.Contains(rendered, "整体代码审查  [Recommended]") {
 		t.Errorf("expected options list, got: %s", rendered)
 	}
 	if !strings.Contains(rendered, "tab to add notes | enter to submit answer | esc to interrupt") {
