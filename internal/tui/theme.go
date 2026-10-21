@@ -19,6 +19,8 @@ type Theme struct {
 	TextMuted string
 	// Accent / links / prompts
 	AccentBlue string
+	// Softer accent used by question cards and plan content
+	AccentSoft string
 	// Selected row background
 	SelectBg string
 	// Selected row text
@@ -50,6 +52,7 @@ var LightTheme = Theme{
 	TextPrimary:  "#24292F",
 	TextMuted:    "#6E7781",
 	AccentBlue:   "#0969DA",
+	AccentSoft:   "#3B82F6",
 	SelectBg:     "#A4CDFB",
 	SelectFg:     "#0550AE",
 	PlanPurple:   "#8250DF",
@@ -72,6 +75,7 @@ var DarkTheme = Theme{
 	TextPrimary:  "#E6EDF3",
 	TextMuted:    "#8B949E",
 	AccentBlue:   "#58A6FF",
+	AccentSoft:   "#79C0FF",
 	SelectBg:     "#1F6FEB",
 	SelectFg:     "#FFFFFF",
 	PlanPurple:   "#BC8CFF",

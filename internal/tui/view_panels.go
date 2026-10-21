@@ -98,7 +98,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if q.Submitting {
 		meta = styleTextMuted().Render(fmt.Sprintf("Submitting answers (%d)…", len(q.Answers)))
 	}
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Bold(true).Render(qItem.Question)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentSoft)).Bold(true).Render(qItem.Question)
 
 	optionsRows := renderQuestionOptionRows(qItem.Options, q.Selected, max(1, max(20, width)-4))
 
@@ -112,7 +112,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		pad := max(0, width-lipgloss.Width(noneRaw)-4)
 		optionsRows = append(optionsRows, styleSelectedRow().Render(noneRaw+strings.Repeat(" ", pad)))
 		customPrompt := "    Custom answer: " + q.Custom + "█"
-		optionsRows = append(optionsRows, lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(customPrompt))
+		optionsRows = append(optionsRows, styleTextPrimary().Render(customPrompt))
 	} else {
 		optionsRows = append(optionsRows, styleTextMuted().Render(noneRaw))
 	}
@@ -124,7 +124,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		}
 		notesLine := "  Notes: " + q.NoteText + cursor
 		optionsRows = append(optionsRows, "")
-		optionsRows = append(optionsRows, lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(notesLine))
+		optionsRows = append(optionsRows, styleTextPrimary().Render(notesLine))
 	}
 
 	hint := styleTextMuted().Render("tab to add notes | enter to submit answer | esc to interrupt")

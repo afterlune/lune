@@ -86,7 +86,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
 		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
-		rendered := renderMarkdown(cleanPlan, max(20, width-6))
+		rendered := renderPlanMarkdown(cleanPlan, max(20, width-6))
 		var outLines []string
 		outLines = append(outLines, bullet+title)
 		for _, line := range strings.Split(rendered, "\n") {

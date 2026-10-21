@@ -124,6 +124,46 @@ func TestQuestionPanelRendering(t *testing.T) {
 	}
 }
 
+func TestQuestionPanelUsesSoftAccentAndPrimaryInputs(t *testing.T) {
+	previous := CurrentThemeMode()
+	SetThemeMode(ThemeModeDark)
+	defer SetThemeMode(previous)
+
+	q := &ActiveQuestion{
+		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
+			Question: "Which scope?",
+			Options:  []core.UserQuestionOption{{Label: "One"}},
+		}}},
+		Selected: 1,
+		Custom:   "custom answer",
+		NoteText: "a note",
+	}
+	rendered := renderQuestionPanel(q, 100)
+	r, g, b, ok := parseHexRGB(DarkTheme.AccentSoft)
+	if !ok || !strings.Contains(rendered, fmt.Sprintf("38;2;%d;%d;%dm", r, g, b)) {
+		t.Fatalf("question title did not use the soft accent: %q", rendered)
+	}
+	pr, pg, pb, ok := parseHexRGB(DarkTheme.TextPrimary)
+	if !ok || !strings.Contains(rendered, fmt.Sprintf("38;2;%d;%d;%dm", pr, pg, pb)) || !strings.Contains(ansi.Strip(rendered), "Custom answer: custom answer█") {
+		t.Fatalf("custom answer did not use primary text: %q", rendered)
+	}
+	if !strings.Contains(ansi.Strip(rendered), "Notes: a note") {
+		t.Fatalf("notes did not use primary text: %q", rendered)
+	}
+}
+
+func TestPlanMarkdownUsesSoftAccent(t *testing.T) {
+	previous := CurrentThemeMode()
+	SetThemeMode(ThemeModeDark)
+	defer SetThemeMode(previous)
+
+	rendered := renderPlanMarkdown("See internal/tui/view.go:100", 100)
+	r, g, b, ok := parseHexRGB(DarkTheme.AccentSoft)
+	if !ok || !strings.Contains(rendered, fmt.Sprintf("38;2;%d;%d;%dm", r, g, b)) {
+		t.Fatalf("plan markdown did not use the soft accent: %q", rendered)
+	}
+}
+
 func TestQuestionPanelAlignsDescriptionsByTerminalCellWidth(t *testing.T) {
 	q := &ActiveQuestion{
 		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
