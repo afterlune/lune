@@ -97,6 +97,8 @@ func (m *tuiModel) modalHeight(contentWidth int) int {
 	} else if m.activeApproval != nil {
 		modalHeight = lipgloss.Height(renderApprovalPanel(m.activeApproval, contentWidth)) + 1
 	} else if m.activePlanReview != nil {
+		// The extra row is the fixed hint slot above the review, in addition
+		// to the composer gap accounted for by updateLayout.
 		modalHeight = lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, contentWidth)) + 1
 	} else if m.autocompleteOpen && len(m.autocompleteItems) > 0 {
 		visibleCount := min(len(m.autocompleteItems), maxVisibleAutocomplete)
@@ -419,9 +421,10 @@ func (m *tuiModel) View() tea.View {
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
 
-	// Keep the scroll control between plan content and its review choices.
+	// Keep permanent gaps above and below the review. Changing the hint must
+	// never move the review choices or the composer.
 	copyFeedbackActive := m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt)
-	moveScrollPillBeforePlan := m.activePlanReview != nil && m.scrolledUp && !copyFeedbackActive
+	planReviewGap := m.activePlanReview != nil
 	gapLine := ""
 	if copyFeedbackActive {
 		color := activeTheme().AccentBlue
@@ -436,7 +439,7 @@ func (m *tuiModel) View() tea.View {
 	} else if m.hasPausedTask() && !m.running {
 		gapLine = renderPausedBanner(contentWidth)
 	}
-	if moveScrollPillBeforePlan {
+	if planReviewGap {
 		sections = append(sections, gapLine)
 	}
 
@@ -486,7 +489,9 @@ func (m *tuiModel) View() tea.View {
 	}
 
 	// 4. Composer gap (shared with copy feedback, scroll pill, paused task banner, or blank line)
-	if !moveScrollPillBeforePlan {
+	if planReviewGap {
+		sections = append(sections, "")
+	} else {
 		sections = append(sections, gapLine)
 	}
 

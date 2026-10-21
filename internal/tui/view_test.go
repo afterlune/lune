@@ -280,7 +280,7 @@ func TestScrollPillAppearsBetweenPlanAndReviewOptions(t *testing.T) {
 	}
 
 	expectedHeight := lipgloss.Height(renderHeader(m.workspace)) + m.viewport.Height() +
-		lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, max(20, m.width-4))) + 1 +
+		lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, max(20, m.width-4))) + 2 +
 		lipgloss.Height(renderComposerBand(m.composer.View(), max(20, m.width-4))) +
 		lipgloss.Height(renderFooter(m, max(20, m.width-4)))
 	if got := lipgloss.Height(view); got != expectedHeight {

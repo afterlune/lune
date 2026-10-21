@@ -86,12 +86,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
 		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
 		rendered := renderPlanMarkdown(cleanPlan, max(12, width-4))
-		cardStyle := lipgloss.NewStyle().
-			Background(lipgloss.Color(th.CardBg)).
-			Foreground(lipgloss.Color(th.TextPrimary)).
-			Padding(1, 2).
-			Width(max(20, width))
-		return bullet + title + "\n" + renderCardSurface(cardStyle, rendered)
+		return bullet + title + "\n\n" + renderPlanSurface(rendered, max(20, width))
 
 	case KindSystem:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
