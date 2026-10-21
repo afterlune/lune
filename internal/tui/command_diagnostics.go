@@ -39,6 +39,8 @@ func (m *tuiModel) renderStatusTable() string {
 		fmt.Sprintf("Thread name:    %s", title),
 		fmt.Sprintf("Session:        %s", m.sessionID),
 		fmt.Sprintf("Theme:          %s", CurrentThemeMode()),
+		fmt.Sprintf("Task:           %s", m.taskStatusLabel()),
+		fmt.Sprintf("Queued:         %d waiting", len(m.queuedTurns)),
 	}
 
 	if m.contextWindow > 0 {

@@ -82,7 +82,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
 		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
 		rendered := renderPlanMarkdown(cleanPlan, max(12, width-4))
-		return bullet + title + "\n\n" + renderPlanSurface(rendered, max(20, width))
+		return bullet + title + "\n" + renderPlanRail(rendered, width)
 
 	case KindSystem:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
@@ -124,6 +124,33 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	return ""
 }
 
+// renderPlanRail marks the plan body with a muted vertical rail that starts
+// directly under the purple "Proposed Plan" marker and ends at the last body
+// line. The rail replaces the former filled card surface, so a plan reads as an
+// annotated block instead of a separate panel.
+func renderPlanRail(rendered string, width int) string {
+	rail := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().Border)).Render("  │")
+	innerWidth := max(8, width-4)
+	rows := []string{rail}
+	for _, source := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+		for _, line := range strings.Split(ansi.Hardwrap(source, innerWidth, true), "\n") {
+			if strings.TrimSpace(ansi.Strip(line)) == "" {
+				rows = append(rows, rail)
+				continue
+			}
+			rows = append(rows, rail+" "+line)
+		}
+	}
+	return strings.Join(rows, "\n")
+}
+
+// renderTranscriptRule renders the full-width solid separator that divides task
+// turns and delimits the proposed plan body.
+func renderTranscriptRule(width int) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().Border)).
+		Render(strings.Repeat("─", max(1, width)))
+}
+
 // renderSubagentEntry renders a concurrent subagent status card without polluting the lead stream.
 func renderSubagentEntry(entry TranscriptEntry, width int) string {
 	th := activeTheme()
@@ -154,8 +181,13 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 		toolsStyled = styleTextMuted().Render(fmt.Sprintf(" · %d %s", entry.SubagentTools, toolsWord))
 	}
 	durStyled := ""
-	if !entry.SubagentRunning && entry.SubagentDuration > 0 {
+	switch {
+	case !entry.SubagentRunning && entry.SubagentDuration > 0:
 		durStyled = styleTextMuted().Render(" · " + formatDuration(entry.SubagentDuration))
+	case entry.SubagentRunning && !entry.Timestamp.IsZero():
+		if elapsed := time.Since(entry.Timestamp); elapsed >= time.Second {
+			durStyled = styleTextMuted().Render(" · " + formatDuration(elapsed))
+		}
 	}
 
 	header := bullet + action + " " + nameStyled + roleStyled + toolsStyled + durStyled

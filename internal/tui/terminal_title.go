@@ -68,6 +68,19 @@ func (m *terminalTitleManager) Set(title string) error {
 	return nil
 }
 
+// Notify writes a terminal bell so that a user who switched windows notices
+// that the TUI needs attention. Writes share the renderer mutex, so the bell
+// never interleaves with Bubble Tea output.
+func (m *terminalTitleManager) Notify() error {
+	if m == nil || m.output == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := io.WriteString(m.output, "\a")
+	return err
+}
+
 func (m *terminalTitleManager) Clear() error {
 	if m == nil || m.output == nil {
 		return nil

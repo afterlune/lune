@@ -142,6 +142,10 @@ func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, tool
 	preview := fmt.Sprintf("Running %s...", toolName)
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			if !m.entries[i].SubagentRunning {
+				// Restart the live elapsed clock when a finished subagent wakes up again.
+				m.entries[i].Timestamp = time.Now()
+			}
 			m.entries[i].SubagentRunning = true
 			m.entries[i].SubagentTools++
 			m.entries[i].SubagentLastTool = toolName

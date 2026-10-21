@@ -220,6 +220,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					}
 					if m.running {
 						m.entries[i].ToolRunning = true
+						if m.entries[i].ToolStartedAt.IsZero() {
+							m.entries[i].ToolStartedAt = time.Now()
+						}
 					}
 					m.invalidateEntryCache()
 					return m, nil
@@ -236,6 +239,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			ToolRunning: m.running,
 			ToolChanges: changes,
 			ToolOutput:  outText,
+		}
+		if entry.ToolRunning {
+			entry.ToolStartedAt = time.Now()
 		}
 		m.entries = append(m.entries, entry)
 		m.invalidateEntryCache()
@@ -297,6 +303,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			if event.Tool.Started {
 				m.entries[i].ToolRunning = true
+				if m.entries[i].ToolStartedAt.IsZero() {
+					m.entries[i].ToolStartedAt = time.Now()
+				}
 			} else if event.Tool.Duration > 0 || event.Tool.Details != nil {
 				m.entries[i].ToolRunning = false
 			}
@@ -321,6 +330,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			entry.ToolChanges = changes
 			entry.ToolExitCode = event.CommandExitCode
 			entry.ToolDuration = event.Tool.Duration
+			if entry.ToolRunning {
+				entry.ToolStartedAt = time.Now()
+			}
 			m.entries = append(m.entries, entry)
 			m.invalidateEntryCache()
 		}

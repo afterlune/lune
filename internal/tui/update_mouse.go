@@ -14,6 +14,7 @@ func (m *tuiModel) composerMouseOffset() (int, int) {
 
 func (m *tuiModel) isComposerMousePoint(x, y int) bool {
 	offsetX, offsetY := m.composerMouseOffset()
+	// Width() excludes the prompt; include it to match the rendered view width.
 	composerViewWidth := m.composer.Width() + lipgloss.Width(m.composer.Prompt)
 	return x >= offsetX && x < offsetX+composerViewWidth &&
 		y >= offsetY && y < offsetY+m.composer.Height()

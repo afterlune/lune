@@ -18,7 +18,8 @@ func (m *tuiModel) updateLayout() {
 	}
 
 	contentWidth := max(20, m.width-4)
-	m.composer.SetWidth(contentWidth)
+	// renderComposerBand reserves one leading column for the card surface.
+	m.composer.SetWidth(contentWidth - 1)
 
 	// Measure bottom components height:
 	// - Header: ~2-3 lines
@@ -155,6 +156,55 @@ func (m *tuiModel) refreshViewportContent() {
 	m.entryLineRanges = make([]entryLineRange, 0, len(m.entries)+4)
 	blocks := make([]string, 0, len(m.entries)+3)
 	currentLine := 0
+	pendingRule := false
+
+	// Blocks are joined with a blank line. appendBlock owns that accounting so
+	// entryLineRanges stays exact after separators are inserted.
+	appendBlock := func(block string) {
+		if block == "" {
+			return
+		}
+		if len(blocks) > 0 {
+			currentLine += 2 // "\n\n" separator adds 1 blank line + moves to next line
+		}
+		currentLine += strings.Count(block, "\n")
+		blocks = append(blocks, block)
+	}
+	nextBlockStart := func() int {
+		if len(blocks) > 0 {
+			return currentLine + 2
+		}
+		return currentLine
+	}
+	// flushRule emits the pending horizontal rule in front of real content and
+	// never leaves a dangling rule at the end of the transcript.
+	flushRule := func() {
+		if !pendingRule {
+			return
+		}
+		pendingRule = false
+		if len(blocks) == 0 {
+			return
+		}
+		appendBlock(renderTranscriptRule(contentWidth))
+	}
+	appendRendered := func(block string, relRanges []entryLineRange) {
+		if block == "" {
+			return
+		}
+		flushRule()
+		start := nextBlockStart()
+		for _, rr := range relRanges {
+			m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+				EntryIndex:    rr.EntryIndex,
+				StartLine:     start + rr.StartLine,
+				EndLine:       start + rr.EndLine,
+				IsRoundHeader: rr.IsRoundHeader,
+			})
+		}
+		appendBlock(block)
+	}
+
 	for i := 0; i < len(m.entries); {
 		if isRoundMember(m.entries, i) {
 			end := i + 1
@@ -173,37 +223,15 @@ func (m *tuiModel) refreshViewportContent() {
 
 			if live || m.entries[i].RoundExpanded {
 				block, relRanges := renderExpandedToolRound(roundSlice, i, live, contentWidth)
-				if block != "" {
-					if len(blocks) > 0 {
-						currentLine += 2
-					}
-					for _, rr := range relRanges {
-						m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
-							EntryIndex:    rr.EntryIndex,
-							StartLine:     currentLine + rr.StartLine,
-							EndLine:       currentLine + rr.EndLine,
-							IsRoundHeader: rr.IsRoundHeader,
-						})
-					}
-					lineCount := strings.Count(block, "\n") + 1
-					currentLine += lineCount - 1
-					blocks = append(blocks, block)
-				}
+				appendRendered(block, relRanges)
 			} else {
 				block := renderCollapsedToolRound(roundSlice, contentWidth)
 				if block != "" {
-					if len(blocks) > 0 {
-						currentLine += 2
-					}
-					lineCount := strings.Count(block, "\n") + 1
-					m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+					appendRendered(block, []entryLineRange{{
 						EntryIndex:    i,
-						StartLine:     currentLine,
-						EndLine:       currentLine + lineCount - 1,
+						EndLine:       strings.Count(block, "\n"),
 						IsRoundHeader: true,
-					})
-					currentLine += lineCount - 1
-					blocks = append(blocks, block)
+					}})
 				}
 			}
 			i = end
@@ -219,17 +247,22 @@ func (m *tuiModel) refreshViewportContent() {
 			i++
 			continue
 		}
-		if len(blocks) > 0 {
-			currentLine += 2 // "\n\n" separator adds 1 blank line + moves to next line
+		// Every user turn starts a new task, so it gets its own solid rule.
+		if m.entries[i].Kind == KindUser && len(blocks) > 0 {
+			pendingRule = true
 		}
-		lineCount := strings.Count(block, "\n") + 1
-		m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+		// The plan body is delimited by a rule above and, when more content
+		// follows, by the same rule below.
+		if m.entries[i].Kind == KindPlan {
+			pendingRule = true
+		}
+		appendRendered(block, []entryLineRange{{
 			EntryIndex: i,
-			StartLine:  currentLine,
-			EndLine:    currentLine + lineCount - 1,
-		})
-		currentLine += lineCount - 1
-		blocks = append(blocks, block)
+			EndLine:    strings.Count(block, "\n"),
+		}})
+		if m.entries[i].Kind == KindPlan {
+			pendingRule = true
+		}
 		i++
 	}
 
@@ -243,7 +276,7 @@ func (m *tuiModel) refreshViewportContent() {
 				ReasoningExpanded: !m.reasoningLiveCollapsed,
 				ReasoningLive:     true,
 			}
-			blocks = append(blocks, renderEntry(liveReasoning, contentWidth))
+			appendRendered(renderEntry(liveReasoning, contentWidth), nil)
 		}
 		if m.currentStreamText != "" {
 			stream := tuiMarkdown.SplitProposedPlanStream(m.currentStreamText)
@@ -251,13 +284,15 @@ func (m *tuiModel) refreshViewportContent() {
 				if strings.TrimSpace(text) == "" {
 					return
 				}
-				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, contentWidth))
+				appendRendered(renderEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, contentWidth), nil)
 			}
 			if stream.Found {
 				appendAssistant(stream.Before)
 				// Render the live plan as a plan entry so the purple Proposed Plan
 				// marker remains visible before Core has returned the final result.
-				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindPlan, Text: stream.Plan}, contentWidth))
+				pendingRule = true
+				appendRendered(renderEntry(TranscriptEntry{Kind: KindPlan, Text: stream.Plan}, contentWidth), nil)
+				pendingRule = true
 				appendAssistant(stream.After)
 			} else {
 				appendAssistant(stream.Before)
@@ -265,7 +300,7 @@ func (m *tuiModel) refreshViewportContent() {
 		}
 		if m.running {
 			elapsed := time.Since(m.taskStartedAt)
-			blocks = append(blocks, renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()))
+			appendRendered(renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()), nil)
 		}
 	}
 
@@ -435,7 +470,7 @@ func (m *tuiModel) View() tea.View {
 		leftPad := max(0, contentWidth-lipgloss.Width(styled))
 		gapLine = strings.Repeat(" ", leftPad) + styled
 	} else if m.scrolledUp {
-		gapLine = renderScrollPill(contentWidth)
+		gapLine = renderScrollPill(m, contentWidth)
 	} else if m.hasPausedTask() && !m.running {
 		gapLine = renderPausedBanner(contentWidth)
 	}

@@ -7,10 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const (
-	AppName    = "lune"
-	AppVersion = "v0.1.0"
-)
+const AppName = "lune"
 
 // Theme defines the color palette for the LuneAgent TUI.
 type Theme struct {

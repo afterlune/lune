@@ -41,6 +41,10 @@ type tuiModel struct {
 	viewport                 viewport.Model
 	entries                  []TranscriptEntry
 	terminalTitle            *terminalTitleManager
+	attentionInitialized     bool
+	attentionDecisionShown   bool
+	attentionExecutions      map[string]struct{}
+	unseenCompletion         string
 	running                  bool
 	taskStartedAt            time.Time
 	activeQuestion           *ActiveQuestion
@@ -331,6 +335,9 @@ func (m *tuiModel) resetSessionState() {
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	m.pausedCheckpoint = nil
+	m.attentionDecisionShown = false
+	m.attentionExecutions = nil
+	m.unseenCompletion = ""
 	m.currentStreamText = ""
 	m.currentReasoningText = ""
 	m.reasoningStartTime = time.Time{}
@@ -502,7 +509,9 @@ func (m *tuiModel) currentReasoningEffortLabel() string {
 }
 
 // desiredTerminalTitle computes the expected window/tab title as
-// "<session title> | <workspace directory name>".
+// "<state marker><session title> | <workspace directory name>". The marker keeps
+// long-running work visible in the tab or window title while the user is
+// looking at another window.
 func (m *tuiModel) desiredTerminalTitle() string {
 	title := strings.TrimSpace(m.sessionTitle)
 	if title == "" {
@@ -516,11 +525,25 @@ func (m *tuiModel) desiredTerminalTitle() string {
 	workspaceName := workspaceDirectoryName(m.workspace)
 	if workspaceName == "" {
 		if !hasTitle {
-			return AppName
+			return m.terminalStatePrefix() + AppName
 		}
 		workspaceName = AppName
 	}
-	return title + " | " + workspaceName
+	return m.terminalStatePrefix() + title + " | " + workspaceName
+}
+
+// terminalStatePrefix renders a single state glyph for the terminal title.
+// Decisions take precedence over running work because they block the task.
+func (m *tuiModel) terminalStatePrefix() string {
+	switch {
+	case m.needsUserDecision():
+		return "❓ "
+	case m.running:
+		return "⏳ "
+	case m.hasPausedTask():
+		return "⏸ "
+	}
+	return ""
 }
 
 func workspaceDirectoryName(workspace string) string {

@@ -8,6 +8,26 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// toolDurationBadge renders the muted duration suffix for one tool step.
+// Running steps show live elapsed time so long commands are visibly moving;
+// finished steps keep the final duration once it is meaningful.
+func toolDurationBadge(entry TranscriptEntry) string {
+	if entry.ToolRunning {
+		if entry.ToolStartedAt.IsZero() {
+			return ""
+		}
+		elapsed := time.Since(entry.ToolStartedAt)
+		if elapsed < time.Second {
+			return ""
+		}
+		return styleTextMuted().Render(" (" + formatDuration(elapsed) + ")")
+	}
+	if entry.ToolDuration >= 500*time.Millisecond {
+		return styleTextMuted().Render(" (" + formatDuration(entry.ToolDuration) + ")")
+	}
+	return ""
+}
+
 // renderToolEntry renders tool executions (Running, Ran, Failed, Explored, Added/Edited).
 func renderToolEntry(entry TranscriptEntry, width int) string {
 	th := activeTheme()
@@ -45,11 +65,7 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 	}
 	commandStr = sanitizeAndTruncateLine(commandStr, max(20, width-18))
 	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue))
-	durBadge := ""
-	if !entry.ToolRunning && entry.ToolDuration >= 500*time.Millisecond {
-		durBadge = styleTextMuted().Render(" (" + formatDuration(entry.ToolDuration) + ")")
-	}
-	header := bullet + action + " " + cmdStyle.Render(commandStr) + durBadge
+	header := bullet + action + " " + cmdStyle.Render(commandStr) + toolDurationBadge(entry)
 
 	// Branch indicator
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
@@ -578,11 +594,7 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 			actionStyled = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render(actionWord + " ")
 		}
 		targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(targetText)
-		durBadge := ""
-		if !entry.ToolRunning && entry.ToolDuration >= 500*time.Millisecond {
-			durBadge = styleTextMuted().Render(" (" + formatDuration(entry.ToolDuration) + ")")
-		}
-		header := prefix + actionStyled + targetStyled + durBadge
+		header := prefix + actionStyled + targetStyled + toolDurationBadge(entry)
 
 		// Show details below the child header when expanded by user, or while actively running / failed in a live round
 		showDetails := entry.ToolExpanded || entry.ToolRunning || (liveRound && isFail)

@@ -48,18 +48,19 @@ type TranscriptEntry struct {
 	TurnDuration  time.Duration
 
 	// Tool specific fields
-	ToolCallID   string
-	ToolName     string
-	ToolArgs     string
-	ToolCommand  string
-	ToolStatus   publictool.CommandStatus
-	ToolExitCode *int
-	ToolRunning  bool
-	ToolFailed   bool
-	ToolDuration time.Duration
-	ToolChanges  []publictool.FileChange
-	ToolOutput   string
-	ToolExpanded bool
+	ToolCallID    string
+	ToolName      string
+	ToolArgs      string
+	ToolCommand   string
+	ToolStatus    publictool.CommandStatus
+	ToolExitCode  *int
+	ToolRunning   bool
+	ToolStartedAt time.Time
+	ToolFailed    bool
+	ToolDuration  time.Duration
+	ToolChanges   []publictool.FileChange
+	ToolOutput    string
+	ToolExpanded  bool
 
 	// Subagent specific fields
 	AgentID          string

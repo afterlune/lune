@@ -369,6 +369,63 @@ func TestComposerBandRendering(t *testing.T) {
 	}
 }
 
+func TestComposerBandRowsMatchSurfaceWidth(t *testing.T) {
+	for _, width := range []int{20, 40, 80, 120} {
+		for _, tc := range []struct {
+			name  string
+			value string
+		}{
+			{name: "empty"},
+			{name: "short", value: "short prompt"},
+			{name: "wrapped", value: strings.Repeat("多行输入 composer 宽度 ", 10)},
+		} {
+			t.Run(fmt.Sprintf("width=%d/%s", width, tc.name), func(t *testing.T) {
+				m := newTUIModel(nil, nil, "test-sess")
+				m.width = width + 4
+				m.height = 30
+				m.composer.SetValue(tc.value)
+				m.updateLayout()
+
+				rendered := ansi.Strip(renderComposerBand(m.composer.View(), width))
+				lines := strings.Split(rendered, "\n")
+				if len(lines) < 3 {
+					t.Fatalf("expected at least 3 composer rows, got %d:\n%s", len(lines), rendered)
+				}
+				for i, line := range lines {
+					if got := ansi.StringWidth(line); got != width {
+						t.Fatalf("composer row %d width = %d, want %d: %q", i, got, width, line)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestComposerMouseHitAreaMatchesRenderedWidth(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.width = 80
+	m.height = 24
+	m.updateLayout()
+
+	_, y := m.composerMouseOffset()
+	composerViewWidth := m.composer.Width() + lipgloss.Width(m.composer.Prompt)
+	if composerViewWidth <= 0 {
+		t.Fatalf("expected a positive composer width, got %d", composerViewWidth)
+	}
+	if got := lipgloss.Width(m.composer.View()); got != composerViewWidth {
+		t.Fatalf("composer hit width = %d, rendered width = %d", composerViewWidth, got)
+	}
+	if !m.isComposerMousePoint(1, y) {
+		t.Fatal("expected the first composer column to be interactive")
+	}
+	if !m.isComposerMousePoint(1+composerViewWidth-1, y) {
+		t.Fatalf("expected the last rendered composer column %d to be interactive", 1+composerViewWidth-1)
+	}
+	if m.isComposerMousePoint(1+composerViewWidth, y) {
+		t.Fatalf("column %d lies outside the rendered composer and must not be interactive", 1+composerViewWidth)
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		d        time.Duration
@@ -744,7 +801,7 @@ func TestComposerMouseSelectionAcrossLinesAndSoftWrap(t *testing.T) {
 	}
 
 	m = newTUIModel(nil, nil, "test-sess")
-	m.width = 24 // The composer is 20 columns wide, forcing this line to wrap.
+	m.width = 25 // The composer is 20 columns wide after the band's left padding, forcing this line to wrap.
 	m.height = 24
 	m.composer.SetValue("abcdefghijklmnopqrst")
 	m.updateLayout()
@@ -1255,7 +1312,7 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 		}
 	}
 
-	// KindPlan renders as a padded card with source-preserving heading levels and clean code blocks.
+	// KindPlan renders as a railed block with source-preserving heading levels and clean code blocks.
 	planEntry := TranscriptEntry{
 		Kind: KindPlan,
 		Text: "# 验证\n\n1. **运行测试**\n\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
@@ -1266,14 +1323,14 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 		t.Fatalf("expected Proposed Plan header, got:\n%s", renderedPlan)
 	}
 	cardR, cardG, cardB, ok := parseHexRGB(activeTheme().CardBg)
-	if !ok || !strings.Contains(rawRenderedPlan, fmt.Sprintf("48;2;%d;%d;%d", cardR, cardG, cardB)) {
-		t.Fatalf("expected plan body to use the card surface background, got: %q", rawRenderedPlan)
+	if !ok || strings.Contains(rawRenderedPlan, fmt.Sprintf("48;2;%d;%d;%d", cardR, cardG, cardB)) {
+		t.Fatalf("expected the plan body to drop the card surface background, got: %q", rawRenderedPlan)
 	}
 	if !strings.Contains(renderedPlan, "# 验证") {
 		t.Fatalf("expected visible plan heading marker, got:\n%s", renderedPlan)
 	}
-	if strings.Contains(renderedPlan, "│ ") {
-		t.Fatalf("plan body should use card padding instead of a repeated rail, got:\n%s", renderedPlan)
+	if !strings.Contains(renderedPlan, "  │ # 验证") {
+		t.Fatalf("plan body should be marked by the rail, got:\n%s", renderedPlan)
 	}
 	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
 		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)

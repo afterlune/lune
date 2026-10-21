@@ -5,14 +5,36 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
+// scrollPillText describes what the background task is doing so the user keeps
+// the state visible while reading history above the live tail.
+func scrollPillText(m *tuiModel) string {
+	const back = "↓ Back to bottom · esc"
+	if m == nil {
+		return back
+	}
+	switch {
+	case m.unseenCompletion != "":
+		return m.unseenCompletion + " · " + back
+	case m.running:
+		if m.taskStartedAt.IsZero() {
+			return "⏳ Working · " + back
+		}
+		return "⏳ Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
+	case m.hasPausedTask():
+		return "⏸ Paused · /continue or /discard · " + back
+	}
+	return back
+}
+
 // renderScrollPill renders the floating hint pill when scrolled away from bottom.
-func renderScrollPill(width int) string {
-	text := "↓ Back to bottom · esc"
+func renderScrollPill(m *tuiModel, width int) string {
+	text := scrollPillText(m)
 	styled := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(activeTheme().AccentBlue)).
 		Background(lipgloss.Color(activeTheme().CardBg)).
@@ -231,13 +253,20 @@ func renderFooter(m *tuiModel, width int) string {
 	// Line 2: 6 token & context diagnostic metrics (left) + contextual hint / shortcuts (right)
 	var line2RightText string
 	if m.running {
+		line2RightText = "esc to interrupt"
 		if m.totalSubagentsCount() > 0 {
-			line2RightText = "esc to interrupt · /agents"
-		} else {
-			line2RightText = "esc to interrupt"
+			line2RightText += " · /agents"
+		}
+		if n := len(m.queuedTurns); n > 0 {
+			line2RightText += fmt.Sprintf(" · ⏳ %d queued", n)
 		}
 	} else if m.hasPausedTask() {
 		line2RightText = "⏸ task paused · /continue or /discard"
+		if n := len(m.queuedTurns); n > 0 {
+			line2RightText += fmt.Sprintf(" · ⏳ %d queued", n)
+		}
+	} else if n := len(m.queuedTurns); n > 0 {
+		line2RightText = fmt.Sprintf("⏳ %d queued · /cancel-queue", n)
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
 	} else if m.totalSubagentsCount() > 0 || m.delegationEnabled() {

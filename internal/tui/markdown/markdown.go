@@ -135,7 +135,7 @@ func Render(text string, width int, palette Palette) string {
 }
 
 // RenderPlan renders Markdown using the more spacious, source-preserving
-// typography used inside the proposed-plan card.
+// typography used inside the proposed-plan block.
 func RenderPlan(text string, width int, palette Palette) string {
 	return render(text, width, palette, true)
 }

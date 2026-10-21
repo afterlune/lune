@@ -26,6 +26,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	defer func() {
 		if current, ok := updated.(*tuiModel); ok {
 			current.syncTerminalTitle()
+			current.syncAttention()
+			if !current.scrolledUp {
+				current.unseenCompletion = ""
+			}
 		}
 	}()
 
@@ -551,6 +555,10 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	if !main.StartedAt.IsZero() {
 		main.Duration = time.Since(main.StartedAt)
 	}
+	if main.Duration <= 0 && !m.taskStartedAt.IsZero() {
+		main.Duration = time.Since(m.taskStartedAt)
+	}
+	m.noteTurnFinished(executionID, event.Status, main.Duration)
 	m.terminalEvents[executionID] = event
 	m.taskSnapshot.Status = event.Status
 	m.thinking = false
