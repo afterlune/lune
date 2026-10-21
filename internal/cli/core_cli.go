@@ -97,11 +97,11 @@ var cliCommands = []cliCommandHelp{
 	{name: "/memory", usage: "/memory [list|add|remove|clear]", description: "View and manage workspace long-term memories."},
 	{name: "/model", usage: "/model [profile]", description: "View or change active model profile."},
 	{name: "/new", usage: "/new", description: "Start a new session."},
-	{name: "/open", usage: "/open [id|prefix]", description: "Switch to an existing session."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set mode: read-only, workspace, ask, full-access."},
 	{name: "/plan", usage: "/plan", description: "Toggle Plan mode (read-only exploration)."},
 	{name: "/ps", usage: "/ps", description: "List background processes and daemon commands."},
-	{name: "/resume", usage: "/resume", description: "Resume the paused task in this session."},
+	{name: "/resume", usage: "/resume [id|prefix]", description: "Switch to a saved session; list recent sessions when no ID is given."},
+	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
 	{name: "/review", usage: "/review [path]", description: "Run a read-only model review of workspace changes in this session."},
 	{name: "/rewind", usage: "/rewind [N|preview [N]]", description: "Rewind conversation or preview turns to be removed."},
 	{name: "/sessions", usage: "/sessions [query]", description: "List or search recent sessions in this workspace."},
@@ -286,10 +286,10 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIModel(client, sessionID, line, stdout, stderr)
 		case line == "/sessions" || strings.HasPrefix(line, "/sessions "):
 			handleCoreCLISessions(client, sessionID, line, stdout, stderr)
-		case line == "/open" || strings.HasPrefix(line, "/open "):
-			newID, newRuntime, openErr := handleCoreCLIOpen(client, sessionID, line, stdout, stderr)
-			if openErr != nil {
-				fmt.Fprintf(stderr, "error: open session: %v\n", openErr)
+		case line == "/resume" || strings.HasPrefix(line, "/resume "):
+			newID, newRuntime, resumeErr := handleCoreCLIResume(client, sessionID, line, stdout, stderr)
+			if resumeErr != nil {
+				fmt.Fprintf(stderr, "error: resume session: %v\n", resumeErr)
 			} else if newRuntime != nil {
 				_ = runtime.Close()
 				sessionID = newID
@@ -349,12 +349,12 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			} else {
 				fmt.Fprintln(stdout, "No interrupted task to discard.")
 			}
-		case line == "/resume":
+		case line == "/continue":
 			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
 			} else if state.Task.Status != core.TaskPaused {
-				fmt.Fprintln(stdout, "No interrupted task to resume.")
+				fmt.Fprintln(stdout, "No paused task to continue.")
 			} else {
 				requests, requestErr := runtime.PendingRequests(ctx)
 				if requestErr != nil {
@@ -390,8 +390,6 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
-			} else if state.Task.Status == core.TaskPaused {
-				fmt.Fprintln(stderr, "An interrupted task is pending. Use /resume or /discard first.")
 			} else if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
 				fmt.Fprintln(stderr, "A turn is already running or queued in this session.")
 			} else {
@@ -404,6 +402,13 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				if err != nil {
 					fmt.Fprintf(stderr, "error: %v\n", err)
 				} else {
+					if state.Task.Status == core.TaskPaused {
+						if _, err := runtime.DiscardPaused(ctx); err != nil {
+							fmt.Fprintf(stderr, "error: discard paused task checkpoint: %v\n", err)
+							continue
+						}
+						fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
+					}
 					result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input}, false, watchKeys, stderr)
 					if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
 						return err

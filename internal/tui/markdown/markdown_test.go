@@ -112,6 +112,22 @@ func TestRenderPlanPreservesStructureAndSpacing(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownSeparatesHeadingsFromBody(t *testing.T) {
+	rendered := ansi.Strip(Render("# Overview\nBody text", 48, testPalette()))
+	if !strings.Contains(rendered, "Overview\n\nBody text") {
+		t.Fatalf("expected a blank line after the heading, got %q", rendered)
+	}
+}
+
+func TestRenderMarkdownCodeBlockUsesRectangularSurface(t *testing.T) {
+	rendered := ansi.Strip(Render("```go\nx\nlonger line\n```", 32, testPalette()))
+	for i, line := range strings.Split(rendered, "\n") {
+		if width := lipgloss.Width(line); width != 32 {
+			t.Fatalf("code block row %d width = %d, want 32: %q", i, width, line)
+		}
+	}
+}
+
 func TestFormatInlineRestoresNestedTokens(t *testing.T) {
 	input := "**Bold `inline code`** then `plain code` and internal/tui/view.go"
 	rendered := formatInline(input, testPalette())

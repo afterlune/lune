@@ -102,7 +102,7 @@ func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string
 		lines = append(lines, "• **Progress**: Interrupted during model output generation")
 	}
 	lines = append(lines, "• **Actions**:")
-	lines = append(lines, "  - Type `/resume` to continue execution from this checkpoint")
+	lines = append(lines, "  - Type `/continue` to continue execution from this checkpoint")
 	lines = append(lines, "  - Type `/discard` to abandon this execution checkpoint")
 	return strings.Join(lines, "\n")
 }

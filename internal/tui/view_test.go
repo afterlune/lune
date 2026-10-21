@@ -1023,6 +1023,24 @@ func TestRenderCardSurfacePreservesBackground(t *testing.T) {
 	}
 }
 
+func TestUserMessageCardHasConsistentPaddingAndWidth(t *testing.T) {
+	const width = 64
+	rendered := renderEntry(TranscriptEntry{
+		Kind:          KindUser,
+		Text:          strings.Repeat("A deliberately long user message stays readable when it wraps. ", 2),
+		AttachedFiles: []string{"internal/tui/view.go"},
+	}, width)
+	lines := strings.Split(ansi.Strip(rendered), "\n")
+	if len(lines) < 5 || !strings.Contains(rendered, "› ") || !strings.Contains(rendered, "internal/tui/view.go") {
+		t.Fatalf("expected a padded, wrapped user card with its attachment, got:\n%s", rendered)
+	}
+	for i, line := range lines {
+		if got := ansi.StringWidth(line); got != width {
+			t.Fatalf("user card row %d width = %d, want %d: %q", i, got, width, line)
+		}
+	}
+}
+
 func TestComposerBandUsesThemeCardBackground(t *testing.T) {
 	previousMode := CurrentThemeMode()
 	t.Cleanup(func() { SetThemeMode(previousMode) })

@@ -297,11 +297,11 @@ func TestSessionsModalInteractions(t *testing.T) {
 		t.Fatalf("expected filter to reset on Esc")
 	}
 
-	// 7. Open with /open command (without arguments)
-	mod, _ = m.handleSlashCommand("/open")
+	// 7. Open with /resume command (without arguments)
+	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if !m.sessionsModalOpen {
-		t.Fatalf("expected /open without args to open modal")
+		t.Fatalf("expected /resume without args to open modal")
 	}
 
 	// 8. Filter to "data" and press Enter to switch

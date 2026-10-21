@@ -159,14 +159,18 @@ func (m *tuiModel) handleRewindExecute(turns int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleOpenCommand handles switching to a session by ID/prefix or opening the modal.
-func (m *tuiModel) handleOpenCommand(parts []string) (tea.Model, tea.Cmd) {
+// handleResumeCommand handles switching to a session by ID/prefix or opening the modal.
+func (m *tuiModel) handleResumeCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.taskBusy() {
 		m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
 		return m, nil
 	}
 	if m.client == nil {
 		m.addSystemEntry("Session management unavailable.")
+		return m, nil
+	}
+	if len(parts) > 2 {
+		m.addSystemEntry("Usage: `/resume [session-id|prefix]`.")
 		return m, nil
 	}
 	if len(parts) < 2 {
@@ -315,7 +319,7 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 
 	if targetID == m.sessionID {
-		m.addSystemEntry("Cannot delete currently active session. Switch to another session first with `/open`.")
+		m.addSystemEntry("Cannot delete currently active session. Switch to another session first with `/resume`.")
 		return m, nil
 	}
 
@@ -370,7 +374,7 @@ func (m *tuiModel) switchToSession(targetID string) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 	}
-	m.addSystemEntry("Opened session: " + targetID)
+	m.addSystemEntry("Resumed session: " + targetID)
 	return m, m.subscribeRuntimeEvents()
 }
 
@@ -419,7 +423,7 @@ func (m *tuiModel) handleSessionsCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("No matching sessions found.")
 		return m, nil
 	}
-	lines = append(lines, "\nUse `/open <id>` or `Ctrl+O` to switch sessions.")
+	lines = append(lines, "\nUse `/resume <id>` or `Ctrl+O` to switch sessions.")
 	m.addSystemEntry(strings.Join(lines, "\n"))
 	return m, nil
 }

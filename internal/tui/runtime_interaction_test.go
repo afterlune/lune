@@ -536,8 +536,8 @@ func TestRewindAndOpenRunningGuards(t *testing.T) {
 		t.Errorf("expected rewind guard error, got: %s", lastSys)
 	}
 
-	// /open while running
-	m.handleSlashCommand("/open other-sess")
+	// /resume while running
+	m.handleSlashCommand("/resume other-sess")
 	lastSys2 := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys2, "Cannot switch sessions while a task is running") {
 		t.Errorf("expected open guard error, got: %s", lastSys2)

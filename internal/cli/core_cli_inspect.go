@@ -151,6 +151,7 @@ func handleCoreCLISessions(client cliCore, currentSessionID, line string, stdout
 		timeStr := s.UpdatedAt.Format("2006-01-02 15:04:05")
 		fmt.Fprintf(stdout, "%s%-14s %-25s %s\n", prefix, shortID, title, timeStr)
 	}
+	fmt.Fprintln(stdout, "Use /resume <session-id|prefix> to restore a session.")
 }
 
 func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMode bool, stdout io.Writer) {

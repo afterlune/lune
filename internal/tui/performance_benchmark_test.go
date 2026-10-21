@@ -87,7 +87,7 @@ func TestRefreshViewportContentUsesSoftWrapOnlyWhenNeeded(t *testing.T) {
 	m.entries = append(m.entries, TranscriptEntry{Kind: KindUser, Text: strings.Repeat("界", 100)})
 	m.invalidateEntryCache()
 	m.refreshViewportContent()
-	if !m.viewport.SoftWrap {
-		t.Fatal("viewport must keep soft wrapping when a transcript line exceeds its width")
+	if m.viewport.SoftWrap {
+		t.Fatal("user cards wrap their content to the viewport width before rendering")
 	}
 }

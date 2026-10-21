@@ -136,11 +136,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	}
 
 	panelContent := meta + "\n" + title + "\n\n" + strings.Join(optionsRows, "\n") + "\n\n" + hint
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	return renderCardSurface(cardStyle, panelContent)
 }
@@ -304,11 +300,7 @@ func renderEffortPicker(m *tuiModel, width int) string {
 	footer := styleTextMuted().Render("↑/↓ or 1-8 select · enter apply · esc cancel")
 	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
 
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	return renderCardSurface(cardStyle, content)
 }
 
@@ -345,11 +337,7 @@ func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 	footer := styleTextMuted().Render("1-3 / enter select · esc stay in Plan mode")
 	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
 
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	return renderCardSurface(cardStyle, content)
 }
 
@@ -382,7 +370,7 @@ func renderPausedBanner(width int) string {
 	th := activeTheme()
 	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render("⏸ ")
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Task Paused (Checkpoint saved)")
-	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · /resume to continue · /discard to drop")
+	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · /continue to continue · /discard to drop")
 	banner := icon + label + actions
 	pad := max(0, (width-lipgloss.Width(banner))/2)
 	return strings.Repeat(" ", pad) + banner
@@ -394,11 +382,7 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 		return ""
 	}
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	var lines []string
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.WarningAmber)).
@@ -468,11 +452,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 		return ""
 	}
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	var lines []string
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.WarningAmber)).
@@ -575,11 +555,7 @@ func formatRelativeTime(t time.Time) string {
 // renderApprovalPanel renders a permission approval modal.
 func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	var lines []string
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.WarningAmber)).

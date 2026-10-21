@@ -197,7 +197,7 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 				}
 			case core.EventUserQuestionRequired, core.EventUserInteractionRequired,
 				core.EventToolRecoveryRequired, core.EventModelRecoveryRequired, core.EventExecutionBlocked:
-				fmt.Fprintf(stderr, "Task paused for %s. Use /resume to inspect it.\n", event.Kind)
+				fmt.Fprintf(stderr, "Task paused for %s. Use /continue to recover it, or /resume <id> to switch sessions.\n", event.Kind)
 			}
 		case key, ok := <-keyEvents:
 			if !ok || key.err != nil {
@@ -542,7 +542,7 @@ func printCoreTaskResult(stdout, stderr io.Writer, response json.RawMessage, cal
 		}
 	}
 	if interrupted {
-		if _, err := fmt.Fprintln(stdout, "Task interrupted. Use /resume to continue, or /discard to abandon."); err != nil {
+		if _, err := fmt.Fprintln(stdout, "Task interrupted. Use /continue to recover, or /discard to abandon."); err != nil {
 			return err
 		}
 	}

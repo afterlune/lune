@@ -32,7 +32,7 @@ var builtinCommands = []builtinCommandSpec{
 	{Command: "/stop", Description: "choose a running process to stop, or use /stop <id|all>", AvailableDuringTask: true},
 	{Command: "/logs", Description: "choose a process to inspect, or use /logs <id>", AvailableDuringTask: true},
 	{Command: "/sessions", Description: "list or search recent sessions in this workspace", AvailableDuringTask: true},
-	{Command: "/open", Description: "open session switcher modal or switch by ID (Ctrl+O)"},
+	{Command: "/resume", Description: "switch to a saved session or open the session switcher (Ctrl+O)"},
 	{Command: "/drop", Description: "choose a saved session to delete with confirmation"},
 	{Command: "/detail", Description: "open tool output pager modal: /detail [index] (Ctrl+T)", AvailableDuringTask: true},
 	{Command: "/title", Description: "view or set custom title for this session", AvailableDuringTask: true},
@@ -46,7 +46,7 @@ var builtinCommands = []builtinCommandSpec{
 	{Command: "/fork", Description: "fork the current chat"},
 	{Command: "/rewind", Description: "rewind session history: /rewind [N] or /rewind preview [N]"},
 	{Command: "/status", Description: "show session, model and token status", AvailableDuringTask: true},
-	{Command: "/resume", Description: "resume the paused task in this session"},
+	{Command: "/continue", Description: "continue the paused task in this session"},
 	{Command: "/discard", Description: "discard the paused task in this session"},
 	{Command: "/shortcuts", Description: "display keyboard shortcuts help", AvailableDuringTask: true},
 	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block (Ctrl+R)", AvailableDuringTask: true},
@@ -131,7 +131,7 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 	switch name {
 	case "/rewind":
 		return "Cannot rewind while a task is running."
-	case "/open":
+	case "/resume":
 		return "Cannot switch sessions while a task is running. Cancel or wait for it to finish."
 	case "/drop":
 		return "Cannot delete sessions while a task is running."
@@ -139,7 +139,7 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 		return "Cannot start a new session while a task is running."
 	case "/fork":
 		return "Cannot fork a session while a task is running."
-	case "/resume":
+	case "/continue":
 		return "A task is already running."
 	case "/discard":
 		return "Cannot discard a paused task while another task is running."
@@ -212,8 +212,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/sessions":
 		return m.handleSessionsCommand(parts)
-	case "/open":
-		return m.handleOpenCommand(parts)
+	case "/resume":
+		return m.handleResumeCommand(parts)
 
 	case "/drop":
 		return m.handleDropCommand(parts)
@@ -296,9 +296,9 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			return sessionForkedMsg{session: session, err: err}
 		}
 
-	case "/resume":
+	case "/continue":
 		if len(parts) > 1 {
-			m.addSystemEntry("Usage: `/resume` resumes a paused task. Use `/open <id>` to switch sessions.")
+			m.addSystemEntry("Usage: `/continue` continues the paused task in this session.")
 			return m, nil
 		}
 		if m.taskBusy() {
@@ -322,7 +322,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.addSystemEntry("No paused task to resume. Use `/open` to switch sessions.")
+		m.addSystemEntry("No paused task to continue. Use `/resume` to switch sessions.")
 		return m, nil
 
 	case "/discard":

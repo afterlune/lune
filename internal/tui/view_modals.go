@@ -12,11 +12,7 @@ import (
 // renderSessionsModal renders the interactive floating session switcher modal.
 func renderSessionsModal(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	var lines []string
 
@@ -115,11 +111,7 @@ func renderSessionsModal(m *tuiModel, width int) string {
 
 func renderThemePicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Theme")}
 	for i, mode := range themeModes {
 		label := string(mode)
@@ -138,11 +130,7 @@ func renderThemePicker(m *tuiModel, width int) string {
 
 func renderModelPicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("Model profile (%d)", len(m.modelPicker.Items)))}
 	visible := 8
 	start := 0
@@ -173,11 +161,7 @@ func renderModelPicker(m *tuiModel, width int) string {
 
 func renderPermissionPicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Permission mode")}
 	for i, mode := range permissionModes {
 		label := string(mode)
@@ -195,12 +179,7 @@ func renderPermissionPicker(m *tuiModel, width int) string {
 }
 
 func renderMemoryInputPrompt(m *tuiModel, width int) string {
-	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	category := "preference"
 	if m.pendingMemoryCategory != "" {
 		category = m.pendingMemoryCategory
@@ -211,11 +190,7 @@ func renderMemoryInputPrompt(m *tuiModel, width int) string {
 
 func renderMemoryPicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Remove workspace memory")}
 	visible := 8
 	start := 0
@@ -242,11 +217,7 @@ func renderMemoryPicker(m *tuiModel, width int) string {
 
 func renderMemoryClearConfirm(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	content := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).
 		Render("Clear all workspace memories?") + "\n" + styleTextMuted().Render("y confirm · n/Esc cancel")
 	return renderCardSurface(cardStyle, content)
@@ -254,11 +225,7 @@ func renderMemoryClearConfirm(m *tuiModel, width int) string {
 
 func renderMCPServerPicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	title := map[string]string{"enable": "Enable MCP server", "disable": "Disable MCP server", "auth": "Authorize MCP server"}[m.mcpServerPicker.Action]
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(title)}
 	visible := 8
@@ -281,11 +248,7 @@ func renderMCPServerPicker(m *tuiModel, width int) string {
 
 func renderProcessPicker(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	title := "Select process logs"
 	if m.processPickerMode == processPickerStop {
 		title = "Select process to stop"
@@ -315,12 +278,7 @@ func renderProcessPicker(m *tuiModel, width int) string {
 }
 
 func renderMCPAuthPanel(m *tuiModel, width int) string {
-	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", m.mcpAuthName)
 	return renderCardSurface(cardStyle, content)
 }
@@ -328,11 +286,7 @@ func renderMCPAuthPanel(m *tuiModel, width int) string {
 // renderToolPagerModal renders the dedicated floating pager modal for inspecting full tool output.
 func renderToolPagerModal(m *tuiModel, width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	indices := m.getToolEntryIndices()
 	if len(indices) == 0 {
@@ -649,11 +603,7 @@ func renderShortcutsPanel(width int) string {
 	hint := styleTextMuted().Render("esc or ? to close")
 	panelContent := title + "\n\n" + colsContent + "\n\n" + hint
 
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(activeTheme().CardBg)).
-		Foreground(lipgloss.Color(activeTheme().TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 
 	return renderCardSurface(cardStyle, panelContent)
 }

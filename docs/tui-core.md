@@ -23,7 +23,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 - **Plan Review**: Interactive card triggered when a `<proposed_plan>` completes in Plan mode, offering same-context or new-context implementation. Approved plans remain archived; execution status comes from Core, without inferred step completion.
 - **Model Recovery (`ActiveRecovery`)**: Interactive amber card for model rate limits or timeouts, offering retry (`Enter`) or discard (`Esc`).
 - **Keyboard Shortcuts**: Cheat sheet modal (`?` or `/shortcuts`) with a 3-column layout (Compose, Session, Transcript).
-- **Session Management**: Full lifecycle support with `/sessions`, `/open <prefix>`, `/rewind [N]`, `/clear`, and `/title [name]`.
+- **Session Management**: Full lifecycle support with `/sessions`, `/resume [prefix]`, `/rewind [N]`, `/clear`, and `/title [name]`. `/resume` switches sessions without starting a model turn; `/continue` resumes a paused checkpoint.
 - **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards; `/cancel-queue` removes a queued turn and `Esc` interrupts the active task.
 - **Workspace Diff**: Read-only colored Git diff modal via `/diff [path]`. It reads unstaged changes and falls back to staged changes when no unstaged diff is available. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
 

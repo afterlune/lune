@@ -34,6 +34,7 @@ func TestPlanCardHasRectangularSurface(t *testing.T) {
 				}
 			}
 			r, g, b, _ := parseHexRGB(activeTheme().CardBg)
+			codeR, codeG, codeB, _ := parseHexRGB(activeTheme().CodeBlockBg)
 			for y := 2; y < len(lines); y++ {
 				if got := ansi.StringWidth(lines[y]); got != width {
 					t.Fatalf("%s card row %d width = %d, want %d: %q", mode, y, got, width, lines[y])
@@ -47,8 +48,13 @@ func TestPlanCardHasRectangularSurface(t *testing.T) {
 						t.Fatalf("%s card has no background at (%d,%d): %q", mode, x, y, lines[y])
 					}
 					cr, cg, cb, _ := cell.Style.Bg.RGBA()
-					if int(cr>>8) != r || int(cg>>8) != g || int(cb>>8) != b {
+					isCard := int(cr>>8) == r && int(cg>>8) == g && int(cb>>8) == b
+					isCode := int(cr>>8) == codeR && int(cg>>8) == codeG && int(cb>>8) == codeB
+					if !isCard && !isCode {
 						t.Fatalf("%s card background differs at (%d,%d): %v", mode, x, y, cell.Style.Bg)
+					}
+					if (x < 2 || x >= width-2) && !isCard {
+						t.Fatalf("%s card edge should keep its surface color at (%d,%d)", mode, x, y)
 					}
 					x += cell.Width
 				}

@@ -17,7 +17,7 @@ func renderHeader(workspace string) string {
 	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render(AppName)
 	top := fmt.Sprintf("%s %s", prompt, brand)
 
-	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Underline(true).Render(workspace)
+	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("in " + workspace)
 	return top + "\n" + cwd + "\n"
 }
 
@@ -26,20 +26,16 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	switch entry.Kind {
 	case KindUser:
 		text := strings.TrimSpace(entry.Text)
-		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render("› ")
-		content := prefix + styleTextPrimary().Render(text)
-		pad := max(0, width-lipgloss.Width(content))
-		cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
-		box := renderCardSurface(cardStyle, content+strings.Repeat(" ", pad))
+		prompt := styleTextPrimary().Bold(true).Render("› ")
+		content := prompt + styleTextPrimary().Render(text)
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
-				chips = append(chips, "📎 "+file)
+				chips = append(chips, styleTextMuted().Render("📎 "+file))
 			}
-			chipLine := "  " + styleTextMuted().Render(strings.Join(chips, "  "))
-			return box + "\n" + chipLine
+			content += "\n  " + strings.Join(chips, styleTextMuted().Render("  "))
 		}
-		return box
+		return renderSurfaceCard(content, width, 2, 1)
 
 	case KindAssistant:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")

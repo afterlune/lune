@@ -428,10 +428,14 @@ func handleCoreCLIDetail(client cliCore, runtime cliRuntime, sessionID, line str
 	}
 }
 
-func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) (string, cliRuntime, error) {
+func handleCoreCLIResume(client cliCore, currentSessionID, line string, stdout, stderr io.Writer) (string, cliRuntime, error) {
 	fields := strings.Fields(line)
+	if len(fields) == 1 {
+		handleCoreCLISessions(client, currentSessionID, "/sessions", stdout, stderr)
+		return currentSessionID, nil, nil
+	}
 	if len(fields) != 2 {
-		fmt.Fprintln(stderr, "usage: /open <session-id|prefix>")
+		fmt.Fprintln(stderr, "usage: /resume [session-id|prefix]")
 		return currentSessionID, nil, nil
 	}
 	targetPrefix := fields[1]
@@ -477,7 +481,7 @@ func handleCoreCLIOpen(client cliCore, currentSessionID, line string, stdout, st
 		fmt.Fprintf(stderr, "error: open session runtime: %v\n", err)
 		return currentSessionID, nil, nil
 	}
-	fmt.Fprintf(stdout, "Switched to session %s.\n", targetID)
+	fmt.Fprintf(stdout, "Resumed session %s.\n", targetID)
 	return targetID, rt, nil
 }
 
@@ -522,7 +526,7 @@ func handleCoreCLIDrop(client cliCore, currentSessionID string, line string, std
 		targetID = matches[0].ID
 	}
 	if targetID == currentSessionID {
-		fmt.Fprintln(stderr, "Cannot delete currently active session. Switch to another session first with /open.")
+		fmt.Fprintln(stderr, "Cannot delete currently active session. Switch to another session first with /resume.")
 		return
 	}
 	if err := client.DeleteSession(ctx, targetID); err != nil {

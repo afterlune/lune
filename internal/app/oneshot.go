@@ -142,7 +142,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
-					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /resume\n", event.Approval.Tool, sessionID)
+					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", event.Approval.Tool, sessionID)
 				}
 			}
 		}
@@ -150,7 +150,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 }
 
 func oneShotPausedTaskError(sessionID string) error {
-	return fmt.Errorf("task paused for approval or a decision in session %s; continue with `lune --session %s --cli` and use /resume", sessionID, sessionID)
+	return fmt.Errorf("task paused for approval or a decision in session %s; continue with `lune --session %s --cli` and use /continue", sessionID, sessionID)
 }
 
 func applyOneShotModelProfile(ctx context.Context, client *core.Core, sessionID, profile string) error {

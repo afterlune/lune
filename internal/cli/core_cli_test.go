@@ -614,12 +614,16 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 		"Available commands:",
 		"/help",
 		"/permissions [mode]",
-		"/resume",
+		"/resume [id|prefix]",
+		"/continue",
 		"read-only, workspace, ask, full-access",
 	} {
 		if !strings.Contains(stdout, expected) {
 			t.Errorf("help output %q is missing %q", stdout, expected)
 		}
+	}
+	if strings.Contains(stdout, "/open") {
+		t.Fatalf("help output still exposes the removed /open command: %q", stdout)
 	}
 	if client.responses != 0 || len(client.inputs) != 0 {
 		t.Fatalf("help started a task: responses=%d inputs=%#v", client.responses, client.inputs)
@@ -633,9 +637,12 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 }
 
 func TestCLIUnknownCommandListsHelp(t *testing.T) {
-	_, stderr := runCLI(t, &fakeCLICore{}, "/not-a-command\n/exit\n", nil)
+	_, stderr := runCLI(t, &fakeCLICore{}, "/open session-2\n/not-a-command\n/exit\n", nil)
 	if !strings.Contains(stderr, "Available commands:") || !strings.Contains(stderr, "/help") {
 		t.Fatalf("unknown-command output = %q, want the /help command in the list", stderr)
+	}
+	if !strings.Contains(stderr, `Unknown command "/open session-2"`) {
+		t.Fatalf("unknown-command output = %q, want the removed /open command rejected", stderr)
 	}
 }
 
@@ -848,9 +855,9 @@ func TestCLIApprovalPromptEscapesModelControlledTerminalText(t *testing.T) {
 	}
 }
 
-func TestChatLoopResumesExplicitlyAndWarnsAboutReplay(t *testing.T) {
+func TestChatLoopContinuesPausedCheckpointExplicitly(t *testing.T) {
 	client := &fakeCLICore{pending: true}
-	stdout, _ := runCLI(t, client, "/resume\n/exit\n", nil)
+	stdout, _ := runCLI(t, client, "/continue\n/exit\n", nil)
 	if client.resumes != 1 || client.pending {
 		t.Fatalf("resume calls=%d pending=%v, want one resume and no pending task", client.resumes, client.pending)
 	}
@@ -868,7 +875,7 @@ func TestCLIResumeAnswersUserQuestionBatch(t *testing.T) {
 		},
 	}
 	client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: question}}}
-	stdout, stderr := runCLI(t, client, "/resume\n\nKeep the API stable\n/exit\n", nil)
+	stdout, stderr := runCLI(t, client, "/continue\n\nKeep the API stable\n/exit\n", nil)
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
@@ -894,7 +901,7 @@ func TestCLIResumeHandlesModelAndToolRecovery(t *testing.T) {
 	t.Run("model", func(t *testing.T) {
 		modelRecovery := &core.PendingModelRecovery{ExecutionID: "execution-paused", Failure: core.ModelFailure{RetryNotBefore: time.Now().Add(-time.Second)}}
 		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingModelRecoveryRequest, ModelRecovery: modelRecovery}}}
-		stdout, stderr := runCLI(t, client, "/resume\nr\n/exit\n", nil)
+		stdout, stderr := runCLI(t, client, "/continue\nr\n/exit\n", nil)
 		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
 			t.Fatalf("stdout=%q stderr=%q resumes=%d, want retry", stdout, stderr, client.resumes)
 		}
@@ -903,7 +910,7 @@ func TestCLIResumeHandlesModelAndToolRecovery(t *testing.T) {
 	t.Run("tool skip", func(t *testing.T) {
 		toolRecovery := &core.ToolRecoveryRequest{InvocationID: "invocation-2", Tool: "run_command"}
 		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingToolRecovery, ToolRecovery: toolRecovery}}}
-		stdout, stderr := runCLI(t, client, "/resume\ns\n/exit\n", nil)
+		stdout, stderr := runCLI(t, client, "/continue\ns\n/exit\n", nil)
 		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
 			t.Fatalf("stdout=%q stderr=%q resumes=%d, want skip and recover", stdout, stderr, client.resumes)
 		}
@@ -913,20 +920,20 @@ func TestCLIResumeHandlesModelAndToolRecovery(t *testing.T) {
 	})
 }
 
-func TestChatLoopBlocksNewInputUntilPendingTaskIsResumedOrDiscarded(t *testing.T) {
+func TestChatLoopDiscardsPausedCheckpointWhenStartingNewPrompt(t *testing.T) {
 	client := &fakeCLICore{pending: true}
-	stdout, stderr := runCLI(t, client, "must not run\n/discard\nnew task\n/exit\n", nil)
+	stdout, stderr := runCLI(t, client, "new task\n/exit\n", nil)
 	if client.discarded != 1 || client.pending {
 		t.Fatalf("discarded=%d pending=%v, want discarded once", client.discarded, client.pending)
 	}
 	if len(client.inputs) != 1 || string(client.inputs[0].Input.Raw) != `"new task"` {
-		t.Fatalf("responder inputs = %#v, want only new task after discard", client.inputs)
+		t.Fatalf("responder inputs = %#v, want new task after discard", client.inputs)
 	}
-	if !strings.Contains(stderr, "Use /resume or /discard first") {
-		t.Fatalf("stderr = %q, want pending-task instruction", stderr)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want no pending-task error", stderr)
 	}
-	if !strings.Contains(stdout, "Interrupted task discarded.") {
-		t.Fatalf("stdout = %q, want discard confirmation", stdout)
+	if !strings.Contains(stdout, "Discarded the paused checkpoint; starting a new turn.") {
+		t.Fatalf("stdout = %q, want checkpoint discard confirmation", stdout)
 	}
 }
 
@@ -1024,9 +1031,12 @@ func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
 	}
 }
 
-func TestCLISessionsAndOpen(t *testing.T) {
-	client := &fakeCLICore{}
-	stdout, stderr := runCLI(t, client, "/sessions\n/open session-1\n/open non-existent\n/exit\n", nil)
+func TestCLISessionsAndResume(t *testing.T) {
+	client := &fakeCLICore{sessions: []core.Session{
+		{ID: "session-1", Title: "Current session"},
+		{ID: "session-2", Title: "Restored session"},
+	}}
+	stdout, stderr := runCLI(t, client, "/resume\n/resume session-1\n/resume session-2\n/resume non-existent\n/exit\n", nil)
 	if !strings.Contains(stdout, "Recent sessions:") {
 		t.Fatalf("stdout = %q, want recent sessions list", stdout)
 	}
@@ -1035,6 +1045,12 @@ func TestCLISessionsAndOpen(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "No session found matching prefix") {
 		t.Fatalf("stderr = %q, want no session found", stderr)
+	}
+	if !strings.Contains(stdout, "Resumed session session-2.") || client.runtime == nil || client.runtime.sessionID != "session-2" {
+		t.Fatalf("stdout=%q runtime=%v, want session-2 restored", stdout, client.runtime)
+	}
+	if client.responses != 0 || len(client.inputs) != 0 {
+		t.Fatalf("restoring a session started a model turn: responses=%d inputs=%#v", client.responses, client.inputs)
 	}
 }
 
@@ -1364,13 +1380,13 @@ func TestCLIDropCommand(t *testing.T) {
 	}
 
 	// 2. Prevent deleting active session
-	_, stderr = runCLI(t, client, "/open sess-101\n/drop sess-101\n/exit\n", nil)
+	_, stderr = runCLI(t, client, "/resume sess-101\n/drop sess-101\n/exit\n", nil)
 	if !strings.Contains(stderr, "Cannot delete currently active session") {
 		t.Fatalf("stderr = %q, want active session guard error", stderr)
 	}
 
 	// 3. Delete other session via unique prefix
-	stdout, stderr := runCLI(t, client, "/open sess-101\n/drop sess-102\n/exit\n", nil)
+	stdout, stderr := runCLI(t, client, "/resume sess-101\n/drop sess-102\n/exit\n", nil)
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %s", stderr)
 	}

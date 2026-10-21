@@ -219,6 +219,10 @@ func renderFooter(m *tuiModel, width int) string {
 		remainingWidth -= lipgloss.Width(" · ") + lipgloss.Width(shown)
 	}
 	leftStr := styleTextMuted().Render(rawLeft)
+	if modelLabel != "" && strings.HasPrefix(rawLeft, modelLabel) {
+		leftStr = styleTextPrimary().Bold(true).Render(modelLabel) +
+			styleTextMuted().Render(strings.TrimPrefix(rawLeft, modelLabel))
+	}
 
 	leftLen := lipgloss.Width(leftStr)
 	gap := max(1, width-leftLen-rightLen)
@@ -233,7 +237,7 @@ func renderFooter(m *tuiModel, width int) string {
 			line2RightText = "esc to interrupt"
 		}
 	} else if m.hasPausedTask() {
-		line2RightText = "⏸ task paused · /resume or /discard"
+		line2RightText = "⏸ task paused · /continue or /discard"
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
 	} else if m.totalSubagentsCount() > 0 || m.delegationEnabled() {

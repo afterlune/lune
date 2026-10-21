@@ -112,7 +112,21 @@ func renderCodeBlockRow(line string, blockWidth int, th Palette) string {
 	if commentPart != "" {
 		b.WriteString(commentStyle.Render(commentPart))
 	}
-	return b.String()
+	return fillCodeBlockRow(b.String(), blockWidth, th)
+}
+
+func fillCodeBlockRow(line string, blockWidth int, th Palette) string {
+	if th.CodeBlockBg == "" {
+		return line
+	}
+	padding := max(0, blockWidth-lipgloss.Width(line))
+	if padding == 0 {
+		return line
+	}
+	fillStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Background(lipgloss.Color(th.CodeBlockBg))
+	return line + fillStyle.Render(strings.Repeat(" ", padding))
 }
 
 // Render renders ordinary Markdown text with terminal styles, wrapping lines to fit width.
@@ -138,9 +152,9 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 	inCodeBlock := false
 
 	th := palette
-	h1Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
+	h1Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue))
 	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
-	h3Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextMuted))
+	h3Style := lipgloss.NewStyle().Bold(true).Italic(true).Foreground(lipgloss.Color(th.TextMuted))
 	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted))
 
 	inlineCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.InlineCodeFg))
@@ -158,7 +172,10 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 					headerStyle := lipgloss.NewStyle().
 						Foreground(lipgloss.Color(th.TextMuted)).
 						Bold(true)
-					result = append(result, "  "+headerStyle.Render(lang))
+					if th.CodeBlockBg != "" {
+						headerStyle = headerStyle.Background(lipgloss.Color(th.CodeBlockBg))
+					}
+					result = append(result, fillCodeBlockRow("  "+headerStyle.Render(lang), codeWidth, th))
 				}
 			} else {
 				inCodeBlock = false
@@ -227,7 +244,7 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 				for _, wl := range strings.Split(wrapped, "\n") {
 					result = append(result, style.Render(wl))
 				}
-				if planStyle && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
+				if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
 					result = append(result, "")
 				}
 				continue

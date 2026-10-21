@@ -366,11 +366,7 @@ func (m *tuiModel) closeAgentsPanel() {
 
 func (m *tuiModel) renderAgentsPanel(width int) string {
 	th := activeTheme()
-	cardStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(th.CardBg)).
-		Foreground(lipgloss.Color(th.TextPrimary)).
-		Padding(1, 2).
-		Width(max(20, width))
+	cardStyle := panelCardStyle(width)
 	ids := m.agentMetricIDs()
 	var lines []string
 	if m.agentsPanelDetail {

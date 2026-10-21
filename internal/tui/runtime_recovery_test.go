@@ -136,36 +136,52 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 		t.Fatalf("expected /sessions Beta to list matches without switching: modal=%v session=%s entry=%q", m.sessionsModalOpen, m.sessionID, m.entries[len(m.entries)-1].Text)
 	}
 
-	// 3. /open with a unique prefix switches directly.
+	// 3. /resume with a unique prefix switches directly without starting a model turn.
 	s2Prefix := s2.ID
 	if len(s2Prefix) > 8 {
 		s2Prefix = s2Prefix[:8]
 	}
-	mod, _ = m.handleSlashCommand("/open " + s2Prefix)
+	mod, _ = m.handleSlashCommand("/resume " + s2Prefix)
 	m = mod.(*tuiModel)
+	if m.running {
+		t.Fatal("switching sessions must not start a model turn")
+	}
 	if m.sessionsModalOpen {
 		t.Fatalf("expected direct switch instead of opening modal for unique prefix")
 	}
 	if m.sessionID != s2.ID {
 		t.Fatalf("expected session to switch to s2 (%s), got %s", s2.ID, m.sessionID)
 	}
+	mod, _ = m.handleSlashCommand("/open " + s1.ID)
+	m = mod.(*tuiModel)
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Unknown command: `/open ") || m.sessionID != s2.ID {
+		t.Fatalf("expected removed /open command to be rejected without switching: session=%s entry=%q", m.sessionID, m.entries[len(m.entries)-1].Text)
+	}
 
-	// 4. /resume does not switch sessions; use /open instead.
+	// 4. /resume without an ID opens the session picker.
+	mod, _ = m.handleSlashCommand("/resume")
+	m = mod.(*tuiModel)
+	if !m.sessionsModalOpen {
+		t.Fatal("expected /resume without arguments to open the session picker")
+	}
+	m.sessionsModalOpen = false
+
+	// 5. Checkpoint recovery has a separate /continue command.
 	s1Prefix := s1.ID
 	if len(s1Prefix) > 8 {
 		s1Prefix = s1Prefix[:8]
 	}
-	mod, _ = m.handleSlashCommand("/resume " + s1Prefix)
+	mod, _ = m.handleSlashCommand("/continue " + s1Prefix)
 	m = mod.(*tuiModel)
-	if m.sessionID != s2.ID || !strings.Contains(m.entries[len(m.entries)-1].Text, "Use `/open <id>`") {
-		t.Fatalf("expected /resume with an ID to recommend /open, session=%s entry=%q", m.sessionID, m.entries[len(m.entries)-1].Text)
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Usage: `/continue`") {
+		t.Fatalf("expected /continue to reject session IDs, session=%s entry=%q", m.sessionID, m.entries[len(m.entries)-1].Text)
 	}
 
-	// 5. /resume without a paused task reports that no recovery is available.
-	mod, _ = m.handleSlashCommand("/resume")
+	// 6. /continue without a paused task reports that no checkpoint is available.
+	mod, _ = m.handleSlashCommand("/continue")
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to resume") {
-		t.Fatalf("expected /resume to report no paused task without opening a modal")
+	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to continue") {
+		t.Fatalf("expected /continue to report no paused task without opening a modal")
 	}
 }
 
@@ -416,8 +432,8 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	if !strings.Contains(cardText, "2 tool step(s) completed") || !strings.Contains(cardText, "run_command") {
 		t.Errorf("expected completed tools summary in card, got: %s", cardText)
 	}
-	if !strings.Contains(cardText, "/resume") || !strings.Contains(cardText, "/discard") {
-		t.Errorf("expected /resume and /discard hints in card, got: %s", cardText)
+	if !strings.Contains(cardText, "/continue") || !strings.Contains(cardText, "/discard") {
+		t.Errorf("expected /continue and /discard hints in card, got: %s", cardText)
 	}
 
 	// Verify View contains the paused task banner in composer gap
@@ -428,7 +444,7 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 
 	// Verify footer shows paused task indicator
 	footerText := ansi.Strip(renderFooter(m, 100))
-	if !strings.Contains(footerText, "task paused · /resume or /discard") {
+	if !strings.Contains(footerText, "task paused · /continue or /discard") {
 		t.Errorf("expected footer to show paused task hint, got: %s", footerText)
 	}
 

@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"strings"
+
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -48,15 +51,15 @@ type Theme struct {
 // LightTheme returns the light theme palette.
 var LightTheme = Theme{
 	Canvas:       "#FFFFFF",
-	CardBg:       "#F4F6F8",
+	CardBg:       "#F6F8FA",
 	TextPrimary:  "#24292F",
 	TextMuted:    "#6E7781",
 	AccentBlue:   "#0969DA",
-	AccentSoft:   "#3B82F6",
-	SelectBg:     "#A4CDFB",
-	SelectFg:     "#0550AE",
+	AccentSoft:   "#245EA8",
+	SelectBg:     "#DCEBFA",
+	SelectFg:     "#174A7E",
 	PlanPurple:   "#8250DF",
-	Border:       "#D0D7DE",
+	Border:       "#D8DEE4",
 	SuccessGreen: "#1A7F37",
 	FailureRed:   "#CF222E",
 	WarningAmber: "#9A6700",
@@ -65,7 +68,7 @@ var LightTheme = Theme{
 	DiffDelBg:    "#FFEBE9",
 	InlineCodeBg: "",
 	InlineCodeFg: "#0550AE",
-	CodeBlockBg:  "",
+	CodeBlockBg:  "#EFF3F7",
 }
 
 // DarkTheme returns the dark equivalent for terminals with dark backgrounds.
@@ -75,9 +78,9 @@ var DarkTheme = Theme{
 	TextPrimary:  "#E6EDF3",
 	TextMuted:    "#8B949E",
 	AccentBlue:   "#58A6FF",
-	AccentSoft:   "#79C0FF",
-	SelectBg:     "#1F6FEB",
-	SelectFg:     "#FFFFFF",
+	AccentSoft:   "#8AB4F8",
+	SelectBg:     "#26364D",
+	SelectFg:     "#C9D9F0",
 	PlanPurple:   "#BC8CFF",
 	Border:       "#30363D",
 	SuccessGreen: "#3FB950",
@@ -88,7 +91,7 @@ var DarkTheme = Theme{
 	DiffDelBg:    "#2D1619",
 	InlineCodeBg: "",
 	InlineCodeFg: "#79C0FF",
-	CodeBlockBg:  "",
+	CodeBlockBg:  "#1C2128",
 }
 
 // ThemeMode specifies the theme preference.
@@ -257,6 +260,38 @@ func applySurfaceBg(content, bgHex, fgHex string) string {
 func renderCardSurface(cardStyle lipgloss.Style, content string) string {
 	th := activeTheme()
 	return cardStyle.Render(applySurfaceBg(content, th.CardBg, th.TextPrimary))
+}
+
+func panelCardStyle(width int) lipgloss.Style {
+	th := activeTheme()
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(th.CardBg)).
+		Foreground(lipgloss.Color(th.TextPrimary)).
+		Padding(1, 2).
+		Width(max(20, width))
+}
+
+func renderSurfaceCard(content string, width, paddingX, paddingY int) string {
+	width = max(1, width)
+	paddingX = max(0, min(paddingX, (width-1)/2))
+	innerWidth := max(1, width-2*paddingX)
+	rows := make([]string, 0, strings.Count(content, "\n")+2*paddingY+1)
+	emptyRow := strings.Repeat(" ", width)
+	for range paddingY {
+		rows = append(rows, emptyRow)
+	}
+	for _, sourceLine := range strings.Split(content, "\n") {
+		for _, line := range strings.Split(ansi.Hardwrap(sourceLine, innerWidth, true), "\n") {
+			row := strings.Repeat(" ", paddingX) + line
+			row += strings.Repeat(" ", max(0, width-ansi.StringWidth(row)))
+			rows = append(rows, row)
+		}
+	}
+	for range paddingY {
+		rows = append(rows, emptyRow)
+	}
+	th := activeTheme()
+	return applySurfaceBg(strings.Join(rows, "\n"), th.CardBg, th.TextPrimary)
 }
 
 func itoaByte(v int) string {
