@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
@@ -132,6 +133,75 @@ func TestPlanMarkupInTextWithoutCorePlanDoesNotOpenReview(t *testing.T) {
 		}
 		if entry.Kind == KindAssistant && strings.Contains(entry.Text, "<proposed_plan>") {
 			t.Fatalf("expected raw plan markup to be removed, got: %q", entry.Text)
+		}
+	}
+}
+
+func TestResumedAnswerIsAppendedAfterQuestionAnswer(t *testing.T) {
+	const executionID = "exec-question"
+	m := newTUIModel(nil, nil, "question-order")
+	m.entries = []TranscriptEntry{
+		{
+			ID:          assistantOutputID(executionID),
+			ExecutionID: executionID,
+			Kind:        KindAssistant,
+			Text:        "Initial analysis",
+		},
+		{Kind: KindPlan, Text: "Initial plan"},
+	}
+	m.recordQuestionAnswer(&ActiveQuestion{Request: core.UserQuestionRequest{
+		ID:          "question-batch",
+		ExecutionID: executionID,
+		Questions:   []core.UserQuestionItem{{Question: "Which scope?"}},
+	}}, 0, AnsweredQuestionItem{Question: "Which scope?", Answer: "TUI"})
+
+	m.currentStreamText = "Resumed answer"
+	m.finalizeTurnOutput("", nil, executionID)
+
+	if len(m.entries) != 4 {
+		t.Fatalf("expected the resumed answer to append one entry, got %#v", m.entries)
+	}
+	if m.entries[0].Text != "Initial analysis" || m.entries[1].Kind != KindPlan {
+		t.Fatalf("the pre-question transcript was modified: %#v", m.entries)
+	}
+	if m.entries[2].Kind != KindQuestionAnswered || m.entries[2].ExecutionID != executionID {
+		t.Fatalf("question answer did not remain the resume boundary: %#v", m.entries[2])
+	}
+	if m.entries[3].Kind != KindAssistant || m.entries[3].Text != "Resumed answer" || m.entries[3].ExecutionID != executionID {
+		t.Fatalf("resumed answer was not rendered after the question card: %#v", m.entries)
+	}
+
+	// A later completion event must update the resumed response instead of
+	// creating a second assistant block.
+	m.currentStreamText = "Canonical resumed answer"
+	m.finalizeTurnOutput("", nil, executionID)
+	if len(m.entries) != 4 || m.entries[3].Text != "Canonical resumed answer" {
+		t.Fatalf("resumed response was not deduplicated after finalization: %#v", m.entries)
+	}
+}
+
+func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
+	m := newTUIModel(nil, nil, "live-plan")
+	m.width, m.height = 100, 30
+	m.running = true
+	m.taskStartedAt = time.Now()
+	m.updateLayout()
+
+	for _, stream := range []string{
+		"<proposed_plan>\n## Steps\n1. Fin",
+		"<proposed_plan>\n## Steps\n1. Finish\n</proposed_plan>",
+	} {
+		m.currentStreamText = stream
+		m.transcriptDirty = true
+		m.refreshViewportContent()
+		view := ansi.Strip(m.viewport.View())
+		if !strings.Contains(view, "Steps") || !strings.Contains(view, "1. Fin") {
+			t.Fatalf("live plan disappeared while the stream reached a complete block:\n%s", view)
+		}
+	}
+	for _, entry := range m.entries {
+		if entry.Kind == KindPlan {
+			t.Fatalf("live rendering should not persist a plan entry before finalization: %#v", m.entries)
 		}
 	}
 }

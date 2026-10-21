@@ -159,7 +159,17 @@ func (m *tuiModel) assistantEntryIndex(executionID string) int {
 		return -1
 	}
 	id := assistantOutputID(executionID)
+	// A resumed execution must render after the question answer that admitted
+	// it. The original assistant entry belongs to the pre-question turn and
+	// updating it would make the resumed response appear inside the old plan.
+	boundary := -1
 	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindQuestionAnswered && m.entries[i].ExecutionID == executionID {
+			boundary = i
+			break
+		}
+	}
+	for i := len(m.entries) - 1; i > boundary; i-- {
 		if m.entries[i].ID == id && m.entries[i].Kind == KindAssistant {
 			return i
 		}

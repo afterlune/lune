@@ -246,7 +246,11 @@ func (m *tuiModel) refreshViewportContent() {
 		if m.currentStreamText != "" {
 			streamEntry := TranscriptEntry{
 				Kind: KindAssistant,
-				Text: tuiMarkdown.StripProposedPlan(m.currentStreamText),
+				// Keep a complete plan block visible while it is still the live
+				// stream. StripProposedPlan removes the body as soon as the closing
+				// tag arrives, causing a visible flash before finalization appends the
+				// dedicated plan entry.
+				Text: tuiMarkdown.CleanProposedPlanTags(m.currentStreamText),
 			}
 			if strings.TrimSpace(streamEntry.Text) != "" {
 				blocks = append(blocks, renderEntry(streamEntry, contentWidth))

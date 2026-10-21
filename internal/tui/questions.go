@@ -59,6 +59,9 @@ func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer Ans
 		if entry.Kind != KindQuestionAnswered || entry.QuestionBatchID != batchID {
 			continue
 		}
+		if entry.ExecutionID == "" {
+			entry.ExecutionID = q.Request.ExecutionID
+		}
 		if index < len(entry.AnsweredQuestions) {
 			entry.AnsweredQuestions[index] = answer
 		} else {
@@ -68,7 +71,7 @@ func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer Ans
 		return
 	}
 	m.entries = append(m.entries, TranscriptEntry{
-		Kind: KindQuestionAnswered, QuestionBatchID: batchID,
+		Kind: KindQuestionAnswered, ExecutionID: q.Request.ExecutionID, QuestionBatchID: batchID,
 		QuestionsTotal: len(q.Request.Questions), AnsweredQuestions: []AnsweredQuestionItem{answer},
 	})
 	m.invalidateEntryCache()
