@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -68,9 +70,7 @@ func newModelProfileTestCore(t *testing.T) *core.Core {
 	t.Helper()
 	workspace := t.TempDir()
 	config := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"primary-model"},"fast":{"provider":"host","model":"fast-model"}},"defaultProfile":"primary"},"runtime":{}}`
-	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeUserProjectConfigForTest(t, config)
 	client, err := newCore(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +81,29 @@ func newModelProfileTestCore(t *testing.T) *core.Core {
 		}
 	})
 	return client
+}
+
+func writeUserProjectConfigForTest(t *testing.T, config string) {
+	t.Helper()
+	userConfigRoot := t.TempDir()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", userConfigRoot)
+	case "darwin":
+		t.Setenv("HOME", userConfigRoot)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", userConfigRoot)
+	}
+	configDirectory, err := settings.UserSettingsDirectory()
+	if err != nil {
+		t.Fatalf("get test user config directory: %v", err)
+	}
+	if err := os.MkdirAll(configDirectory, 0700); err != nil {
+		t.Fatalf("create test user config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDirectory, "config.json"), []byte(config), 0600); err != nil {
+		t.Fatalf("write user config.json: %v", err)
+	}
 }
 
 func TestRunOneShotRejectsUnknownModelProfile(t *testing.T) {
@@ -227,9 +250,7 @@ func createTestWorkspace(t *testing.T) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	cfg := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
-	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(cfg), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeUserProjectConfigForTest(t, cfg)
 	return tmpDir
 }
 
@@ -368,9 +389,7 @@ func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 	// Also verify that with placeholder keys populated, core.New parses and validates config.example.json without schema or configuration errors
 	tmpData := strings.ReplaceAll(string(data), `"apiKey": ""`, `"apiKey": "test-key"`)
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(tmpData), 0600); err != nil {
-		t.Fatalf("write temp config.json: %v", err)
-	}
+	writeUserProjectConfigForTest(t, tmpData)
 	coreClient, err := newCore(tmpDir)
 	if err != nil {
 		t.Fatalf("newCore failed with config.example.json (with keys populated): %v", err)

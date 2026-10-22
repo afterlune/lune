@@ -155,9 +155,7 @@ func createMockWorkspaceWithServer(t *testing.T, serverURL string) string {
   },
   "runtime": {}
 }`, serverURL)
-	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(cfg), 0600); err != nil {
-		t.Fatalf("write config.json: %v", err)
-	}
+	writeUserProjectConfigForTest(t, cfg)
 	return tmpDir
 }
 

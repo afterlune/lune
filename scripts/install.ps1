@@ -1,0 +1,81 @@
+$ErrorActionPreference = 'Stop'
+
+$workspaceRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$sourceDirectory = Join-Path $workspaceRoot 'bin'
+$sourceApp = Join-Path $sourceDirectory 'lune.exe'
+$sourceHelper = Join-Path $sourceDirectory 'lune-sandbox.exe'
+
+foreach ($sourcePath in @($sourceApp, $sourceHelper)) {
+	if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+		throw "Missing build output: $sourcePath. Run scripts/build.ps1 first."
+	}
+}
+
+if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+	throw 'LOCALAPPDATA is not set; cannot choose a per-user install directory.'
+}
+if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+	throw 'APPDATA is not set; cannot choose a per-user config directory.'
+}
+
+$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\luneAgent\bin'
+$configDirectory = Join-Path $env:APPDATA 'luneAgent'
+$configPath = Join-Path $configDirectory 'config.json'
+
+New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+Copy-Item -LiteralPath $sourceApp -Destination (Join-Path $installDirectory 'lune.exe') -Force
+Copy-Item -LiteralPath $sourceHelper -Destination (Join-Path $installDirectory 'lune-sandbox.exe') -Force
+
+$createdConfig = $false
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+	$workspaceConfig = Join-Path $workspaceRoot 'config.json'
+	if (Test-Path -LiteralPath $workspaceConfig -PathType Leaf) {
+		Copy-Item -LiteralPath $workspaceConfig -Destination $configPath
+	} else {
+		$exampleConfig = Join-Path $workspaceRoot 'config.example.json'
+		if (-not (Test-Path -LiteralPath $exampleConfig -PathType Leaf)) {
+			throw "Neither config.json nor config.example.json was found in $workspaceRoot."
+		}
+		Copy-Item -LiteralPath $exampleConfig -Destination $configPath
+		$createdConfig = $true
+	}
+}
+
+$normalizedInstallDirectory = [System.IO.Path]::GetFullPath($installDirectory).TrimEnd([char]'\')
+$userPathValue = [Environment]::GetEnvironmentVariable('Path', 'User')
+$userPathEntries = @()
+if (-not [string]::IsNullOrWhiteSpace($userPathValue)) {
+	$userPathEntries = @($userPathValue -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+$userPathContainsInstallDirectory = $false
+foreach ($entry in $userPathEntries) {
+	$expandedEntry = [Environment]::ExpandEnvironmentVariables($entry.Trim()).TrimEnd([char]'\')
+	if ([string]::Equals($expandedEntry, $normalizedInstallDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+		$userPathContainsInstallDirectory = $true
+		break
+	}
+}
+if (-not $userPathContainsInstallDirectory) {
+	$userPathEntries += $normalizedInstallDirectory
+	[Environment]::SetEnvironmentVariable('Path', ($userPathEntries -join ';'), 'User')
+}
+
+$processPathEntries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$processPathContainsInstallDirectory = $false
+foreach ($entry in $processPathEntries) {
+	$expandedEntry = [Environment]::ExpandEnvironmentVariables($entry.Trim()).TrimEnd([char]'\')
+	if ([string]::Equals($expandedEntry, $normalizedInstallDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+		$processPathContainsInstallDirectory = $true
+		break
+	}
+}
+if (-not $processPathContainsInstallDirectory) {
+	$env:Path = (($processPathEntries + $normalizedInstallDirectory) -join ';')
+}
+
+Write-Output "Installed lune.exe and lune-sandbox.exe to $installDirectory"
+Write-Output "User config: $configPath"
+if ($createdConfig) {
+	Write-Output 'Created config.json from config.example.json. Edit it and add your provider API key before starting Lune.'
+}

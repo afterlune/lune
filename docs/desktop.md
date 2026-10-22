@@ -14,6 +14,20 @@ go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
 
 桌面二进制输出到 `bin/lune-desktop.exe`。运行桌面程序需要 WebView2 Runtime；如果缺少运行时，启动错误窗口会提供安装说明。
 
+### CLI/TUI 本地安装（Windows）
+
+每台电脑分别 clone 仓库、安装 Go 1.27.1，然后在仓库根目录的 PowerShell 中运行：
+
+```powershell
+$env:GOWORK = 'off'
+./scripts/build.ps1
+./scripts/install.ps1
+```
+
+`build.ps1` 在 `bin/` 生成 `lune.exe` 和 `lune-sandbox.exe`；`install.ps1` 将两者安装到 `%LOCALAPPDATA%\Programs\luneAgent\bin`，并把目录加入当前用户的 `PATH`。无需管理员权限。打开新终端后即可从任意工作目录运行 `lune`。重复运行安装脚本会更新程序，不会覆盖已有配置。
+
+用户配置目录是 `%APPDATA%\luneAgent`。首次安装时，如果仓库根目录有本地 `config.json`，脚本会复制它；否则从 `config.example.json` 创建 `%APPDATA%\luneAgent\config.json`。已有全局配置不会被覆盖。编辑这份全局配置后，TUI/CLI 从任何工作区启动都会使用它；项目内的 `config.json` 不再参与 TUI/CLI 配置。配置示例中的 API Key 需要替换后才能连接模型。
+
 ### Windows Beta 安装包
 
 安装 NSIS 3.x 并确保 `makensis` 在 `PATH` 中，然后运行：
@@ -35,11 +49,11 @@ Beta 安装包尚未签名，Windows 可能显示 SmartScreen 提示。安装器
 
 ## 首次设置
 
-在模型设置中添加提供方、模型 ID 和默认模型。API 密钥保存在 `%APPDATA%\luneAgent\settings.db`，并由当前 Windows 用户的 DPAPI 加密。前端只接收密钥是否已保存的标记，留空可保留已保存的密钥。
+在 Desktop 模型设置中添加提供方、模型 ID 和默认模型。API 密钥保存在 `%APPDATA%\luneAgent\settings.db`，并由当前 Windows 用户的 DPAPI 加密。前端只接收密钥是否已保存的标记，留空可保留已保存的密钥。
 
-Desktop 的提供方、模型档案、默认模型、主题和最近工作区保存在当前用户的 `settings.db`。TUI/CLI 继续使用自己的工作区 `config.json`，不读取 Desktop 数据库。Desktop 的项目运行设置（上下文窗口、自动压缩、输出预留、图片限制和 MCP 服务）按规范化项目路径保存在 `settings.db` 中；同一项目的所有会话共用这些设置。
+Desktop 的提供方、模型档案、默认模型、主题和最近工作区保存在当前用户的 `settings.db`。TUI/CLI 的模型、运行时、附件和 MCP 配置读取 `%APPDATA%\luneAgent\config.json`，不读取 Desktop 模型设置。Desktop 的项目运行设置（上下文窗口、自动压缩、输出预留、图片限制和 MCP 服务）按规范化项目路径保存在 `settings.db` 中；同一项目的所有会话共用这些设置。
 
-Desktop 完全忽略项目中的 `config.json`，不会导入、迁移或改写它。需要配置 Desktop 时，在工作区侧栏打开“项目设置”；需要配置 TUI/CLI 时，编辑工作区的 `config.json`。两套配置各自独立。
+Desktop 完全忽略项目中的 `config.json`，不会导入、迁移或改写它。需要配置 Desktop 时，在工作区侧栏打开“项目设置”；需要配置 TUI/CLI 时，编辑用户配置目录中的 `config.json`。两套配置各自独立。
 
 Desktop 会话数据保存在用户配置目录下 `luneAgent/desktop/<project-hash>`。TUI/CLI 继续使用项目内 `.luneagent`。升级后已有 `.luneagent` 数据保持原样，Desktop 从独立会话列表开始，不自动复制旧会话。旧版 Desktop 留在用户缓存目录 `luneAgent/worktrees` 下的 Git 工作树不会自动删除，也不会再被读取或管理。
 

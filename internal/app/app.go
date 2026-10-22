@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/tui"
 	core "github.com/afterlune/luneCore"
-	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 // maxPipedStdinBytes limits the maximum data read from standard input pipe (10 MB).
@@ -205,14 +205,11 @@ func isSandboxDisabledEnv() bool {
 }
 
 func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
-	helperName := "lune-sandbox"
-	if runtime.GOOS == "windows" {
-		helperName += ".exe"
+	projectConfig, configPath, err := loadUserProjectConfig()
+	if err != nil {
+		return nil, err
 	}
-	helperPath := filepath.Join(workspace, "bin", helperName)
-	if _, err := os.Stat(helperPath); err != nil {
-		helperPath = ""
-	}
+	helperPath := findSandboxHelper(workspace)
 	allowLocalCommand := isSandboxDisabledEnv()
 	if len(noSandbox) > 0 && noSandbox[0] {
 		allowLocalCommand = true
@@ -222,38 +219,52 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 		Logger:            slog.Default(),
 		SandboxHelperPath: helperPath,
 		AllowLocalCommand: allowLocalCommand,
+		ProjectConfig:     &projectConfig,
 	}
 
-	var storeModelCfg *publicmodel.Config
-	var storeProjectCfg *core.ProjectConfig
 	if store, err := settings.OpenUser(); err == nil {
 		defer store.Close()
 		_ = store.TouchWorkspace(workspace)
-		if wsCfg, ok, err := store.LoadWorkspaceConfig(workspace); err == nil && ok {
-			storeProjectCfg = &wsCfg
-		}
-		if modelSettings, err := store.LoadModelSettings(); err == nil {
-			baseCfg.MaxParallelAgents = modelSettings.MaxParallelAgents
-			if len(modelSettings.Catalog.Providers) > 0 || len(modelSettings.Catalog.Profiles) > 0 {
-				storeModelCfg = &modelSettings.Catalog
-			}
-		}
 	}
 
-	configPath := filepath.Join(workspace, "config.json")
-	if _, err := os.Stat(configPath); err == nil {
-		// Prefer explicit workspace config.json when present; fall back to overlaying user settings if needed.
-		client, err := core.New(baseCfg)
-		if err == nil || storeModelCfg == nil {
-			return client, err
+	client, err := core.New(baseCfg)
+	if err != nil {
+		return nil, fmt.Errorf("initialize Lune with user config %s: %w", configPath, err)
+	}
+	return client, nil
+}
+
+func loadUserProjectConfig() (core.ProjectConfig, string, error) {
+	configDirectory, err := settings.UserSettingsDirectory()
+	if err != nil {
+		return core.ProjectConfig{}, "", fmt.Errorf("find user configuration directory: %w", err)
+	}
+	configPath := filepath.Join(configDirectory, "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return core.ProjectConfig{}, configPath, fmt.Errorf("read user config %s: %w; copy config.example.json there and edit it", configPath, err)
+	}
+	var projectConfig core.ProjectConfig
+	if err := json.Unmarshal(data, &projectConfig); err != nil {
+		return core.ProjectConfig{}, configPath, fmt.Errorf("parse user config %s: %w", configPath, err)
+	}
+	return projectConfig, configPath, nil
+}
+
+func findSandboxHelper(workspace string) string {
+	helperName := "lune-sandbox"
+	if runtime.GOOS == "windows" {
+		helperName += ".exe"
+	}
+	if executablePath, err := os.Executable(); err == nil {
+		installedPath := filepath.Join(filepath.Dir(executablePath), helperName)
+		if info, err := os.Stat(installedPath); err == nil && !info.IsDir() {
+			return installedPath
 		}
 	}
-
-	if storeProjectCfg != nil {
-		baseCfg.ProjectConfig = storeProjectCfg
+	workspacePath := filepath.Join(workspace, "bin", helperName)
+	if info, err := os.Stat(workspacePath); err == nil && !info.IsDir() {
+		return workspacePath
 	}
-	if storeModelCfg != nil {
-		baseCfg.ModelConfig = storeModelCfg
-	}
-	return core.New(baseCfg)
+	return ""
 }
