@@ -1687,3 +1687,29 @@ func TestHeaderBrandLune(t *testing.T) {
 		t.Fatalf("header missing workspace: %q", stripped)
 	}
 }
+
+func TestAssistantNarrationStyleDiffersFromReasoning(t *testing.T) {
+	marker := assistantMarkerStyle()
+	if marker.GetForeground() != lipgloss.Color(activeTheme().TextPrimary) || !marker.GetBold() {
+		t.Fatalf("narration marker must use the primary text color and a bold weight")
+	}
+	if marker.GetForeground() == styleTextMuted().GetForeground() {
+		t.Fatalf("narration marker must differ from the muted reasoning color")
+	}
+
+	narration := renderEntry(TranscriptEntry{Kind: KindAssistant, Text: "我会先检查基础状态。"}, 80)
+	if !strings.Contains(narration, marker.Render("• ")) {
+		t.Fatalf("expected the primary marker on narration, got:\n%s", narration)
+	}
+	if got := ansi.Strip(narration); !strings.Contains(got, "我会先检查基础状态。") || strings.Contains(got, "Thought for") {
+		t.Fatalf("narration must read as model text, got:\n%s", got)
+	}
+
+	reasoning := renderEntry(TranscriptEntry{Kind: KindReasoning, Text: "先看进程与网络", ReasoningDuration: 2 * time.Second}, 80)
+	if got := ansi.Strip(reasoning); !strings.Contains(got, "Thought for 2s") {
+		t.Fatalf("expected the folded reasoning label, got:\n%s", got)
+	}
+	if strings.Contains(reasoning, marker.Render("• ")) {
+		t.Fatalf("reasoning must not reuse the narration marker, got:\n%s", ansi.Strip(reasoning))
+	}
+}

@@ -121,14 +121,6 @@ var cliCommands = []cliCommandHelp{
 	{name: "/title", usage: "/title [name]", description: "View or set custom title for this session."},
 }
 
-func cliCommandNames() []string {
-	names := make([]string, 0, len(cliCommands))
-	for _, command := range cliCommands {
-		names = append(names, command.name)
-	}
-	return names
-}
-
 func cliHelpText() string {
 	lines := []string{"Available commands:"}
 	for _, command := range cliCommands {
@@ -277,6 +269,42 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		}
 		return nil
 	}
+
+	submitPrompt := func(text string) error {
+		if err := ensureSession(); err != nil {
+			fmt.Fprintf(stderr, "error: create session: %v\n", err)
+			return nil
+		}
+		state, err := runtime.State(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
+			return nil
+		}
+		if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
+			fmt.Fprintln(stderr, "A turn is already running or queued in this session.")
+			return nil
+		}
+		effectiveWorkspace := workspace
+		if effectiveWorkspace == "" {
+			effectiveWorkspace = client.Workspace()
+		}
+		_, augmented := filemention.Expand(text, effectiveWorkspace)
+		input, err := core.ParseTaskInput(augmented)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return nil
+		}
+		if state.Task.Status == core.TaskPaused {
+			if _, err := runtime.DiscardPaused(ctx); err != nil {
+				fmt.Fprintf(stderr, "error: discard paused task checkpoint: %v\n", err)
+				return nil
+			}
+			fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
+		}
+		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input}, false, watchKeys, stderr)
+		return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
+	}
+
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -448,40 +476,11 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		case line == "/cancel-queue" || strings.HasPrefix(line, "/cancel-queue "):
 			fmt.Fprintln(stderr, "The /cancel-queue command is specific to full-screen interactive TUI mode (run 'lune --tui').")
 		case line == "":
-		case strings.HasPrefix(line, "/"):
-			fmt.Fprintf(stderr, "Unknown command %q. Available commands: %s\n", line, strings.Join(cliCommandNames(), " "))
 		default:
-			if err := ensureSession(); err != nil {
-				fmt.Fprintf(stderr, "error: create session: %v\n", err)
-				continue
-			}
-			state, err := runtime.State(ctx)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
-			} else if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued {
-				fmt.Fprintln(stderr, "A turn is already running or queued in this session.")
-			} else {
-				effectiveWorkspace := workspace
-				if effectiveWorkspace == "" {
-					effectiveWorkspace = client.Workspace()
-				}
-				_, augmented := filemention.Expand(line, effectiveWorkspace)
-				input, err := core.ParseTaskInput(augmented)
-				if err != nil {
-					fmt.Fprintf(stderr, "error: %v\n", err)
-				} else {
-					if state.Task.Status == core.TaskPaused {
-						if _, err := runtime.DiscardPaused(ctx); err != nil {
-							fmt.Fprintf(stderr, "error: discard paused task checkpoint: %v\n", err)
-							continue
-						}
-						fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
-					}
-					result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input}, false, watchKeys, stderr)
-					if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
-						return err
-					}
-				}
+			// Anything that is not a registered command, including text that merely
+			// starts with "/" (for example a pasted absolute path), is a prompt.
+			if err := submitPrompt(line); err != nil {
+				return err
 			}
 		}
 		if errors.Is(readErr, io.EOF) {

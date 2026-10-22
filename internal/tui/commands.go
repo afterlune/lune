@@ -90,6 +90,28 @@ func (m *tuiModel) taskBusy() bool {
 	return m.running || len(m.queuedTurns) > 0
 }
 
+// lookupBuiltinCommand returns the registered command spec for a slash command name.
+func lookupBuiltinCommand(name string) *builtinCommandSpec {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for i := range builtinCommands {
+		if builtinCommands[i].Command == name {
+			return &builtinCommands[i]
+		}
+	}
+	return nil
+}
+
+// isKnownSlashCommand reports whether the first token of text is a registered command.
+// Anything else that merely starts with "/" is a normal prompt, so pasted absolute
+// paths are sent to the model instead of failing as an unknown command.
+func isKnownSlashCommand(text string) bool {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return false
+	}
+	return lookupBuiltinCommand(fields[0]) != nil
+}
+
 func (m *tuiModel) slashCommandUnavailable(raw string) string {
 	if !m.taskBusy() {
 		return ""
@@ -99,13 +121,7 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 		return ""
 	}
 	name := strings.ToLower(parts[0])
-	var spec *builtinCommandSpec
-	for i := range builtinCommands {
-		if builtinCommands[i].Command == name {
-			spec = &builtinCommands[i]
-			break
-		}
-	}
+	spec := lookupBuiltinCommand(name)
 	if spec == nil || spec.AvailableDuringTask {
 		switch name {
 		case "/mcp":

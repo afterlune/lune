@@ -23,6 +23,13 @@ func renderHeader(workspace string) string {
 	return top + "\n" + cwd + "\n"
 }
 
+// assistantMarkerStyle styles the marker that introduces model narration. It stays
+// in the primary text weight so mid-turn prose reads as model output instead of being
+// mistaken for the muted, folded reasoning blocks.
+func assistantMarkerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true)
+}
+
 // renderEntry renders a single transcript item according to LuneAgent visual patterns.
 func renderEntry(entry TranscriptEntry, width int) string {
 	switch entry.Kind {
@@ -40,7 +47,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		return renderSurfaceCard(content, width, 2, 1)
 
 	case KindAssistant:
-		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
+		bullet := assistantMarkerStyle().Render("• ")
 		cleanText := tuiMarkdown.CleanProposedPlanTags(entry.Text)
 		rendered := renderMarkdown(cleanText, width-4)
 		lines := strings.Split(rendered, "\n")

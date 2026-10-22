@@ -592,7 +592,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if val == "" {
 			return m, nil
 		}
-		if strings.HasPrefix(val, "/") {
+		isCommand := isKnownSlashCommand(val)
+		if isCommand {
 			if reason := m.slashCommandUnavailable(val); reason != "" {
 				m.addSystemEntry(reason)
 				m.updateLayout()
@@ -603,9 +604,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.autocompleteOpen = false
 		m.updateLayout()
 
-		if strings.HasPrefix(val, "/") {
+		if isCommand {
 			return m.handleSlashCommand(val)
 		}
+		// Slash-prefixed text that is not a registered command (for example a pasted
+		// absolute path) is submitted as a normal prompt.
 		return m.submitTurn(val)
 	}
 

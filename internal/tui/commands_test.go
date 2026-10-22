@@ -845,3 +845,45 @@ func TestProcessCommands(t *testing.T) {
 		t.Errorf("expected not found message, got: %s", lastSys)
 	}
 }
+
+func TestUnknownSlashTextSubmitsAsMessage(t *testing.T) {
+	client := newLazySessionTestCore(t)
+	m := newTUIModel(client, nil, "")
+	m.composer.SetValue("/home/iacsadmin/cntb/屏幕截图 2026-10-22 131712.png 执行过程像这样")
+	m.composer.CursorEnd()
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+
+	last := m.entries[len(m.entries)-1]
+	if last.Kind != KindUser {
+		t.Fatalf("expected a user message, got %s: %q", last.Kind, last.Text)
+	}
+	if !strings.HasPrefix(last.Text, "/home/iacsadmin/cntb/") {
+		t.Fatalf("submitted text = %q, want the pasted path", last.Text)
+	}
+	for _, entry := range m.entries {
+		if entry.Kind == KindSystem && strings.Contains(entry.Text, "Unknown command") {
+			t.Fatalf("slash-prefixed prompt must not be rejected as a command: %q", entry.Text)
+		}
+	}
+}
+
+func TestKnownSlashCommandStillDispatches(t *testing.T) {
+	client := newLazySessionTestCore(t)
+	m := newTUIModel(client, nil, "")
+	m.composer.SetValue("/model fast")
+	m.composer.CursorEnd()
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+
+	if m.pendingModelProfile != "fast" {
+		t.Fatalf("expected /model to dispatch as a command, got pending profile %q", m.pendingModelProfile)
+	}
+	for _, entry := range m.entries {
+		if entry.Kind == KindUser {
+			t.Fatalf("command input must not be submitted as a message: %q", entry.Text)
+		}
+	}
+}

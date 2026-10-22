@@ -661,13 +661,20 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 	}
 }
 
-func TestCLIUnknownCommandListsHelp(t *testing.T) {
-	_, stderr := runCLI(t, &fakeCLICore{}, "/open session-2\n/not-a-command\n/exit\n", nil)
-	if !strings.Contains(stderr, "Available commands:") || !strings.Contains(stderr, "/help") {
-		t.Fatalf("unknown-command output = %q, want the /help command in the list", stderr)
+func TestCLIUnknownSlashTextSubmitsPrompt(t *testing.T) {
+	client := &fakeCLICore{}
+	_, stderr := runCLI(t, client, "/open session-2\n/home/iacsadmin/notes.txt 看一下这个文件\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want slash-prefixed text submitted without errors", stderr)
 	}
-	if !strings.Contains(stderr, `Unknown command "/open session-2"`) {
-		t.Fatalf("unknown-command output = %q, want the removed /open command rejected", stderr)
+	if len(client.inputs) != 2 {
+		t.Fatalf("inputs = %#v, want both slash-prefixed lines treated as prompts", client.inputs)
+	}
+	if got := string(client.inputs[0].Input.Raw); got != `"/open session-2"` {
+		t.Fatalf("first prompt = %s, want the removed /open line kept verbatim", got)
+	}
+	if got := string(client.inputs[1].Input.Raw); !strings.Contains(got, "/home/iacsadmin/notes.txt") {
+		t.Fatalf("second prompt = %s, want the pasted absolute path", got)
 	}
 }
 
@@ -1494,10 +1501,15 @@ func TestCLIDropCommand(t *testing.T) {
 		}
 	}
 
-	// 4. Removed aliases should be rejected rather than silently duplicating commands.
+	// 4. Removed aliases are no longer commands, so they are submitted as prompts
+	// instead of deleting anything.
+	before := len(client.inputs)
 	stdout, stderr = runCLI(t, client, "/delete sess-103\n/exit\n", nil)
-	if !strings.Contains(stderr, "Unknown command \"/delete sess-103\"") {
-		t.Fatalf("stderr = %q, want removed alias to be rejected", stderr)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want the removed alias submitted as a prompt", stderr)
+	}
+	if len(client.inputs) != before+1 || string(client.inputs[len(client.inputs)-1].Input.Raw) != `"/delete sess-103"` {
+		t.Fatalf("inputs = %#v, want the removed alias submitted as a prompt", client.inputs)
 	}
 	if strings.Contains(stdout, "Deleted session sess-103-database.") {
 		t.Fatalf("stdout = %q, removed alias unexpectedly deleted a session", stdout)
