@@ -39,7 +39,7 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 }
 
 type compactDoneMsg struct {
-	trimmed   int
+	result    core.CompactionResult
 	err       error
 	sessionID string
 }

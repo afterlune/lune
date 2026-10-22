@@ -23,19 +23,19 @@ func TestCompactDoneMessages(t *testing.T) {
 		m.lastInputTokens = 700_000
 		m.lastCachedTokens = 500_000
 		m.compacting = true
-		m.Update(compactDoneMsg{trimmed: 3, sessionID: "session-compact"})
+		m.Update(compactDoneMsg{result: core.CompactionResult{Turns: 3, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
 
 		if m.compacting {
 			t.Fatalf("compaction result must clear the in-progress state")
 		}
-		if !m.contextCompacted || m.compactedFromTokens != 621_000 {
-			t.Fatalf("manual compaction state = (%t, %d)", m.contextCompacted, m.compactedFromTokens)
+		if m.contextCompacted || m.compactedFromTokens != 0 {
+			t.Fatalf("manual compaction left a fallback footer state")
 		}
-		if m.lastInputTokens != 0 || m.lastCachedTokens != 0 || m.estimatedInputTokens != 0 {
+		if m.lastInputTokens != 0 || m.lastCachedTokens != 0 || m.estimatedInputTokens != 92_000 {
 			t.Fatalf("stale context metrics survived compaction: last=%d cached=%d estimated=%d",
 				m.lastInputTokens, m.lastCachedTokens, m.estimatedInputTokens)
 		}
-		if got := lastEntryText(m); got != "Compacted 3 older turns (kept the latest 4)." {
+		if got := lastEntryText(m); got != "Compacted 3 older turns, 621k → 92k tokens." {
 			t.Fatalf("compacted message = %q", got)
 		}
 	})
@@ -44,7 +44,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-compact")
 		m.estimatedInputTokens = 621_000
 		m.compacting = true
-		m.Update(compactDoneMsg{trimmed: 0, sessionID: "session-compact"})
+		m.Update(compactDoneMsg{sessionID: "session-compact"})
 
 		if m.compacting || m.contextCompacted {
 			t.Fatalf("an empty compaction must not change the footer state")
@@ -52,7 +52,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		if m.estimatedInputTokens != 621_000 {
 			t.Fatalf("empty compaction changed the estimate: %d", m.estimatedInputTokens)
 		}
-		if got := lastEntryText(m); got != "No older conversation to compact (the latest 4 turns are always kept)." {
+		if got := lastEntryText(m); got != "No older conversation to compact." {
 			t.Fatalf("empty message = %q", got)
 		}
 	})
@@ -72,7 +72,7 @@ func TestCompactDoneMessages(t *testing.T) {
 
 	t.Run("stale session", func(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-b")
-		m.Update(compactDoneMsg{trimmed: 2, sessionID: "session-a"})
+		m.Update(compactDoneMsg{result: core.CompactionResult{Turns: 2, Compacted: true}, sessionID: "session-a"})
 		if len(m.entries) != 0 {
 			t.Fatalf("result from another session must be ignored: %+v", m.entries)
 		}

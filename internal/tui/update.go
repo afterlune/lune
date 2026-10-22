@@ -193,18 +193,16 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		switch {
 		case msg.err != nil:
 			m.addSystemEntry("Compaction failed: " + msg.err.Error())
-		case msg.trimmed > 0:
-			m.compactedFromTokens = m.estimatedInputTokens
-			if m.compactedFromTokens == 0 {
-				m.compactedFromTokens = m.lastInputTokens
-			}
-			m.contextCompacted = true
+		case msg.result.Compacted && msg.result.Turns > 0:
+			m.contextCompacted = false
+			m.compactedFromTokens = 0
 			m.lastInputTokens = 0
 			m.lastCachedTokens = 0
-			m.estimatedInputTokens = 0
-			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns (kept the latest 4).", msg.trimmed))
+			m.estimatedInputTokens = msg.result.After
+			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns, %s → %s tokens.",
+				msg.result.Turns, formatCompactTokens(msg.result.Before), formatCompactTokens(msg.result.After)))
 		default:
-			m.addSystemEntry("No older conversation to compact (the latest 4 turns are always kept).")
+			m.addSystemEntry("No older conversation to compact.")
 		}
 		m.updateLayout()
 		return m, nil

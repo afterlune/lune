@@ -327,8 +327,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Compacting older conversation history…")
 		m.updateLayout()
 		return m, func() tea.Msg {
-			n, err := client.Compact(context.Background(), sessionID)
-			return compactDoneMsg{trimmed: n, err: err, sessionID: sessionID}
+			result, err := client.Compact(context.Background(), sessionID)
+			return compactDoneMsg{result: result, err: err, sessionID: sessionID}
 		}
 
 	case "/fork":

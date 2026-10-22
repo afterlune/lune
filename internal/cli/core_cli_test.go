@@ -100,7 +100,9 @@ func (f *fakeCLICore) CreateSession(_ context.Context, history json.RawMessage) 
 	return f.latest, nil
 }
 
-func (f *fakeCLICore) Compact(context.Context, string) (int, error) { return f.compact, nil }
+func (f *fakeCLICore) Compact(context.Context, string) (core.CompactionResult, error) {
+	return core.CompactionResult{Turns: f.compact, Compacted: f.compact > 0}, nil
+}
 
 func (f *fakeCLICore) Workspace() string {
 	if f.workspace != "" {

@@ -44,7 +44,7 @@ type cliCore interface {
 	RewindSession(context.Context, string, int) (int, error)
 	SetSessionTitle(context.Context, string, string) error
 	OpenSessionRuntime(context.Context, string) (cliRuntime, error)
-	Compact(context.Context, string) (int, error)
+	Compact(context.Context, string) (core.CompactionResult, error)
 	PermissionMode() core.PermissionMode
 	SetPermissionMode(core.PermissionMode) error
 	ProjectContextDefaults() core.ContextDefaults
@@ -460,13 +460,14 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 		case line == "/compact":
 			fmt.Fprintln(stderr, "Compacting context...")
-			turns, err := client.Compact(ctx, sessionID)
+			result, err := client.Compact(ctx, sessionID)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: compact conversation: %v\n", err)
-			} else if turns == 0 {
-				fmt.Fprintln(stdout, "No older conversation to compact (the latest 4 turns are always kept).")
+			} else if !result.Compacted || result.Turns == 0 {
+				fmt.Fprintln(stdout, "No older conversation to compact.")
 			} else {
-				fmt.Fprintf(stdout, "Compacted %d older user turn(s) (kept the latest 4).\n", turns)
+				fmt.Fprintf(stdout, "Compacted %d older user turn(s), %s → %s tokens.\n",
+					result.Turns, compactCLITokens(result.Before), compactCLITokens(result.After))
 			}
 		case line == "/theme" || strings.HasPrefix(line, "/theme "):
 			fmt.Fprintln(stderr, "The /theme command is specific to full-screen interactive TUI mode (run 'lune --tui').")
