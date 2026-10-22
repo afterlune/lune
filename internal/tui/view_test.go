@@ -1268,7 +1268,7 @@ func TestSanitizeAndTruncateLineUTF8(t *testing.T) {
 func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	m := newTUIModel(nil, nil, "grok-round-sess")
 	m.width = 100
-	m.height = 30
+	m.height = 44
 	m.updateLayout()
 
 	// 1. Simulate an active (live) tool round while m.running == true and currentStreamText == ""
