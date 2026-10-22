@@ -1529,6 +1529,78 @@ func TestCtrlOTogglesAllToolRounds(t *testing.T) {
 	}
 }
 
+func TestCtrlOCollapsesRunningRound(t *testing.T) {
+	m := newTUIModel(nil, nil, "live-toggle")
+	m.width = 100
+	m.height = 30
+	m.running = true
+	m.taskStartedAt = time.Now()
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "sleep for a while"},
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "sleep 5", ToolRunning: true, ToolStartedAt: time.Now()},
+	}
+	m.updateLayout()
+
+	if !strings.Contains(ansi.Strip(m.viewport.View()), "│ ⠋ Running Ran sleep 5") {
+		t.Fatalf("expected the running round expanded by default, got:\n%s", ansi.Strip(m.viewport.View()))
+	}
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if !m.roundsCollapsedByUser {
+		t.Fatalf("expected Ctrl+O to collapse the running round")
+	}
+	collapsed := ansi.Strip(m.viewport.View())
+	if strings.Contains(collapsed, "│ ⠋ Running Ran sleep 5") {
+		t.Fatalf("expected the running round collapsed, got:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "Ran 1 command") {
+		t.Fatalf("expected the collapsed summary bar to keep the command count, got:\n%s", collapsed)
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.roundsCollapsedByUser {
+		t.Fatalf("expected the second Ctrl+O to expand the running round again")
+	}
+	if !strings.Contains(ansi.Strip(m.viewport.View()), "│ ⠋ Running Ran sleep 5") {
+		t.Fatalf("expected the running round expanded again, got:\n%s", ansi.Strip(m.viewport.View()))
+	}
+}
+
+func TestQueuedTurnsStayPinnedAboveComposer(t *testing.T) {
+	m := newTUIModel(nil, nil, "queue-band")
+	m.width = 100
+	m.height = 30
+	m.running = true
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "first task"},
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "ls", ToolOutput: "a\nb", ToolRunning: true},
+		{Kind: KindQueued, Text: "follow-up task"},
+	}
+	m.updateLayout()
+
+	if got := ansi.Strip(m.viewport.View()); strings.Contains(got, "Queued ›") {
+		t.Fatalf("queued turns must not scroll with the transcript, got:\n%s", got)
+	}
+	band := ansi.Strip(renderQueuedBand(m, 96))
+	if !strings.Contains(band, "Queued › follow-up task") {
+		t.Fatalf("expected the queued band to show the waiting task, got %q", band)
+	}
+	if !strings.Contains(ansi.Strip(m.View().Content), "Queued › follow-up task") {
+		t.Fatalf("expected the queued band inside the rendered frame")
+	}
+
+	// The band takes one row from the viewport so the frame never overflows.
+	bandHeight := lipgloss.Height(renderQueuedBand(m, 96))
+	withQueue := m.viewport.Height()
+	m.entries = m.entries[:2]
+	m.updateLayout()
+	if bandHeight != 1 || m.viewport.Height() != withQueue+bandHeight {
+		t.Fatalf("expected the queued band to reserve %d row(s), viewport %d -> %d", bandHeight, withQueue, m.viewport.Height())
+	}
+}
+
 func TestRemovedCtrlRAndCtrlTHotkeys(t *testing.T) {
 	m := newTUIModel(nil, nil, "removed-hotkeys")
 	m.width = 80

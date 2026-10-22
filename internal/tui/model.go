@@ -47,6 +47,7 @@ type tuiModel struct {
 	unseenCompletion         string
 	running                  bool
 	taskStartedAt            time.Time
+	roundsCollapsedByUser    bool
 	activeQuestion           *ActiveQuestion
 	activeApproval           *ActiveApproval
 	activePlanReview         *ActivePlanReview
@@ -128,16 +129,19 @@ type tuiModel struct {
 	copyFeedback           string
 	copyFeedbackError      bool
 	copyFeedbackExpiresAt  time.Time
-	clipboardWriter        func(string) error
-	shortcutsOpen          bool
-	sessionsModalOpen      bool
-	sessionsItems          []core.Session
-	sessionsFiltered       []core.Session
-	sessionsFilter         string
-	sessionsIndex          int
-	sessionsConfirmDelete  bool
-	sessionsDeletingID     string
-	sessionsDeleteMode     bool
+	// copiedViaTerminal records that the last copy used an OSC 52 terminal
+	// clipboard write instead of a host clipboard bridge.
+	copiedViaTerminal     bool
+	clipboardWriter       func(string) error
+	shortcutsOpen         bool
+	sessionsModalOpen     bool
+	sessionsItems         []core.Session
+	sessionsFiltered      []core.Session
+	sessionsFilter        string
+	sessionsIndex         int
+	sessionsConfirmDelete bool
+	sessionsDeletingID    string
+	sessionsDeleteMode    bool
 
 	settingsStore *settings.Store
 
@@ -532,16 +536,16 @@ func (m *tuiModel) desiredTerminalTitle() string {
 	return m.terminalStatePrefix() + title + " | " + workspaceName
 }
 
-// terminalStatePrefix renders a single state glyph for the terminal title.
+// terminalStatePrefix renders the task state as plain words for the terminal title.
 // Decisions take precedence over running work because they block the task.
 func (m *tuiModel) terminalStatePrefix() string {
 	switch {
 	case m.needsUserDecision():
-		return "❓ "
+		return "waiting · "
 	case m.running:
-		return "⏳ "
+		return "running · "
 	case m.hasPausedTask():
-		return "⏸ "
+		return "paused · "
 	}
 	return ""
 }

@@ -224,6 +224,54 @@ func roundStartIndex(entries []TranscriptEntry, idx int) int {
 	return start
 }
 
+// roundEndIndex returns the exclusive end index of the tool round starting at idx.
+func (m *tuiModel) roundEndIndex(idx int) int {
+	end := idx + 1
+	for end < len(m.entries) && isRoundMember(m.entries, end) {
+		end++
+	}
+	return end
+}
+
+// roundLive reports whether the round spanning entries[start:end] is still running.
+func (m *tuiModel) roundLive(start, end int) bool {
+	for i := start; i < end; i++ {
+		entry := m.entries[i]
+		if entry.ToolRunning || entry.SubagentRunning || entry.ReasoningLive {
+			return true
+		}
+	}
+	return end == len(m.entries) && m.running && strings.TrimSpace(m.currentStreamText) == ""
+}
+
+// roundExpanded reports whether a round renders expanded. The running round follows
+// the user's explicit collapse so Ctrl+O and clicks work during execution, while a
+// finished round follows its own flag.
+func (m *tuiModel) roundExpanded(headIdx int, live bool) bool {
+	if live {
+		return !m.roundsCollapsedByUser
+	}
+	return m.entries[headIdx].RoundExpanded
+}
+
+// toggleRoundExpansion flips one round between expanded and collapsed.
+func (m *tuiModel) toggleRoundExpansion(headIdx int) {
+	if m.roundLive(headIdx, m.roundEndIndex(headIdx)) {
+		m.roundsCollapsedByUser = !m.roundsCollapsedByUser
+		return
+	}
+	m.entries[headIdx].RoundExpanded = !m.entries[headIdx].RoundExpanded
+}
+
+// beginRoundIfNeeded clears the running-round collapse override so a new round in
+// the same turn opens expanded again.
+func (m *tuiModel) beginRoundIfNeeded() {
+	if n := len(m.entries); n > 0 && isRoundMember(m.entries, n-1) {
+		return
+	}
+	m.roundsCollapsedByUser = false
+}
+
 // toolRoundStarts returns the header entry index of every tool round in the transcript.
 func (m *tuiModel) toolRoundStarts() []int {
 	var starts []int
@@ -248,7 +296,7 @@ func (m *tuiModel) toggleAllToolRounds() (tea.Model, tea.Cmd) {
 	}
 	expand := false
 	for _, start := range starts {
-		if !m.entries[start].RoundExpanded {
+		if !m.roundExpanded(start, m.roundLive(start, m.roundEndIndex(start))) {
 			expand = true
 			break
 		}
@@ -256,6 +304,7 @@ func (m *tuiModel) toggleAllToolRounds() (tea.Model, tea.Cmd) {
 	for _, start := range starts {
 		m.entries[start].RoundExpanded = expand
 	}
+	m.roundsCollapsedByUser = !expand
 	m.invalidateEntryCache()
 	m.refreshViewportContent()
 	return m, nil

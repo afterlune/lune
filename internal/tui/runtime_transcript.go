@@ -32,6 +32,7 @@ func (m *tuiModel) flushReasoningEntry() {
 		m.invalidateEntryCache()
 		return
 	}
+	m.beginRoundIfNeeded()
 	m.entries = append(m.entries, TranscriptEntry{
 		Kind:              KindReasoning,
 		Text:              trimmed,

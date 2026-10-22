@@ -33,8 +33,12 @@ func (m *tuiModel) updateLayout() {
 	footerHeight := 2
 
 	modalHeight := m.modalHeight(contentWidth)
+	queuedHeight := 0
+	if band := renderQueuedBand(m, contentWidth); band != "" {
+		queuedHeight = lipgloss.Height(band)
+	}
 
-	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight
+	occupied := headerHeight + gapHeight + composerBandHeight + footerHeight + modalHeight + queuedHeight
 	vpHeight := max(3, m.height-occupied)
 
 	widthChanged := (contentWidth != m.viewport.Width())
@@ -207,22 +211,21 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 
 	for i := 0; i < len(m.entries); {
+		if m.entries[i].Kind == KindQueued {
+			// Queued turns stay pinned above the composer instead of scrolling
+			// away with the transcript.
+			i++
+			continue
+		}
 		if isRoundMember(m.entries, i) {
 			end := i + 1
 			for end < len(m.entries) && isRoundMember(m.entries, end) {
 				end++
 			}
 			roundSlice := m.entries[i:end]
-			hasRunningStep := false
-			for _, re := range roundSlice {
-				if re.ToolRunning || re.SubagentRunning || re.ReasoningLive {
-					hasRunningStep = true
-					break
-				}
-			}
-			live := hasRunningStep || (end == len(m.entries) && m.running && strings.TrimSpace(m.currentStreamText) == "")
+			live := m.roundLive(i, end)
 
-			if live || m.entries[i].RoundExpanded {
+			if m.roundExpanded(i, live) {
 				block, relRanges := renderExpandedToolRound(roundSlice, i, live, contentWidth)
 				appendRendered(block, relRanges)
 			} else {
@@ -456,6 +459,11 @@ func (m *tuiModel) View() tea.View {
 
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
+
+	// 2b. Pinned queue band: waiting turns never scroll away with the transcript.
+	if band := renderQueuedBand(m, contentWidth); band != "" {
+		sections = append(sections, band)
+	}
 
 	// Keep permanent gaps above and below the review. Changing the hint must
 	// never move the review choices or the composer.

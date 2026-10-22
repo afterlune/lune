@@ -31,6 +31,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		queued := len(m.queuedTurns) > 0 && m.queuedTurns[0].ExecutionID == execID
 		if queued {
 			m.queuedTurns = m.queuedTurns[1:]
+			m.roundsCollapsedByUser = false
 			for i := range m.entries {
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
 					m.entries[i].Kind = KindUser
@@ -243,6 +244,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if entry.ToolRunning {
 			entry.ToolStartedAt = time.Now()
 		}
+		m.beginRoundIfNeeded()
 		m.entries = append(m.entries, entry)
 		m.invalidateEntryCache()
 
@@ -333,6 +335,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			if entry.ToolRunning {
 				entry.ToolStartedAt = time.Now()
 			}
+			m.beginRoundIfNeeded()
 			m.entries = append(m.entries, entry)
 			m.invalidateEntryCache()
 		}

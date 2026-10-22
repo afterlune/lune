@@ -449,5 +449,39 @@ func renderWorking(elapsed time.Duration, thinking bool, subagentsSummary ...str
 	return bullet + title + "\n  " + branch + tip
 }
 
+// renderQueuedBand pins waiting turns directly above the composer so streaming
+// output can never push them out of view.
+func renderQueuedBand(m *tuiModel, width int) string {
+	if m == nil {
+		return ""
+	}
+	var queued []TranscriptEntry
+	for _, entry := range m.entries {
+		if entry.Kind == KindQueued {
+			queued = append(queued, entry)
+		}
+	}
+	if len(queued) == 0 {
+		return ""
+	}
+
+	th := activeTheme()
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Render("⏳ ")
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render("Queued › ")
+	hintText := " (/cancel-queue cancels latest waiting task)"
+
+	rows := make([]string, 0, len(queued))
+	for i, entry := range queued {
+		hint := ""
+		if i == len(queued)-1 {
+			hint = styleTextMuted().Render(hintText)
+		}
+		textWidth := max(10, width-lipgloss.Width(bullet+label)-lipgloss.Width(hintText))
+		text := sanitizeAndTruncateLine(strings.TrimSpace(entry.Text), textWidth)
+		rows = append(rows, bullet+label+styleTextPrimary().Render(text)+hint)
+	}
+	return strings.Join(rows, "\n")
+}
+
 // maxVisibleAutocomplete is the maximum number of items visible simultaneously in the autocomplete dropdown.
 const maxVisibleAutocomplete = 7

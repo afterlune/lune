@@ -150,6 +150,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		}
 		m.running = true
 		m.runningExecution = msg.submission.ExecutionID
+		m.roundsCollapsedByUser = false
 		m.refreshViewportContent()
 		cmds = append(cmds, tickClock(), m.waitForExecution(msg.submission.ExecutionID))
 		return m, tea.Batch(cmds...)
@@ -375,7 +376,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				for _, rng := range m.entryLineRanges {
 					if absLine >= rng.StartLine && absLine <= rng.EndLine && rng.EntryIndex >= 0 && rng.EntryIndex < len(m.entries) {
 						if rng.IsRoundHeader || rng.IsRoundFooter {
-							m.entries[rng.EntryIndex].RoundExpanded = !m.entries[rng.EntryIndex].RoundExpanded
+							m.toggleRoundExpansion(rng.EntryIndex)
 							toggled = true
 							break
 						}
@@ -400,8 +401,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 						if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "Running") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") || strings.Contains(lineText, "Show less") {
 							for i := len(m.entries) - 1; i >= 0; i-- {
 								if isRoundMember(m.entries, i) {
-									start := roundStartIndex(m.entries, i)
-									m.entries[start].RoundExpanded = !m.entries[start].RoundExpanded
+									m.toggleRoundExpansion(roundStartIndex(m.entries, i))
 									toggled = true
 									break
 								}

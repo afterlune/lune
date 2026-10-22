@@ -130,19 +130,19 @@ func TestTerminalTitleCarriesStateMarker(t *testing.T) {
 	}
 
 	m.running = true
-	if got := m.desiredTerminalTitle(); got != "⏳ Refactor | demo" {
+	if got := m.desiredTerminalTitle(); got != "running · Refactor | demo" {
 		t.Fatalf("running title = %q", got)
 	}
 
 	m.running = false
 	m.activeApproval = &ActiveApproval{}
-	if got := m.desiredTerminalTitle(); got != "❓ Refactor | demo" {
+	if got := m.desiredTerminalTitle(); got != "waiting · Refactor | demo" {
 		t.Fatalf("decision title = %q", got)
 	}
 
 	m.activeApproval = nil
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused"}
-	if got := m.desiredTerminalTitle(); got != "⏸ Refactor | demo" {
+	if got := m.desiredTerminalTitle(); got != "paused · Refactor | demo" {
 		t.Fatalf("paused title = %q", got)
 	}
 }

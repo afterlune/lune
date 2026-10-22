@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +11,39 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 )
+
+// TestClipboardFallsBackToOSC52 covers terminals without a host clipboard bridge.
+func TestClipboardFallsBackToOSC52(t *testing.T) {
+	m := newTUIModel(nil, nil, "osc52-sess")
+	var out bytes.Buffer
+	m.terminalTitle = &terminalTitleManager{output: &out}
+
+	if err := m.writeClipboardWith(func(string) error { return errors.New("clipboard unavailable") }, "hello"); err != nil {
+		t.Fatalf("OSC 52 fallback failed: %v", err)
+	}
+	if !m.copiedViaTerminal {
+		t.Fatalf("expected the OSC 52 path to be recorded")
+	}
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hello")) + "\x07"
+	if got := out.String(); got != want {
+		t.Fatalf("OSC 52 sequence = %q, want %q", got, want)
+	}
+
+	// A working host clipboard must not emit any terminal sequence.
+	out.Reset()
+	if err := m.writeClipboardWith(func(string) error { return nil }, "hi"); err != nil {
+		t.Fatalf("host clipboard copy failed: %v", err)
+	}
+	if m.copiedViaTerminal || out.Len() != 0 {
+		t.Fatalf("host clipboard path wrote terminal output: copiedViaTerminal=%t out=%q", m.copiedViaTerminal, out.String())
+	}
+
+	// Without a terminal writer the original clipboard error must surface.
+	bare := newTUIModel(nil, nil, "osc52-bare")
+	if err := bare.writeClipboardWith(func(string) error { return errors.New("no clipboard") }, "x"); err == nil {
+		t.Fatalf("expected the clipboard error to surface without a terminal writer")
+	}
+}
 
 func TestSanitizeClipboardTextRemovesNUL(t *testing.T) {
 	if got, want := sanitizeClipboardText("before\x00TOKEN_0\x00after"), "beforeTOKEN_0after"; got != want {

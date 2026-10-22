@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -96,6 +97,18 @@ func (m *terminalTitleManager) Clear() error {
 	}
 	m.last = ""
 	return nil
+}
+
+// WriteRaw writes a control sequence (for example an OSC 52 clipboard write)
+// through the same lock the renderer uses, so it never interleaves with a frame.
+func (m *terminalTitleManager) WriteRaw(sequence string) error {
+	if m == nil || m.output == nil {
+		return errors.New("terminal output unavailable")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := io.WriteString(m.output, sequence)
+	return err
 }
 
 func (m *tuiModel) syncTerminalTitle() {
