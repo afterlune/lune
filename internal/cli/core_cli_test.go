@@ -1766,3 +1766,26 @@ func TestCoreCLILogsSanitizeProcessOutput(t *testing.T) {
 		t.Fatalf("stdout lost printable process output: %q", stdout.String())
 	}
 }
+
+func TestCLIPlanModeReachesSubmittedTurn(t *testing.T) {
+	for _, startup := range []bool{false, true} {
+		t.Run(fmt.Sprint(startup), func(t *testing.T) {
+			client := &fakeCLICore{mode: core.PermissionAsk}
+			input := "/plan\nplan this task\n/plan\nimplement this task\n/exit\n"
+			if startup {
+				input = "plan this task\n/plan\nimplement this task\n/exit\n"
+			}
+			var stdout, stderr bytes.Buffer
+			err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, nil, LaunchOptions{PlanMode: startup})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(client.inputs) != 2 || !client.inputs[0].PlanMode || client.inputs[1].PlanMode {
+				t.Fatalf("requests=%+v", client.inputs)
+			}
+			if client.PermissionMode() != core.PermissionAsk {
+				t.Fatalf("restored permissions=%s", client.PermissionMode())
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/afterlune/lune/internal/filemention"
 	"github.com/afterlune/lune/internal/terminaltext"
@@ -48,12 +49,13 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
 	}
+	defer runtime.Close()
 	runtime.SetUserInteractionAvailable(false)
 
 	streamCtx, stopStream := context.WithCancel(ctx)
 	defer stopStream()
 
-	events, err := runtime.SubscribeEvents(streamCtx, 0)
+	events, err := runtime.SubscribeEventsWithOptions(streamCtx, 0, core.EventSubscriptionOptions{Reliable: true})
 	if err != nil {
 		return fmt.Errorf("subscribe events: %w", err)
 	}
@@ -78,61 +80,84 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 		return fmt.Errorf("submit task: %w", err)
 	}
 
+	return awaitOneShotTurn(ctx, runtime, sessionID, submission.ExecutionID, events, stopStream, stdout, stderr)
+}
+
+// Keep the completion loop independent of session setup so event/result races
+// and slow output can be exercised deterministically.
+type oneShotTurnRuntime interface {
+	WaitTurn(context.Context, string) (core.TurnResult, error)
+	Interrupt(string) bool
+}
+
+func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID, executionID string, events <-chan core.Event, stopStream context.CancelFunc, stdout, stderr io.Writer) error {
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
 	type waitResult struct {
 		result core.TurnResult
 		err    error
 	}
-
 	done := make(chan waitResult, 1)
 	go func() {
-		res, wErr := runtime.WaitTurn(ctx, submission.ExecutionID)
-		done <- waitResult{result: res, err: wErr}
+		res, err := runtime.WaitTurn(waitCtx, executionID)
+		done <- waitResult{res, err}
 	}()
-
-	var streamText strings.Builder
-	for {
+	abort := func(err error) error {
+		// Release blocked stream producers before joining the interrupted turn.
+		stopStream()
+		runtime.Interrupt(executionID)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, cleanupErr := runtime.WaitTurn(cleanupCtx, executionID)
+		return errors.Join(err, cleanupErr)
+	}
+	writeText := func(text string) error {
+		n, err := io.WriteString(stdout, text)
+		if err == nil && n != len(text) {
+			return io.ErrShortWrite
+		}
+		return err
+	}
+	var result core.TurnResult
+	haveResult, finished, streamed, endsWithNewline := false, false, false, false
+	for !haveResult || !finished {
 		select {
 		case res := <-done:
-			if res.result.Status == core.TaskPaused || errors.Is(res.err, core.ErrTaskPaused) {
-				return oneShotPausedTaskError(sessionID)
-			}
 			if res.err != nil {
-				return res.err
+				return abort(res.err)
 			}
-			if res.result.Status == core.TaskFailed {
-				if res.result.ModelFailure != nil {
-					return fmt.Errorf("task execution failed: %s (code=%s)", res.result.ModelFailure.Category, res.result.ModelFailure.Code)
-				}
-				return errors.New("task execution failed")
-			}
-			// Print final response if not streamed as deltas
-			if streamText.Len() == 0 && len(res.result.Response) > 0 {
-				respText, _ := coreExtractText(res.result.Response)
-				if respText != "" {
-					fmt.Fprintln(stdout, terminaltext.Sanitize(respText))
-				}
-			} else if streamText.Len() > 0 && !strings.HasSuffix(streamText.String(), "\n") {
-				fmt.Fprintln(stdout)
-			}
-			return nil
-
+			result, haveResult, done = res.result, true, nil
 		case event, ok := <-events:
 			if !ok {
-				return errors.New("runtime event stream closed unexpectedly")
-			}
-			if event.ExecutionID != "" && event.ExecutionID != submission.ExecutionID {
+				if !finished {
+					return abort(errors.New("runtime event stream closed before task completion"))
+				}
+				events = nil
 				continue
 			}
+			if event.ExecutionID != "" && event.ExecutionID != executionID {
+				continue
+			}
+			var writeErr error
 			switch event.Kind {
+			case core.EventRuntimeStreamFailed:
+				return abort(fmt.Errorf("runtime event stream failed: %s", event.Err))
+			case core.EventTaskFinished:
+				if event.ExecutionID == executionID {
+					finished = true
+				}
 			case core.EventModelStream:
-				if event.Stream != nil && event.Stream.Type != "reasoning_delta" && event.Stream.Delta != "" {
-					delta := terminaltext.Sanitize(event.Stream.Delta)
-					streamText.WriteString(delta)
-					fmt.Fprint(stdout, delta)
+				if !oneShotAssistantDelta(event) {
+					continue
+				}
+				delta := terminaltext.Sanitize(event.Stream.Delta)
+				if delta != "" {
+					writeErr = writeText(delta)
+					streamed, endsWithNewline = true, strings.HasSuffix(delta, "\n")
 				}
 			case core.EventToolStarted:
 				if !strings.EqualFold(event.Tool.Name, "select_tool_category") {
-					fmt.Fprintf(stderr, "• Running %s...\n", terminaltext.Sanitize(event.Tool.Name))
+					_, writeErr = fmt.Fprintf(stderr, "• Running %s...\n", terminaltext.Sanitize(event.Tool.Name))
 				}
 			case core.EventToolFinished:
 				if !strings.EqualFold(event.Tool.Name, "select_tool_category") {
@@ -140,15 +165,53 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 					if event.CommandStatus == core.CommandFailed {
 						status = "failed"
 					}
-					fmt.Fprintf(stderr, "• %s (%s)\n", terminaltext.Sanitize(event.Tool.Name), status)
+					_, writeErr = fmt.Fprintf(stderr, "• %s (%s)\n", terminaltext.Sanitize(event.Tool.Name), status)
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
-					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
+					_, writeErr = fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
 				}
 			}
+			if writeErr != nil {
+				return abort(fmt.Errorf("write task output: %w", writeErr))
+			}
+		case <-ctx.Done():
+			return abort(ctx.Err())
 		}
 	}
+	if result.Status == core.TaskPaused {
+		return oneShotPausedTaskError(sessionID)
+	}
+	if result.Status == core.TaskFailed {
+		if result.ModelFailure != nil {
+			return fmt.Errorf("task execution failed: %s (code=%s)", result.ModelFailure.Category, result.ModelFailure.Code)
+		}
+		return errors.New("task execution failed")
+	}
+	if result.Status != core.TaskCompleted {
+		return fmt.Errorf("task ended with status %s", result.Status)
+	}
+	if !streamed && len(result.Response) > 0 {
+		text, err := coreExtractText(result.Response)
+		if err != nil {
+			return err
+		}
+		if text != "" {
+			return writeText(terminaltext.Sanitize(text) + "\n")
+		}
+	} else if streamed && !endsWithNewline {
+		return writeText("\n")
+	}
+	return nil
+}
+
+func oneShotAssistantDelta(event core.Event) bool {
+	if event.Stream == nil || event.Stream.Type != "text_delta" || event.Stream.Delta == "" {
+		return false
+	}
+	agent := strings.TrimSpace(event.AgentID)
+	purpose := strings.TrimSpace(event.Stream.Purpose)
+	return (agent == "" || agent == "lead") && (purpose == "" || purpose == string(core.UsagePurposeMain))
 }
 
 func oneShotPausedTaskError(sessionID string) error {

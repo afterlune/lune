@@ -301,7 +301,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 			fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
 		}
-		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input}, false, watchKeys, stderr)
+		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PlanMode: planMode}, false, watchKeys, stderr)
 		return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
 	}
 
