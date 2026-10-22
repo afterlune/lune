@@ -449,6 +449,11 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventUsage:
+		if m.restoringSession {
+			// The snapshot already carries the session totals and the latest request
+			// metrics; replaying old usage events must not make the footer churn.
+			return m, nil
+		}
 		if m.running || !m.seededSessionUsage {
 			m.totalInputTokens += event.Usage.InputTokens
 			m.totalOutputTokens += event.Usage.OutputTokens

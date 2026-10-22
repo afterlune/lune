@@ -24,6 +24,20 @@ type runtimeEventMsg struct {
 	events    <-chan core.Event
 }
 
+// runtimeRestoreSettledMsg fires once the durable replay for a freshly loaded
+// session has been quiet long enough to re-render the transcript in one pass.
+type runtimeRestoreSettledMsg struct {
+	generation uint64
+}
+
+const (
+	// sessionRestoreIdle is how long the event stream must stay quiet before the
+	// restored transcript is rendered again.
+	sessionRestoreIdle = 200 * time.Millisecond
+	// sessionRestoreTimeout bounds the restore window even while events keep coming.
+	sessionRestoreTimeout = 3 * time.Second
+)
+
 type turnSubmittedMsg struct {
 	sessionID  string
 	submission core.TurnSubmission
@@ -165,6 +179,9 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		m.updateLayout()
 		return m, nil
 	}
+	// A new turn is live work; stop deferring the restored transcript so its usage
+	// events are counted immediately.
+	m.finishSessionRestore()
 
 	m.promptHistory = append(m.promptHistory, text)
 	m.historyIndex = len(m.promptHistory)

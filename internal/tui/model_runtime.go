@@ -59,8 +59,27 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	m.restoreRuntimeSnapshot(state)
 	m.applyPendingRequests(pending)
 	rt.SetUserInteractionAvailable(true)
+	m.beginSessionRestore()
 	m.updateLayout()
 	return nil
+}
+
+// beginSessionRestore freezes footer metrics and transcript rebuilds until the
+// runtime's durable event replay for this session settles.
+func (m *tuiModel) beginSessionRestore() {
+	m.restoringSession = true
+	m.restoreGeneration++
+	m.restoreStartedAt = time.Now()
+}
+
+// finishSessionRestore re-renders the transcript once the replay settles.
+func (m *tuiModel) finishSessionRestore() {
+	if !m.restoringSession {
+		return
+	}
+	m.restoringSession = false
+	m.refreshViewportContent()
+	m.updateLayout()
 }
 
 // ensureSession creates the draft session on first use so launching the TUI or

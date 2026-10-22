@@ -36,23 +36,28 @@ type tuiModel struct {
 	currentModelProfile string
 	// pendingModelProfile holds a model profile chosen before the draft session
 	// exists; it is applied when the first message creates the session.
-	pendingModelProfile      string
-	permissionMode           core.PermissionMode
-	planMode                 bool
-	savedMode                core.PermissionMode
-	width                    int
-	height                   int
-	composer                 textarea.Model
-	viewport                 viewport.Model
-	entries                  []TranscriptEntry
-	terminalTitle            *terminalTitleManager
-	attentionInitialized     bool
-	attentionDecisionShown   bool
-	attentionExecutions      map[string]struct{}
-	unseenCompletion         string
-	running                  bool
-	taskStartedAt            time.Time
-	roundsCollapsedByUser    bool
+	pendingModelProfile    string
+	permissionMode         core.PermissionMode
+	planMode               bool
+	savedMode              core.PermissionMode
+	width                  int
+	height                 int
+	composer               textarea.Model
+	viewport               viewport.Model
+	entries                []TranscriptEntry
+	terminalTitle          *terminalTitleManager
+	attentionInitialized   bool
+	attentionDecisionShown bool
+	attentionExecutions    map[string]struct{}
+	unseenCompletion       string
+	running                bool
+	taskStartedAt          time.Time
+	roundsCollapsedByUser  bool
+	// restoringSession freezes footer metrics and transcript rebuilds while Core
+	// replays durable events for a freshly loaded session.
+	restoringSession         bool
+	restoreGeneration        uint64
+	restoreStartedAt         time.Time
 	activeQuestion           *ActiveQuestion
 	activeApproval           *ActiveApproval
 	activePlanReview         *ActivePlanReview
@@ -223,6 +228,7 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	}
 	m.applyThemeStyles()
 	if runtime != nil {
+		m.beginSessionRestore()
 		m.restoreRuntimeState(context.Background())
 		m.checkPendingState(context.Background())
 	}

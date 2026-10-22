@@ -102,6 +102,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if msg.event.Kind == "" && msg.events == nil {
 			return m, nil
 		}
+		if m.restoringSession && (m.running || msg.event.Kind == core.EventModelStream || time.Since(m.restoreStartedAt) > sessionRestoreTimeout) {
+			m.finishSessionRestore()
+		}
 		var mod tea.Model
 		var cmd tea.Cmd
 		mod, cmd = m.processRuntimeEventNoRefresh(msg.event)
@@ -116,11 +119,23 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if m.transcriptDirty || m.cachedDirty {
+		if m.restoringSession {
+			// Defer the transcript rebuild so replaying a long session renders once.
+			generation := m.restoreGeneration
+			cmds = append(cmds, tea.Tick(sessionRestoreIdle, func(time.Time) tea.Msg {
+				return runtimeRestoreSettledMsg{generation: generation}
+			}))
+		} else if m.transcriptDirty || m.cachedDirty {
 			m.refreshViewportContent()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
 		return m, tea.Batch(cmds...)
+
+	case runtimeRestoreSettledMsg:
+		if m.restoringSession && msg.generation == m.restoreGeneration {
+			m.finishSessionRestore()
+		}
+		return m, nil
 
 	case turnSubmittedMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
@@ -151,6 +166,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.running = true
 		m.runningExecution = msg.submission.ExecutionID
 		m.roundsCollapsedByUser = false
+		m.finishSessionRestore()
 		m.refreshViewportContent()
 		cmds = append(cmds, tickClock(), m.waitForExecution(msg.submission.ExecutionID))
 		return m, tea.Batch(cmds...)
