@@ -23,7 +23,7 @@ Windows 上的 vet 仅关闭 `unsafeptr` 分析器：ConPTY 测试按 Win32 API 
 go -C ..\luneCore test -trimpath ./...
 ```
 
-Linux CI 运行 CLI/TUI 支持包测试，并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。
+Linux CI 运行 CLI/TUI 支持包测试，并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。Linux 上验证 CLI/TUI 改动时无需构建或测试 `internal/desktop`；该包需要 GTK4、WebKitGTK 6、GLib 和 libsoup 开发依赖，只有涉及 Desktop 的改动才按下方桌面端流程验证。
 
 ## 依赖更新
 
