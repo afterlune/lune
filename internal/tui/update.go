@@ -186,11 +186,27 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, m.finishQuestionSubmission(msg)
 
 	case compactDoneMsg:
-		if msg.err != nil {
-			m.addSystemEntry("Compaction failed: " + msg.err.Error())
-		} else {
-			m.addSystemEntry("Compacted older conversation history.")
+		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+			return m, nil
 		}
+		m.compacting = false
+		switch {
+		case msg.err != nil:
+			m.addSystemEntry("Compaction failed: " + msg.err.Error())
+		case msg.trimmed > 0:
+			m.compactedFromTokens = m.estimatedInputTokens
+			if m.compactedFromTokens == 0 {
+				m.compactedFromTokens = m.lastInputTokens
+			}
+			m.contextCompacted = true
+			m.lastInputTokens = 0
+			m.lastCachedTokens = 0
+			m.estimatedInputTokens = 0
+			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns (kept the latest 4).", msg.trimmed))
+		default:
+			m.addSystemEntry("No older conversation to compact (the latest 4 turns are always kept).")
+		}
+		m.updateLayout()
 		return m, nil
 
 	case mcpAuthDoneMsg:
@@ -568,6 +584,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	m.terminalEvents[executionID] = event
 	m.taskSnapshot.Status = event.Status
 	m.thinking = false
+	m.compacting = false
 	// Keep the live transcript until WaitTurn supplies the authoritative response
 	// and ProposedPlan; finalizing here would briefly erase a completed plan.
 	if event.Status == core.TaskPaused {

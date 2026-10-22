@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -411,17 +410,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventContextCompaction:
-		if event.Compaction != nil && m.running {
-			switch event.Compaction.Stage {
-			case "completed":
-				if event.Compaction.BeforeTokens > 0 && event.Compaction.AfterTokens > 0 {
-					m.addSystemEntry(fmt.Sprintf("Context compacted: %d → %d tokens.", event.Compaction.BeforeTokens, event.Compaction.AfterTokens))
-				}
-			case "failed":
-				if event.Compaction.Err != "" {
-					m.addSystemEntry("Context compaction failed: " + event.Compaction.Err)
-				}
-			}
+		if event.Compaction != nil {
+			m.handleCompactionEvent(*event.Compaction)
 		}
 
 	case core.EventUserQuestionRequired:
@@ -491,6 +481,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 		}
 		if isLeadMainUsage(event.AgentID, event.UsagePurpose) {
+			m.contextCompacted = false
+			m.compactedFromTokens = 0
 			if event.ContextWindow > 0 {
 				m.contextWindow = event.ContextWindow
 			}

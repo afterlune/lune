@@ -171,6 +171,10 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	if text == "" {
 		return m, nil
 	}
+	if m.compacting {
+		m.addSystemEntry("Compaction is in progress; wait for it to finish.")
+		return m, nil
+	}
 
 	if err := m.ensureSession(context.Background()); err != nil {
 		m.addSystemEntry("Failed to create session: " + err.Error())

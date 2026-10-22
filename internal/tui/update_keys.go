@@ -64,6 +64,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.selectedText != "" {
 			return m, m.copyTextToClipboard(m.selectedText)
 		}
+		if m.compacting {
+			m.addSystemEntry("Compaction is in progress; wait for it to finish.")
+			return m, nil
+		}
 		if m.activeQuestion != nil {
 			return m.discardPausedTask(discardSourceQuestion)
 		}
@@ -79,6 +83,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
+		if m.compacting {
+			return m, nil
+		}
 		if m.pendingMemoryAdd {
 			m.pendingMemoryAdd = false
 			m.pendingMemoryCategory = ""

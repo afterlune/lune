@@ -114,6 +114,11 @@ type tuiModel struct {
 	lastCachedTokens     int64
 	estimatedInputTokens int64
 	seededSessionUsage   bool
+	// Context compaction state
+	compacting          bool
+	compactionStartedAt time.Time
+	contextCompacted    bool
+	compactedFromTokens int64
 
 	reasoningEffort string
 
@@ -251,6 +256,10 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.cachedTokens = saved.SessionUsage.Cached
 	m.reasoningTokens = saved.SessionUsage.Reasoning
 	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
+	m.compacting = false
+	m.compactionStartedAt = time.Time{}
+	m.contextCompacted = false
+	m.compactedFromTokens = 0
 	m.lastInputTokens = 0
 	m.lastCachedTokens = 0
 	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
@@ -332,6 +341,10 @@ func (m *tuiModel) resetSessionState() {
 	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
 	m.estimatedInputTokens = 0
 	m.seededSessionUsage = false
+	m.compacting = false
+	m.compactionStartedAt = time.Time{}
+	m.contextCompacted = false
+	m.compactedFromTokens = 0
 	m.reasoningEffort = ""
 	m.running = false
 	m.runningExecution = ""
@@ -555,6 +568,8 @@ func (m *tuiModel) terminalStatePrefix() string {
 		return "waiting · "
 	case m.running:
 		return "running · "
+	case m.compacting:
+		return "compacting · "
 	case m.hasPausedTask():
 		return "paused · "
 	}

@@ -459,13 +459,14 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				}
 			}
 		case line == "/compact":
+			fmt.Fprintln(stderr, "Compacting context...")
 			turns, err := client.Compact(ctx, sessionID)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: compact conversation: %v\n", err)
 			} else if turns == 0 {
-				fmt.Fprintln(stdout, "No older conversation to compact.")
+				fmt.Fprintln(stdout, "No older conversation to compact (the latest 4 turns are always kept).")
 			} else {
-				fmt.Fprintf(stdout, "Compacted %d older user turn(s).\n", turns)
+				fmt.Fprintf(stdout, "Compacted %d older user turn(s) (kept the latest 4).\n", turns)
 			}
 		case line == "/theme" || strings.HasPrefix(line, "/theme "):
 			fmt.Fprintln(stderr, "The /theme command is specific to full-screen interactive TUI mode (run 'lune --tui').")

@@ -27,6 +27,11 @@ func scrollPillText(m *tuiModel) string {
 			return "Working · " + back
 		}
 		return "Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
+	case m.compacting:
+		if m.compactionStartedAt.IsZero() {
+			return "Compacting · " + back
+		}
+		return "Compacting " + formatDuration(time.Since(m.compactionStartedAt)) + " · " + back
 	case m.hasPausedTask():
 		return "Paused · /continue or /discard · " + back
 	}
@@ -103,23 +108,31 @@ func formatCompactTokens(n int64) string {
 // 5. Generation speed (X.X tok/s)
 // 6. Cumulative session total tokens (Total: X tok)
 func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
-	usedCtx := m.lastInputTokens
-	if usedCtx == 0 {
-		usedCtx = m.estimatedInputTokens
-	}
 	totalCtx := m.contextWindow
 	if totalCtx <= 0 {
 		totalCtx = 200000 // Standard fallback context window
 	}
 
-	pct := 0.0
-	if totalCtx > 0 {
-		pct = float64(usedCtx) / float64(totalCtx) * 100.0
-		if pct > 100.0 {
-			pct = 100.0
+	var ctxStr string
+	switch {
+	case m.compacting:
+		ctxStr = fmt.Sprintf("Context: compacting…/%s", formatCompactTokens(totalCtx))
+	case m.contextCompacted:
+		ctxStr = fmt.Sprintf("Context: compacted (was %s)/%s", formatCompactTokens(m.compactedFromTokens), formatCompactTokens(totalCtx))
+	default:
+		usedCtx := m.lastInputTokens
+		if usedCtx == 0 {
+			usedCtx = m.estimatedInputTokens
 		}
+		pct := 0.0
+		if totalCtx > 0 {
+			pct = float64(usedCtx) / float64(totalCtx) * 100.0
+			if pct > 100.0 {
+				pct = 100.0
+			}
+		}
+		ctxStr = fmt.Sprintf("Context: %s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
 	}
-	ctxStr := fmt.Sprintf("Context: %s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
 
 	cachePct := 0.0
 	if m.totalInputTokens > 0 {
@@ -160,7 +173,7 @@ func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
 		return ctxStr
 	}
 
-	compactCtx := fmt.Sprintf("%s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
+	compactCtx := strings.TrimPrefix(ctxStr, "Context: ")
 	if lipgloss.Width(compactCtx) <= maxWidth {
 		return compactCtx
 	}

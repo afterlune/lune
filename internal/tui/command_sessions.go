@@ -39,8 +39,9 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 }
 
 type compactDoneMsg struct {
-	trimmed int
-	err     error
+	trimmed   int
+	err       error
+	sessionID string
 }
 
 type sessionForkedMsg struct {

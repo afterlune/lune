@@ -65,6 +65,15 @@ func (m *tuiModel) renderStatusTable() string {
 		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (%s: %s, %.1f%% full)",
 			formatTokens(m.contextWindow), inputLabel, formatTokens(usedCtx), pct))
 	}
+	if label := m.compactionSettingsLabel(); label != "" {
+		lines = append(lines, "Auto-compaction: "+label)
+	}
+	switch {
+	case m.compacting:
+		lines = append(lines, "Compaction:      in progress…")
+	case m.contextCompacted:
+		lines = append(lines, fmt.Sprintf("Compaction:      manual (was %s tokens); budget refreshes with the next message", formatTokens(m.compactedFromTokens)))
+	}
 	if m.lastInputTokens > 0 {
 		lines = append(lines, "Last Prompt Cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
 	}
@@ -205,6 +214,12 @@ func (m *tuiModel) renderContextDiagnostics() string {
 			progressBar, pct, formatTokens(m.estimatedInputTokens), formatTokens(m.contextWindow)))
 	} else {
 		lines = append(lines, "- Budget: Standard context window (no provider limit reported yet)")
+	}
+	if label := m.compactionSettingsLabel(); label != "" {
+		lines = append(lines, "- Auto-compaction: "+label)
+	}
+	if m.contextCompacted {
+		lines = append(lines, fmt.Sprintf("- Context budget refreshes with the next message (compacted from %s tokens).", formatTokens(m.compactedFromTokens)))
 	}
 	lines = append(lines, fmt.Sprintf("- Session Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
 		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),

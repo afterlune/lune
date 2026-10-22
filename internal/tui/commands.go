@@ -316,9 +316,19 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/compact":
+		if m.compacting {
+			m.addSystemEntry("Compaction is already in progress.")
+			return m, nil
+		}
+		client, sessionID := m.client, m.sessionID
+		m.compacting = true
+		m.compactionStartedAt = time.Now()
+		m.contextCompacted = false
+		m.addSystemEntry("Compacting older conversation history…")
+		m.updateLayout()
 		return m, func() tea.Msg {
-			n, err := m.client.Compact(context.Background(), m.sessionID)
-			return compactDoneMsg{trimmed: n, err: err}
+			n, err := client.Compact(context.Background(), sessionID)
+			return compactDoneMsg{trimmed: n, err: err, sessionID: sessionID}
 		}
 
 	case "/fork":
