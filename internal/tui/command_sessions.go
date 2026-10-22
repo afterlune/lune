@@ -423,7 +423,7 @@ func (m *tuiModel) handleSessionsCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("No matching sessions found.")
 		return m, nil
 	}
-	lines = append(lines, "\nUse `/resume <id>` or `Ctrl+O` to switch sessions.")
+	lines = append(lines, "\nUse `/resume <id>` to switch sessions.")
 	m.addSystemEntry(strings.Join(lines, "\n"))
 	return m, nil
 }

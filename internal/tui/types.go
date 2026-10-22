@@ -28,6 +28,8 @@ type entryLineRange struct {
 	StartLine     int
 	EndLine       int
 	IsRoundHeader bool
+	// IsRoundFooter marks the trailing "Show less" row of an expanded tool round.
+	IsRoundFooter bool
 }
 
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.

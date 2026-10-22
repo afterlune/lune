@@ -204,11 +204,7 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 		if m.entries[i].Kind == KindReasoning {
 			m.entries[i].ReasoningExpanded = !m.entries[i].ReasoningExpanded
 			if m.entries[i].ReasoningExpanded {
-				start := i
-				for start > 0 && isRoundMember(m.entries, start-1) {
-					start--
-				}
-				m.entries[start].RoundExpanded = true
+				m.entries[roundStartIndex(m.entries, i)].RoundExpanded = true
 			}
 			m.invalidateEntryCache()
 			m.refreshViewportContent()
@@ -216,5 +212,51 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.addSystemEntry("No thinking/reasoning blocks found in this session.")
+	return m, nil
+}
+
+// roundStartIndex returns the first entry index of the tool round that contains idx.
+func roundStartIndex(entries []TranscriptEntry, idx int) int {
+	start := idx
+	for start > 0 && isRoundMember(entries, start-1) {
+		start--
+	}
+	return start
+}
+
+// toolRoundStarts returns the header entry index of every tool round in the transcript.
+func (m *tuiModel) toolRoundStarts() []int {
+	var starts []int
+	for i := range m.entries {
+		if !isRoundMember(m.entries, i) {
+			continue
+		}
+		if i > 0 && isRoundMember(m.entries, i-1) {
+			continue
+		}
+		starts = append(starts, i)
+	}
+	return starts
+}
+
+// toggleAllToolRounds expands every tool round when at least one is collapsed and
+// collapses all of them otherwise. Sub-step expansion flags are left untouched.
+func (m *tuiModel) toggleAllToolRounds() (tea.Model, tea.Cmd) {
+	starts := m.toolRoundStarts()
+	if len(starts) == 0 {
+		return m, nil
+	}
+	expand := false
+	for _, start := range starts {
+		if !m.entries[start].RoundExpanded {
+			expand = true
+			break
+		}
+	}
+	for _, start := range starts {
+		m.entries[start].RoundExpanded = expand
+	}
+	m.invalidateEntryCache()
+	m.refreshViewportContent()
 	return m, nil
 }

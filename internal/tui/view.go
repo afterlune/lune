@@ -260,11 +260,11 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 		lineCount = strings.Count(bodyText, "\n") + 1
 	}
 
-	hint := "(ctrl+r to expand)"
+	hint := "(click to expand)"
 	if entry.ReasoningExpanded {
-		hint = "(ctrl+r to collapse)"
+		hint = "(click to collapse)"
 	} else if lineCount > 1 {
-		hint = fmt.Sprintf("+ %d lines (ctrl+r to expand)", lineCount)
+		hint = fmt.Sprintf("+ %d lines (click to expand)", lineCount)
 	}
 
 	titleText := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true).Render(action)

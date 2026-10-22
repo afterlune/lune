@@ -224,7 +224,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 
 	// 1. Guard: Cannot open modal when running
 	m.running = true
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	mod, _ := m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if m.sessionsModalOpen {
 		t.Fatalf("expected sessions modal NOT to open while task is running")
@@ -235,11 +235,11 @@ func TestSessionsModalInteractions(t *testing.T) {
 	}
 	m.running = false
 
-	// 2. Open modal via Ctrl+O
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	// 2. Open modal via /resume
+	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if !m.sessionsModalOpen {
-		t.Fatalf("expected sessions modal to open on Ctrl+O")
+		t.Fatalf("expected sessions modal to open via /resume")
 	}
 	if len(m.sessionsItems) != 3 {
 		t.Fatalf("expected 3 sessions in modal, got %d", len(m.sessionsItems))
@@ -326,22 +326,28 @@ func TestSessionsModalInteractions(t *testing.T) {
 		t.Fatalf("expected session to switch to s3 (%s), got %s", s3.ID, m.sessionID)
 	}
 
-	// 9. Pressing Ctrl+O while modal is open toggles it closed
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	// 9. Reopening via /resume and closing with Esc
+	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if !m.sessionsModalOpen {
-		t.Fatalf("expected modal to open on Ctrl+O")
+		t.Fatalf("expected modal to open via /resume")
 	}
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 	if m.sessionsModalOpen {
-		t.Fatalf("expected modal to toggle closed on second Ctrl+O")
+		t.Fatalf("expected modal to close on Esc")
 	}
 
-	// 10. Verify shortcuts panel includes Ctrl+O
+	// 10. Verify the shortcuts panel lists /resume instead of a session hotkey
 	shortcutsStr := renderShortcutsPanel(100)
-	if !strings.Contains(shortcutsStr, "Ctrl+O") || !strings.Contains(shortcutsStr, "Switch session") {
-		t.Fatalf("expected shortcuts panel to list Ctrl+O Switch session, got:\n%s", shortcutsStr)
+	if !strings.Contains(shortcutsStr, "/resume") || !strings.Contains(shortcutsStr, "Switch session") {
+		t.Fatalf("expected shortcuts panel to list /resume Switch session, got:\n%s", shortcutsStr)
+	}
+	if strings.Contains(shortcutsStr, "Ctrl+T") || strings.Contains(shortcutsStr, "Ctrl+R") {
+		t.Fatalf("expected removed Ctrl+T/Ctrl+R hotkeys to be absent, got:\n%s", shortcutsStr)
+	}
+	if !strings.Contains(shortcutsStr, "Ctrl+O") || !strings.Contains(shortcutsStr, "Expand/collapse all rounds") {
+		t.Fatalf("expected Ctrl+O to be listed for round expansion, got:\n%s", shortcutsStr)
 	}
 }
 
@@ -387,10 +393,10 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	m.updateLayout()
 
 	// 1. Open sessions modal
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	mod, _ := m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if !m.sessionsModalOpen {
-		t.Fatalf("expected modal to open on Ctrl+O")
+		t.Fatalf("expected modal to open via /resume")
 	}
 
 	// 2. Select active session (s1) and try Ctrl+D -> blocked
@@ -511,8 +517,8 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	m.height = 30
 	m.updateLayout()
 
-	// 1. Pressing Ctrl+T when no tool executions exist
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	// 1. Opening the pager with no tool executions reports it instead of opening
+	mod, _ := m.handleSlashCommand("/detail")
 	m = mod.(*tuiModel)
 	if m.toolPagerOpen {
 		t.Fatalf("expected toolPagerOpen to be false when no tools exist")
@@ -558,11 +564,11 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	}
 	m.updateLayout()
 
-	// 3. Open pager via Ctrl+T
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	// 3. Open pager via /detail
+	mod, _ = m.handleSlashCommand("/detail")
 	m = mod.(*tuiModel)
 	if !m.toolPagerOpen {
-		t.Fatalf("expected toolPagerOpen to be true after Ctrl+T")
+		t.Fatalf("expected toolPagerOpen to be true after /detail")
 	}
 	if m.toolPagerIndex != 2 {
 		t.Fatalf("expected toolPagerIndex to point to latest tool (2), got %d", m.toolPagerIndex)
@@ -676,16 +682,11 @@ func TestToolPagerModalInteractions(t *testing.T) {
 		t.Fatalf("expected toolPagerOpen to be false after Esc")
 	}
 
-	// Toggle open and close with Ctrl+T
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
-	m = mod.(*tuiModel)
-	if !m.toolPagerOpen {
-		t.Fatalf("expected toolPagerOpen to be true after Ctrl+T toggle open")
-	}
+	// Ctrl+T is no longer bound: it must not reopen the pager
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
 	if m.toolPagerOpen {
-		t.Fatalf("expected toolPagerOpen to be false after Ctrl+T toggle close")
+		t.Fatalf("expected Ctrl+T to no longer open the tool output pager")
 	}
 }
 

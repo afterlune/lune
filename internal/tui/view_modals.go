@@ -402,7 +402,7 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.copyFeedback))
 	} else {
-		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] switch tool · c copy · esc/q/ctrl+t close")
+		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] switch tool · c copy · esc/q close")
 		lines = append(lines, hint)
 	}
 
@@ -561,7 +561,7 @@ func renderShortcutsPanel(width int) string {
 	col2Title := styleTextPrimary().Bold(true).Underline(true).Render("Session")
 	col2Items := []struct{ Key, Desc string }{
 		{"Enter", "Send message"},
-		{"Ctrl+O", "Switch session"},
+		{"/resume", "Switch session"},
 		{"Shift+Tab", "Toggle Plan mode"},
 		{"/permissions", "Switch permission mode"},
 		{"/model", "Switch model"},
@@ -573,9 +573,8 @@ func renderShortcutsPanel(width int) string {
 	col3Items := []struct{ Key, Desc string }{
 		{"Mouse Drag", "Select & auto-copy"},
 		{"Scroll", "History scroll"},
-		{"Ctrl+T", "Tool output pager"},
+		{"Ctrl+O", "Expand/collapse all rounds"},
 		{"Ctrl+D", "Workspace diff viewer"},
-		{"Ctrl+R", "Toggle reasoning"},
 		{"Ctrl+C", "Copy selection"},
 		{"Esc", "Clear selection"},
 	}

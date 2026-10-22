@@ -566,24 +566,24 @@ func TestReasoningRenderingAndToggle(t *testing.T) {
 	}
 	m.entries = append(m.entries, entry)
 
-	// 1. Collapsed rendering: contains Thought for 12s and (ctrl+r to expand)
+	// 1. Collapsed rendering: contains Thought for 12s and (click to expand)
 	collapsed := renderReasoningEntry(m.entries[0], 80)
-	if !strings.Contains(collapsed, "Thought for 12s") || !strings.Contains(collapsed, "(ctrl+r to expand)") {
+	if !strings.Contains(collapsed, "Thought for 12s") || !strings.Contains(collapsed, "(click to expand)") {
 		t.Errorf("Unexpected collapsed rendering: %s", collapsed)
 	}
 	if strings.Contains(collapsed, "Step 1: check files") {
 		t.Errorf("Collapsed rendering should not contain body text: %s", collapsed)
 	}
 
-	// 2. Toggle via ctrl+r
+	// 2. Toggle via the /thought command path
 	_, _ = m.toggleReasoningExpansion()
 	if !m.entries[0].ReasoningExpanded {
 		t.Errorf("Expected ReasoningExpanded to be true after toggle")
 	}
 
-	// 3. Expanded rendering: contains body text and (ctrl+r to collapse)
+	// 3. Expanded rendering: contains body text and (click to collapse)
 	expanded := renderReasoningEntry(m.entries[0], 80)
-	if !strings.Contains(expanded, "(ctrl+r to collapse)") {
+	if !strings.Contains(expanded, "(click to collapse)") {
 		t.Errorf("Unexpected expanded rendering header: %s", expanded)
 	}
 	if !strings.Contains(expanded, "Step 1: check files") {
@@ -1066,7 +1066,7 @@ func TestToolExpandAndCollapseHint(t *testing.T) {
 	}
 
 	renderedCollapsed := renderEntry(toolEntry, 80)
-	if !strings.Contains(renderedCollapsed, "+ 3 lines (click to expand · Ctrl+T for full output)") {
+	if !strings.Contains(renderedCollapsed, "+ 3 lines (click to expand · /detail for full output)") {
 		t.Errorf("expected expand hint, got: %s", renderedCollapsed)
 	}
 
@@ -1091,7 +1091,7 @@ func TestRoundToolPreviewUsesHeadForSuccessAndTailForFailure(t *testing.T) {
 	if strings.Contains(rendered, "line4") || strings.Contains(rendered, "line5") {
 		t.Fatalf("expected successful tool preview to stop after three lines, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "+ 2 lines (click to expand · Ctrl+T for full output)") {
+	if !strings.Contains(rendered, "+ 2 lines (click to expand · /detail for full output)") {
 		t.Fatalf("expected a three-line expand hint, got:\n%s", rendered)
 	}
 
@@ -1377,11 +1377,14 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		t.Fatalf("expected expanded round tree with ⌄ header and │ › children, got:\n%s", expandedRoundView)
 	}
 	if !strings.Contains(expandedRoundView, "M internal/tui/view.go") ||
-		!strings.Contains(expandedRoundView, "+ 3 lines (click to expand · Ctrl+T for full output)") {
+		!strings.Contains(expandedRoundView, "+ 3 lines (click to expand · /detail for full output)") {
 		t.Fatalf("expected a three-line child command preview and expand hint, got:\n%s", expandedRoundView)
 	}
 	if strings.Contains(expandedRoundView, "M internal/tui/view_footer.go") {
 		t.Fatalf("expected only the first three command output lines before clicking, got:\n%s", expandedRoundView)
+	}
+	if !strings.Contains(expandedRoundView, "⌃ Show less") {
+		t.Fatalf("expected a bottom Show less row in the expanded round, got:\n%s", expandedRoundView)
 	}
 
 	// 4. Level 2 Click: Click on the child step "│ › Ran git status --short" (EntryIndex 5) -> expands its output inline
@@ -1411,6 +1414,151 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	clickLine(roundHeaderLine)
 	if m.entries[1].RoundExpanded {
 		t.Fatalf("expected entries[1].RoundExpanded to be false after clicking ⌄ header")
+	}
+	if !m.entries[5].ToolExpanded {
+		t.Fatalf("expected the expanded child step to survive a header collapse")
+	}
+}
+
+func TestExpandedToolRoundShowLessRow(t *testing.T) {
+	m := newTUIModel(nil, nil, "show-less-sess")
+	m.width = 100
+	m.height = 40
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "run checks"},
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "go build ./...", ToolOutput: "ok"},
+		{Kind: KindTool, ToolName: "read_file", ToolCommand: "Read go.mod", ToolOutput: "module github.com/afterlune/lune"},
+	}
+	m.entries[1].RoundExpanded = true
+	m.entries[2].ToolExpanded = true
+	m.updateLayout()
+	m.refreshViewportContent()
+
+	expandedView := ansi.Strip(m.viewport.View())
+	if !strings.Contains(expandedView, "⌃ Show less") {
+		t.Fatalf("expected a bottom Show less row in the expanded round, got:\n%s", expandedView)
+	}
+	if !strings.Contains(expandedView, "│ ⌄ Read go.mod") {
+		t.Fatalf("expected the expanded child step to stay expanded, got:\n%s", expandedView)
+	}
+
+	footerLine := -1
+	for _, rng := range m.entryLineRanges {
+		if rng.IsRoundFooter && rng.EntryIndex == 1 {
+			footerLine = rng.StartLine
+			break
+		}
+	}
+	if footerLine < 0 {
+		t.Fatalf("expected a round footer range for EntryIndex 1, got %+v", m.entryLineRanges)
+	}
+
+	vpY := footerLine - m.viewport.YOffset() + 3
+	mod, _ := m.Update(tea.MouseClickMsg{X: 5, Y: vpY, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+	mod, _ = m.Update(tea.MouseReleaseMsg{X: 5, Y: vpY, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+
+	if m.entries[1].RoundExpanded {
+		t.Fatalf("expected entries[1].RoundExpanded to be false after clicking Show less")
+	}
+	if !m.entries[2].ToolExpanded {
+		t.Fatalf("expected a block-level collapse to leave sub-step expansion untouched")
+	}
+	collapsedView := ansi.Strip(m.viewport.View())
+	if strings.Contains(collapsedView, "⌃ Show less") {
+		t.Fatalf("expected the Show less row to disappear once collapsed, got:\n%s", collapsedView)
+	}
+}
+
+func TestCtrlOTogglesAllToolRounds(t *testing.T) {
+	m := newTUIModel(nil, nil, "toggle-all-rounds")
+	m.width = 100
+	m.height = 30
+	m.entries = []TranscriptEntry{
+		{Kind: KindUser, Text: "first"},
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "go test ./...", ToolOutput: "ok"},
+		{Kind: KindTool, ToolName: "read_file", ToolCommand: "Read go.mod", ToolOutput: "module github.com/afterlune/lune"},
+		{Kind: KindAssistant, Text: "first done"},
+		{Kind: KindUser, Text: "second"},
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "git status --short", ToolOutput: "clean"},
+	}
+	m.updateLayout()
+
+	starts := m.toolRoundStarts()
+	if len(starts) != 2 || starts[0] != 1 || starts[1] != 5 {
+		t.Fatalf("expected round starts at 1 and 5, got %v", starts)
+	}
+
+	pressCtrlO := func() {
+		mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+		m = mod.(*tuiModel)
+	}
+
+	// Every round is collapsed -> one press expands all of them.
+	pressCtrlO()
+	for _, start := range starts {
+		if !m.entries[start].RoundExpanded {
+			t.Fatalf("expected round %d to expand after Ctrl+O", start)
+		}
+	}
+
+	// All expanded -> next press collapses all of them.
+	pressCtrlO()
+	for _, start := range starts {
+		if m.entries[start].RoundExpanded {
+			t.Fatalf("expected round %d to collapse after second Ctrl+O", start)
+		}
+	}
+
+	// One expanded round plus one collapsed round -> the press expands everything again.
+	m.entries[1].RoundExpanded = true
+	m.entries[5].RoundExpanded = false
+	pressCtrlO()
+	for _, start := range starts {
+		if !m.entries[start].RoundExpanded {
+			t.Fatalf("expected round %d to expand after Ctrl+O with one round expanded", start)
+		}
+	}
+
+	// Block-level toggling never rewrites sub-step expansion flags.
+	m.entries[2].ToolExpanded = true
+	pressCtrlO()
+	if !m.entries[2].ToolExpanded {
+		t.Fatalf("expected Ctrl+O to leave sub-step expansion untouched")
+	}
+}
+
+func TestRemovedCtrlRAndCtrlTHotkeys(t *testing.T) {
+	m := newTUIModel(nil, nil, "removed-hotkeys")
+	m.width = 80
+	m.height = 24
+	m.entries = []TranscriptEntry{
+		{Kind: KindTool, ToolName: "run_command", ToolCommand: "ls", ToolOutput: "a\nb\nc\nd"},
+		{Kind: KindReasoning, Text: "plan the work"},
+	}
+	m.updateLayout()
+	entryCount := len(m.entries)
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'r', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.entries[1].ReasoningExpanded {
+		t.Fatalf("expected Ctrl+R to no longer toggle reasoning")
+	}
+	if len(m.entries) != entryCount {
+		t.Fatalf("expected Ctrl+R to stay silent, got %d entries", len(m.entries))
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.toolPagerOpen {
+		t.Fatalf("expected Ctrl+T to no longer open the tool output pager")
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
+	m = mod.(*tuiModel)
+	if m.sessionsModalOpen {
+		t.Fatalf("expected Ctrl+O to no longer open the session switcher")
 	}
 }
 

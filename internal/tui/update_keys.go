@@ -174,21 +174,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		return m.togglePlanMode()
 
-	case "ctrl+t":
-		return m.openToolPager(-1)
+	case "ctrl+o":
+		return m.toggleAllToolRounds()
 
 	case "ctrl+d":
 		return m.openDiffModal("")
-
-	case "ctrl+o":
-		if m.taskBusy() {
-			m.addSystemEntry("Cannot switch sessions while a task is running. Cancel or wait for it to finish.")
-			return m, nil
-		}
-		return m.openSessionsModal()
-
-	case "ctrl+r":
-		return m.toggleReasoningExpansion()
 	}
 
 	// 2. Navigation in Modal / Autocomplete

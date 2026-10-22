@@ -128,7 +128,7 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 		}
 
 		switch keyStr {
-		case "esc", "ctrl+o":
+		case "esc":
 			m.sessionsModalOpen = false
 			m.sessionsFilter = ""
 			m.sessionsConfirmDelete = false
@@ -261,7 +261,7 @@ func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr stri
 		maxScroll := max(0, totalLines-visibleLines)
 
 		switch keyStr {
-		case "esc", "q", "ctrl+t":
+		case "esc", "q":
 			m.toolPagerOpen = false
 			m.updateLayout()
 			return m, nil

@@ -200,6 +200,7 @@ func (m *tuiModel) refreshViewportContent() {
 				StartLine:     start + rr.StartLine,
 				EndLine:       start + rr.EndLine,
 				IsRoundHeader: rr.IsRoundHeader,
+				IsRoundFooter: rr.IsRoundFooter,
 			})
 		}
 		appendBlock(block)

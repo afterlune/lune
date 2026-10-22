@@ -374,7 +374,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				toggled := false
 				for _, rng := range m.entryLineRanges {
 					if absLine >= rng.StartLine && absLine <= rng.EndLine && rng.EntryIndex >= 0 && rng.EntryIndex < len(m.entries) {
-						if rng.IsRoundHeader {
+						if rng.IsRoundHeader || rng.IsRoundFooter {
 							m.entries[rng.EntryIndex].RoundExpanded = !m.entries[rng.EntryIndex].RoundExpanded
 							toggled = true
 							break
@@ -397,13 +397,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 					lines := strings.Split(m.viewport.View(), "\n")
 					if vpRow >= 0 && vpRow < len(lines) {
 						lineText := lines[vpRow]
-						if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "Running") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") {
+						if strings.Contains(lineText, "Ran") || strings.Contains(lineText, "Explored") || strings.Contains(lineText, "Failed") || strings.Contains(lineText, "Running") || strings.Contains(lineText, "expand") || strings.Contains(lineText, "collapse") || strings.Contains(lineText, "Show less") {
 							for i := len(m.entries) - 1; i >= 0; i-- {
 								if isRoundMember(m.entries, i) {
-									start := i
-									for start > 0 && isRoundMember(m.entries, start-1) {
-										start--
-									}
+									start := roundStartIndex(m.entries, i)
 									m.entries[start].RoundExpanded = !m.entries[start].RoundExpanded
 									toggled = true
 									break

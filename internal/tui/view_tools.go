@@ -120,7 +120,7 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 
 	if hidden > 0 {
 		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
-			Render(fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", hidden))
+			Render(fmt.Sprintf("  + %d lines (click to expand · /detail for full output)", hidden))
 		bodyLines = append(bodyLines, expandHint)
 	} else if entry.ToolExpanded && total > toolPreviewLineLimit {
 		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
@@ -386,6 +386,18 @@ func renderExpandedToolRound(entries []TranscriptEntry, startIdx int, live bool,
 		})
 	}
 
+	// A finished round can be collapsed from its bottom edge as well as its header.
+	if !live {
+		footerLine := len(allLines)
+		allLines = append(allLines, bar+styleTextMuted().Render("⌃ Show less"))
+		ranges = append(ranges, entryLineRange{
+			EntryIndex:    startIdx,
+			StartLine:     footerLine,
+			EndLine:       footerLine,
+			IsRoundFooter: true,
+		})
+	}
+
 	return strings.Join(allLines, "\n"), ranges
 }
 
@@ -625,7 +637,7 @@ func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 		}
 		if hidden > 0 {
 			detailLines = append(detailLines, styleTextMuted().Render(
-				fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", hidden)))
+				fmt.Sprintf("  + %d lines (click to expand · /detail for full output)", hidden)))
 		} else if entry.ToolExpanded && total > toolPreviewLineLimit {
 			detailLines = append(detailLines, styleTextMuted().Render(
 				fmt.Sprintf("  - collapse %d lines (click)", total)))
