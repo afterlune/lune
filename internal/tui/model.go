@@ -229,6 +229,9 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 			m.loadSessionSnapshot(saved)
 		}
 	}
+	if sessionID == "" {
+		m.refreshMainContextWindow()
+	}
 	m.applyThemeStyles()
 	if runtime != nil {
 		m.beginSessionRestore()

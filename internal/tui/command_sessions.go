@@ -33,6 +33,7 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 	m.pendingTitle = ""
 	m.pendingModelProfile = profile
 	m.reasoningEffort = effort
+	m.refreshMainContextWindow()
 	m.updateLayout()
 	m.addSystemEntry("Started a fresh session. It is saved with your first message.")
 	return m, nil
