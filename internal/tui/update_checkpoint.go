@@ -81,7 +81,7 @@ func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string
 		return "Interrupted."
 	}
 	var lines []string
-	lines = append(lines, "⏸ **Task Execution Paused (Checkpoint Saved)**")
+	lines = append(lines, "**Task Execution Paused (Checkpoint Saved)**")
 	if cp.ExecutionID != "" {
 		lines = append(lines, fmt.Sprintf("• **Execution ID**: `%s`", cp.ExecutionID))
 	}

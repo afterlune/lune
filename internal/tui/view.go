@@ -40,7 +40,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
-				chips = append(chips, styleTextMuted().Render("📎 "+terminaltext.Sanitize(file)))
+				chips = append(chips, styleTextMuted().Render("@"+terminaltext.Sanitize(file)))
 			}
 			content += "\n  " + strings.Join(chips, styleTextMuted().Render("  "))
 		}
@@ -106,25 +106,6 @@ func renderEntry(entry TranscriptEntry, width int) string {
 			}
 		}
 		return strings.Join(out, "\n")
-
-	case KindQueued:
-		icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render("⏳ ")
-		label := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Bold(true).Render("Queued › ")
-		content := styleTextPrimary().Render(terminaltext.Sanitize(strings.TrimSpace(entry.Text)))
-		hint := styleTextMuted().Render(" (/cancel-queue cancels latest waiting task)")
-		row := icon + label + content + hint
-		pad := max(0, width-lipgloss.Width(row))
-		cardStyle := lipgloss.NewStyle().Background(lipgloss.Color(activeTheme().CardBg))
-		box := renderCardSurface(cardStyle, row+strings.Repeat(" ", pad))
-		if len(entry.AttachedFiles) > 0 {
-			var chips []string
-			for _, file := range entry.AttachedFiles {
-				chips = append(chips, "📎 "+terminaltext.Sanitize(file))
-			}
-			chipLine := "  " + styleTextMuted().Render(strings.Join(chips, "  "))
-			return box + "\n" + chipLine
-		}
-		return box
 
 	case KindReasoning:
 		return renderReasoningEntry(entry, width)
@@ -473,7 +454,6 @@ func renderQueuedBand(m *tuiModel, width int) string {
 	}
 
 	th := activeTheme()
-	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Render("⏳ ")
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render("Queued › ")
 	hintText := " (/cancel-queue cancels latest waiting task)"
 
@@ -483,9 +463,9 @@ func renderQueuedBand(m *tuiModel, width int) string {
 		if i == len(queued)-1 {
 			hint = styleTextMuted().Render(hintText)
 		}
-		textWidth := max(10, width-lipgloss.Width(bullet+label)-lipgloss.Width(hintText))
+		textWidth := max(10, width-lipgloss.Width(label)-lipgloss.Width(hintText))
 		text := sanitizeAndTruncateLine(strings.TrimSpace(entry.Text), textWidth)
-		rows = append(rows, bullet+label+styleTextPrimary().Render(text)+hint)
+		rows = append(rows, label+styleTextPrimary().Render(text)+hint)
 	}
 	return strings.Join(rows, "\n")
 }

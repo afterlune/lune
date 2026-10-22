@@ -426,7 +426,7 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 func TestFooterSubagentsAlwaysVisible(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	footer := ansi.Strip(renderFooter(m, 120))
-	if !strings.Contains(footer, "🤖 0 active · disabled") {
+	if !strings.Contains(footer, "agents 0 active · disabled") {
 		t.Fatalf("expected footer to show disabled when idle, got:\n%s", footer)
 	}
 }
@@ -439,7 +439,7 @@ func TestFooterSubagentCountReportsActiveAgents(t *testing.T) {
 	}
 	m.width = 140
 	footer := ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "🤖 1 active · disabled") {
+	if !strings.Contains(footer, "agents 1 active · disabled") {
 		t.Fatalf("expected footer to retain the active count with delegation disabled, got:\n%s", footer)
 	}
 	if strings.Contains(footer, "2 active") {
@@ -457,7 +457,7 @@ func TestFooterKeepsSubagentCountVisibleWhenCrowded(t *testing.T) {
 	m.entries = []TranscriptEntry{{Kind: KindSubagent, AgentID: "active", SubagentRunning: true}}
 
 	footer := ansi.Strip(renderFooter(m, 80))
-	if !strings.Contains(footer, "🤖 1 · off") {
+	if !strings.Contains(footer, "agents 1 · off") {
 		t.Fatalf("crowded footer should preserve the compact active/disabled state, got:\n%s", footer)
 	}
 	firstLine := strings.Split(footer, "\n")[0]

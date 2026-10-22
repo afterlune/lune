@@ -102,7 +102,7 @@ func completionLabel(status core.TaskStatus, duration time.Duration) string {
 	case core.TaskFailed:
 		return "! Task failed"
 	case core.TaskCancelled, core.TaskDiscarded:
-		return "⏹ Cancelled"
+		return "Cancelled"
 	}
 	if duration >= time.Second {
 		return "✓ Finished in " + formatDuration(duration)

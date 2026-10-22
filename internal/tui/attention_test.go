@@ -97,7 +97,7 @@ func TestNoteTurnFinishedRecordsScrolledAwayCompletion(t *testing.T) {
 	}
 	m.unseenCompletion = ""
 	m.noteTurnFinished("exec-4", core.TaskCancelled, 5*time.Second)
-	if m.unseenCompletion != "⏹ Cancelled" {
+	if m.unseenCompletion != "Cancelled" {
 		t.Fatalf("cancelled turn label = %q", m.unseenCompletion)
 	}
 }

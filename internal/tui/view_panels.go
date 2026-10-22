@@ -370,10 +370,9 @@ func renderCountdownProgressBar(remainingSecs, maxSecs, width int) string {
 // renderPausedBanner renders an actionable checkpoint status banner in the composer gap.
 func renderPausedBanner(width int) string {
 	th := activeTheme()
-	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render("⏸ ")
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Task Paused (Checkpoint saved)")
 	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · /continue to continue · /discard to drop")
-	banner := icon + label + actions
+	banner := label + actions
 	pad := max(0, (width-lipgloss.Width(banner))/2)
 	return strings.Repeat(" ", pad) + banner
 }
@@ -406,7 +405,7 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 				secs = 0
 			}
 			bar := renderCountdownProgressBar(secs, 60, 20)
-			countdownLine := fmt.Sprintf("⏳ Rate limit cool-down: %s remaining  %s", remaining, bar)
+			countdownLine := fmt.Sprintf("Rate limit cool-down: %s remaining  %s", remaining, bar)
 			lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).Render(countdownLine))
 			lines = append(lines, styleTextMuted().Render("   Provider rate limit active. Execution checkpoint is safely preserved."))
 		} else {

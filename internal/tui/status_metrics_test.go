@@ -126,7 +126,7 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 	if !strings.Contains(footer, "Beta . high") {
 		t.Fatalf("expected footer to show model and effort, got:\n%s", footer)
 	}
-	if !strings.Contains(footer, "🤖 0 active · disabled") {
+	if !strings.Contains(footer, "agents 0 active · disabled") {
 		t.Fatalf("expected footer to show delegation disabled despite scheduler concurrency, got:\n%s", footer)
 	}
 }

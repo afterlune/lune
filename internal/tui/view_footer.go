@@ -24,11 +24,11 @@ func scrollPillText(m *tuiModel) string {
 		return m.unseenCompletion + " · " + back
 	case m.running:
 		if m.taskStartedAt.IsZero() {
-			return "⏳ Working · " + back
+			return "Working · " + back
 		}
-		return "⏳ Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
+		return "Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
 	case m.hasPausedTask():
-		return "⏸ Paused · /continue or /discard · " + back
+		return "Paused · /continue or /discard · " + back
 	}
 	return back
 }
@@ -193,9 +193,9 @@ func renderFooter(m *tuiModel, width int) string {
 	activeSubs := m.activeSubagentsCount()
 	var subagentLabel string
 	if m.delegationEnabled() {
-		subagentLabel = fmt.Sprintf("🤖 %d active · %d parallel", activeSubs, maxSubs)
+		subagentLabel = fmt.Sprintf("agents %d active · %d parallel", activeSubs, maxSubs)
 	} else {
-		subagentLabel = fmt.Sprintf("🤖 %d active · disabled", activeSubs)
+		subagentLabel = fmt.Sprintf("agents %d active · disabled", activeSubs)
 	}
 	maxLeftWidth := max(1, width-rightLen-2)
 	primaryItems := []string{subagentLabel}
@@ -204,9 +204,9 @@ func renderFooter(m *tuiModel, width int) string {
 	}
 	rawLeft := strings.Join(primaryItems, " · ")
 	if lipgloss.Width(rawLeft) > maxLeftWidth {
-		compactSubagentLabel := fmt.Sprintf("🤖 %d/%d", activeSubs, maxSubs)
+		compactSubagentLabel := fmt.Sprintf("agents %d/%d", activeSubs, maxSubs)
 		if !m.delegationEnabled() {
-			compactSubagentLabel = fmt.Sprintf("🤖 %d · off", activeSubs)
+			compactSubagentLabel = fmt.Sprintf("agents %d · off", activeSubs)
 		}
 		modelWidth := maxLeftWidth - lipgloss.Width(compactSubagentLabel) - lipgloss.Width(" · ")
 		if modelLabel != "" && modelWidth > 0 {
@@ -215,7 +215,7 @@ func renderFooter(m *tuiModel, width int) string {
 		} else {
 			rawLeft = compactSubagentLabel
 			if lipgloss.Width(rawLeft) > maxLeftWidth {
-				rawLeft = fmt.Sprintf("🤖 %d", activeSubs)
+				rawLeft = fmt.Sprintf("agents %d", activeSubs)
 			}
 			if lipgloss.Width(rawLeft) > maxLeftWidth {
 				rawLeft = ansi.Truncate(fmt.Sprintf("%d", activeSubs), maxLeftWidth, "…")
@@ -259,15 +259,15 @@ func renderFooter(m *tuiModel, width int) string {
 			line2RightText += " · /agents"
 		}
 		if n := len(m.queuedTurns); n > 0 {
-			line2RightText += fmt.Sprintf(" · ⏳ %d queued", n)
+			line2RightText += fmt.Sprintf(" · %d queued", n)
 		}
 	} else if m.hasPausedTask() {
-		line2RightText = "⏸ task paused · /continue or /discard"
+		line2RightText = "task paused · /continue or /discard"
 		if n := len(m.queuedTurns); n > 0 {
-			line2RightText += fmt.Sprintf(" · ⏳ %d queued", n)
+			line2RightText += fmt.Sprintf(" · %d queued", n)
 		}
 	} else if n := len(m.queuedTurns); n > 0 {
-		line2RightText = fmt.Sprintf("⏳ %d queued · /cancel-queue", n)
+		line2RightText = fmt.Sprintf("%d queued · /cancel-queue", n)
 	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
 		line2RightText = "esc to edit last message"
 	} else if m.totalSubagentsCount() > 0 || m.delegationEnabled() {

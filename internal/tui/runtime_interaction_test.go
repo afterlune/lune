@@ -565,7 +565,7 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	if lastEntry.Kind != KindQueued || !strings.Contains(lastEntry.Text, "Follow-up task") {
 		t.Errorf("expected KindQueued entry, got %+v", lastEntry)
 	}
-	rendered := renderEntry(lastEntry, 80)
+	rendered := renderQueuedBand(m, 80)
 	if !strings.Contains(rendered, "Queued ›") || !strings.Contains(rendered, "Follow-up task") {
 		t.Errorf("expected queued badge in rendered view, got: %s", rendered)
 	}

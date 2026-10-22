@@ -624,7 +624,7 @@ func TestFileMentionAutocomplete(t *testing.T) {
 		t.Errorf("expected badge to contain 'internal/tui/tui.go', got: %s", lastEntry.AttachedFiles[0])
 	}
 	renderedUser := renderEntry(lastEntry, 80)
-	if !strings.Contains(renderedUser, "📎 internal/tui/tui.go") {
+	if !strings.Contains(renderedUser, "@internal/tui/tui.go") {
 		t.Errorf("expected rendered user entry to contain attachment chip, got: %s", renderedUser)
 	}
 

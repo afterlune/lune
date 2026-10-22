@@ -67,13 +67,13 @@ func TestScrollPillReflectsTaskState(t *testing.T) {
 	m := newTUIModel(nil, nil, "pill-session")
 	m.taskStartedAt = time.Now().Add(-70 * time.Second)
 	m.running = true
-	if got := scrollPillText(m); !strings.Contains(got, "⏳ Working 1m 10s") {
+	if got := scrollPillText(m); !strings.Contains(got, "Working 1m 10s") {
 		t.Fatalf("running pill = %q", got)
 	}
 
 	m.running = false
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused"}
-	if got := scrollPillText(m); !strings.Contains(got, "⏸ Paused") {
+	if got := scrollPillText(m); !strings.Contains(got, "Paused") {
 		t.Fatalf("paused pill = %q", got)
 	}
 
@@ -100,7 +100,7 @@ func TestFooterShowsQueuedCount(t *testing.T) {
 	m.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
 
 	footer := renderFooter(m, 120)
-	if !strings.Contains(footer, "⏳ 2 queued") {
+	if !strings.Contains(footer, "2 queued") {
 		t.Fatalf("footer has no queued badge:\n%s", footer)
 	}
 }
@@ -167,11 +167,71 @@ func TestCompletionLabel(t *testing.T) {
 		{core.TaskCompleted, 3*time.Minute + 12*time.Second, "✓ Finished in 3m 12s"},
 		{core.TaskCompleted, 0, "✓ Finished"},
 		{core.TaskFailed, time.Minute, "! Task failed"},
-		{core.TaskCancelled, time.Minute, "⏹ Cancelled"},
+		{core.TaskCancelled, time.Minute, "Cancelled"},
 	}
 	for _, tc := range cases {
 		if got := completionLabel(tc.status, tc.duration); got != tc.want {
 			t.Fatalf("completionLabel(%s, %s) = %q, want %q", tc.status, tc.duration, got, tc.want)
 		}
+	}
+}
+
+// TestStatusSurfacesUseNoEmojiGlyphs keeps colored emoji out of the terminal
+// canvas: status text stays plain, only the existing typographic symbols remain.
+func TestStatusSurfacesUseNoEmojiGlyphs(t *testing.T) {
+	banned := []string{"⏳", "⏸", "⏹", "🤖", "📎"}
+	assertPlain := func(name, rendered string) {
+		t.Helper()
+		for _, glyph := range banned {
+			if strings.Contains(rendered, glyph) {
+				t.Fatalf("%s still renders %q:\n%s", name, glyph, rendered)
+			}
+		}
+	}
+
+	m := newTUIModel(nil, nil, "glyph-session")
+	m.taskStartedAt = time.Now().Add(-12 * time.Second)
+	m.running = true
+	assertPlain("running pill", scrollPillText(m))
+	if got := scrollPillText(m); !strings.Contains(got, "Working 12s") {
+		t.Fatalf("running pill lost its state word: %q", got)
+	}
+	assertPlain("running footer", renderFooter(m, 120))
+
+	m.running = false
+	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused"}
+	assertPlain("paused pill", scrollPillText(m))
+	assertPlain("paused footer", renderFooter(m, 120))
+	assertPlain("paused banner", renderPausedBanner(80))
+
+	m.pausedCheckpoint = nil
+	m.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
+	m.entries = []TranscriptEntry{{Kind: KindQueued, Text: "follow-up"}}
+	band := renderQueuedBand(m, 96)
+	assertPlain("queued band", band)
+	if !strings.Contains(band, "Queued ›") || !strings.Contains(band, "follow-up") {
+		t.Fatalf("queued band lost its label:\n%s", band)
+	}
+	footer := renderFooter(m, 120)
+	assertPlain("queued footer", footer)
+	if !strings.Contains(footer, "2 queued") {
+		t.Fatalf("queued footer lost its count:\n%s", footer)
+	}
+
+	if got := completionLabel(core.TaskCancelled, time.Minute); got != "Cancelled" {
+		t.Fatalf("cancelled label = %q", got)
+	} else {
+		assertPlain("cancelled label", got)
+	}
+	assertPlain("finished label", completionLabel(core.TaskCompleted, 3*time.Minute+12*time.Second))
+
+	recovery := &ActiveRecovery{RetryNotBefore: time.Now().Add(30 * time.Second)}
+	assertPlain("recovery panel", renderRecoveryPanel(recovery, 100))
+
+	withAttachment := TranscriptEntry{Kind: KindUser, Text: "inspect", AttachedFiles: []string{"internal/tui/view.go"}}
+	rendered := renderEntry(withAttachment, 80)
+	assertPlain("attachment chips", rendered)
+	if !strings.Contains(rendered, "@internal/tui/view.go") {
+		t.Fatalf("attachment chip lost its @ prefix:\n%s", rendered)
 	}
 }
