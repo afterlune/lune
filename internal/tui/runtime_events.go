@@ -21,7 +21,27 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// replaySafeDuringRestore reports events that only enrich the transcript while a
+// freshly loaded session replays its durable events. Task state, usage and
+// interaction cards come from the snapshot and Core state instead.
+func replaySafeDuringRestore(kind core.EventKind) bool {
+	switch kind {
+	case core.EventToolStarted, core.EventToolDetails, core.EventToolFinished,
+		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed:
+		return true
+	}
+	return false
+}
+
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
+	if m.restoringSession && event.Cursor == 0 {
+		// Live-only events (model stream deltas, live tool details) always carry a
+		// zero cursor; replayed durable events carry the stored cursor.
+		m.finishSessionRestore()
+	}
+	if m.restoringSession && !replaySafeDuringRestore(event.Kind) {
+		return m, nil
+	}
 	switch event.Kind {
 	case core.EventTaskStarted:
 		execID := event.ExecutionID
@@ -449,11 +469,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventUsage:
-		if m.restoringSession {
-			// The snapshot already carries the session totals and the latest request
-			// metrics; replaying old usage events must not make the footer churn.
-			return m, nil
-		}
 		if m.running || !m.seededSessionUsage {
 			m.totalInputTokens += event.Usage.InputTokens
 			m.totalOutputTokens += event.Usage.OutputTokens

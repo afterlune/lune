@@ -93,7 +93,15 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			m.addSystemEntry("Failed to connect to runtime event stream: " + msg.err.Error())
 			return m, nil
 		}
-		return m, nextRuntimeEvent(m.sessionID, msg.events)
+		cmds := []tea.Cmd{nextRuntimeEvent(m.sessionID, msg.events)}
+		if m.restoringSession {
+			// Sessions without durable events must settle too.
+			generation := m.restoreGeneration
+			cmds = append(cmds, tea.Tick(sessionRestoreIdle, func(time.Time) tea.Msg {
+				return runtimeRestoreSettledMsg{generation: generation}
+			}))
+		}
+		return m, tea.Batch(cmds...)
 
 	case runtimeEventMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
@@ -101,9 +109,6 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		}
 		if msg.event.Kind == "" && msg.events == nil {
 			return m, nil
-		}
-		if m.restoringSession && (m.running || msg.event.Kind == core.EventModelStream || time.Since(m.restoreStartedAt) > sessionRestoreTimeout) {
-			m.finishSessionRestore()
 		}
 		var mod tea.Model
 		var cmd tea.Cmd

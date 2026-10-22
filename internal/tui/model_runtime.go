@@ -72,12 +72,22 @@ func (m *tuiModel) beginSessionRestore() {
 	m.restoreStartedAt = time.Now()
 }
 
-// finishSessionRestore re-renders the transcript once the replay settles.
+// finishSessionRestore re-syncs live state from Core and re-renders the transcript
+// once the replay settles. Usage metrics keep the snapshot values.
 func (m *tuiModel) finishSessionRestore() {
 	if !m.restoringSession {
 		return
 	}
 	m.restoringSession = false
+	if m.runtime != nil {
+		ctx := context.Background()
+		if state, err := m.runtime.State(ctx); err == nil && !m.running && !m.hasPausedTask() {
+			// Adopt Core's state when the model is idle; an in-flight local turn or a
+			// paused checkpoint stays authoritative.
+			m.restoreRuntimeSnapshot(state)
+		}
+		m.checkPendingState(ctx)
+	}
 	m.refreshViewportContent()
 	m.updateLayout()
 }

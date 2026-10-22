@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	core "github.com/afterlune/luneCore"
@@ -23,6 +25,7 @@ func TestRestoreSuppressesUsageChurn(t *testing.T) {
 	usage.InputTokensDetails.CachedTokens = 200
 	event := core.Event{
 		Kind:                 core.EventUsage,
+		Cursor:               3,
 		AgentID:              "lead",
 		Usage:                usage,
 		ContextWindow:        64000,
@@ -69,8 +72,9 @@ func TestRestoreDefersTranscriptRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	mod, _ := m.Update(runtimeEventMsg{event: core.Event{
-		Kind: core.EventToolStarted,
-		Tool: core.ToolCall{ID: "call-1", Name: "run_command", Arguments: args, Started: true},
+		Kind:   core.EventToolStarted,
+		Cursor: 9,
+		Tool:   core.ToolCall{ID: "call-1", Name: "run_command", Arguments: args, Started: true},
 	}})
 	m = mod.(*tuiModel)
 
@@ -132,5 +136,92 @@ func TestStartingTurnEndsRestore(t *testing.T) {
 	}
 	if !m.running {
 		t.Fatalf("expected the submitted turn to be running")
+	}
+}
+
+// TestRestoreIgnoresReplayedLifecycle keeps task state, usage and interaction
+// cards out of the replay window; they come from the snapshot and Core state.
+func TestRestoreIgnoresReplayedLifecycle(t *testing.T) {
+	m := newTUIModel(nil, nil, "restore-lifecycle")
+	m.beginSessionRestore()
+
+	events := []core.Event{
+		{Kind: core.EventTaskStarted, Cursor: 2, ExecutionID: "exec-old", TaskID: "task-old", ContextWindow: 64000, ModelProfile: "fast"},
+		{Kind: core.EventTaskFinished, Cursor: 3, ExecutionID: "exec-old"},
+		{Kind: core.EventApprovalRequired, Cursor: 4, Approval: &core.ApprovalRequest{ID: "approval-old"}},
+	}
+	for _, event := range events {
+		mod, _ := m.processRuntimeEventNoRefresh(event)
+		m = mod.(*tuiModel)
+	}
+
+	if m.running || m.runningExecution != "" || m.taskSnapshot.TaskID != "" {
+		t.Fatalf("replayed lifecycle mutated task state: running=%t execution=%q task=%q",
+			m.running, m.runningExecution, m.taskSnapshot.TaskID)
+	}
+	if m.contextWindow != 0 || m.currentModelProfile != "" {
+		t.Fatalf("replayed lifecycle mutated metrics: context=%d profile=%q", m.contextWindow, m.currentModelProfile)
+	}
+	if m.activeApproval != nil {
+		t.Fatalf("replayed approval resurfaced a card")
+	}
+	if len(m.entries) != 0 {
+		t.Fatalf("replayed lifecycle added transcript entries: %+v", m.entries)
+	}
+}
+
+// TestRestoreSettlesOnIdleWithoutEvents covers sessions whose replay is empty.
+func TestRestoreSettlesOnIdleWithoutEvents(t *testing.T) {
+	m := newTUIModel(nil, nil, "restore-idle")
+	m.beginSessionRestore()
+
+	mod, _ := m.Update(runtimeRestoreSettledMsg{generation: m.restoreGeneration})
+	m = mod.(*tuiModel)
+
+	if m.restoringSession {
+		t.Fatalf("idle tick did not settle an empty replay")
+	}
+}
+
+// TestLiveStreamEndsRestore treats zero-cursor live deltas as real work.
+func TestLiveStreamEndsRestore(t *testing.T) {
+	m := newTUIModel(nil, nil, "restore-live")
+	m.beginSessionRestore()
+
+	mod, _ := m.Update(runtimeEventMsg{event: core.Event{
+		Kind:   core.EventModelStream,
+		Stream: &core.ModelStreamEvent{Type: "text_delta", Delta: "streaming"},
+	}})
+	m = mod.(*tuiModel)
+
+	if m.restoringSession {
+		t.Fatalf("live stream delta must end the restore window")
+	}
+	if !strings.Contains(m.currentStreamText, "streaming") {
+		t.Fatalf("live stream delta was dropped: %q", m.currentStreamText)
+	}
+}
+
+// TestFinishRestoreResyncsIdleState adopts Core's idle state after the replay.
+func TestFinishRestoreResyncsIdleState(t *testing.T) {
+	client := newLazySessionTestCore(t)
+	session, err := client.CreateSession(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	m := newTUIModel(client, runtime, session.ID)
+	if !m.restoringSession {
+		t.Fatalf("a model opened with a runtime must start in the restore window")
+	}
+	m.finishSessionRestore()
+	if m.restoringSession || m.running || m.hasPausedTask() {
+		t.Fatalf("idle session state not adopted: restoring=%t running=%t paused=%t",
+			m.restoringSession, m.running, m.hasPausedTask())
 	}
 }

@@ -34,8 +34,6 @@ const (
 	// sessionRestoreIdle is how long the event stream must stay quiet before the
 	// restored transcript is rendered again.
 	sessionRestoreIdle = 200 * time.Millisecond
-	// sessionRestoreTimeout bounds the restore window even while events keep coming.
-	sessionRestoreTimeout = 3 * time.Second
 )
 
 type turnSubmittedMsg struct {
