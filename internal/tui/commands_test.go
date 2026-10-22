@@ -522,10 +522,12 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(tempDir, "internal", "tui", "tui.go"), []byte("package tui"), 0644)
 	_ = os.WriteFile(filepath.Join(tempDir, "cmd", "main.go"), []byte("package main"), 0644)
 
-	m := &tuiModel{
-		workspace:   tempDir,
-		fileScanner: filemention.NewScanner(tempDir),
-	}
+	// Core lives in its own workspace so the mention scan still sees only the two
+	// fixture files; the model starts as a draft session.
+	client := newLazySessionTestCore(t)
+	m := newTUIModel(client, nil, "")
+	m.workspace = tempDir
+	m.fileScanner = filemention.NewScanner(tempDir)
 	m.composer = textarea.New()
 	m.composer.Focus()
 

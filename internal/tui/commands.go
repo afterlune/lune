@@ -149,6 +149,16 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 	return fmt.Sprintf("`%s` is unavailable while a task is running. Interrupt the task or wait for it to finish.", name)
 }
 
+// commandNeedsSession reports whether a slash command operates on a persisted session.
+// Draft sessions keep these commands unavailable until the first message is sent.
+func commandNeedsSession(name string) bool {
+	switch name {
+	case "/rewind", "/compact", "/fork", "/continue", "/discard", "/export", "/agents", "/ps", "/stop", "/logs":
+		return true
+	}
+	return false
+}
+
 // handleSlashCommand executes slash commands entered by the user.
 func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	if reason := m.slashCommandUnavailable(raw); reason != "" {
@@ -160,6 +170,11 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	cmdName := strings.ToLower(parts[0])
+
+	if m.sessionID == "" && commandNeedsSession(cmdName) {
+		m.addSystemEntry("No session yet — send a message first.")
+		return m, nil
+	}
 
 	switch cmdName {
 	case "/exit":
@@ -181,7 +196,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Cannot start a new session while a task is running.")
 			return m, nil
 		}
-		return m, m.startNewSession()
+		return m.startDraftSession()
 
 	case "/clear":
 		m.entries = nil

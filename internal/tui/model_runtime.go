@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -59,6 +60,57 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	m.applyPendingRequests(pending)
 	rt.SetUserInteractionAvailable(true)
 	m.updateLayout()
+	return nil
+}
+
+// ensureSession creates the draft session on first use so launching the TUI or
+// running /new never persists an empty session.
+func (m *tuiModel) ensureSession(ctx context.Context) error {
+	if m.sessionID != "" {
+		return nil
+	}
+	if m.client == nil {
+		return fmt.Errorf("core client is unavailable")
+	}
+
+	// bindSessionRuntime resets per-session state, so capture the deferred choices first.
+	title := m.pendingTitle
+	profile := m.pendingModelProfile
+	effort := m.reasoningEffort
+
+	created, err := m.client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		return err
+	}
+	if err := m.bindSessionRuntime(ctx, created.ID); err != nil {
+		_ = m.client.DeleteSession(ctx, created.ID)
+		return err
+	}
+
+	if title != "" {
+		if err := m.client.SetSessionTitle(ctx, created.ID, title); err != nil {
+			return err
+		}
+		m.sessionTitle = title
+		m.pendingTitle = ""
+	}
+	if profile != "" {
+		if err := applySessionModelProfile(ctx, m.client, created.ID, profile); err != nil {
+			return err
+		}
+		m.pendingModelProfile = ""
+		m.currentModelProfile = profile
+		m.currentModel = m.client.ModelForSession(ctx, created.ID)
+	}
+	if effort != "" {
+		if err := m.mutateSessionSettings(func(settings *core.SessionSettings) {
+			settings.ReasoningEffort = effort
+		}); err != nil {
+			return err
+		}
+		m.reasoningEffort = effort
+	}
+	m.refreshViewportContent()
 	return nil
 }
 

@@ -201,18 +201,6 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.addSystemEntry("Forked into new session: " + msg.session.ID)
 		return m, m.subscribeRuntimeEvents()
 
-	case sessionCreatedMsg:
-		if msg.err != nil {
-			m.addSystemEntry("New session failed: " + msg.err.Error())
-			return m, nil
-		}
-		if err := m.bindSessionRuntime(context.Background(), msg.session.ID); err != nil {
-			m.addSystemEntry("Failed to bind new session runtime: " + err.Error())
-			return m, nil
-		}
-		m.addSystemEntry("Started fresh session.")
-		return m, m.subscribeRuntimeEvents()
-
 	case planImplementedMsg:
 		if msg.err != nil {
 

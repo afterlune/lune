@@ -25,13 +25,18 @@ const (
 )
 
 type tuiModel struct {
-	client                   *core.Core
-	runtime                  *core.SessionRuntime
-	workspace                string
-	sessionID                string
-	sessionTitle             string
-	currentModel             string
-	currentModelProfile      string
+	client       *core.Core
+	runtime      *core.SessionRuntime
+	workspace    string
+	sessionID    string
+	sessionTitle string
+	// pendingTitle holds a /title value chosen before the draft session exists.
+	pendingTitle        string
+	currentModel        string
+	currentModelProfile string
+	// pendingModelProfile holds a model profile chosen before the draft session
+	// exists; it is applied when the first message creates the session.
+	pendingModelProfile      string
 	permissionMode           core.PermissionMode
 	planMode                 bool
 	savedMode                core.PermissionMode

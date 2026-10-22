@@ -160,6 +160,12 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		return m, nil
 	}
 
+	if err := m.ensureSession(context.Background()); err != nil {
+		m.addSystemEntry("Failed to create session: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
+
 	m.promptHistory = append(m.promptHistory, text)
 	m.historyIndex = len(m.promptHistory)
 	m.historyDraft = ""

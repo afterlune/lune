@@ -90,6 +90,20 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 	return m.openPermissionPicker()
 }
 
+// validateTuiModelProfile fails fast for a `-m` profile that does not exist, even
+// while the session is still a draft.
+func validateTuiModelProfile(client *core.Core, profile string) error {
+	if client == nil {
+		return fmt.Errorf("core client is unavailable")
+	}
+	for _, candidate := range client.ListModelProfiles() {
+		if strings.EqualFold(candidate.Profile, profile) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown model profile %q", profile)
+}
+
 // handleModelCommand handles the /model command.
 func (m *tuiModel) handleModelCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.client == nil {
@@ -118,6 +132,13 @@ func (m *tuiModel) handleModelCommand(parts []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if valid {
+			if m.sessionID == "" {
+				m.pendingModelProfile = targetProfile
+				m.currentModelProfile = targetProfile
+				m.addSystemEntry(fmt.Sprintf("Model `%s` will be used when the session starts with your first message.", targetProfile))
+				m.updateLayout()
+				return m, nil
+			}
 			err := m.mutateSessionSettings(func(settings *core.SessionSettings) {
 				settings.ModelProfile = targetProfile
 			})

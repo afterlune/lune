@@ -8,7 +8,7 @@ For detailed interface design, layout, keyboard shortcuts, and interaction life-
 
 - `internal/tui` uses the `luneCore` client for workspace and session management.
 - `SessionRuntime` handles turn submission, waiting, events, interruption, recovery, and user decisions for one session.
-- `Run` creates a clean, fresh session and opens its runtime, then projects Core events into the Bubble Tea view.
+- `Run` starts a draft session: launching the TUI or running `/new` persists nothing, and the first submitted message creates the Core session (applying deferred title/model/effort choices) before its runtime is opened. Core events are then projected into the Bubble Tea view.
 - The line-oriented CLI owns prompt input, commands, keyboard interruption, and approval prompts in `internal/cli`; it uses the same session runtime API.
 - `internal/tui` remains one package because its update loop and views share private model state; source files are split by command domain, runtime events, model state, transcript rendering, panels, and modals.
 
@@ -24,7 +24,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 - **Plan Review**: Interactive card triggered when a `<proposed_plan>` completes in Plan mode, offering same-context or new-context implementation. Approved plans remain archived; execution status comes from Core, without inferred step completion. The plan body itself uses a muted vertical rail from the purple `Proposed Plan` marker to the last body line instead of a filled card surface, and full-width rules separate task turns and delimit the plan block; the review option card keeps its card background.
 - **Model Recovery (`ActiveRecovery`)**: Interactive amber card for model rate limits or timeouts, offering retry (`Enter`) or discard (`Esc`).
 - **Keyboard Shortcuts**: Cheat sheet modal (`?` or `/shortcuts`) with a 3-column layout (Compose, Session, Transcript).
-- **Session Management**: Full lifecycle support with `/sessions`, `/resume [prefix]`, `/rewind [N]`, `/clear`, and `/title [name]`. `/resume` switches sessions without starting a model turn; `/continue` resumes a paused checkpoint.
+- **Session Management**: Full lifecycle support with `/sessions`, `/resume [prefix]`, `/rewind [N]`, `/clear`, and `/title [name]`. `/resume` switches sessions without starting a model turn; `/continue` resumes a paused checkpoint. `/new` returns to an unsaved draft session, and session-scoped commands report `No session yet — send a message first.` until the first message creates it.
 - **Queued Turns**: Continuous prompt entry while tasks are running, with FIFO queued cards pinned directly above the composer so streaming output can never scroll them away; `/cancel-queue` removes a queued turn and `Esc` interrupts the active task.
 - **Workspace Diff**: Read-only colored Git diff modal via `/diff [path]`. It reads unstaged changes and falls back to staged changes when no unstaged diff is available. Git writes use Core tools or an external Git client; there are no `/commit` or `/push` commands.
 

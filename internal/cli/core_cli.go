@@ -78,6 +78,17 @@ func applyCLISessionModelProfile(ctx context.Context, client cliCore, sessionID,
 	return client.SetSessionSettings(ctx, sessionID, settings)
 }
 
+// validateCLIModelProfile fails fast for a `-m` profile that does not exist, even
+// while the session is still a draft.
+func validateCLIModelProfile(client cliCore, profile string) error {
+	for _, candidate := range client.ListModelProfiles() {
+		if strings.EqualFold(candidate.Profile, profile) {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown model profile %q", profile)
+}
+
 var cliCommands = []cliCommandHelp{
 	{name: "/agents", usage: "/agents [id]", description: "Inspect live agents and subagents in this session."},
 	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
@@ -96,7 +107,7 @@ var cliCommands = []cliCommandHelp{
 	{name: "/mcp", usage: "/mcp [list|enable|disable|auth]", description: "Manage external MCP servers."},
 	{name: "/memory", usage: "/memory [list|add|remove|clear]", description: "View and manage workspace long-term memories."},
 	{name: "/model", usage: "/model [profile]", description: "View or change active model profile."},
-	{name: "/new", usage: "/new", description: "Start a new session."},
+	{name: "/new", usage: "/new", description: "Start a fresh draft session (saved with your first message)."},
 	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set mode: read-only, workspace, ask, full-access."},
 	{name: "/plan", usage: "/plan", description: "Toggle Plan mode (read-only exploration)."},
 	{name: "/ps", usage: "/ps", description: "List background processes and daemon commands."},
@@ -124,6 +135,28 @@ func cliHelpText() string {
 		lines = append(lines, fmt.Sprintf("  %-24s %s", command.usage, command.description))
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// cliCommandNeedsSession reports slash commands that operate on a persisted session.
+// The CLI stays in a draft until the first prompt creates the session.
+func cliCommandNeedsSession(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/rewind", "/compact", "/fork", "/detail", "/agents", "/review", "/continue", "/discard", "/ps", "/stop", "/logs", "/export", "/model", "/effort", "/title":
+		return true
+	}
+	return false
+}
+
+// cliSessionLabel renders the session identifier for status output.
+func cliSessionLabel(sessionID string) string {
+	if sessionID == "" {
+		return "(pending — created with your first message)"
+	}
+	return sessionID
 }
 
 type cliInputEvent struct {
@@ -173,19 +206,19 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			workspace = matches[0].Workspace
 		}
 		sessionID = targetID
-	} else {
-		saved, err := client.CreateSession(ctx, json.RawMessage("null"))
-		if err != nil {
-			return fmt.Errorf("create session: %w", err)
-		}
-		sessionID = saved.ID
-		sessionTitle = saved.Title
-		workspace = saved.Workspace
 	}
 
-	// Apply model profile if provided
+	// A draft session is created with the first prompt so launching the CLI never
+	// persists an empty session.
+	pendingModelProfile := ""
 	if opts.ModelProfile != "" {
-		if err := applyCLISessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
+		if sessionID == "" {
+			// Fail fast for an unknown profile; it is applied when the session exists.
+			if err := validateCLIModelProfile(client, opts.ModelProfile); err != nil {
+				return err
+			}
+			pendingModelProfile = opts.ModelProfile
+		} else if err := applyCLISessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
 			return fmt.Errorf("set model profile: %w", err)
 		}
 	}
@@ -206,11 +239,44 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		}
 	}
 
-	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("open session runtime: %w", err)
+	var runtime cliRuntime
+	if sessionID != "" {
+		opened, err := client.OpenSessionRuntime(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("open session runtime: %w", err)
+		}
+		runtime = opened
 	}
-	defer func() { _ = runtime.Close() }()
+	defer func() {
+		if runtime != nil {
+			_ = runtime.Close()
+		}
+	}()
+
+	ensureSession := func() error {
+		if sessionID != "" {
+			return nil
+		}
+		created, err := client.CreateSession(ctx, json.RawMessage("null"))
+		if err != nil {
+			return err
+		}
+		opened, err := client.OpenSessionRuntime(ctx, created.ID)
+		if err != nil {
+			if cleanupErr := client.DeleteSession(ctx, created.ID); cleanupErr != nil {
+				return fmt.Errorf("%w (cleanup failed: %v)", err, cleanupErr)
+			}
+			return err
+		}
+		sessionID, sessionTitle, workspace, runtime = created.ID, created.Title, created.Workspace, opened
+		if pendingModelProfile != "" {
+			if err := applyCLISessionModelProfile(ctx, client, sessionID, pendingModelProfile); err != nil {
+				return err
+			}
+			pendingModelProfile = ""
+		}
+		return nil
+	}
 	for {
 		if _, err := fmt.Fprint(stdout, "> "); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
@@ -220,6 +286,10 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			return fmt.Errorf("read input: %w", readErr)
 		}
 		line = strings.TrimSpace(line)
+		if sessionID == "" && cliCommandNeedsSession(line) {
+			fmt.Fprintln(stderr, "No session yet. Send a message first.")
+			continue
+		}
 		switch {
 		case line == "/help":
 			fmt.Fprint(stdout, cliHelpText())
@@ -228,22 +298,12 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		case line == "/clear":
 			fmt.Fprint(stdout, "\033[H\033[2J")
 		case line == "/new":
-			created, err := client.CreateSession(ctx, json.RawMessage("null"))
-			if err != nil {
-				fmt.Fprintf(stderr, "error: create session: %v\n", err)
-			} else {
-				newRuntime, openErr := client.OpenSessionRuntime(ctx, created.ID)
-				if openErr != nil {
-					fmt.Fprintf(stderr, "error: open session runtime: %v\n", openErr)
-					if cleanupErr := client.DeleteSession(ctx, created.ID); cleanupErr != nil {
-						fmt.Fprintf(stderr, "error: remove unused session %s: %v\n", created.ID, cleanupErr)
-					}
-				} else {
-					_ = runtime.Close()
-					sessionID, sessionTitle, workspace, runtime = created.ID, created.Title, created.Workspace, newRuntime
-					fmt.Fprintln(stdout, "New session.")
-				}
+			if runtime != nil {
+				_ = runtime.Close()
+				runtime = nil
 			}
+			sessionID, sessionTitle, workspace = "", "", ""
+			fmt.Fprintln(stdout, "Started a fresh session; it is saved with your first message.")
 		case line == "/plan":
 			if !planMode {
 				previousMode := client.PermissionMode()
@@ -263,9 +323,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				fmt.Fprintln(stdout, "Exited Plan mode (permissions restored).")
 			}
 		case line == "/status":
-			handleCoreCLIStatus(client, sessionID, sessionTitle, planMode, stdout)
+			handleCoreCLIStatus(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
 		case line == "/context":
-			handleCoreCLIContext(client, sessionID, sessionTitle, planMode, stdout)
+			handleCoreCLIContext(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
 			handleCoreCLIMemory(client, line, stdout, stderr)
 		case line == "/ps" || strings.HasPrefix(line, "/ps "):
@@ -291,7 +351,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			if resumeErr != nil {
 				fmt.Fprintf(stderr, "error: resume session: %v\n", resumeErr)
 			} else if newRuntime != nil {
-				_ = runtime.Close()
+				if runtime != nil {
+					_ = runtime.Close()
+				}
 				sessionID = newID
 				runtime = newRuntime
 				if s, err := client.GetSession(ctx, sessionID); err == nil {
@@ -333,7 +395,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 						fmt.Fprintf(stderr, "error: remove unused fork %s: %v\n", newSession.ID, cleanupErr)
 					}
 				} else {
-					_ = runtime.Close()
+					if runtime != nil {
+						_ = runtime.Close()
+					}
 					sessionID, sessionTitle, workspace, runtime = newSession.ID, newSession.Title, newSession.Workspace, newRuntime
 					fmt.Fprintf(stdout, "Forked to new session: %s\n", sessionID)
 				}
@@ -387,6 +451,10 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		case strings.HasPrefix(line, "/"):
 			fmt.Fprintf(stderr, "Unknown command %q. Available commands: %s\n", line, strings.Join(cliCommandNames(), " "))
 		default:
+			if err := ensureSession(); err != nil {
+				fmt.Fprintf(stderr, "error: create session: %v\n", err)
+				continue
+			}
 			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)

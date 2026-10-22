@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,11 +10,32 @@ import (
 	core "github.com/afterlune/luneCore"
 )
 
-func (m *tuiModel) startNewSession() tea.Cmd {
-	return func() tea.Msg {
-		session, err := m.client.CreateSession(context.Background(), json.RawMessage("null"))
-		return sessionCreatedMsg{session: session, err: err}
+func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
+	if m.runtime != nil {
+		if err := m.runtime.Close(); err != nil {
+			m.addSystemEntry("Failed to close the current session: " + err.Error())
+			return m, nil
+		}
 	}
+	if m.runtimeCancel != nil {
+		m.runtimeCancel()
+		m.runtimeCancel = nil
+	}
+
+	profile := m.pendingModelProfile
+	effort := m.reasoningEffort
+
+	m.roundsCollapsedByUser = false
+	m.resetSessionState()
+	m.sessionID = ""
+	m.runtime = nil
+	m.sessionTitle = ""
+	m.pendingTitle = ""
+	m.pendingModelProfile = profile
+	m.reasoningEffort = effort
+	m.updateLayout()
+	m.addSystemEntry("Started a fresh session. It is saved with your first message.")
+	return m, nil
 }
 
 type compactDoneMsg struct {
@@ -24,11 +44,6 @@ type compactDoneMsg struct {
 }
 
 type sessionForkedMsg struct {
-	session core.Session
-	err     error
-}
-
-type sessionCreatedMsg struct {
 	session core.Session
 	err     error
 }
@@ -463,6 +478,13 @@ func (m *tuiModel) handleRewindCommand(parts []string) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleTitleCommand(parts []string) (tea.Model, tea.Cmd) {
 	if len(parts) > 1 {
 		newTitle := strings.TrimSpace(strings.Join(parts[1:], " "))
+		if m.sessionID == "" {
+			m.pendingTitle = newTitle
+			m.sessionTitle = newTitle
+			m.updateLayout()
+			m.addSystemEntry(fmt.Sprintf("Title `%s` will be used when the session starts with your first message.", newTitle))
+			return m, nil
+		}
 		if m.client != nil {
 			if err := m.client.SetSessionTitle(context.Background(), m.sessionID, newTitle); err != nil {
 				m.addSystemEntry("Failed to set session title: " + err.Error())
@@ -477,7 +499,11 @@ func (m *tuiModel) handleTitleCommand(parts []string) (tea.Model, tea.Cmd) {
 		if title == "" {
 			title = "<untitled>"
 		}
-		m.addSystemEntry(fmt.Sprintf("Current session title: `%s` (ID: `%s`)", title, m.sessionID))
+		sessionID := m.sessionID
+		if sessionID == "" {
+			sessionID = "(pending)"
+		}
+		m.addSystemEntry(fmt.Sprintf("Current session title: `%s` (ID: `%s`)", title, sessionID))
 	}
 	return m, nil
 }

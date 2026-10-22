@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -51,6 +50,7 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	var sessionID string
 	var sessionTitle string
+	pendingModelProfile := ""
 
 	if opts.SessionID != "" {
 		targetID := ""
@@ -78,18 +78,17 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 			sessionTitle = matches[0].Title
 		}
 		sessionID = targetID
-	} else {
-		saved, err := client.CreateSession(ctx, json.RawMessage("null"))
-		if err != nil {
-			return fmt.Errorf("create initial session: %w", err)
-		}
-		sessionID = saved.ID
-		sessionTitle = saved.Title
 	}
 
-	// Apply model profile if provided
+	// Apply the model profile now for an existing session. A draft session keeps it
+	// pending so launching the TUI never persists an empty session.
 	if opts.ModelProfile != "" {
-		if err := applySessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
+		if sessionID == "" {
+			if err := validateTuiModelProfile(client, opts.ModelProfile); err != nil {
+				return fmt.Errorf("set model profile: %w", err)
+			}
+			pendingModelProfile = opts.ModelProfile
+		} else if err := applySessionModelProfile(ctx, client, sessionID, opts.ModelProfile); err != nil {
 			return fmt.Errorf("set model profile: %w", err)
 		}
 	}
@@ -110,10 +109,15 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 		}
 	}
 
-	// Open session runtime
-	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("open session runtime: %w", err)
+	// Open session runtime for an existing session; draft sessions open theirs when
+	// the first message creates them.
+	var runtime *core.SessionRuntime
+	if sessionID != "" {
+		opened, err := client.OpenSessionRuntime(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("open session runtime: %w", err)
+		}
+		runtime = opened
 	}
 
 	// Initialize model
@@ -130,6 +134,7 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	model := newTUIModel(client, runtime, sessionID)
 	model.terminalTitle = terminalTitle
 	model.settingsStore = userSettings
+	model.pendingModelProfile = pendingModelProfile
 	if settingsErr != nil {
 		model.addSystemEntry("Could not load the saved TUI theme; using `auto`: " + settingsErr.Error())
 	}
@@ -141,12 +146,14 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 		model.savedMode = savedMode
 		model.permissionMode = core.PermissionReadOnly
 	}
-	if opts.ModelProfile != "" {
+	if opts.ModelProfile != "" && sessionID != "" {
 		model.currentModel = client.ModelForSession(ctx, sessionID)
 	}
 
-	runtime.SetUserInteractionAvailable(true)
-	defer runtime.SetUserInteractionAvailable(false)
+	if runtime != nil {
+		runtime.SetUserInteractionAvailable(true)
+		defer runtime.SetUserInteractionAvailable(false)
+	}
 	defer model.cancelMCPAuthentication(false)
 
 	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)

@@ -574,9 +574,33 @@ func newApprovalCLICore(request core.ApprovalRequest) *approvalCLICore {
 
 func runCLI(t *testing.T, client cliCore, input string, watchKeys keyEventWatcher) (string, string) {
 	t.Helper()
+	// Most CLI tests exercise in-session behavior, so seed a persisted session first
+	// and reuse the fake's existing session when one is already set up.
+	seed := core.Session{}
+	if latest, ok, err := client.LatestSession(context.Background()); err == nil && ok {
+		seed = latest
+	}
+	if seed.ID == "" {
+		created, err := client.CreateSession(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		seed = created
+	}
+	return runCLIWithOptions(t, client, input, watchKeys, LaunchOptions{SessionID: seed.ID})
+}
+
+// runCLIDraft runs the chat loop against a draft session that has no persisted row.
+func runCLIDraft(t *testing.T, client cliCore, input string, watchKeys keyEventWatcher) (string, string) {
+	t.Helper()
+	return runCLIWithOptions(t, client, input, watchKeys, LaunchOptions{})
+}
+
+func runCLIWithOptions(t *testing.T, client cliCore, input string, watchKeys keyEventWatcher, opts LaunchOptions) (string, string) {
+	t.Helper()
 	var stdout, stderr strings.Builder
-	if err := runCoreChatLoop(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, watchKeys); err != nil {
-		t.Fatalf("runCoreChatLoop: %v", err)
+	if err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, watchKeys, opts); err != nil {
+		t.Fatalf("runCoreChatLoopWithOptions: %v", err)
 	}
 	return stdout.String(), stderr.String()
 }
@@ -953,21 +977,76 @@ func TestChatLoopDiscardsPausedCheckpointWhenStartingNewPrompt(t *testing.T) {
 	}
 }
 
-func TestCLICleanLaunchCreatesNewSession(t *testing.T) {
+func TestCLICleanLaunchKeepsDraftUntilFirstPrompt(t *testing.T) {
 	client := &fakeCLICore{
 		latest: core.Session{ID: "old-session-123", Title: "Old Session"},
 	}
-	stdout, stderr := runCLI(t, client, "/exit\n", nil)
+	// Launching and exiting without a prompt must not create a session.
+	stdout, stderr := runCLIDraft(t, client, "/exit\n", nil)
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
-	_ = stdout
-	// sequence must be 1 because CreateSession was called on startup instead of reusing old-session-123
-	if client.sequence != 1 {
-		t.Fatalf("client.sequence = %d, want 1 (new session created on launch)", client.sequence)
+	if strings.Contains(stdout, "session-") {
+		t.Fatalf("stdout = %q, want no session banner", stdout)
 	}
-	if client.latest.ID == "old-session-123" {
-		t.Fatalf("latest session ID = %q, want new session created", client.latest.ID)
+	if client.sequence != 0 {
+		t.Fatalf("client.sequence = %d, want 0 (no session created on launch)", client.sequence)
+	}
+	if client.latest.ID != "old-session-123" {
+		t.Fatalf("latest session ID = %q, want the previous session untouched", client.latest.ID)
+	}
+
+	// The first prompt creates exactly one session and runs the turn in it.
+	client.latest = core.Session{ID: "old-session-123", Title: "Old Session"}
+	stdout, stderr = runCLIDraft(t, client, "hello\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if client.sequence != 1 {
+		t.Fatalf("client.sequence = %d, want 1 (first prompt creates the session)", client.sequence)
+	}
+	if len(client.inputs) != 1 || string(client.inputs[0].Input.Raw) != `"hello"` {
+		t.Fatalf("inputs = %#v, want the first prompt submitted", client.inputs)
+	}
+	_ = stdout
+}
+
+func TestCLINewStaysDraft(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLIDraft(t, client, "/new\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if client.sequence != 0 {
+		t.Fatalf("client.sequence = %d, want 0 (/new must not persist a session)", client.sequence)
+	}
+	if !strings.Contains(stdout, "Started a fresh session; it is saved with your first message.") {
+		t.Fatalf("stdout = %q, want draft notice", stdout)
+	}
+}
+
+func TestCLIDraftRejectsSessionCommands(t *testing.T) {
+	client := &fakeCLICore{}
+	_, stderr := runCLIDraft(t, client, "/rewind\n/fork\n/export\n/exit\n", nil)
+	if strings.Count(stderr, "No session yet. Send a message first.") != 3 {
+		t.Fatalf("stderr = %q, want three draft-session notices", stderr)
+	}
+	if client.sequence != 0 {
+		t.Fatalf("client.sequence = %d, want 0", client.sequence)
+	}
+}
+
+func TestCLIStatusOnDraftReportsPendingSession(t *testing.T) {
+	client := &fakeCLICore{}
+	stdout, stderr := runCLIDraft(t, client, "/status\n/exit\n", nil)
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if !strings.Contains(stdout, "(pending — created with your first message)") {
+		t.Fatalf("stdout = %q, want the pending session label", stdout)
+	}
+	if client.sequence != 0 {
+		t.Fatalf("client.sequence = %d, want 0", client.sequence)
 	}
 }
 

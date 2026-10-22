@@ -31,13 +31,18 @@ func (m *tuiModel) renderStatusTable() string {
 		effort = "default"
 	}
 
+	sessionLabel := m.sessionID
+	if sessionLabel == "" {
+		sessionLabel = "(pending — created with your first message)"
+	}
+
 	lines := []string{
 		fmt.Sprintf("Model:          %s", modelName),
 		fmt.Sprintf("Reasoning Effort: %s", effort),
 		fmt.Sprintf("Directory:      %s", m.workspace),
 		fmt.Sprintf("Permissions:    %s", permStr),
 		fmt.Sprintf("Thread name:    %s", title),
-		fmt.Sprintf("Session:        %s", m.sessionID),
+		fmt.Sprintf("Session:        %s", sessionLabel),
 		fmt.Sprintf("Theme:          %s", CurrentThemeMode()),
 		fmt.Sprintf("Task:           %s", m.taskStatusLabel()),
 		fmt.Sprintf("Queued:         %d waiting", len(m.queuedTurns)),
@@ -157,7 +162,11 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 	lines = append(lines, "\n**Session & Model:**")
 	lines = append(lines, fmt.Sprintf("- Active Model: `%s`", modelName))
-	lines = append(lines, fmt.Sprintf("- Session ID: `%s`", m.sessionID))
+	sessionIDLabel := m.sessionID
+	if sessionIDLabel == "" {
+		sessionIDLabel = "(pending — created with your first message)"
+	}
+	lines = append(lines, fmt.Sprintf("- Session ID: `%s`", sessionIDLabel))
 	lines = append(lines, fmt.Sprintf("- Thread: `%s`", title))
 
 	// 3. Capabilities & Tools
