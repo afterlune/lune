@@ -63,7 +63,7 @@ func TestToolSummaryUsesTransientArgumentsRegardlessOfEventOrder(t *testing.T) {
 			if entry.ToolArgs != "" {
 				t.Fatalf("transient tool arguments should not be retained, got %q", entry.ToolArgs)
 			}
-			collapsed := ansi.Strip(renderRoundChildEntry(entry, false, 120))
+			collapsed := ansi.Strip(renderRoundChildEntry(entry, 120))
 			if !strings.Contains(collapsed, "Read internal/tui/model.go") || strings.Contains(collapsed, "Read read_file") {
 				t.Fatalf("collapsed execution step should show the file path:\n%s", collapsed)
 			}

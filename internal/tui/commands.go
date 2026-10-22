@@ -21,7 +21,7 @@ type builtinCommandSpec struct {
 var builtinCommands = []builtinCommandSpec{
 	{Command: "/new", Description: "start a new chat during a conversation"},
 	{Command: "/clear", Description: "clear transcript history from the current view"},
-	{Command: "/plan", Description: "switch to Plan mode (read-only exploration)"},
+	{Command: "/plan", Description: "toggle Plan mode (read-only exploration)"},
 	{Command: "/permissions", Description: "choose a permission mode: read-only, workspace, ask, full-access", AvailableDuringTask: true},
 	{Command: "/model", Description: "choose an active model profile", AvailableDuringTask: true},
 	{Command: "/effort", Description: "choose the reasoning effort level interactively", AvailableDuringTask: true},

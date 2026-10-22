@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -273,5 +275,61 @@ func TestEscapePlanReviewKeepsPlanMode(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "continue discussing") {
 		t.Fatal("expected Esc cancellation to leave continuation guidance")
+	}
+}
+
+func TestShiftTabTogglesPlanModeWithGuards(t *testing.T) {
+	workspace := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	m := newTUIModel(client, nil, "shift-tab-plan")
+	m.width, m.height = 100, 30
+	m.updateLayout()
+	normalMode := m.permissionMode
+
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if !m.planMode || m.permissionMode != core.PermissionReadOnly || client.PermissionMode() != core.PermissionReadOnly {
+		t.Fatalf("Shift+Tab should enter Plan mode with read-only permissions, plan=%v model=%s client=%s", m.planMode, m.permissionMode, client.PermissionMode())
+	}
+	if m.savedMode != normalMode {
+		t.Fatalf("expected saved permission %s, got %s", normalMode, m.savedMode)
+	}
+
+	m.handleSlashCommand("/permissions")
+	if m.permissionPicker != nil {
+		t.Fatal("permissions picker must stay unavailable while Plan mode is active")
+	}
+
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if m.planMode || m.permissionMode != normalMode || client.PermissionMode() != normalMode {
+		t.Fatalf("Shift+Tab should exit Plan mode and restore %s, plan=%v model=%s client=%s", normalMode, m.planMode, m.permissionMode, client.PermissionMode())
+	}
+
+	m.running = true
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if m.planMode {
+		t.Fatal("Shift+Tab must not enter Plan mode while a task is running")
+	}
+	m.running = false
+
+	m.activeQuestion = &ActiveQuestion{}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if m.planMode {
+		t.Fatal("Shift+Tab must not enter Plan mode while an interaction is pending")
+	}
+	if len(m.entries) == 0 || !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "pending interaction") {
+		t.Fatalf("expected a pending-interaction guard message, got %#v", m.entries)
 	}
 }

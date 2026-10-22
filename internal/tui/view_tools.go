@@ -8,6 +8,28 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+const toolPreviewLineLimit = 3
+
+// toolOutputPreview returns the visible output window for a tool step.
+// Successful finished tools show their first lines, while running or failed
+// tools show their last lines so live progress and error summaries stay visible.
+func toolOutputPreview(entry TranscriptEntry) (lines []string, hidden, total int) {
+	output := strings.TrimSpace(entry.ToolOutput)
+	if output == "" {
+		return nil, 0, 0
+	}
+	outLines := strings.Split(output, "\n")
+	total = len(outLines)
+	if entry.ToolExpanded || total <= toolPreviewLineLimit {
+		return outLines, 0, total
+	}
+	hasNonZeroExit := entry.ToolExitCode != nil && *entry.ToolExitCode != 0
+	if entry.ToolRunning || entry.ToolFailed || hasNonZeroExit {
+		return outLines[total-toolPreviewLineLimit:], total - toolPreviewLineLimit, total
+	}
+	return outLines[:toolPreviewLineLimit], total - toolPreviewLineLimit, total
+}
+
 // toolDurationBadge renders the muted duration suffix for one tool step.
 // Running steps show live elapsed time so long commands are visibly moving;
 // finished steps keep the final duration once it is meaningful.
@@ -85,21 +107,9 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		return header + "\n" + strings.Join(bodyLines, "\n")
 	}
 
-	outLines := strings.Split(output, "\n")
-	previewCount := 3
-	if entry.ToolExpanded || len(outLines) <= previewCount {
-		previewCount = len(outLines)
-	}
-
-	// Show the tail (last 3 lines) when collapsed so error summaries, tracebacks,
-	// and final results are immediately visible just like Codex.
-	startIdx := 0
-	if !entry.ToolExpanded && len(outLines) > previewCount {
-		startIdx = len(outLines) - previewCount
-	}
-
-	for i := 0; i < previewCount; i++ {
-		line := sanitizeAndTruncateLine(outLines[startIdx+i], maxLineLen)
+	outLines, hidden, total := toolOutputPreview(entry)
+	for i, outLine := range outLines {
+		line := sanitizeAndTruncateLine(outLine, maxLineLen)
 		if i == 0 {
 			bodyLines = append(bodyLines, "  "+branch+styleTextMuted().Render(line))
 		} else {
@@ -107,14 +117,13 @@ func renderToolEntry(entry TranscriptEntry, width int) string {
 		}
 	}
 
-	if len(outLines) > previewCount && !entry.ToolExpanded {
-		remaining := len(outLines) - previewCount
+	if hidden > 0 {
 		expandHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
-			Render(fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", remaining))
+			Render(fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", hidden))
 		bodyLines = append(bodyLines, expandHint)
-	} else if entry.ToolExpanded && len(outLines) > 3 {
+	} else if entry.ToolExpanded && total > toolPreviewLineLimit {
 		collapseHint := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).
-			Render(fmt.Sprintf("  - collapse %d lines (click)", len(outLines)))
+			Render(fmt.Sprintf("  - collapse %d lines (click)", total))
 		bodyLines = append(bodyLines, collapseHint)
 	}
 
@@ -361,7 +370,7 @@ func renderExpandedToolRound(entries []TranscriptEntry, startIdx int, live bool,
 	childWidth := max(20, width-4)
 
 	for k, entry := range entries {
-		childBlock := renderRoundChildEntry(entry, live, childWidth)
+		childBlock := renderRoundChildEntry(entry, childWidth)
 		childLines := strings.Split(childBlock, "\n")
 		childStart := len(allLines)
 		for _, cl := range childLines {
@@ -380,9 +389,9 @@ func renderExpandedToolRound(entries []TranscriptEntry, startIdx int, live bool,
 }
 
 // renderRoundChildEntry renders an individual step inside an expanded tool round tree.
-// Compact 1-line header (`› Read go.mod`, `› Thought for 1.6s`, `› Ran git status --short`)
-// when collapsed, or inline details when clicked (`ToolExpanded` / `ReasoningExpanded` / `SubagentExpanded`) or running.
-func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) string {
+// Tool steps show a compact three-line output preview by default; clicking expands the
+// full output through ToolExpanded, and reasoning/subagent steps use their own toggles.
+func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 	th := activeTheme()
 	mutedChevron := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("› ")
 	openChevron := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("⌄ ")
@@ -502,35 +511,29 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		// File changes (Added / Edited / Deleted)
 		if !entry.ToolRunning && !isFail && len(entry.ToolChanges) > 0 {
 			ch := entry.ToolChanges[0]
-			adds, dels := ch.Added, ch.Removed
-			if adds == 0 && dels == 0 {
-				for _, dl := range ch.Lines {
-					switch dl.Kind {
-					case "add", "+":
-						adds++
-					case "delete", "remove", "-":
-						dels++
-					}
-				}
-			}
-			actionWord := "Edited"
-			if strings.EqualFold(entry.ToolName, "write_file") || (adds > 0 && dels == 0 && len(ch.Lines) > 0 && ch.Lines[0].OldLine == 0) {
-				actionWord = "Added"
-			} else if adds == 0 && dels > 0 {
-				actionWord = "Deleted"
-			}
+			adds, dels := fileChangeCounts(ch)
+			actionWord := fileChangeActionWord(entry, ch, adds, dels)
 			actionStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render(actionWord + " ")
 			pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(ch.Path)
 			addStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(fmt.Sprintf("+%d", adds))
 			delStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Render(fmt.Sprintf("-%d", dels))
 			header := fmt.Sprintf("%s%s%s (%s %s)", prefix, actionStyled, pathStyled, addStyled, delStyled)
+
 			if !entry.ToolExpanded {
-				return header
+				out := []string{header}
+				for _, row := range renderFileChangeRows(ch, max(20, width-6), toolPreviewLineLimit) {
+					out = append(out, "  "+row)
+				}
+				if len(ch.Lines) > toolPreviewLineLimit {
+					out = append(out, styleTextMuted().Render(
+						fmt.Sprintf("  + %d lines (click to expand)", len(ch.Lines)-toolPreviewLineLimit)))
+				}
+				return strings.Join(out, "\n")
 			}
+
 			card := renderFileChangesCard(entry, max(20, width-4))
 			cardLines := strings.Split(card, "\n")
-			var out []string
-			out = append(out, header)
+			out := []string{header}
 			for i := 1; i < len(cardLines); i++ {
 				out = append(out, "  "+cardLines[i])
 			}
@@ -596,38 +599,35 @@ func renderRoundChildEntry(entry TranscriptEntry, liveRound bool, width int) str
 		targetStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(targetText)
 		header := prefix + actionStyled + targetStyled + toolDurationBadge(entry)
 
-		// Show details below the child header when expanded by user, or while actively running / failed in a live round
-		showDetails := entry.ToolExpanded || entry.ToolRunning || (liveRound && isFail)
-		if !showDetails {
-			return header
-		}
-
 		output := strings.TrimSpace(entry.ToolOutput)
 		branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
 		if output == "" {
 			if entry.ToolRunning {
 				return header + "\n  " + branch + styleTextMuted().Render("Running...")
 			}
-			return header + "\n  " + branch + styleTextMuted().Render("(no output)")
+			if entry.ToolExpanded {
+				return header + "\n  " + branch + styleTextMuted().Render("(no output)")
+			}
+			return header
 		}
 
-		outLines := strings.Split(output, "\n")
-		previewCount := len(outLines)
-		startLineIdx := 0
-		if !entry.ToolExpanded && len(outLines) > 3 {
-			previewCount = 3
-			startLineIdx = len(outLines) - 3
-		}
+		outLines, hidden, total := toolOutputPreview(entry)
 		maxLineLen := max(20, width-8)
-		var detailLines []string
-		detailLines = append(detailLines, header)
-		for i := 0; i < previewCount; i++ {
-			line := sanitizeAndTruncateLine(outLines[startLineIdx+i], maxLineLen)
+		detailLines := []string{header}
+		for i, outLine := range outLines {
+			line := sanitizeAndTruncateLine(outLine, maxLineLen)
 			if i == 0 {
 				detailLines = append(detailLines, "  "+branch+styleTextMuted().Render(line))
 			} else {
 				detailLines = append(detailLines, "    "+styleTextMuted().Render(line))
 			}
+		}
+		if hidden > 0 {
+			detailLines = append(detailLines, styleTextMuted().Render(
+				fmt.Sprintf("  + %d lines (click to expand · Ctrl+T for full output)", hidden)))
+		} else if entry.ToolExpanded && total > toolPreviewLineLimit {
+			detailLines = append(detailLines, styleTextMuted().Render(
+				fmt.Sprintf("  - collapse %d lines (click)", total)))
 		}
 		return strings.Join(detailLines, "\n")
 	}

@@ -52,11 +52,11 @@ The tool permission setting has four modes:
 - `full-access`: registered tools run without approval and may use current-user filesystem access; extremely dangerous commands are always blocked.
   `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；极度危险命令始终被阻止。
 
-Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. In the TUI, `Shift+Tab` cycles through the four modes and `/permissions <mode>` selects one directly.
-自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。TUI 中按 `Shift+Tab` 循环切换四档，也可用 `/permissions <mode>` 直接选择。
+Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. In the TUI, `/permissions` opens the permission selector and `/permissions <mode>` selects a mode directly; `Shift+Tab` toggles Plan mode instead of cycling permissions.
+自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。TUI 中 `/permissions` 打开权限选择器，`/permissions <mode>` 可直接选择权限档位；`Shift+Tab` 用于切换 Plan 模式，不再循环权限档位。
 
-Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` and `Shift+Tab` cannot raise access while Plan mode is active. Choosing an implementation option in plan review exits Plan mode and restores the previous mode before implementation starts. External-directory reads and read-only web tools still require approval.
-Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 和 `Shift+Tab` 均不能提高权限。在计划审查中选择实施时，会先退出 Plan 模式并恢复之前的档位，再启动实施。工作区外目录读取和只读 web 工具仍需授权。
+Plan mode locks the active permission mode to `read-only` for its duration. The TUI remembers the previous mode and restores it when Plan mode ends; `/permissions` cannot raise access while Plan mode is active. `Shift+Tab` or `/plan` exits Plan mode and restores the previous mode. Choosing an implementation option in plan review also exits Plan mode and restores the previous mode before implementation starts. External-directory reads and read-only web tools still require approval.
+Plan 模式期间会将当前权限档位锁定为 `read-only`。TUI 会记住进入前的档位，并在退出 Plan 模式时恢复；Plan 模式期间，`/permissions` 不能提高权限。按 `Shift+Tab` 或执行 `/plan` 会退出 Plan 模式并恢复之前的档位。在计划审查中选择实施时，也会先退出 Plan 模式并恢复之前的档位，再启动实施。工作区外目录读取和只读 web 工具仍需授权。
 
 Approved commands and commands run under `full-access` have network access enabled by default. `full-access` is also supported when running as root in container environments (e.g. Docker, Podman, WSL). When sandboxing causes container conflicts or native execution is preferred, the OS sandbox can be bypassed using the `--no-sandbox` flag or `LUNE_SANDBOX=off` environment variable.
 已批准的命令与 `full-access` 模式下的命令默认允许访问网络。在容器环境（如 Docker、Podman、WSL）中以 root 运行时亦支持 `full-access` 模式。当沙箱产生容器环境冲突或需要原生执行时，可通过 `--no-sandbox` 参数或 `LUNE_SANDBOX=off` 环境变量跳过 OS 沙箱。

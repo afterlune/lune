@@ -326,11 +326,17 @@ func TestModelUpdateKeys(t *testing.T) {
 	m.height = 30
 	m.updateLayout()
 
-	// Shift+Tab cycles mode
+	// Shift+Tab toggles Plan mode and locks permissions to read-only.
+	normalMode := m.permissionMode
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
-	if m.permissionMode != core.PermissionAsk {
-		t.Errorf("expected permissionMode to cycle to ask, got %s", m.permissionMode)
+	if !m.planMode || m.permissionMode != core.PermissionReadOnly {
+		t.Fatalf("expected Shift+Tab to enter Plan mode with read-only permissions, plan=%v permission=%s", m.planMode, m.permissionMode)
+	}
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	m = mod.(*tuiModel)
+	if m.planMode || m.permissionMode != normalMode {
+		t.Fatalf("expected Shift+Tab to exit Plan mode and restore %s, plan=%v permission=%s", normalMode, m.planMode, m.permissionMode)
 	}
 
 	// Autocomplete trigger
@@ -886,6 +892,9 @@ func TestShortcutsPanelRendering(t *testing.T) {
 	if !strings.Contains(strippedWide, "Shift+Enter") || !strings.Contains(strippedWide, "Shift+Tab") || !strings.Contains(strippedWide, "Mouse Drag") || !strings.Contains(strippedWide, "Select all input") {
 		t.Errorf("expected shortcut keys, got: %s", strippedWide)
 	}
+	if !strings.Contains(strippedWide, "Toggle Plan mode") || !strings.Contains(strippedWide, "Switch permission mode") {
+		t.Errorf("expected Plan and permission shortcut entries, got: %s", strippedWide)
+	}
 	if !strings.Contains(strippedWide, "esc or ? to close") {
 		t.Errorf("expected close hint, got: %s", strippedWide)
 	}
@@ -1041,6 +1050,74 @@ func TestToolExpandAndCollapseHint(t *testing.T) {
 	renderedExpanded := renderEntry(toolEntry, 80)
 	if !strings.Contains(renderedExpanded, "collapse 6 lines (click)") {
 		t.Errorf("expected collapse hint, got: %s", renderedExpanded)
+	}
+}
+
+func TestRoundToolPreviewUsesHeadForSuccessAndTailForFailure(t *testing.T) {
+	success := TranscriptEntry{
+		Kind:        KindTool,
+		ToolName:    "run_command",
+		ToolCommand: "git status --short",
+		ToolOutput:  "line1\nline2\nline3\nline4\nline5",
+	}
+	rendered := ansi.Strip(renderRoundChildEntry(success, 100))
+	if !strings.Contains(rendered, "line1") || !strings.Contains(rendered, "line3") {
+		t.Fatalf("expected successful tool preview to show its first lines, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "line4") || strings.Contains(rendered, "line5") {
+		t.Fatalf("expected successful tool preview to stop after three lines, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "+ 2 lines (click to expand · Ctrl+T for full output)") {
+		t.Fatalf("expected a three-line expand hint, got:\n%s", rendered)
+	}
+
+	exitOne := 1
+	failed := success
+	failed.ToolExitCode = &exitOne
+	failedRendered := ansi.Strip(renderRoundChildEntry(failed, 100))
+	if strings.Contains(failedRendered, "line1") || !strings.Contains(failedRendered, "line5") {
+		t.Fatalf("expected failed tool preview to show its last lines, got:\n%s", failedRendered)
+	}
+
+	success.ToolExpanded = true
+	expanded := ansi.Strip(renderRoundChildEntry(success, 100))
+	if !strings.Contains(expanded, "line5") || !strings.Contains(expanded, "- collapse 5 lines (click)") {
+		t.Fatalf("expected expanded tool output and collapse hint, got:\n%s", expanded)
+	}
+}
+
+func TestRoundFileChangePreviewShowsThreeDiffLines(t *testing.T) {
+	entry := TranscriptEntry{
+		Kind:     KindTool,
+		ToolName: "write_file",
+		ToolChanges: []publictool.FileChange{{
+			Path:  "internal/tui/view.go",
+			Added: 5,
+			Lines: []publictool.DiffLine{
+				{Kind: "add", NewLine: 1, Text: "line one"},
+				{Kind: "add", NewLine: 2, Text: "line two"},
+				{Kind: "add", NewLine: 3, Text: "line three"},
+				{Kind: "add", NewLine: 4, Text: "line four"},
+				{Kind: "add", NewLine: 5, Text: "line five"},
+			},
+		}},
+	}
+
+	preview := ansi.Strip(renderRoundChildEntry(entry, 100))
+	if !strings.Contains(preview, "Added internal/tui/view.go (+5 -0)") ||
+		!strings.Contains(preview, "line one") ||
+		!strings.Contains(preview, "line three") ||
+		!strings.Contains(preview, "+ 2 lines (click to expand)") {
+		t.Fatalf("expected a three-line file diff preview and hint, got:\n%s", preview)
+	}
+	if strings.Contains(preview, "line four") || strings.Contains(preview, "line five") {
+		t.Fatalf("expected the file diff preview to stop after three lines, got:\n%s", preview)
+	}
+
+	entry.ToolExpanded = true
+	expanded := ansi.Strip(renderRoundChildEntry(entry, 100))
+	if !strings.Contains(expanded, "line five") || !strings.Contains(expanded, "Hide details") {
+		t.Fatalf("expected the full file diff after expansion, got:\n%s", expanded)
 	}
 }
 
@@ -1204,7 +1281,7 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 			Kind:        KindTool,
 			ToolName:    "run_command",
 			ToolCommand: "git status --short",
-			ToolOutput:  " M internal/tui/view.go\n M internal/tui/model.go",
+			ToolOutput:  " M internal/tui/view.go\n M internal/tui/model.go\n M internal/tui/view_tools.go\n M internal/tui/view_footer.go\n M internal/tui/update_keys.go\n M internal/tui/command_model.go",
 		},
 	}
 
@@ -1222,6 +1299,11 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		!strings.Contains(liveView, "│ › Read go.mod") ||
 		!strings.Contains(liveView, "│ › Ran git status --short") {
 		t.Fatalf("expected live round child tree lines, got:\n%s", liveView)
+	}
+	if !strings.Contains(liveView, "└ cmd/") ||
+		!strings.Contains(liveView, "└ module github.com/afterlune/lune") ||
+		!strings.Contains(liveView, "M internal/tui/view.go") {
+		t.Fatalf("expected live round tool output previews, got:\n%s", liveView)
 	}
 
 	// 2. Complete the turn via finalizeTurnOutput -> round auto-collapses into 1-line summary bar + Worked for 46s
@@ -1270,8 +1352,12 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		!strings.Contains(expandedRoundView, "│ › Ran git status --short") {
 		t.Fatalf("expected expanded round tree with ⌄ header and │ › children, got:\n%s", expandedRoundView)
 	}
-	if strings.Contains(expandedRoundView, "M internal/tui/view.go") {
-		t.Fatalf("expected child command output to remain collapsed until child item is clicked, got:\n%s", expandedRoundView)
+	if !strings.Contains(expandedRoundView, "M internal/tui/view.go") ||
+		!strings.Contains(expandedRoundView, "+ 3 lines (click to expand · Ctrl+T for full output)") {
+		t.Fatalf("expected a three-line child command preview and expand hint, got:\n%s", expandedRoundView)
+	}
+	if strings.Contains(expandedRoundView, "M internal/tui/view_footer.go") {
+		t.Fatalf("expected only the first three command output lines before clicking, got:\n%s", expandedRoundView)
 	}
 
 	// 4. Level 2 Click: Click on the child step "│ › Ran git status --short" (EntryIndex 5) -> expands its output inline
@@ -1291,8 +1377,10 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	}
 	childExpandedView := ansi.Strip(m.viewport.View())
 	if !strings.Contains(childExpandedView, "│ ⌄ Ran git status --short") ||
-		!strings.Contains(childExpandedView, "M internal/tui/view.go") {
-		t.Fatalf("expected inline command output inside expanded round tree, got:\n%s", childExpandedView)
+		!strings.Contains(childExpandedView, "M internal/tui/view.go") ||
+		!strings.Contains(childExpandedView, "M internal/tui/view_footer.go") ||
+		!strings.Contains(childExpandedView, "│   - collapse 6 lines (click)") {
+		t.Fatalf("expected full inline command output inside expanded round tree, got:\n%s", childExpandedView)
 	}
 
 	// 5. Click the round header (⌄ Explored ...) again -> collapses the entire round back to 1 line

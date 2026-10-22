@@ -2,13 +2,11 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/afterlune/lune/internal/filemention"
-	core "github.com/afterlune/luneCore"
 )
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -174,32 +172,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "shift+tab":
-		if !m.planMode {
-			if m.client == nil {
-				m.addSystemEntry("Permission management is unavailable.")
-				return m, nil
-			}
-			// Cycle permission mode: read-only -> workspace -> ask -> full-access -> read-only
-			nextMode := core.PermissionWorkspace
-			switch m.permissionMode {
-			case core.PermissionReadOnly:
-				nextMode = core.PermissionWorkspace
-			case core.PermissionWorkspace:
-				nextMode = core.PermissionAsk
-			case core.PermissionAsk:
-				nextMode = core.PermissionFullAccess
-			case core.PermissionFullAccess:
-				nextMode = core.PermissionReadOnly
-			}
-			if err := m.client.SetPermissionMode(nextMode); err != nil {
-				m.addSystemEntry("Failed to set permission mode: " + err.Error())
-			} else {
-				m.permissionMode = nextMode
-				m.addSystemEntry(fmt.Sprintf("Permission mode set to `%s`.", nextMode))
-			}
-			m.updateLayout()
-		}
-		return m, nil
+		return m.togglePlanMode()
 
 	case "ctrl+t":
 		return m.openToolPager(-1)

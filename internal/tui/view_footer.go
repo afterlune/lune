@@ -173,12 +173,12 @@ func renderFooter(m *tuiModel, width int) string {
 	var rightStr string
 	if m.planMode {
 		planLabel := stylePlanPurple().Bold(true).Render("Plan mode")
-		cycleHint := styleTextMuted().Render("(shift+tab to cycle)")
-		rightStr = planLabel + " " + cycleHint
+		exitHint := styleTextMuted().Render("(shift+tab to exit)")
+		rightStr = planLabel + " " + exitHint
 	} else {
 		permLabel := styleTextPrimary().Bold(true).Render(string(m.permissionMode))
-		cycleHint := styleTextMuted().Render("(shift+tab to cycle)")
-		rightStr = permLabel + " " + cycleHint
+		planHint := styleTextMuted().Render(" · shift+tab plan")
+		rightStr = permLabel + planHint
 	}
 	rightLen := lipgloss.Width(rightStr)
 

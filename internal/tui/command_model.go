@@ -15,14 +15,29 @@ func (m *tuiModel) handlePlanCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Usage: `/plan` to toggle Plan mode.")
 		return m, nil
 	}
-	if m.taskBusy() {
-		m.addSystemEntry("Plan mode can only be changed after the current and queued tasks finish.")
-		return m, nil
-	}
+	return m.togglePlanMode()
+}
+
+// togglePlanMode switches between normal and Plan mode. Plan mode locks tool
+// permissions to read-only and restores the previous mode when it ends.
+func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		m.addSystemEntry("Plan mode is unavailable without a Core client.")
 		return m, nil
 	}
+	if m.taskBusy() {
+		m.addSystemEntry("Plan mode can only be changed after the current and queued tasks finish.")
+		return m, nil
+	}
+	if m.hasPausedTask() {
+		m.addSystemEntry("Plan mode can only be changed after paused tasks are resumed or discarded.")
+		return m, nil
+	}
+	if m.activeQuestion != nil || m.activeApproval != nil || m.activePlanReview != nil {
+		m.addSystemEntry("Plan mode can only be changed after the pending interaction is resolved.")
+		return m, nil
+	}
+
 	if m.planMode {
 		if err := m.client.SetPermissionMode(m.savedMode); err != nil {
 			m.addSystemEntry("Failed to restore permissions; Plan mode remains active: " + err.Error())
@@ -42,6 +57,7 @@ func (m *tuiModel) handlePlanCommand(parts []string) (tea.Model, tea.Cmd) {
 		m.planMode = true
 		m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
 	}
+	m.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }

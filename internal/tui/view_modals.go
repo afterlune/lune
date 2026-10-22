@@ -561,7 +561,8 @@ func renderShortcutsPanel(width int) string {
 	col2Items := []struct{ Key, Desc string }{
 		{"Enter", "Send message"},
 		{"Ctrl+O", "Switch session"},
-		{"Shift+Tab", "Cycle permissions"},
+		{"Shift+Tab", "Toggle Plan mode"},
+		{"/permissions", "Switch permission mode"},
 		{"/model", "Switch model"},
 		{"/status", "Show status"},
 		{"/sessions", "List sessions"},
