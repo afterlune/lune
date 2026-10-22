@@ -23,7 +23,7 @@ Windows 上的 vet 仅关闭 `unsafeptr` 分析器：ConPTY 测试按 Win32 API 
 go -C ..\luneCore test -trimpath ./...
 ```
 
-Linux CI 运行 CLI/TUI 支持包测试，并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。Linux 上验证 CLI/TUI 改动时无需构建或测试 `internal/desktop`；该包需要 GTK4、WebKitGTK 6、GLib 和 libsoup 开发依赖，只有涉及 Desktop 的改动才按下方桌面端流程验证。
+Linux CI 运行 CLI/TUI 支持包测试，并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。Linux 本机运行 `./scripts/build-linux.sh` 会默认使用 `go.mod` 固定的 luneCore 版本，在 `bin/` 生成本机程序，并在 `bin/linux-amd64`、`bin/linux-arm64` 生成对应交叉构建产物；需要联调本地 luneCore 时，可显式设置 `GOWORK`。如果 Go 不在 `PATH`，可通过 `GO=/path/to/go` 或 `GOROOT=/path/to/go-root` 指定安装位置。Linux 上验证 CLI/TUI 改动时无需构建或测试 `internal/desktop`；该包需要 GTK4、WebKitGTK 6、GLib 和 libsoup 开发依赖，只有涉及 Desktop 的改动才按下方桌面端流程验证。
 
 ## 依赖更新
 
