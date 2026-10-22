@@ -486,8 +486,7 @@ func TestThemePickerPersistsSelection(t *testing.T) {
 		mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 		m = mod.(*tuiModel)
 	}
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	m = mod.(*tuiModel)
+	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if CurrentThemeMode() != ThemeModeLight {
 		t.Fatalf("theme mode = %q, want light", CurrentThemeMode())
 	}

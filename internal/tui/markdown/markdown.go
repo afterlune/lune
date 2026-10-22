@@ -360,9 +360,7 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 		formatted := formatInlineWithStyles(expandedLine, inlineCodeStyle, boldStyle, fileRefStyle)
 		if lipgloss.Width(formatted) > proseWidth {
 			wrapped := ansi.Wrap(formatted, proseWidth, wrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				result = append(result, wl)
-			}
+			result = append(result, strings.Split(wrapped, "\n")...)
 		} else {
 			result = append(result, formatted)
 		}

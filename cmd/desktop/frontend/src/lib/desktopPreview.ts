@@ -80,5 +80,5 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
     };
   }
 
-  return { previewBootstrap, previewState, previewPendingRequest, previewPendingSessions, previewPendingRequests, previewPendingWorkspaceState };
+  return { previewBootstrap, previewState, previewPendingSessions, previewPendingWorkspaceState };
 }

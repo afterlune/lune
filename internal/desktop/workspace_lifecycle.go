@@ -97,7 +97,7 @@ func (s *DesktopService) startWorkspace(path string) error {
 	projectConfig.Models = modelSettings.Catalog
 	projectConfig.Runtime.MaxParallelAgents = modelSettings.MaxParallelAgents
 	if err := projectConfig.Validate(); err != nil {
-		return fmt.Errorf("Desktop 项目配置无效: %w", err)
+		return fmt.Errorf("桌面项目配置无效: %w", err)
 	}
 	return s.startWorkspaceWithConfig(path, projectConfig, commandToolchainPaths)
 }

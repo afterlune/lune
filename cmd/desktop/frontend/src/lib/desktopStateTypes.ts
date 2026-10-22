@@ -1,7 +1,6 @@
 import type {
   ConversationMessage,
   PendingRequestView,
-  PendingSessionSummary as PendingSessionSummaryView,
   SubmitInput,
   WorkspaceState,
 } from '../../bindings/github.com/afterlune/lune/internal/desktop/models';

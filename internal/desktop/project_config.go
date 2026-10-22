@@ -150,7 +150,7 @@ func mergeWorkspaceConfig(current core.ProjectConfig, input WorkspaceConfigInput
 		config.MCPServers = map[string]core.MCPServerConfig{}
 	}
 	if err := config.Validate(); err != nil {
-		return core.ProjectConfig{}, fmt.Errorf("Desktop 项目配置无效: %w", err)
+		return core.ProjectConfig{}, fmt.Errorf("桌面项目配置无效: %w", err)
 	}
 	return config, nil
 }

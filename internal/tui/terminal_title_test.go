@@ -83,8 +83,7 @@ func TestUpdateSyncsChangedTerminalTitle(t *testing.T) {
 	}
 
 	m.sessionTitle = "Refactor Architecture"
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
-	m = updated.(*tuiModel)
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
 	want := "\x1b]0;lune | luneAgent\x07\x1b]0;Refactor Architecture | luneAgent\x07"
 	if got := output.String(); got != want {
 		t.Fatalf("changed title was not synchronized: got %q, want %q", got, want)

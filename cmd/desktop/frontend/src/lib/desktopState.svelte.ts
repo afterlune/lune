@@ -9,7 +9,7 @@ import {
 import { createDesktopProcessState } from './desktopProcessState.svelte';
 import type {
   Activity, ActivityRun, DesktopProcess, DesktopProcessSession, ExecutionState, ExecutionTimelineBlock,
-  LocalMessage, StoredActivityRun,
+  LocalMessage,
 } from './desktopStateTypes';
 import { TaskStatus } from '../../bindings/github.com/afterlune/luneCore/internal/runtime/models';
 import type {
@@ -131,7 +131,6 @@ export function createDesktopState() {
     completeWorkspaceOpen,
   });
 
-  const activeQuestion = $derived(pending.find((item) => item.kind === 'user_question'));
   const canWrite = $derived(models.configured && !controlsPending && !switchingSession && !busy && !interrupting && pending.length === 0 && !planReview);
   const canSend = $derived(canWrite && !editDraft);
   const canEditMessages = $derived(models.configured && !controlsPending && !switchingSession && !busy && !interrupting && pending.length === 0 && !planReview && !applyingEdit);
@@ -481,7 +480,7 @@ export function createDesktopState() {
     activityHistory = activityHistory.map((run) => run.key === key ? { ...run, expanded: !run.expanded } : run);
   }
 
-  const { previewBootstrap, previewState, previewPendingRequest, previewPendingSessions, previewPendingRequests, previewPendingWorkspaceState } = createDesktopPreview(previewVariant, defaultAppearance);
+  const { previewBootstrap, previewState, previewPendingSessions, previewPendingWorkspaceState } = createDesktopPreview(previewVariant, defaultAppearance);
 
   async function refreshPendingSessions() {
     const request = ++pendingSessionsRequest;

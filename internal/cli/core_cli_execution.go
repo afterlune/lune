@@ -32,7 +32,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	defer stopWatching()
 
 	var events <-chan core.Event
-	stopStream := func() {}
+	var stopStream context.CancelFunc
 	var err error
 	if resume {
 		state, stateErr := runtime.State(context.Background())
