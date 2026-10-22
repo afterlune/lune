@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -415,12 +416,12 @@ func handleCoreCLIDetail(client cliCore, runtime cliRuntime, sessionID, line str
 		}
 	}
 
-	fmt.Fprintf(stdout, "--- Tool %d of %d: %s ---\n", target+1, len(tools), cmdStr)
+	fmt.Fprintf(stdout, "--- Tool %d of %d: %s ---\n", target+1, len(tools), cleanCLIInlineText(cmdStr))
 	outTrimmed := strings.TrimSpace(entry.Output)
 	if outTrimmed == "" {
 		fmt.Fprintln(stdout, "(no output)")
 	} else {
-		fmt.Fprintln(stdout, outTrimmed)
+		fmt.Fprintln(stdout, terminaltext.Sanitize(outTrimmed))
 	}
 
 	if len(tools) > 1 && len(parts) <= 1 {

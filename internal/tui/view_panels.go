@@ -5,9 +5,9 @@ import (
 	"math"
 	"strings"
 	"time"
-	"unicode"
 
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -47,7 +47,7 @@ func renderAutocompletePopup(items []AutocompleteItem, selected int, width int) 
 		}
 		displayCmd := fitTerminalText(item.Command, maxLeft-2)
 		cmdText := displayCmd + strings.Repeat(" ", max(1, leftCol-lipgloss.Width(displayCmd)))
-		descText := item.Description
+		descText := terminaltext.Sanitize(item.Description)
 		line := marker + cmdText + descText
 		if lipgloss.Width(line) > width {
 			line = ansi.Truncate(line, width, "…")
@@ -99,7 +99,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if q.Submitting {
 		meta = styleTextMuted().Render(fmt.Sprintf("Submitting answers (%d)…", len(q.Answers)))
 	}
-	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentSoft)).Bold(true).Render(qItem.Question)
+	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentSoft)).Bold(true).Render(terminaltext.Sanitize(qItem.Question))
 
 	optionsRows := renderQuestionOptionRows(qItem.Options, q.Selected, max(1, max(20, width)-4))
 
@@ -112,7 +112,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if q.Selected == noneIdx {
 		pad := max(0, width-lipgloss.Width(noneRaw)-4)
 		optionsRows = append(optionsRows, styleSelectedRow().Render(noneRaw+strings.Repeat(" ", pad)))
-		customPrompt := "    Custom answer: " + q.Custom + "█"
+		customPrompt := "    Custom answer: " + terminaltext.Sanitize(q.Custom) + "█"
 		optionsRows = append(optionsRows, styleTextPrimary().Render(customPrompt))
 	} else {
 		optionsRows = append(optionsRows, styleTextMuted().Render(noneRaw))
@@ -123,7 +123,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		if q.NotesOpen {
 			cursor = "█"
 		}
-		notesLine := "  Notes: " + q.NoteText + cursor
+		notesLine := "  Notes: " + terminaltext.Sanitize(q.NoteText) + cursor
 		optionsRows = append(optionsRows, "")
 		optionsRows = append(optionsRows, styleTextPrimary().Render(notesLine))
 	}
@@ -133,7 +133,7 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		hint = styleTextMuted().Render("Waiting for Core to accept answers…")
 	}
 	if q.Error != "" {
-		hint = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render(q.Error) + "\n" + hint
+		hint = lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render(terminaltext.Sanitize(q.Error)) + "\n" + hint
 	}
 
 	panelContent := meta + "\n" + title + "\n\n" + strings.Join(optionsRows, "\n") + "\n\n" + hint
@@ -218,10 +218,11 @@ func renderQuestionOptionRows(options []core.UserQuestionOption, selected, width
 }
 
 func singleLineQuestionText(value string) string {
-	return strings.Join(strings.Fields(value), " ")
+	return strings.Join(strings.Fields(terminaltext.Sanitize(value)), " ")
 }
 
 func wrapQuestionText(value string, width int) []string {
+	value = terminaltext.Sanitize(value)
 	if value == "" {
 		return []string{""}
 	}
@@ -394,7 +395,7 @@ func renderRecoveryPanel(recovery *ActiveRecovery, width int) string {
 	if reason == "" {
 		reason = "Model request was interrupted or failed retry deadline."
 	}
-	lines = append(lines, styleTextPrimary().Render("Reason: "+reason))
+	lines = append(lines, styleTextPrimary().Render("Reason: "+terminaltext.Sanitize(reason)))
 
 	if !recovery.RetryNotBefore.IsZero() {
 		lines = append(lines, "")
@@ -460,7 +461,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 		Render("Tool Failure Recovery Required")
 	lines = append(lines, title)
 
-	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(recovery.ToolName))
+	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(terminaltext.Sanitize(recovery.ToolName)))
 	lines = append(lines, toolLine)
 
 	if recovery.Arguments != "" && recovery.Arguments != "null" {
@@ -563,12 +564,12 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		Render("Tool Approval Required")
 	lines = append(lines, title)
 
-	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(approval.Request.Tool))
+	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(terminaltext.Sanitize(approval.Request.Tool)))
 	lines = append(lines, toolLine)
 
 	summary := formatToolSummary(approval.Request.Tool, string(approval.Request.Arguments), "")
 	if summary != "" && summary != approval.Request.Tool {
-		lines = append(lines, fmt.Sprintf("Action: %s", styleTextPrimary().Render(summary)))
+		lines = append(lines, fmt.Sprintf("Action: %s", styleTextPrimary().Render(terminaltext.Sanitize(summary))))
 	}
 
 	if len(approval.Request.Arguments) > 0 && string(approval.Request.Arguments) != "{}" {
@@ -582,12 +583,7 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 			access = "read and write"
 		}
 		lines = append(lines, styleTextMuted().Render(fmt.Sprintf("Session grant: %s access", access)))
-		safePath := strings.Map(func(char rune) rune {
-			if unicode.IsControl(char) {
-				return -1
-			}
-			return char
-		}, pathGrant.Path)
+		safePath := terminaltext.Sanitize(pathGrant.Path)
 		wrappedPath := ansi.Wrap("Directory: "+safePath, max(20, width-16), " /\\")
 		for _, line := range strings.Split(wrappedPath, "\n") {
 			lines = append(lines, styleTextMuted().Render(line))

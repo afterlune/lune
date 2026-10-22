@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/terminaltext"
 	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
@@ -18,7 +19,7 @@ func renderHeader(workspace string) string {
 	brand := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true).Render(AppName)
 	top := fmt.Sprintf("%s %s", prompt, brand)
 
-	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("in " + workspace)
+	cwd := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("in " + terminaltext.Sanitize(workspace))
 	return top + "\n" + cwd + "\n"
 }
 
@@ -26,13 +27,13 @@ func renderHeader(workspace string) string {
 func renderEntry(entry TranscriptEntry, width int) string {
 	switch entry.Kind {
 	case KindUser:
-		text := strings.TrimSpace(entry.Text)
+		text := terminaltext.Sanitize(strings.TrimSpace(entry.Text))
 		prompt := styleTextPrimary().Bold(true).Render("› ")
 		content := prompt + styleTextPrimary().Render(text)
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
-				chips = append(chips, styleTextMuted().Render("📎 "+file))
+				chips = append(chips, styleTextMuted().Render("📎 "+terminaltext.Sanitize(file)))
 			}
 			content += "\n  " + strings.Join(chips, styleTextMuted().Render("  "))
 		}
@@ -70,9 +71,9 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		var rows []string
 		rows = append(rows, bullet+title)
 		for _, qa := range entry.AnsweredQuestions {
-			qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(qa.Question))
+			qLine := fmt.Sprintf("  • %s", styleTextPrimary().Render(terminaltext.Sanitize(qa.Question)))
 			ansLabel := styleTextMuted().Render("    answer: ")
-			ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(qa.Answer)
+			ansVal := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentBlue)).Render(terminaltext.Sanitize(qa.Answer))
 			rows = append(rows, qLine, ansLabel+ansVal)
 		}
 		return strings.Join(rows, "\n")
@@ -102,7 +103,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	case KindQueued:
 		icon := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Render("⏳ ")
 		label := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().WarningAmber)).Bold(true).Render("Queued › ")
-		content := styleTextPrimary().Render(strings.TrimSpace(entry.Text))
+		content := styleTextPrimary().Render(terminaltext.Sanitize(strings.TrimSpace(entry.Text)))
 		hint := styleTextMuted().Render(" (/cancel-queue cancels latest waiting task)")
 		row := icon + label + content + hint
 		pad := max(0, width-lipgloss.Width(row))
@@ -111,7 +112,7 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		if len(entry.AttachedFiles) > 0 {
 			var chips []string
 			for _, file := range entry.AttachedFiles {
-				chips = append(chips, "📎 "+file)
+				chips = append(chips, "📎 "+terminaltext.Sanitize(file))
 			}
 			chipLine := "  " + styleTextMuted().Render(strings.Join(chips, "  "))
 			return box + "\n" + chipLine
@@ -168,10 +169,10 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 	if name == "" {
 		name = entry.AgentID
 	}
-	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render(name)
+	nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render(terminaltext.Sanitize(name))
 	roleStyled := ""
 	if entry.AgentRole != "" {
-		roleStyled = styleTextMuted().Render(" (" + entry.AgentRole + ")")
+		roleStyled = styleTextMuted().Render(" (" + terminaltext.Sanitize(entry.AgentRole) + ")")
 	}
 	toolsStyled := ""
 	if entry.SubagentTools > 0 {
@@ -290,10 +291,9 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 	return strings.Join(outLines, "\n")
 }
 
-// sanitizeAndTruncateLine expands tabs, strips carriage returns, and truncates safely by display width.
+// sanitizeAndTruncateLine removes terminal controls and truncates by display width.
 func sanitizeAndTruncateLine(line string, maxWidth int) string {
-	line = strings.ReplaceAll(line, "\r", "")
-	line = strings.ReplaceAll(line, "\t", "    ")
+	line = terminaltext.Sanitize(line)
 	if maxWidth <= 0 {
 		return ""
 	}
@@ -405,7 +405,7 @@ func renderFileChangesCard(entry TranscriptEntry, width int) string {
 
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render("• ")
 		actionStyled := styleTextPrimary().Bold(true).Render(actionWord)
-		pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Underline(true).Render(ch.Path)
+		pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Underline(true).Render(terminaltext.Sanitize(ch.Path))
 		addStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Bold(true).Render(fmt.Sprintf("+%d", adds))
 		delStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Bold(true).Render(fmt.Sprintf("-%d", dels))
 		header := fmt.Sprintf("%s%s %s (%s %s)", bullet, actionStyled, pathStyled, addStyled, delStyled)

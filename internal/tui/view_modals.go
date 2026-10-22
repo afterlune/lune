@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/terminaltext"
 )
 
 // renderSessionsModal renders the interactive floating session switcher modal.
@@ -279,7 +280,7 @@ func renderProcessPicker(m *tuiModel, width int) string {
 
 func renderMCPAuthPanel(m *tuiModel, width int) string {
 	cardStyle := panelCardStyle(width)
-	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", m.mcpAuthName)
+	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", terminaltext.Sanitize(m.mcpAuthName))
 	return renderCardSurface(cardStyle, content)
 }
 

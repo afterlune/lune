@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/afterlune/lune/internal/tui/markdown"
+import (
+	"github.com/afterlune/lune/internal/terminaltext"
+	"github.com/afterlune/lune/internal/tui/markdown"
+)
 
 func renderMarkdown(text string, width int) string {
 	return renderMarkdownWithAccent(text, width, activeTheme().AccentBlue)
@@ -8,7 +11,7 @@ func renderMarkdown(text string, width int) string {
 
 func renderPlanMarkdown(text string, width int) string {
 	theme := activeTheme()
-	return markdown.RenderPlan(text, width, markdown.Palette{
+	return markdown.RenderPlan(terminaltext.Sanitize(text), width, markdown.Palette{
 		TextPrimary:  theme.TextPrimary,
 		TextMuted:    theme.TextMuted,
 		AccentBlue:   theme.AccentSoft,
@@ -20,7 +23,7 @@ func renderPlanMarkdown(text string, width int) string {
 
 func renderMarkdownWithAccent(text string, width int, accent string) string {
 	theme := activeTheme()
-	return markdown.Render(text, width, markdown.Palette{
+	return markdown.Render(terminaltext.Sanitize(text), width, markdown.Palette{
 		TextPrimary:  theme.TextPrimary,
 		TextMuted:    theme.TextMuted,
 		AccentBlue:   accent,

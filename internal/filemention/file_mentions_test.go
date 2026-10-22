@@ -325,6 +325,53 @@ func TestExpandFileMentions(t *testing.T) {
 	}
 }
 
+func TestExpandFileMentionsRestrictsSymlinksToWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	insidePath := filepath.Join(workspace, "inside.txt")
+	if err := os.WriteFile(insidePath, []byte("inside workspace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside workspace"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink("inside.txt", filepath.Join(workspace, "inside-link.txt")); err != nil {
+		t.Skipf("create in-workspace symlink: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(workspace, "outside-link.txt")); err != nil {
+		t.Skipf("create outside-workspace symlink: %v", err)
+	}
+
+	attachments, _ := Expand("read @inside-link.txt and @outside-link.txt", workspace)
+	if len(attachments) != 1 {
+		t.Fatalf("got %d attachments, want only the in-workspace symlink", len(attachments))
+	}
+	if attachments[0].Path != "inside-link.txt" || attachments[0].Content != "inside workspace" {
+		t.Fatalf("unexpected in-workspace symlink attachment: %+v", attachments[0])
+	}
+}
+
+func TestExpandFileMentionBoundsReadSize(t *testing.T) {
+	workspace := t.TempDir()
+	content := strings.Repeat("x", maxAttachmentSizeBytes+4096)
+	if err := os.WriteFile(filepath.Join(workspace, "large.txt"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	attachments, _ := Expand("read @large.txt", workspace)
+	if len(attachments) != 1 {
+		t.Fatalf("got %d attachments, want 1", len(attachments))
+	}
+	if len(attachments[0].Content) != maxAttachmentSizeBytes {
+		t.Fatalf("attachment content length = %d, want %d", len(attachments[0].Content), maxAttachmentSizeBytes)
+	}
+	if attachments[0].Size != int64(len(content)) {
+		t.Fatalf("attachment size = %d, want original file size %d", attachments[0].Size, len(content))
+	}
+}
+
 func TestGitModifiedFilesBoost(t *testing.T) {
 	files := []File{
 		{Path: "cmd/main.go", Name: "main.go", Size: 500, IsModified: false},

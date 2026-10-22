@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/terminaltext"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -292,5 +293,5 @@ func fitTerminalText(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return ansi.Truncate(value, width, "…")
+	return ansi.Truncate(terminaltext.Sanitize(value), width, "…")
 }

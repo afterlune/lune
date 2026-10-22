@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/afterlune/lune/internal/terminaltext"
 )
 
 const toolPreviewLineLimit = 3
@@ -455,8 +456,8 @@ func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 		var rows []string
 		rows = append(rows, header)
 		for _, qa := range entry.AnsweredQuestions {
-			rows = append(rows, "  • "+styleTextPrimary().Render(qa.Question))
-			rows = append(rows, "    "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(qa.Answer))
+			rows = append(rows, "  • "+styleTextPrimary().Render(terminaltext.Sanitize(qa.Question)))
+			rows = append(rows, "    "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(terminaltext.Sanitize(qa.Answer)))
 		}
 		return strings.Join(rows, "\n")
 
@@ -472,10 +473,10 @@ func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 			prefix = openChevron
 		}
 		action := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("Subagent ")
-		nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render(name)
+		nameStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render(terminaltext.Sanitize(name))
 		roleStyled := ""
 		if entry.AgentRole != "" {
-			roleStyled = styleTextMuted().Render(" (" + entry.AgentRole + ")")
+			roleStyled = styleTextMuted().Render(" (" + terminaltext.Sanitize(entry.AgentRole) + ")")
 		}
 		durStyled := ""
 		if !entry.SubagentRunning && entry.SubagentDuration > 0 {
@@ -514,7 +515,7 @@ func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 			adds, dels := fileChangeCounts(ch)
 			actionWord := fileChangeActionWord(entry, ch, adds, dels)
 			actionStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render(actionWord + " ")
-			pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(ch.Path)
+			pathStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(terminaltext.Sanitize(ch.Path))
 			addStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.SuccessGreen)).Render(fmt.Sprintf("+%d", adds))
 			delStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(th.FailureRed)).Render(fmt.Sprintf("-%d", dels))
 			header := fmt.Sprintf("%s%s%s (%s %s)", prefix, actionStyled, pathStyled, addStyled, delStyled)

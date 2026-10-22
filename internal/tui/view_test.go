@@ -43,6 +43,30 @@ func TestHeaderRendering(t *testing.T) {
 	}
 }
 
+func TestRenderingRemovesUntrustedTerminalControls(t *testing.T) {
+	unsafe := "before\x1b]52;c;clipboard\a\u009b31m after"
+	rendered := renderEntry(TranscriptEntry{Kind: KindAssistant, Text: unsafe}, 80)
+	if strings.Contains(rendered, "\x1b]52") || strings.ContainsRune(rendered, '\a') || strings.ContainsRune(rendered, '\u009b') {
+		t.Fatalf("assistant rendering retained terminal control sequence: %q", rendered)
+	}
+	if plain := ansi.Strip(rendered); !strings.Contains(plain, "before") || !strings.Contains(plain, "after") {
+		t.Fatalf("assistant rendering lost printable text: %q", plain)
+	}
+	toolRendered := renderEntry(TranscriptEntry{Kind: KindTool, ToolName: "run_command", ToolOutput: unsafe}, 80)
+	if strings.Contains(toolRendered, "\x1b]52") || strings.ContainsRune(toolRendered, '\a') || strings.ContainsRune(toolRendered, '\u009b') {
+		t.Fatalf("tool output rendering retained terminal control sequence: %q", toolRendered)
+	}
+
+	question := &ActiveQuestion{Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
+		Question: unsafe,
+		Options:  []core.UserQuestionOption{{Label: unsafe, Description: unsafe}},
+	}}}}
+	panel := renderQuestionPanel(question, 80)
+	if strings.Contains(panel, "\x1b]52") || strings.ContainsRune(panel, '\a') || strings.ContainsRune(panel, '\u009b') {
+		t.Fatalf("question panel retained terminal control sequence: %q", panel)
+	}
+}
+
 func TestEntryRendering(t *testing.T) {
 	// User entry
 	userEntry := TranscriptEntry{

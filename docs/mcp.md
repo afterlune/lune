@@ -1,6 +1,6 @@
 # MCP 客户端
 
-项目配置中的 `mcpServers` 描述候选服务器。读取配置不会启动进程或访问网络；只有通过 TUI 显式启用后，服务器工具才会进入共享 Registry。
+项目配置中的 `mcpServers` 描述候选服务器。读取配置不会启动进程或访问网络；只有通过 `/mcp enable` 显式启用后，服务器工具才会进入共享 Registry。
 
 ```json
 {
@@ -27,13 +27,13 @@ stdio 命令直接执行，不经过 shell。服务器继承 Lune 当前进程�
 Core、TUI 与 CLI 均提供 MCP 管理和交互。TUI 支持深浅主题、窄屏和错误状态；相关回归快照位于 `internal/tui/testdata/verification`。命令为：
 
 - `/mcp list` 查看配置服务器、启用状态、连接状态和工具数。
-- `/mcp enable <name>` 连接服务器、发现工具并保存启用状态。
+- `/mcp enable <name>` 连接服务器并发现工具。
 - `/mcp disable <name>` 移除该服务器工具并关闭连接。
 - `/mcp auth <name>` 对 Streamable HTTP 服务器执行 OAuth。
 
 重复运行 `/mcp enable <name>` 会重新连接并刷新服务器工具；列表会展示连接错误、工具数及脱敏后的 endpoint。
 
-启用状态保存在工作区 `.luneagent/mcp-enabled.json`。TUI 和行式/无界面 CLI 启动时都恢复已启用的服务；无界面客户端不能处理 elicitation，遇到这类请求会立即返回明确错误。
+CLI（交互式和无界面）与 TUI 每次启动都从未启用状态开始；运行 `/mcp enable <name>` 后，服务器仅在当前进程中保持启用，且不会读取或写入旧的工作区 `.luneagent/mcp-enabled.json`。Desktop 明确选择保存并恢复启用状态，状态存放在应用的本地工作区状态目录。无界面客户端不能处理 elicitation，遇到这类请求会立即返回明确错误。
 
 所有 MCP 工具归入 `mcp` 按需发现类别，并使用 `Network` 权限类别，因此仍遵循当前 `/permissions` 档位。Plan mode 只公开服务器标注 `readOnlyHint: true` 的工具；该注释不影响实际权限批准。
 

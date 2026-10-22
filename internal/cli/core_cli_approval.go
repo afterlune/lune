@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/afterlune/lune/internal/terminaltext"
+
 	core "github.com/afterlune/luneCore"
 	publictool "github.com/afterlune/luneCore/tool"
 )
@@ -178,10 +180,5 @@ func cleanCLIInlineText(value string) string {
 	value = strings.ReplaceAll(value, "\n", "\\n")
 	value = strings.ReplaceAll(value, "\r", "\\r")
 	value = strings.ReplaceAll(value, "\t", "\\t")
-	return strings.Map(func(char rune) rune {
-		if unicode.IsControl(char) {
-			return -1
-		}
-		return char
-	}, value)
+	return terminaltext.Sanitize(value)
 }

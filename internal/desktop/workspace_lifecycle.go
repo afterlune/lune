@@ -119,6 +119,7 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 	config := core.Config{
 		Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath,
 		ProjectConfig: &projectConfig, CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
+		RestoreEnabledMCP: true,
 	}
 	created, err := core.New(config)
 	if err != nil {

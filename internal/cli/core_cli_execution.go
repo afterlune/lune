@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -536,7 +537,7 @@ func printCoreTaskResult(stdout, stderr io.Writer, response json.RawMessage, cal
 			return err
 		}
 		if text != "" {
-			if _, err := fmt.Fprintln(stdout, text); err != nil {
+			if _, err := fmt.Fprintln(stdout, terminaltext.Sanitize(text)); err != nil {
 				return err
 			}
 		}
@@ -547,7 +548,7 @@ func printCoreTaskResult(stdout, stderr io.Writer, response json.RawMessage, cal
 		}
 	}
 	if callErr != nil && !(interrupted && errors.Is(callErr, context.Canceled)) {
-		if _, err := fmt.Fprintf(stderr, "error: %v\n", callErr); err != nil {
+		if _, err := fmt.Fprintf(stderr, "error: %s\n", cleanCLIInlineText(callErr.Error())); err != nil {
 			return err
 		}
 	}

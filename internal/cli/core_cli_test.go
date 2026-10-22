@@ -1641,3 +1641,35 @@ func TestCLIFileMentionExpansion(t *testing.T) {
 		t.Fatalf("submitted input = %q, want expanded file content", submittedInput)
 	}
 }
+
+func TestPrintCoreTaskResultSanitizesTerminalControls(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	response := json.RawMessage(`{"output":[{"type":"message","content":[{"type":"output_text","text":"before\u001b]52;c;clipboard\u000731m after"}]}]}`)
+	if err := printCoreTaskResult(&stdout, &stderr, response, nil, false); err != nil {
+		t.Fatalf("printCoreTaskResult: %v", err)
+	}
+	if strings.Contains(stdout.String(), "\x1b]52") || strings.ContainsRune(stdout.String(), '\a') || strings.ContainsRune(stdout.String(), '\u009b') {
+		t.Fatalf("stdout retained terminal control sequence: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "before") || !strings.Contains(stdout.String(), "after") {
+		t.Fatalf("stdout lost printable text: %q", stdout.String())
+	}
+}
+
+func TestCoreCLILogsSanitizeProcessOutput(t *testing.T) {
+	runtime := newFakeCLIRuntime(&fakeCLICore{}, "session-1", nil)
+	runtime.commands = []core.CommandInfo{{ID: "command-1", Command: "run command"}}
+	runtime.outputs["command-1"] = "before\x1b]52;c;clipboard\a\u009b31m after\rrewritten"
+	var stdout, stderr bytes.Buffer
+
+	handleCoreCLILogs(runtime, "/logs command-1", &stdout, &stderr)
+	if strings.Contains(stdout.String(), "\x1b]52") || strings.ContainsRune(stdout.String(), '\a') || strings.ContainsRune(stdout.String(), '\u009b') {
+		t.Fatalf("stdout retained terminal control sequence: %q", stdout.String())
+	}
+	if strings.ContainsRune(stdout.String(), '\r') {
+		t.Fatalf("carriage return was retained: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "before") || !strings.Contains(stdout.String(), "after") {
+		t.Fatalf("stdout lost printable process output: %q", stdout.String())
+	}
+}

@@ -91,7 +91,7 @@ func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
 			if s.LastError != "" {
 				errInfo = fmt.Sprintf(" (Error: %s)", s.LastError)
 			}
-			fmt.Fprintf(stdout, "  - %-16s [%s, %s] %s (%d tools)%s\n", s.Name, status, conn, endpoint, s.ToolCount, errInfo)
+			fmt.Fprintf(stdout, "  - %-16s [%s, %s] %s (%d tools)%s\n", cleanCLIInlineText(s.Name), status, conn, cleanCLIInlineText(endpoint), s.ToolCount, cleanCLIInlineText(errInfo))
 		}
 	case "enable":
 		if len(fields) < 3 {
@@ -100,10 +100,10 @@ func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
 		}
 		name := fields[2]
 		if err := client.EnableMCPServer(name); err != nil {
-			fmt.Fprintf(stderr, "error: enable MCP server %q: %v\n", name, err)
+			fmt.Fprintf(stderr, "error: enable MCP server %q: %s\n", cleanCLIInlineText(name), cleanCLIInlineText(err.Error()))
 			return
 		}
-		fmt.Fprintf(stdout, "MCP server %q enabled.\n", name)
+		fmt.Fprintf(stdout, "MCP server %q enabled.\n", cleanCLIInlineText(name))
 	case "disable":
 		if len(fields) < 3 {
 			fmt.Fprintln(stderr, "usage: /mcp disable <server-name>")
@@ -111,10 +111,10 @@ func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
 		}
 		name := fields[2]
 		if err := client.DisableMCPServer(name); err != nil {
-			fmt.Fprintf(stderr, "error: disable MCP server %q: %v\n", name, err)
+			fmt.Fprintf(stderr, "error: disable MCP server %q: %s\n", cleanCLIInlineText(name), cleanCLIInlineText(err.Error()))
 			return
 		}
-		fmt.Fprintf(stdout, "MCP server %q disabled.\n", name)
+		fmt.Fprintf(stdout, "MCP server %q disabled.\n", cleanCLIInlineText(name))
 	case "auth":
 		if len(fields) < 3 {
 			fmt.Fprintln(stderr, "usage: /mcp auth <server-name>")
@@ -122,11 +122,11 @@ func handleCoreCLIMCP(client cliCore, line string, stdout, stderr io.Writer) {
 		}
 		name := fields[2]
 		if err := client.AuthenticateMCPServer(ctx, name); err != nil {
-			fmt.Fprintf(stderr, "error: authenticate MCP server %q: %v\n", name, err)
+			fmt.Fprintf(stderr, "error: authenticate MCP server %q: %s\n", cleanCLIInlineText(name), cleanCLIInlineText(err.Error()))
 			return
 		}
-		fmt.Fprintf(stdout, "MCP server %q authentication completed.\n", name)
+		fmt.Fprintf(stdout, "MCP server %q authentication completed.\n", cleanCLIInlineText(name))
 	default:
-		fmt.Fprintf(stderr, "Unknown MCP subcommand %q. Usage: /mcp [list|enable|disable|auth]\n", subcommand)
+		fmt.Fprintf(stderr, "Unknown MCP subcommand %q. Usage: /mcp [list|enable|disable|auth]\n", cleanCLIInlineText(subcommand))
 	}
 }

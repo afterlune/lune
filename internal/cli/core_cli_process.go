@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/afterlune/lune/internal/terminaltext"
 )
 
 func formatDuration(d time.Duration) string {
@@ -54,7 +56,7 @@ func handleCoreCLIPS(runtime cliRuntime, stdout, stderr io.Writer) {
 		if cmd.ExitCode != nil {
 			exitStr = fmt.Sprintf(" (exit %d)", *cmd.ExitCode)
 		}
-		fmt.Fprintf(stdout, "  [%s] %-12s %s%s%s\n", shortID, statusStr, cmd.Command, exitStr, timeInfo)
+		fmt.Fprintf(stdout, "  [%s] %-12s %s%s%s\n", shortID, statusStr, cleanCLIInlineText(cmd.Command), exitStr, timeInfo)
 	}
 	fmt.Fprintln(stdout, "\nUse '/stop <id|all>' to terminate, '/logs <id>' to inspect output.")
 }
@@ -139,7 +141,7 @@ func handleCoreCLIStop(runtime cliRuntime, line string, stdout, stderr io.Writer
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
-	fmt.Fprintf(stdout, "Stopped background process [%s]: %s\n", shortID, match.Command)
+	fmt.Fprintf(stdout, "Stopped background process [%s]: %s\n", shortID, cleanCLIInlineText(match.Command))
 }
 
 func handleCoreCLILogs(runtime cliRuntime, line string, stdout, stderr io.Writer) {
@@ -202,7 +204,7 @@ func handleCoreCLILogs(runtime cliRuntime, line string, stdout, stderr io.Writer
 	}
 	content := strings.TrimSpace(out.Output)
 	if content == "" {
-		fmt.Fprintf(stdout, "Process [%s] (%s) produced no output yet.\n", shortID, match.Command)
+		fmt.Fprintf(stdout, "Process [%s] (%s) produced no output yet.\n", shortID, cleanCLIInlineText(match.Command))
 		return
 	}
 	rawLines := strings.Split(content, "\n")
@@ -210,13 +212,13 @@ func handleCoreCLILogs(runtime cliRuntime, line string, stdout, stderr io.Writer
 	if len(rawLines) > tailLines {
 		rawLines = rawLines[len(rawLines)-tailLines:]
 	}
-	fmt.Fprintf(stdout, "Logs for [%s] (%s, %s)", shortID, match.Command, match.Status)
+	fmt.Fprintf(stdout, "Logs for [%s] (%s, %s)", shortID, cleanCLIInlineText(match.Command), match.Status)
 	if totalLines > tailLines {
 		fmt.Fprintf(stdout, " (showing last %d of %d lines):\n", tailLines, totalLines)
 	} else {
 		fmt.Fprintln(stdout, ":")
 	}
 	for _, l := range rawLines {
-		fmt.Fprintln(stdout, l)
+		fmt.Fprintln(stdout, terminaltext.Sanitize(l))
 	}
 }

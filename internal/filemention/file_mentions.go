@@ -3,6 +3,7 @@ package filemention
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -449,6 +450,11 @@ func Expand(text string, workspace string) ([]Attachment, string) {
 	if workspace == "" || !strings.Contains(text, "@") {
 		return nil, text
 	}
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return nil, text
+	}
+	defer root.Close()
 
 	var attachments []Attachment
 	seen := make(map[string]bool)
@@ -499,25 +505,27 @@ func Expand(text string, workspace string) ([]Attachment, string) {
 			continue
 		}
 
-		absPath := filepath.Join(workspace, filepath.FromSlash(cleanPath))
-		rel, err := filepath.Rel(workspace, absPath)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			continue // Prevent traversal outside workspace
+		file, err := root.Open(filepath.FromSlash(cleanPath))
+		if err != nil {
+			continue
 		}
-
-		info, err := os.Stat(absPath)
-		if err != nil || info.IsDir() {
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = file.Close()
 			continue
 		}
 
 		// Skip binary files
 		ext := filepath.Ext(cleanPath)
 		if isIgnoredExtension(ext) {
+			_ = file.Close()
 			continue
 		}
 
-		// Read file content
-		data, err := os.ReadFile(absPath)
+		// Read at most one byte past the attachment limit so large files do not
+		// consume unbounded memory before being truncated.
+		data, err := io.ReadAll(io.LimitReader(file, maxAttachmentSizeBytes+1))
+		_ = file.Close()
 		if err != nil {
 			continue
 		}

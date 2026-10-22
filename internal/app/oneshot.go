@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/afterlune/lune/internal/filemention"
+	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -108,7 +109,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 			if streamText.Len() == 0 && len(res.result.Response) > 0 {
 				respText, _ := coreExtractText(res.result.Response)
 				if respText != "" {
-					fmt.Fprintln(stdout, respText)
+					fmt.Fprintln(stdout, terminaltext.Sanitize(respText))
 				}
 			} else if streamText.Len() > 0 && !strings.HasSuffix(streamText.String(), "\n") {
 				fmt.Fprintln(stdout)
@@ -125,12 +126,13 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 			switch event.Kind {
 			case core.EventModelStream:
 				if event.Stream != nil && event.Stream.Type != "reasoning_delta" && event.Stream.Delta != "" {
-					streamText.WriteString(event.Stream.Delta)
-					fmt.Fprint(stdout, event.Stream.Delta)
+					delta := terminaltext.Sanitize(event.Stream.Delta)
+					streamText.WriteString(delta)
+					fmt.Fprint(stdout, delta)
 				}
 			case core.EventToolStarted:
 				if !strings.EqualFold(event.Tool.Name, "select_tool_category") {
-					fmt.Fprintf(stderr, "• Running %s...\n", event.Tool.Name)
+					fmt.Fprintf(stderr, "• Running %s...\n", terminaltext.Sanitize(event.Tool.Name))
 				}
 			case core.EventToolFinished:
 				if !strings.EqualFold(event.Tool.Name, "select_tool_category") {
@@ -138,11 +140,11 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 					if event.CommandStatus == core.CommandFailed {
 						status = "failed"
 					}
-					fmt.Fprintf(stderr, "• %s (%s)\n", event.Tool.Name, status)
+					fmt.Fprintf(stderr, "• %s (%s)\n", terminaltext.Sanitize(event.Tool.Name), status)
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
-					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", event.Approval.Tool, sessionID)
+					fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
 				}
 			}
 		}
