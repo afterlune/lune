@@ -323,7 +323,6 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		client, sessionID := m.client, m.sessionID
 		m.compacting = true
 		m.compactionStartedAt = time.Now()
-		m.contextCompacted = false
 		m.addSystemEntry("Compacting older conversation history…")
 		m.updateLayout()
 		return m, func() tea.Msg {

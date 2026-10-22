@@ -117,8 +117,6 @@ func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
 	switch {
 	case m.compacting:
 		ctxStr = fmt.Sprintf("Context: compacting…/%s", formatCompactTokens(totalCtx))
-	case m.contextCompacted:
-		ctxStr = fmt.Sprintf("Context: compacted (was %s)/%s", formatCompactTokens(m.compactedFromTokens), formatCompactTokens(totalCtx))
 	default:
 		usedCtx := m.lastInputTokens
 		if usedCtx == 0 {

@@ -68,11 +68,8 @@ func (m *tuiModel) renderStatusTable() string {
 	if label := m.compactionSettingsLabel(); label != "" {
 		lines = append(lines, "Auto-compaction: "+label)
 	}
-	switch {
-	case m.compacting:
+	if m.compacting {
 		lines = append(lines, "Compaction:      in progress…")
-	case m.contextCompacted:
-		lines = append(lines, fmt.Sprintf("Compaction:      manual (was %s tokens); budget refreshes with the next message", formatTokens(m.compactedFromTokens)))
 	}
 	if m.lastInputTokens > 0 {
 		lines = append(lines, "Last Prompt Cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
@@ -217,9 +214,6 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	}
 	if label := m.compactionSettingsLabel(); label != "" {
 		lines = append(lines, "- Auto-compaction: "+label)
-	}
-	if m.contextCompacted {
-		lines = append(lines, fmt.Sprintf("- Context budget refreshes with the next message (compacted from %s tokens).", formatTokens(m.compactedFromTokens)))
 	}
 	lines = append(lines, fmt.Sprintf("- Session Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
 		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),

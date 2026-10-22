@@ -28,7 +28,6 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 			m.estimatedInputTokens = details.AfterTokens
 			m.lastInputTokens = 0
 			m.lastCachedTokens = 0
-			m.contextCompacted = false
 		}
 		if m.running {
 			m.ensureAgentMetrics("lead").Activity = "Thinking"

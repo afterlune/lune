@@ -481,8 +481,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 		}
 		if isLeadMainUsage(event.AgentID, event.UsagePurpose) {
-			m.contextCompacted = false
-			m.compactedFromTokens = 0
 			if event.ContextWindow > 0 {
 				m.contextWindow = event.ContextWindow
 			}

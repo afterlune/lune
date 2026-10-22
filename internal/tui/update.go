@@ -194,8 +194,6 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		case msg.err != nil:
 			m.addSystemEntry("Compaction failed: " + msg.err.Error())
 		case msg.result.Compacted && msg.result.Turns > 0:
-			m.contextCompacted = false
-			m.compactedFromTokens = 0
 			m.lastInputTokens = 0
 			m.lastCachedTokens = 0
 			m.estimatedInputTokens = msg.result.After

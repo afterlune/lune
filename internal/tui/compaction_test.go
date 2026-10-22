@@ -28,9 +28,6 @@ func TestCompactDoneMessages(t *testing.T) {
 		if m.compacting {
 			t.Fatalf("compaction result must clear the in-progress state")
 		}
-		if m.contextCompacted || m.compactedFromTokens != 0 {
-			t.Fatalf("manual compaction left a fallback footer state")
-		}
 		if m.lastInputTokens != 0 || m.lastCachedTokens != 0 || m.estimatedInputTokens != 92_000 {
 			t.Fatalf("stale context metrics survived compaction: last=%d cached=%d estimated=%d",
 				m.lastInputTokens, m.lastCachedTokens, m.estimatedInputTokens)
@@ -46,7 +43,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		m.compacting = true
 		m.Update(compactDoneMsg{sessionID: "session-compact"})
 
-		if m.compacting || m.contextCompacted {
+		if m.compacting {
 			t.Fatalf("an empty compaction must not change the footer state")
 		}
 		if m.estimatedInputTokens != 621_000 {
@@ -62,7 +59,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		m.compacting = true
 		m.Update(compactDoneMsg{err: errString("summary provider unavailable"), sessionID: "session-compact"})
 
-		if m.compacting || m.contextCompacted {
+		if m.compacting {
 			t.Fatalf("failed compaction must not fake a compacted footer")
 		}
 		if got := lastEntryText(m); got != "Compaction failed: summary provider unavailable" {
@@ -135,9 +132,8 @@ func TestCompactionFooterStates(t *testing.T) {
 	}
 
 	m.compacting = false
-	m.contextCompacted = true
-	m.compactedFromTokens = 621_000
-	if got := formatContextAndTokenSummary(m, 0); !strings.Contains(got, "Context: compacted (was 621k)/1M") {
+	m.estimatedInputTokens = 92_000
+	if got := formatContextAndTokenSummary(m, 0); !strings.Contains(got, "Context: 92k/1M (9.2%)") {
 		t.Fatalf("compacted footer = %q", got)
 	}
 
@@ -151,9 +147,6 @@ func TestCompactionFooterStates(t *testing.T) {
 	})
 	m = mod.(*tuiModel)
 
-	if m.contextCompacted {
-		t.Fatalf("the next main usage report must clear the compacted footer")
-	}
 	if got := formatContextAndTokenSummary(m, 0); !strings.Contains(got, "Context: 92k/1M (9.2%)") {
 		t.Fatalf("recovered footer = %q", got)
 	}
@@ -261,13 +254,11 @@ func TestCompactionSettingsLabel(t *testing.T) {
 func TestResetSessionStateClearsCompaction(t *testing.T) {
 	m := newTUIModel(nil, nil, "session-reset")
 	m.compacting = true
-	m.contextCompacted = true
-	m.compactedFromTokens = 621_000
 	m.compactionStartedAt = time.Now()
 
 	m.resetSessionState()
 
-	if m.compacting || m.contextCompacted || m.compactedFromTokens != 0 || !m.compactionStartedAt.IsZero() {
+	if m.compacting || !m.compactionStartedAt.IsZero() {
 		t.Fatalf("session reset kept compaction state")
 	}
 }

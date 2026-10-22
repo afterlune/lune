@@ -117,8 +117,6 @@ type tuiModel struct {
 	// Context compaction state
 	compacting          bool
 	compactionStartedAt time.Time
-	contextCompacted    bool
-	compactedFromTokens int64
 
 	reasoningEffort string
 
@@ -258,8 +256,6 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
 	m.compacting = false
 	m.compactionStartedAt = time.Time{}
-	m.contextCompacted = false
-	m.compactedFromTokens = 0
 	m.lastInputTokens = 0
 	m.lastCachedTokens = 0
 	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
@@ -343,8 +339,6 @@ func (m *tuiModel) resetSessionState() {
 	m.seededSessionUsage = false
 	m.compacting = false
 	m.compactionStartedAt = time.Time{}
-	m.contextCompacted = false
-	m.compactedFromTokens = 0
 	m.reasoningEffort = ""
 	m.running = false
 	m.runningExecution = ""
