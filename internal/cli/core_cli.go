@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/afterlune/lune/internal/filemention"
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
 )
@@ -62,12 +64,6 @@ type cliCore interface {
 	ClearMemories(context.Context) error
 }
 
-type cliCommandHelp struct {
-	name        string
-	usage       string
-	description string
-}
-
 func applyCLISessionModelProfile(ctx context.Context, client cliCore, sessionID, profile string) error {
 	saved, err := client.GetSession(ctx, sessionID)
 	if err != nil {
@@ -89,58 +85,27 @@ func validateCLIModelProfile(client cliCore, profile string) error {
 	return fmt.Errorf("unknown model profile %q", profile)
 }
 
-var cliCommands = []cliCommandHelp{
-	{name: "/agents", usage: "/agents [id]", description: "Inspect live agents and subagents in this session."},
-	{name: "/clear", usage: "/clear", description: "Clear terminal screen."},
-	{name: "/compact", usage: "/compact", description: "Compact older conversation history."},
-	{name: "/context", usage: "/context", description: "Show context window budget, system rules, and capabilities."},
-	{name: "/detail", usage: "/detail [index]", description: "View full output of a tool call."},
-	{name: "/diff", usage: "/diff [path]", description: "Inspect git code changes in workspace."},
-	{name: "/discard", usage: "/discard", description: "Discard the paused task in this session."},
-	{name: "/drop", usage: "/drop [id|prefix]", description: "Delete a saved session."},
-	{name: "/effort", usage: "/effort [level]", description: "View or set model reasoning effort: default, none, minimal, low, medium, high, xhigh, max."},
-	{name: "/exit", usage: "/exit", description: "Exit the chat."},
-	{name: "/export", usage: "/export [md|html|jsonl] [path]", description: "Export session conversation transcript to a file."},
-	{name: "/fork", usage: "/fork", description: "Fork the current session."},
-	{name: "/help", usage: "/help", description: "Show available commands."},
-	{name: "/logs", usage: "/logs [id|prefix] [--tail N]", description: "View logs of a background process."},
-	{name: "/mcp", usage: "/mcp [list|enable|disable|auth]", description: "Manage external MCP servers."},
-	{name: "/memory", usage: "/memory [list|add|remove|clear]", description: "View and manage workspace long-term memories."},
-	{name: "/model", usage: "/model [profile]", description: "View or change active model profile."},
-	{name: "/new", usage: "/new", description: "Start a fresh draft session (saved with your first message)."},
-	{name: "/permissions", usage: "/permissions [mode]", description: "Show or set mode: read-only, workspace, ask, full-access."},
-	{name: "/plan", usage: "/plan", description: "Toggle Plan mode (read-only exploration)."},
-	{name: "/ps", usage: "/ps", description: "List background processes and daemon commands."},
-	{name: "/resume", usage: "/resume [id|prefix]", description: "Switch to a saved session; list recent sessions when no ID is given."},
-	{name: "/continue", usage: "/continue", description: "Continue the paused task in this session."},
-	{name: "/review", usage: "/review [path]", description: "Run a read-only model review of workspace changes in this session."},
-	{name: "/rewind", usage: "/rewind [N|preview [N]]", description: "Rewind conversation or preview turns to be removed."},
-	{name: "/sessions", usage: "/sessions [query]", description: "List or search recent sessions in this workspace."},
-	{name: "/status", usage: "/status", description: "Show session, model, and token status."},
-	{name: "/stop", usage: "/stop [id|all]", description: "Stop running background processes."},
-	{name: "/title", usage: "/title [name]", description: "View or set custom title for this session."},
-}
-
+// cliHelpText renders the slash command table from the shared registry. The list
+// is alphabetical so the registry can keep the TUI's semantic order.
 func cliHelpText() string {
+	commands := slashcmd.For(slashcmd.TargetCLI)
+	sort.Slice(commands, func(i, j int) bool { return commands[i].Name < commands[j].Name })
 	lines := []string{"Available commands:"}
-	for _, command := range cliCommands {
-		lines = append(lines, fmt.Sprintf("  %-24s %s", command.usage, command.description))
+	for _, command := range commands {
+		description := command.Description
+		if strings.TrimSpace(description) == "" {
+			description = command.Summary
+		}
+		lines = append(lines, fmt.Sprintf("  %-24s %s", command.Usage, description))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// cliCommandNeedsSession reports slash commands that operate on a persisted session.
-// The CLI stays in a draft until the first prompt creates the session.
+// cliCommandNeedsSession reports slash commands that operate on a persisted
+// session. The CLI stays in a draft until the first prompt creates the session.
 func cliCommandNeedsSession(line string) bool {
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return false
-	}
-	switch strings.ToLower(fields[0]) {
-	case "/rewind", "/compact", "/fork", "/detail", "/agents", "/review", "/continue", "/discard", "/ps", "/stop", "/logs", "/export", "/model", "/effort", "/title":
-		return true
-	}
-	return false
+	command, ok := slashcmd.Lookup(line)
+	return ok && command.NeedsSession
 }
 
 // cliSessionLabel renders the session identifier for status output.

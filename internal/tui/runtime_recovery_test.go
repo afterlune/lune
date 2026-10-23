@@ -684,7 +684,7 @@ func TestRemovedGitCommands(t *testing.T) {
 			t.Fatalf("%s must not execute a command", command)
 		}
 		for _, item := range builtinCommands {
-			if item.Command == command {
+			if item.Name == command {
 				t.Fatalf("removed command is still advertised: %s", command)
 			}
 		}

@@ -31,6 +31,7 @@ Rules that follow from this split:
 - At most one overlay is open. Opening an overlay calls `modalState.open()`, which closes the previous one, so key routing (`handleKeyPress`) and layout (`overlaySection`) can never disagree.
 - `overlaySection` is the single ordered list of overlays and task cards; it returns both the rendered text and the reserved height, so the layout can no longer measure one panel and draw another.
 - The effort picker and a running MCP authentication are rendered inside the same order but are not overlays: they never take the keyboard away from a pending question or approval.
+- Slash command metadata (name, help text, target frontend, session requirement, availability during a task) lives in `internal/slashcmd`; both frontends render their tables from it and keep only dispatch and subcommand rules locally.
 
 ## Questions, Approvals, and Execution Records
 

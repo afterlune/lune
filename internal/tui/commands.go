@@ -9,57 +9,20 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 )
 
-type builtinCommandSpec struct {
-	Command             string
-	Description         string
-	AvailableDuringTask bool
-}
-
-var builtinCommands = []builtinCommandSpec{
-	{Command: "/new", Description: "start a new chat during a conversation"},
-	{Command: "/clear", Description: "clear transcript history from the current view"},
-	{Command: "/plan", Description: "toggle Plan mode (read-only exploration)"},
-	{Command: "/permissions", Description: "choose a permission mode: read-only, workspace, ask, full-access", AvailableDuringTask: true},
-	{Command: "/model", Description: "choose an active model profile", AvailableDuringTask: true},
-	{Command: "/effort", Description: "choose the reasoning effort level interactively", AvailableDuringTask: true},
-	{Command: "/theme", Description: "choose a persisted theme: auto, dark, light", AvailableDuringTask: true},
-	{Command: "/memory", Description: "view and manage workspace long-term memories", AvailableDuringTask: true},
-	{Command: "/agents", Description: "inspect live agents and their context, cache, speed, and usage", AvailableDuringTask: true},
-	{Command: "/ps", Description: "list background processes and daemon commands in session", AvailableDuringTask: true},
-	{Command: "/stop", Description: "choose a running process to stop, or use /stop <id|all>", AvailableDuringTask: true},
-	{Command: "/logs", Description: "choose a process to inspect, or use /logs <id>", AvailableDuringTask: true},
-	{Command: "/sessions", Description: "list or search recent sessions in this workspace", AvailableDuringTask: true},
-	{Command: "/resume", Description: "switch to a saved session or open the session switcher"},
-	{Command: "/drop", Description: "choose a saved session to delete with confirmation"},
-	{Command: "/detail", Description: "open tool output pager modal: /detail [index]", AvailableDuringTask: true},
-	{Command: "/title", Description: "view or set custom title for this session", AvailableDuringTask: true},
-	{Command: "/export", Description: "export session transcript: /export [md|html|jsonl] [file]"},
-	{Command: "/context", Description: "show context window budget, system rules, and capabilities", AvailableDuringTask: true},
-	{Command: "/diff", Description: "inspect git code changes in workspace modal (Ctrl+D)", AvailableDuringTask: true},
-	{Command: "/review", Description: "run a read-only model review of workspace changes"},
-	{Command: "/mcp", Description: "list and interactively manage external MCP servers", AvailableDuringTask: true},
-	{Command: "/cancel-queue", Description: "cancel the most recently queued task", AvailableDuringTask: true},
-	{Command: "/compact", Description: "compact older conversation history"},
-	{Command: "/fork", Description: "fork the current chat"},
-	{Command: "/rewind", Description: "rewind session history: /rewind [N] or /rewind preview [N]"},
-	{Command: "/status", Description: "show session, model and token status", AvailableDuringTask: true},
-	{Command: "/continue", Description: "continue the paused task in this session"},
-	{Command: "/discard", Description: "discard the paused task in this session"},
-	{Command: "/shortcuts", Description: "display keyboard shortcuts help", AvailableDuringTask: true},
-	{Command: "/thought", Description: "toggle visibility of latest thinking/reasoning block", AvailableDuringTask: true},
-	{Command: "/help", Description: "list all available slash commands", AvailableDuringTask: true},
-	{Command: "/exit", Description: "exit the chat session"},
-}
+// builtinCommands is the TUI view of the shared slash command registry.
+// Order here is the completion order users see while typing.
+var builtinCommands = slashcmd.For(slashcmd.TargetTUI)
 
 func filterCommands(prefix string) []AutocompleteItem {
 	prefix = strings.ToLower(prefix)
 	var matches []AutocompleteItem
 	for _, item := range builtinCommands {
-		if strings.HasPrefix(strings.ToLower(item.Command), prefix) {
-			matches = append(matches, AutocompleteItem{Command: item.Command, Description: item.Description})
+		if strings.HasPrefix(strings.ToLower(item.Name), prefix) {
+			matches = append(matches, AutocompleteItem{Command: item.Name, Description: item.Summary})
 		}
 	}
 	return matches
@@ -70,17 +33,10 @@ func (m *tuiModel) commandsForAutocomplete(prefix string) []AutocompleteItem {
 	if !m.taskBusy() {
 		return items
 	}
-	var available []AutocompleteItem
+	available := make([]AutocompleteItem, 0, len(items))
 	for _, item := range items {
-		if item.Command == "/memory" || item.Command == "/mcp" {
+		if spec := lookupBuiltinCommand(item.Command); spec != nil && spec.AvailableDuringTask {
 			available = append(available, item)
-			continue
-		}
-		for _, spec := range builtinCommands {
-			if spec.Command == item.Command && spec.AvailableDuringTask {
-				available = append(available, item)
-				break
-			}
 		}
 	}
 	return available
@@ -90,11 +46,11 @@ func (m *tuiModel) taskBusy() bool {
 	return m.running || len(m.queuedTurns) > 0
 }
 
-// lookupBuiltinCommand returns the registered command spec for a slash command name.
-func lookupBuiltinCommand(name string) *builtinCommandSpec {
+// lookupBuiltinCommand returns the registered command for a slash command name.
+func lookupBuiltinCommand(name string) *slashcmd.Command {
 	name = strings.ToLower(strings.TrimSpace(name))
 	for i := range builtinCommands {
-		if builtinCommands[i].Command == name {
+		if builtinCommands[i].Name == name {
 			return &builtinCommands[i]
 		}
 	}
@@ -166,13 +122,12 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 }
 
 // commandNeedsSession reports whether a slash command operates on a persisted session.
-// Draft sessions keep these commands unavailable until the first message is sent.
+// Draft sessions keep these commands unavailable until the first message is sent;
+// commands marked DraftOK either defer their change to the first message or have
+// nothing to act on yet.
 func commandNeedsSession(name string) bool {
-	switch name {
-	case "/rewind", "/compact", "/fork", "/continue", "/discard", "/export", "/agents", "/ps", "/stop", "/logs":
-		return true
-	}
-	return false
+	spec := lookupBuiltinCommand(name)
+	return spec != nil && spec.NeedsSession && !spec.DraftOK
 }
 
 // handleSlashCommand executes slash commands entered by the user.
@@ -201,7 +156,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		var lines []string
 		lines = append(lines, "**Available slash commands:**")
 		for _, item := range builtinCommands {
-			lines = append(lines, fmt.Sprintf("- `%s`: %s", item.Command, item.Description))
+			lines = append(lines, fmt.Sprintf("- `%s`: %s", item.Name, item.Summary))
 		}
 		lines = append(lines, "\nPress `?` when composer is empty to view the keyboard shortcut cheat sheet.")
 		m.addSystemEntry(strings.Join(lines, "\n"))

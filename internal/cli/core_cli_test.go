@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -630,6 +631,21 @@ func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
 	handleCoreCLIPermissions(client, true, "/permissions full-access", &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "Cannot change permissions while Plan mode is active") {
 		t.Fatalf("stderr=%q, want Plan mode lock error", stderr.String())
+	}
+}
+
+func TestCLIHelpListsEveryRegistryCommand(t *testing.T) {
+	stdout, stderr := runCLI(t, &fakeCLICore{}, "/help\n/exit\n", nil)
+	for _, command := range slashcmd.For(slashcmd.TargetCLI) {
+		if !strings.Contains(stdout, command.Usage) {
+			t.Errorf("help output is missing usage %q", command.Usage)
+		}
+		if !strings.Contains(stdout, command.Description) {
+			t.Errorf("help output is missing description for %q", command.Name)
+		}
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
 	}
 }
 

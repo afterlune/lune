@@ -81,7 +81,7 @@ func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *test
 		t.Fatal("agents panel remained open after escape")
 	}
 	for _, command := range builtinCommands {
-		if command.Command == "/subagents" {
+		if command.Name == "/subagents" {
 			t.Fatal("/subagents still duplicates /agents")
 		}
 	}
@@ -138,7 +138,7 @@ func TestRemovedSlashAliasesAreUnknown(t *testing.T) {
 	removed := []string{"/reasoning", "/delete", "/quit", "/process"}
 	for _, alias := range removed {
 		for _, item := range builtinCommands {
-			if item.Command == alias {
+			if item.Name == alias {
 				t.Fatalf("removed alias %q remains in command help/autocomplete", alias)
 			}
 		}
@@ -146,7 +146,7 @@ func TestRemovedSlashAliasesAreUnknown(t *testing.T) {
 	for _, canonical := range []string{"/effort", "/drop", "/exit", "/ps"} {
 		found := false
 		for _, item := range builtinCommands {
-			found = found || item.Command == canonical
+			found = found || item.Name == canonical
 		}
 		if !found {
 			t.Fatalf("canonical command %q is missing", canonical)
