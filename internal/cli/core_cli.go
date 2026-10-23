@@ -321,6 +321,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIContext(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
 			handleCoreCLIMemory(client, line, stdout, stderr)
+		case line == "/capability" || strings.HasPrefix(line, "/capability "):
+			handleCoreCLICapability(client, line, stdout, stderr)
 		case line == "/ps" || strings.HasPrefix(line, "/ps "):
 			handleCoreCLIPS(runtime, stdout, stderr)
 		case line == "/stop" || strings.HasPrefix(line, "/stop "):

@@ -222,13 +222,17 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 		ProjectConfig:     &projectConfig,
 	}
 
-	if store, err := settings.OpenUser(); err == nil {
-		defer store.Close()
-		_ = store.TouchWorkspace(workspace)
+	userStore, storeErr := settings.OpenUser()
+	if storeErr == nil {
+		_ = userStore.TouchWorkspace(workspace)
+		baseCfg.GeneratedTools = userStore
 	}
 
 	client, err := core.New(baseCfg)
 	if err != nil {
+		if userStore != nil {
+			_ = userStore.Close()
+		}
 		return nil, fmt.Errorf("initialize Lune with user config %s: %w", configPath, err)
 	}
 	return client, nil

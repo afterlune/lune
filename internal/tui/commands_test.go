@@ -45,6 +45,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	m.run.running = true
 	allowed := []string{
 		"/permissions ask", "/model", "/effort", "/theme", "/memory", "/memory list",
+		"/capability", "/capability list", "/capability help",
 		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
 		"/logs process", "/sessions", "/detail", "/title In progress", "/context", "/diff",
 		"/mcp", "/mcp list", "/cancel-queue", "/status", "/shortcuts", "/thought", "/help",
@@ -56,7 +57,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	}
 	blocked := []string{
 		"/new", "/resume", "/drop", "/export", "/review", "/compact", "/fork", "/rewind",
-		"/continue", "/discard", "/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear",
+		"/continue", "/discard", "/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear", "/capability enable id", "/capability delete id",
 	}
 	for _, command := range blocked {
 		if reason := m.slashCommandUnavailable(command); reason == "" {
@@ -72,7 +73,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 			t.Errorf("autocomplete suggested unavailable command %s during a task", command)
 		}
 	}
-	for _, command := range []string{"/status", "/permissions", "/memory", "/mcp", "/cancel-queue"} {
+	for _, command := range []string{"/status", "/permissions", "/memory", "/capability", "/mcp", "/cancel-queue"} {
 		if !suggested[command] {
 			t.Errorf("autocomplete omitted command %s that remains available during a task", command)
 		}
@@ -408,7 +409,12 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 
 	// Autocomplete verification
 	matches := filterCommands("/exp")
-	if len(matches) == 0 || matches[0].Command != "/export" {
+	var foundExport, foundCapability bool
+	for _, match := range matches {
+		foundExport = foundExport || match.Command == "/export"
+		foundCapability = foundCapability || match.Command == "/capability"
+	}
+	if !foundExport || !foundCapability {
 		t.Errorf("expected /export in autocomplete, got: %#v", matches)
 	}
 	matchesCtx := filterCommands("/cont")

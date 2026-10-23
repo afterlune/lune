@@ -128,6 +128,16 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 				if event.Compaction != nil {
 					writeCLICompactionStatus(stderr, *event.Compaction)
 				}
+			case core.EventCapabilityStarted:
+				_, _ = fmt.Fprintln(stderr, "Creating a reusable generated tool...")
+			case core.EventCapabilitySaved:
+				if len(event.CapabilityIDs) > 0 {
+					_, _ = fmt.Fprintf(stderr, "Saved generated tool [%s].\n", shortGeneratedToolID(event.CapabilityIDs[0]))
+				}
+			case core.EventCapabilitySkipped:
+				_, _ = fmt.Fprintln(stderr, "No reusable generated tool was saved.")
+			case core.EventCapabilityFailed:
+				_, _ = fmt.Fprintln(stderr, "Generated tool creation failed; the completed task is unaffected.")
 			case core.EventToolStarted:
 				if strings.TrimSpace(event.Tool.Name) != "" && !strings.EqualFold(event.Tool.Name, "select_tool_category") {
 					summary := cliApprovalSummary(core.ApprovalRequest{

@@ -92,7 +92,7 @@ func TestFormatRelativeTime(t *testing.T) {
 	}
 }
 
-func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
+func TestSessionsCommandAndResumeGeneratedTools(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {

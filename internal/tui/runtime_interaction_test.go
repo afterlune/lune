@@ -551,7 +551,7 @@ func TestRewindAndOpenRunningGuards(t *testing.T) {
 	}
 }
 
-func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
+func TestQueuedTurnGeneratedToolAndCancellation(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.run.running = true
 	m.run.runningExecution = "exec-active"

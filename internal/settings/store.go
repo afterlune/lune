@@ -116,6 +116,26 @@ CREATE TABLE IF NOT EXISTS desktop_command_toolchains (
   workspace_key TEXT PRIMARY KEY,
   paths_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS task_experiences (
+  id TEXT PRIMARY KEY,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  tags_json TEXT NOT NULL,
+  input_schema_json TEXT NOT NULL,
+  preconditions_json TEXT NOT NULL,
+  script TEXT NOT NULL,
+  required_tools_json TEXT NOT NULL,
+  required_capabilities_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source_session_id TEXT NOT NULL DEFAULT '',
+  source_execution_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  use_count INTEGER NOT NULL DEFAULT 0
 );`
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		_ = db.Close()
