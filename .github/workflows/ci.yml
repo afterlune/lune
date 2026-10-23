@@ -79,9 +79,9 @@ jobs:
             exit 1
           fi
       - name: Vet supported Go packages
-        run: go vet ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/workspacereview
+        run: go vet ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview
       - name: Test supported Go packages
-        run: go test -trimpath ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/workspacereview
+        run: go test -trimpath ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview
       - name: Cross-build Linux binaries
         shell: bash
         run: |
