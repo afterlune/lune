@@ -8,8 +8,8 @@ github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
 github.com/adrg/xdg v0.5.3 h1:xRnxJXne7+oWDatRhR1JLnvuccuIeCoBu2rtuLqQB78=
 github.com/adrg/xdg v0.5.3/go.mod h1:nlTsY+NNiCBGCK2tpm09vRqfVzrc2fLmXGpBLF0zlTQ=
-github.com/afterlune/luneCore v0.1.1-0.20261022114557-671865a844cd h1:zaKUa72TNQbzXmOZrn1r0pfWI3sa14n/URVD7j/edmc=
-github.com/afterlune/luneCore v0.1.1-0.20261022114557-671865a844cd/go.mod h1:32Dhhbi2Lr/9WrjLopDTqu9NqoD8Z1BIpwPAlxatjxo=
+github.com/afterlune/luneCore v0.1.1-0.20261023023332-e0ede95b5a37 h1:isrFTSLv6dD5eHI9RyWV9DDVf/TP01dTriYg4tUujqk=
+github.com/afterlune/luneCore v0.1.1-0.20261023023332-e0ede95b5a37/go.mod h1:32Dhhbi2Lr/9WrjLopDTqu9NqoD8Z1BIpwPAlxatjxo=
 github.com/afterlune/luneGraph v0.0.0-20261013021855-f9782c728a1b h1:n5/eER+LGqwtPGutombgn/rBoEcXHWRv7tOsmrxT2+Y=
 github.com/afterlune/luneGraph v0.0.0-20261013021855-f9782c728a1b/go.mod h1:QFVD7BPU/kIij20si8dhEIVjQYUpwhdBYmOtLG9vLT4=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

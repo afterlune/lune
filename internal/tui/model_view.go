@@ -304,7 +304,11 @@ func (m *tuiModel) refreshViewportContent() {
 		}
 		if m.running {
 			elapsed := time.Since(m.taskStartedAt)
-			appendRendered(renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()), nil)
+			if m.taskActivity != "" {
+				appendRendered(renderWorkingActivity(elapsed, m.taskActivity, m.subagentsStatusSummary()), nil)
+			} else {
+				appendRendered(renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()), nil)
+			}
 		}
 	}
 

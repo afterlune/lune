@@ -421,12 +421,20 @@ func renderFileChangesCard(entry TranscriptEntry, width int) string {
 
 // renderWorking renders the active working indicator.
 func renderWorking(elapsed time.Duration, thinking bool, subagentsSummary ...string) string {
-	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
-	timeStr := formatDuration(elapsed)
 	action := "Working"
 	if thinking {
 		action = "Thinking"
 	}
+	return renderWorkingAction(elapsed, action, subagentsSummary...)
+}
+
+func renderWorkingActivity(elapsed time.Duration, activity string, subagentsSummary ...string) string {
+	return renderWorkingAction(elapsed, activity, subagentsSummary...)
+}
+
+func renderWorkingAction(elapsed time.Duration, action string, subagentsSummary ...string) string {
+	bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
+	timeStr := formatDuration(elapsed)
 	titleText := fmt.Sprintf("%s (%s • esc to interrupt)", action, timeStr)
 	if len(subagentsSummary) > 0 && subagentsSummary[0] != "" {
 		titleText = fmt.Sprintf("%s (%s · %s • esc to interrupt)", action, timeStr, subagentsSummary[0])

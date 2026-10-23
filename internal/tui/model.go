@@ -88,6 +88,7 @@ type tuiModel struct {
 	terminalEvents           map[string]core.Event
 	currentStreamText        string
 	currentReasoningText     string
+	taskActivity             string
 	reasoningStartTime       time.Time
 	reasoningLiveCollapsed   bool
 	thinking                 bool
@@ -365,6 +366,7 @@ func (m *tuiModel) resetSessionState() {
 	m.unseenCompletion = ""
 	m.currentStreamText = ""
 	m.currentReasoningText = ""
+	m.taskActivity = ""
 	m.reasoningStartTime = time.Time{}
 	m.thinking = false
 	m.streamFirstTokenTime = time.Time{}

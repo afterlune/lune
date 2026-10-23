@@ -26,16 +26,26 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 func replaySafeDuringRestore(kind core.EventKind) bool {
 	switch kind {
 	case core.EventToolStarted, core.EventToolDetails, core.EventToolFinished,
-		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed:
+		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed,
+		core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
 		return true
 	}
 	return false
 }
 
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
+	if event.Kind == core.EventRuntimeReplayComplete {
+		if m.restoringSession {
+			m.finishSessionRestore()
+		}
+		return m, nil
+	}
 	if m.restoringSession && event.Cursor == 0 {
-		// Live-only events (model stream deltas, live tool details) always carry a
-		// zero cursor; replayed durable events carry the stored cursor.
+		// Live-only events follow the replay marker in Core; keep this as a
+		// defensive boundary for event sources that only expose live events.
+		m.finishSessionRestore()
+	}
+	if m.restoringSession && event.Kind == core.EventRuntimeStreamFailed {
 		m.finishSessionRestore()
 	}
 	if m.restoringSession && !replaySafeDuringRestore(event.Kind) {
@@ -95,6 +105,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.taskSnapshot = nextTask
 		m.running = true
 		m.runningExecution = execID
+		m.taskActivity = ""
 		m.taskStartedAt = time.Now()
 		main := m.ensureAgentMetrics("lead")
 		main.Status = "Running"
@@ -414,6 +425,21 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.handleCompactionEvent(*event.Compaction)
 		}
 
+	case core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
+		if !m.running || event.ExecutionID == "" || event.ExecutionID != m.runningExecution {
+			return m, nil
+		}
+		main := m.ensureAgentMetrics("lead")
+		if event.Kind == core.EventMemoryStarted {
+			m.taskActivity = "Extracting workspace memory"
+			main.Activity = m.taskActivity
+		} else if m.taskActivity == "Extracting workspace memory" {
+			m.taskActivity = "Finishing task"
+			main.Activity = m.taskActivity
+		}
+		m.transcriptDirty = true
+		m.updateLayout()
+
 	case core.EventUserQuestionRequired:
 		if m.staleTaskAttempt(event.ExecutionID, event.TaskID) {
 			return m, nil
@@ -511,6 +537,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	case core.EventRuntimeStreamFailed:
 		m.thinking = false
 		m.running = false
+		m.taskActivity = ""
 		if event.Err != "" {
 			m.addSystemEntry("Runtime stream error: " + event.Err)
 		}
@@ -531,6 +558,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	case core.EventTaskDiscarded:
 		m.thinking = false
 		m.running = false
+		m.taskActivity = ""
 		main := m.ensureAgentMetrics("lead")
 		main.Status = "Cancelled"
 		main.Activity = "Cancelled"

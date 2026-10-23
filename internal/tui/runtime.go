@@ -24,17 +24,10 @@ type runtimeEventMsg struct {
 	events    <-chan core.Event
 }
 
-// runtimeRestoreSettledMsg fires once the durable replay for a freshly loaded
-// session has been quiet long enough to re-render the transcript in one pass.
+// runtimeRestoreSettledMsg is retained for explicit restore-settlement messages.
 type runtimeRestoreSettledMsg struct {
 	generation uint64
 }
-
-const (
-	// sessionRestoreIdle is how long the event stream must stay quiet before the
-	// restored transcript is rendered again.
-	sessionRestoreIdle = 200 * time.Millisecond
-)
 
 type turnSubmittedMsg struct {
 	sessionID  string
@@ -53,6 +46,11 @@ type turnFinishedMsg struct {
 type tickMsg time.Time
 
 func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
+	streamCmd := m.startRuntimeEventSubscription(false)
+	return tea.Batch(streamCmd, m.waitForExecution(m.runningExecution))
+}
+
+func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 	if m.runtime == nil {
 		return nil
 	}
@@ -64,8 +62,9 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 	runtime := m.runtime
 	sessionID := m.sessionID
 	streamCmd := func() tea.Msg {
-		rawEvents, err := runtime.SubscribeEvents(ctx, 0)
+		rawEvents, err := runtime.SubscribeEventsWithReplayComplete(ctx, 0)
 		if err != nil {
+			cancel()
 			return runtimeStreamReadyMsg{sessionID: sessionID, err: err}
 		}
 		// Relay events through a large 2048-buffer channel so luneCore's 64-element
@@ -91,7 +90,17 @@ func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 		}()
 		return runtimeStreamReadyMsg{sessionID: sessionID, events: buffered}
 	}
-	return tea.Batch(streamCmd, m.waitForExecution(m.runningExecution))
+	if !subscribeNow {
+		return streamCmd
+	}
+	// The first turn in a lazy session submits immediately alongside the other
+	// Bubble Tea commands. Open the live subscription now so that submission cannot
+	// race past the subscription command and drop live-only model deltas.
+	ready := streamCmd()
+	if msg, ok := ready.(runtimeStreamReadyMsg); ok && msg.err != nil {
+		m.runtimeCancel = nil
+	}
+	return func() tea.Msg { return ready }
 }
 
 func (m *tuiModel) waitForExecution(executionID string) tea.Cmd {
@@ -176,6 +185,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		return m, nil
 	}
 
+	creatingSession := m.sessionID == ""
 	if err := m.ensureSession(context.Background()); err != nil {
 		m.addSystemEntry("Failed to create session: " + err.Error())
 		m.updateLayout()
@@ -227,6 +237,10 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		PlanMode:       planMode,
 		PermissionMode: permissionMode,
 	}
+	var runtimeEventsCmd tea.Cmd
+	if creatingSession {
+		runtimeEventsCmd = m.startRuntimeEventSubscription(true)
+	}
 
 	runtime := m.runtime
 	sessionID := m.sessionID
@@ -244,11 +258,12 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		m.updateLayout()
 		m.viewport.GotoBottom()
 
-		return m, func() tea.Msg {
+		submitCmd := func() tea.Msg {
 			ctx := context.Background()
 			sub, err := runtime.SubmitTurn(ctx, req, core.QueueInput)
 			return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
 		}
+		return m, tea.Batch(runtimeEventsCmd, submitCmd)
 	}
 
 	// Normal submission when idle
@@ -261,6 +276,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	})
 	m.running = true
 	m.thinking = false
+	m.taskActivity = ""
 	m.taskStartedAt = time.Now()
 	m.turnStreamStartTime = time.Now()
 	m.streamFirstTokenTime = time.Time{}
@@ -291,6 +307,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.viewport.GotoBottom()
 
 	return m, tea.Batch(
+		runtimeEventsCmd,
 		tickClock(),
 		func() tea.Msg {
 			ctx := context.Background()

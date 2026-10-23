@@ -73,7 +73,7 @@ func (m *tuiModel) beginSessionRestore() {
 }
 
 // finishSessionRestore re-syncs live state from Core and re-renders the transcript
-// once the replay settles. Usage metrics keep the snapshot values.
+// once replay settles, using the latest persisted usage snapshot as the baseline.
 func (m *tuiModel) finishSessionRestore() {
 	if !m.restoringSession {
 		return
@@ -88,8 +88,66 @@ func (m *tuiModel) finishSessionRestore() {
 		}
 		m.checkPendingState(ctx)
 	}
+	m.refreshSessionUsageSnapshot(context.Background())
 	m.refreshViewportContent()
 	m.updateLayout()
+}
+
+func (m *tuiModel) refreshSessionUsageSnapshot(ctx context.Context) {
+	if m.client == nil || m.sessionID == "" {
+		return
+	}
+	saved, err := m.client.GetSession(ctx, m.sessionID)
+	if err != nil {
+		return
+	}
+	m.totalInputTokens = saved.SessionUsage.Input
+	m.totalOutputTokens = saved.SessionUsage.Output
+	m.cachedTokens = saved.SessionUsage.Cached
+	m.reasoningTokens = saved.SessionUsage.Reasoning
+	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
+	m.lastInputTokens, m.lastCachedTokens = 0, 0
+	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
+	m.estimatedInputTokens = 0
+
+	if len(saved.AgentUsage) > 0 {
+		for agentID, totals := range saved.AgentUsage {
+			stats := m.ensureAgentMetrics(agentID)
+			stats.InputTokens = totals.Input
+			stats.OutputTokens = totals.Output
+			stats.CachedTokens = totals.Cached
+			stats.ReasoningTokens = totals.Reasoning
+		}
+	} else if m.seededSessionUsage {
+		stats := m.ensureAgentMetrics("lead")
+		stats.InputTokens = saved.SessionUsage.Input
+		stats.OutputTokens = saved.SessionUsage.Output
+		stats.CachedTokens = saved.SessionUsage.Cached
+		stats.ReasoningTokens = saved.SessionUsage.Reasoning
+	}
+
+	last, hasLast := latestLeadUsageRecord(saved.UsageRequests)
+	if hasLast {
+		m.lastInputTokens = last.Usage.InputTokens
+		m.lastCachedTokens = last.Usage.InputTokensDetails.CachedTokens
+		m.lastRequestID, m.lastRequestAttempt = last.RequestID, last.RequestAttempt
+		m.lastRequestChanges = append([]string(nil), last.RequestChanges...)
+		m.estimatedInputTokens = last.EstimatedInputTokens
+		if m.running && m.taskSnapshot.ContextWindow > 0 {
+			m.contextWindow = m.taskSnapshot.ContextWindow
+		} else if saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0 {
+			m.contextWindow = *saved.Settings.ContextWindow
+		} else if last.ContextWindow > 0 {
+			m.contextWindow = last.ContextWindow
+		}
+		stats := m.ensureAgentMetrics("lead")
+		stats.ContextInputTokens = last.Usage.InputTokens
+		if stats.ContextInputTokens <= 0 {
+			stats.ContextInputTokens = last.EstimatedInputTokens
+		}
+		stats.EstimatedInputTokens = last.EstimatedInputTokens
+		m.applyAgentModelContext(stats, last.ModelProfile, last.ContextWindow)
+	}
 }
 
 // ensureSession creates the draft session on first use so launching the TUI or

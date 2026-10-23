@@ -90,17 +90,13 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
+			if m.restoringSession {
+				m.finishSessionRestore()
+			}
 			m.addSystemEntry("Failed to connect to runtime event stream: " + msg.err.Error())
 			return m, nil
 		}
 		cmds := []tea.Cmd{nextRuntimeEvent(m.sessionID, msg.events)}
-		if m.restoringSession {
-			// Sessions without durable events must settle too.
-			generation := m.restoreGeneration
-			cmds = append(cmds, tea.Tick(sessionRestoreIdle, func(time.Time) tea.Msg {
-				return runtimeRestoreSettledMsg{generation: generation}
-			}))
-		}
 		return m, tea.Batch(cmds...)
 
 	case runtimeEventMsg:
@@ -108,6 +104,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.event.Kind == "" && msg.events == nil {
+			if m.restoringSession {
+				m.finishSessionRestore()
+			}
 			return m, nil
 		}
 		var mod tea.Model
@@ -124,13 +123,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if m.restoringSession {
-			// Defer the transcript rebuild so replaying a long session renders once.
-			generation := m.restoreGeneration
-			cmds = append(cmds, tea.Tick(sessionRestoreIdle, func(time.Time) tea.Msg {
-				return runtimeRestoreSettledMsg{generation: generation}
-			}))
-		} else if m.transcriptDirty || m.cachedDirty {
+		if !m.restoringSession && (m.transcriptDirty || m.cachedDirty) {
 			m.refreshViewportContent()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
@@ -525,6 +518,7 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 	if m.runningExecution == executionID {
 		m.running = false
 		m.thinking = false
+		m.taskActivity = ""
 		if msg.result.Status == core.TaskPaused {
 			if m.pausedCheckpoint == nil {
 				m.pausedCheckpoint = m.pausedCheckpointFor(executionID)
@@ -580,6 +574,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	m.terminalEvents[executionID] = event
 	m.taskSnapshot.Status = event.Status
 	m.thinking = false
+	m.taskActivity = ""
 	m.compacting = false
 	// Keep the live transcript until WaitTurn supplies the authoritative response
 	// and ProposedPlan; finalizing here would briefly erase a completed plan.
