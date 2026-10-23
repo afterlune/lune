@@ -43,7 +43,7 @@ func (m *tuiModel) commandsForAutocomplete(prefix string) []AutocompleteItem {
 }
 
 func (m *tuiModel) taskBusy() bool {
-	return m.running || len(m.queuedTurns) > 0
+	return m.run.busy()
 }
 
 // lookupBuiltinCommand returns the registered command for a slash command name.
@@ -171,7 +171,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/clear":
 		m.entries = nil
-		m.currentStreamText = ""
+		m.run.currentStreamText = ""
 		m.viewport.SetContent("")
 		m.scrolledUp = false
 		m.input.selecting = false
@@ -302,8 +302,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		if m.runtime != nil {
 			state, err := m.runtime.State(context.Background())
 			if (err == nil && state.Task.Status == core.TaskPaused) || m.hasPausedTask() {
-				m.running = true
-				m.taskStartedAt = time.Now()
+				m.run.running = true
+				m.run.taskStartedAt = time.Now()
 				m.pausedCheckpoint = nil
 				m.activeRecovery = nil
 				m.activeToolRecovery = nil
@@ -334,20 +334,20 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
-	if len(m.queuedTurns) == 0 {
+	if len(m.run.queuedTurns) == 0 {
 		m.addSystemEntry("No queued tasks to cancel.")
 		return m, nil
 	}
-	if m.cancelingQueuedExecution != "" {
+	if m.run.cancelingQueuedExecution != "" {
 		m.addSystemEntry("A queued-task cancellation is already in progress.")
 		return m, nil
 	}
-	target := m.queuedTurns[len(m.queuedTurns)-1]
+	target := m.run.queuedTurns[len(m.run.queuedTurns)-1]
 	if m.runtime == nil || target.ExecutionID == "" {
 		m.addSystemEntry("This queued task is not ready to cancel yet.")
 		return m, nil
 	}
-	m.cancelingQueuedExecution = target.ExecutionID
+	m.run.cancelingQueuedExecution = target.ExecutionID
 	m.addSystemEntry("Cancelling the most recently queued task…")
 	m.updateLayout()
 	runtime := m.runtime
@@ -359,7 +359,7 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) {
-	if m.discardInFlight {
+	if m.run.discardInFlight {
 		return m, nil
 	}
 	if m.runtime == nil {
@@ -367,7 +367,7 @@ func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) 
 		m.updateLayout()
 		return m, nil
 	}
-	m.discardInFlight = true
+	m.run.discardInFlight = true
 	m.addSystemEntry("Discarding paused task…")
 	m.updateLayout()
 	runtime := m.runtime
@@ -378,14 +378,14 @@ func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) 
 }
 
 func (m *tuiModel) settleQueuedTurnCancellation(msg queuedTurnCancelledMsg) {
-	if m.cancelingQueuedExecution == msg.executionID {
-		m.cancelingQueuedExecution = ""
+	if m.run.cancelingQueuedExecution == msg.executionID {
+		m.run.cancelingQueuedExecution = ""
 	}
 
 	removeQueuedTurn := func() {
-		for i, item := range m.queuedTurns {
+		for i, item := range m.run.queuedTurns {
 			if item.ExecutionID == msg.executionID {
-				m.queuedTurns = append(m.queuedTurns[:i], m.queuedTurns[i+1:]...)
+				m.run.queuedTurns = append(m.run.queuedTurns[:i], m.run.queuedTurns[i+1:]...)
 				break
 			}
 		}

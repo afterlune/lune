@@ -129,9 +129,9 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	apprID := appr.Request.ID
 	toolName := appr.Request.Tool
 	m.activeApproval = nil
-	m.running = true
-	m.thinking = false
-	m.taskStartedAt = time.Now()
+	m.run.running = true
+	m.run.thinking = false
+	m.run.taskStartedAt = time.Now()
 	m.scrolledUp = false
 	m.refreshViewportContent()
 	m.viewport.GotoBottom()
@@ -144,7 +144,7 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decision, toolName))
 
 	runtime := m.runtime
-	executionID := m.runningExecution
+	executionID := m.run.runningExecution
 	return m, tea.Batch(
 		tickClock(),
 		m.waitForExecution(executionID),
@@ -164,9 +164,9 @@ func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
 	invocationID := tr.InvocationID
 	toolName := tr.ToolName
 	m.activeToolRecovery = nil
-	m.running = true
-	m.thinking = false
-	m.taskStartedAt = time.Now()
+	m.run.running = true
+	m.run.thinking = false
+	m.run.taskStartedAt = time.Now()
 	m.scrolledUp = false
 	m.refreshViewportContent()
 	m.viewport.GotoBottom()
@@ -194,8 +194,8 @@ func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
 
 // toggleReasoningExpansion toggles the expanded/collapsed state of the latest reasoning block.
 func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
-	if m.currentReasoningText != "" {
-		m.reasoningLiveCollapsed = !m.reasoningLiveCollapsed
+	if m.run.currentReasoningText != "" {
+		m.run.reasoningLiveCollapsed = !m.run.reasoningLiveCollapsed
 		m.refreshViewportContent()
 		return m, nil
 	}
@@ -241,7 +241,7 @@ func (m *tuiModel) roundLive(start, end int) bool {
 			return true
 		}
 	}
-	return end == len(m.entries) && m.running && strings.TrimSpace(m.currentStreamText) == ""
+	return end == len(m.entries) && m.run.running && strings.TrimSpace(m.run.currentStreamText) == ""
 }
 
 // roundExpanded reports whether a round renders expanded. The running round follows

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -46,9 +45,9 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 		}
 		m.runtime.SetUserInteractionAvailable(false)
 	}
-	if m.runtimeCancel != nil {
-		m.runtimeCancel()
-		m.runtimeCancel = nil
+	if m.run.runtimeCancel != nil {
+		m.run.runtimeCancel()
+		m.run.runtimeCancel = nil
 	}
 	m.resetSessionState()
 	m.runtime = rt
@@ -67,21 +66,18 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 // beginSessionRestore freezes footer metrics and transcript rebuilds until the
 // runtime's durable event replay for this session settles.
 func (m *tuiModel) beginSessionRestore() {
-	m.restoringSession = true
-	m.restoreGeneration++
-	m.restoreStartedAt = time.Now()
+	m.run.beginRestore()
 }
 
 // finishSessionRestore re-syncs live state from Core and re-renders the transcript
 // once replay settles, using the latest persisted usage snapshot as the baseline.
 func (m *tuiModel) finishSessionRestore() {
-	if !m.restoringSession {
+	if !m.run.finishRestore() {
 		return
 	}
-	m.restoringSession = false
 	if m.runtime != nil {
 		ctx := context.Background()
-		if state, err := m.runtime.State(ctx); err == nil && !m.running && !m.hasPausedTask() {
+		if state, err := m.runtime.State(ctx); err == nil && !m.run.running && !m.hasPausedTask() {
 			// Adopt Core's state when the model is idle; an in-flight local turn or a
 			// paused checkpoint stays authoritative.
 			m.restoreRuntimeSnapshot(state)
@@ -124,8 +120,8 @@ func (m *tuiModel) refreshSessionUsageSnapshot(ctx context.Context) {
 	if hasLast {
 		window := int64(0)
 		switch {
-		case m.running && m.taskSnapshot.ContextWindow > 0:
-			window = m.taskSnapshot.ContextWindow
+		case m.run.running && m.run.taskSnapshot.ContextWindow > 0:
+			window = m.run.taskSnapshot.ContextWindow
 		case saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0:
 			window = *saved.Settings.ContextWindow
 		default:
@@ -195,22 +191,15 @@ func (m *tuiModel) ensureSession(ctx context.Context) error {
 }
 
 func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
-	m.taskSnapshot = state.Task
-	m.running = false
-	m.runningExecution = ""
 	m.pausedCheckpoint = nil
+	m.run.restoreFrom(state.Task)
 	contextWindowKnown := state.Task.ContextWindow > 0 || state.Task.TaskID != ""
 	switch state.Task.Status {
 	case core.TaskRunning, core.TaskQueued:
-		m.pausedCheckpoint = nil
-		m.running = true
-		m.runningExecution = state.Task.ExecutionID
 		if contextWindowKnown {
 			m.usage.contextWindow = state.Task.ContextWindow
 		}
-		m.taskStartedAt = time.Now()
 	case core.TaskPaused:
-		m.runningExecution = state.Task.ExecutionID
 		if contextWindowKnown {
 			m.usage.contextWindow = state.Task.ContextWindow
 		}
@@ -242,7 +231,7 @@ func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 	var foundToolRecovery *core.ToolRecoveryRequest
 	for _, req := range reqs {
 		if req.Kind == core.PendingUserQuestion && req.UserQuestion != nil && foundQuestion == nil {
-			if m.questionSubmissions[m.questionKey(*req.UserQuestion)] == 0 {
+			if m.run.questionSubmissions[m.questionKey(*req.UserQuestion)] == 0 {
 				foundQuestion = req.UserQuestion
 			}
 		}

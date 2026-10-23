@@ -84,14 +84,14 @@ func TestRestoreDefersTranscriptRefresh(t *testing.T) {
 	if m.view.cachedEntryCount != renderedBefore {
 		t.Fatalf("transcript rebuilt during restore: cached=%d entries=%d", m.view.cachedEntryCount, len(m.entries))
 	}
-	if !m.restoringSession {
+	if !m.run.restoringSession {
 		t.Fatalf("restore finished before the replay settled")
 	}
 
-	mod, _ = m.Update(runtimeRestoreSettledMsg{generation: m.restoreGeneration})
+	mod, _ = m.Update(runtimeRestoreSettledMsg{generation: m.run.restoreGeneration})
 	m = mod.(*tuiModel)
 
-	if m.restoringSession {
+	if m.run.restoringSession {
 		t.Fatalf("restore did not settle on the idle tick")
 	}
 	if m.view.cachedEntryCount != len(m.entries) {
@@ -103,18 +103,18 @@ func TestRestoreDefersTranscriptRefresh(t *testing.T) {
 func TestRestoreSettlesOnStaleGeneration(t *testing.T) {
 	m := newTUIModel(nil, nil, "restore-stale")
 	m.beginSessionRestore()
-	stale := m.restoreGeneration
+	stale := m.run.restoreGeneration
 	m.beginSessionRestore()
 
 	mod, _ := m.Update(runtimeRestoreSettledMsg{generation: stale})
 	m = mod.(*tuiModel)
-	if !m.restoringSession {
+	if !m.run.restoringSession {
 		t.Fatalf("a stale idle tick settled the newer restore")
 	}
 
-	mod, _ = m.Update(runtimeRestoreSettledMsg{generation: m.restoreGeneration})
+	mod, _ = m.Update(runtimeRestoreSettledMsg{generation: m.run.restoreGeneration})
 	m = mod.(*tuiModel)
-	if m.restoringSession {
+	if m.run.restoringSession {
 		t.Fatalf("current restore did not settle")
 	}
 }
@@ -131,10 +131,10 @@ func TestStartingTurnEndsRestore(t *testing.T) {
 	mod, _ := m.submitTurn("inspect the restored session")
 	m = mod.(*tuiModel)
 
-	if m.restoringSession {
+	if m.run.restoringSession {
 		t.Fatalf("starting a turn must stop deferring the transcript restore")
 	}
-	if !m.running {
+	if !m.run.running {
 		t.Fatalf("expected the submitted turn to be running")
 	}
 }
@@ -155,9 +155,9 @@ func TestRestoreIgnoresReplayedLifecycle(t *testing.T) {
 		m = mod.(*tuiModel)
 	}
 
-	if m.running || m.runningExecution != "" || m.taskSnapshot.TaskID != "" {
+	if m.run.running || m.run.runningExecution != "" || m.run.taskSnapshot.TaskID != "" {
 		t.Fatalf("replayed lifecycle mutated task state: running=%t execution=%q task=%q",
-			m.running, m.runningExecution, m.taskSnapshot.TaskID)
+			m.run.running, m.run.runningExecution, m.run.taskSnapshot.TaskID)
 	}
 	if m.usage.contextWindow != 0 || m.currentModelProfile != "" {
 		t.Fatalf("replayed lifecycle mutated metrics: context=%d profile=%q", m.usage.contextWindow, m.currentModelProfile)
@@ -175,10 +175,10 @@ func TestRestoreSettlesOnIdleWithoutEvents(t *testing.T) {
 	m := newTUIModel(nil, nil, "restore-idle")
 	m.beginSessionRestore()
 
-	mod, _ := m.Update(runtimeRestoreSettledMsg{generation: m.restoreGeneration})
+	mod, _ := m.Update(runtimeRestoreSettledMsg{generation: m.run.restoreGeneration})
 	m = mod.(*tuiModel)
 
-	if m.restoringSession {
+	if m.run.restoringSession {
 		t.Fatalf("idle tick did not settle an empty replay")
 	}
 }
@@ -194,11 +194,11 @@ func TestLiveStreamEndsRestore(t *testing.T) {
 	}})
 	m = mod.(*tuiModel)
 
-	if m.restoringSession {
+	if m.run.restoringSession {
 		t.Fatalf("live stream delta must end the restore window")
 	}
-	if !strings.Contains(m.currentStreamText, "streaming") {
-		t.Fatalf("live stream delta was dropped: %q", m.currentStreamText)
+	if !strings.Contains(m.run.currentStreamText, "streaming") {
+		t.Fatalf("live stream delta was dropped: %q", m.run.currentStreamText)
 	}
 }
 
@@ -216,12 +216,12 @@ func TestFinishRestoreResyncsIdleState(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 
 	m := newTUIModel(client, runtime, session.ID)
-	if !m.restoringSession {
+	if !m.run.restoringSession {
 		t.Fatalf("a model opened with a runtime must start in the restore window")
 	}
 	m.finishSessionRestore()
-	if m.restoringSession || m.running || m.hasPausedTask() {
+	if m.run.restoringSession || m.run.running || m.hasPausedTask() {
 		t.Fatalf("idle session state not adopted: restoring=%t running=%t paused=%t",
-			m.restoringSession, m.running, m.hasPausedTask())
+			m.run.restoringSession, m.run.running, m.hasPausedTask())
 	}
 }

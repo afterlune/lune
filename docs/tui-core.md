@@ -24,6 +24,7 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 | `viewCache` | `internal/tui/view_cache.go` | Rendered entry blocks, line ranges, and the two stale markers (`cachedDirty` needs a re-render, `transcriptDirty` only needs a re-compose) |
 | `modalState` | `internal/tui/modal_state.go` | Every overlay (shortcuts, agents, sessions, memory, MCP, theme/model/permission/effort pickers, process, pager, diff) with `active()`, `open()` and `close()` |
 | `composerState` | `internal/tui/composer_state.go` | Textarea, autocomplete popup, `@` file scanner, prompt history, selection and copy feedback |
+| `runState` | `internal/tui/run_state.go` | Running flags, Core task snapshot, queue, waiting bookkeeping, streaming buffers, restore freeze |
 
 Rules that follow from this split:
 

@@ -50,7 +50,7 @@ func TestUsageEventAccumulatesAndKeepsWindow(t *testing.T) {
 	m.usage.contextWindow = 128000
 	// A seeded session only keeps accumulating while a turn is running; that is
 	// what stops a restored snapshot from double counting.
-	m.running = true
+	m.run.running = true
 
 	m.Update(runtimeEventMsg{event: core.Event{
 		Kind:          core.EventUsage,

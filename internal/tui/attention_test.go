@@ -107,13 +107,13 @@ func TestTaskStatusLabel(t *testing.T) {
 	if got := m.taskStatusLabel(); got != "idle" {
 		t.Fatalf("idle label = %q", got)
 	}
-	m.running = true
-	m.taskStartedAt = time.Now().Add(-70 * time.Second)
+	m.run.running = true
+	m.run.taskStartedAt = time.Now().Add(-70 * time.Second)
 	if got := m.taskStatusLabel(); got != "running (1m 10s)" {
 		t.Fatalf("running label = %q", got)
 	}
-	m.running = false
-	m.taskStartedAt = time.Time{}
+	m.run.running = false
+	m.run.taskStartedAt = time.Time{}
 	m.activeToolRecovery = &ActiveToolRecovery{}
 	if got := m.taskStatusLabel(); got != "waiting for your decision" {
 		t.Fatalf("decision label = %q", got)

@@ -36,7 +36,7 @@ func BenchmarkRefreshViewportContent_Cached(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		m.currentStreamText = "Streaming token delta..."
+		m.run.currentStreamText = "Streaming token delta..."
 		m.refreshViewportContent()
 	}
 }
@@ -143,7 +143,7 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	}
 	mod, _ = m.handleSlashCommand("/resume " + s2Prefix)
 	m = mod.(*tuiModel)
-	if m.running {
+	if m.run.running {
 		t.Fatal("switching sessions must not start a model turn")
 	}
 	if m.modals.sessions.open {
@@ -388,17 +388,17 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 		Timestamp:   time.Now(),
 	})
 
-	m.running = true
-	m.runningExecution = "exec-test-int-001"
-	m.currentReasoningText = "Analyzing test failures..."
-	m.reasoningStartTime = time.Now().Add(-2 * time.Second)
+	m.run.running = true
+	m.run.runningExecution = "exec-test-int-001"
+	m.run.currentReasoningText = "Analyzing test failures..."
+	m.run.reasoningStartTime = time.Now().Add(-2 * time.Second)
 
 	// Press Esc to interrupt
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 
-	if m.running {
-		t.Fatalf("expected m.running to be false after Esc interrupt")
+	if m.run.running {
+		t.Fatalf("expected m.run.running to be false after Esc interrupt")
 	}
 	if m.pausedCheckpoint == nil {
 		t.Fatalf("expected m.pausedCheckpoint to be non-nil after interrupt")
@@ -605,15 +605,15 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 		t.Fatal("plan implementation must dismiss review and restore the previous permission mode")
 	}
 	m.Update(planImplementedMsg{impl: core.PlanImplementation{Submission: core.TurnSubmission{ExecutionID: "implementation"}}, planText: "1. Read code\n2. Run tests"})
-	if !m.running || m.runningExecution != "implementation" {
+	if !m.run.running || m.run.runningExecution != "implementation" {
 		t.Fatal("implementation must use the submitted runtime execution")
 	}
 	m.handleRuntimeEvent(core.Event{Kind: core.EventModelStream, Stream: &core.ModelStreamEvent{Type: "text_delta", Delta: "We will consider Step 2 next."}})
-	if !strings.Contains(m.currentStreamText, "Step 2") {
+	if !strings.Contains(m.run.currentStreamText, "Step 2") {
 		t.Fatal("plan text must still stream normally")
 	}
 	m.Update(turnFinishedMsg{result: core.TurnResult{Status: core.TaskCompleted}})
-	if m.running {
+	if m.run.running {
 		t.Fatal("runtime completion must end the running state")
 	}
 	for _, entry := range m.entries {

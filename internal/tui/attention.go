@@ -83,9 +83,9 @@ func (m *tuiModel) noteTurnFinished(executionID string, status core.TaskStatus, 
 // taskStatusLabel summarizes the current execution state for /status.
 func (m *tuiModel) taskStatusLabel() string {
 	switch {
-	case m.running:
-		if !m.taskStartedAt.IsZero() {
-			return "running (" + formatDuration(time.Since(m.taskStartedAt)) + ")"
+	case m.run.running:
+		if !m.run.taskStartedAt.IsZero() {
+			return "running (" + formatDuration(time.Since(m.run.taskStartedAt)) + ")"
 		}
 		return "running"
 	case m.needsUserDecision():

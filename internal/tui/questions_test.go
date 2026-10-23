@@ -59,7 +59,7 @@ func TestQuestionSubmissionRetainsAnswersAndRetriesWithoutDuplicates(t *testing.
 	}
 	key := m.questionKey(request)
 	m.Update(questionSubmittedMsg{key: questionWaitKey{SessionID: "old-session"}, err: errors.New("old result")})
-	if !m.activeQuestion.Submitting || m.questionSubmissions[key] != questionSubmitting {
+	if !m.activeQuestion.Submitting || m.run.questionSubmissions[key] != questionSubmitting {
 		t.Fatal("another session's result changed the current submission")
 	}
 }
@@ -81,7 +81,7 @@ func TestPendingQuestionDefaultsToRecommendedOption(t *testing.T) {
 func TestAnsweredQuestionIdentityDoesNotHideNewQuestionWithSameText(t *testing.T) {
 	m := newTUIModel(nil, nil, "session")
 	request := questionFixture()
-	m.questionSubmissions = map[questionWaitKey]questionSubmissionState{m.questionKey(request): questionAccepted}
+	m.run.questionSubmissions = map[questionWaitKey]questionSubmissionState{m.questionKey(request): questionAccepted}
 	m.applyPendingRequests([]core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &request}})
 	if m.activeQuestion != nil {
 		t.Fatal("accepted question reopened")
@@ -96,13 +96,13 @@ func TestAnsweredQuestionIdentityDoesNotHideNewQuestionWithSameText(t *testing.T
 
 func TestStaleWaiterAndTaskPauseCannotOverwriteResumedAttempt(t *testing.T) {
 	m := newTUIModel(nil, nil, "session")
-	m.running, m.runningExecution = true, "execution"
-	m.taskSnapshot = core.TaskState{ExecutionID: "execution", TaskID: "new-attempt", Status: core.TaskRunning}
-	m.awaitingTurns["execution"] = 2
+	m.run.running, m.run.runningExecution = true, "execution"
+	m.run.taskSnapshot = core.TaskState{ExecutionID: "execution", TaskID: "new-attempt", Status: core.TaskRunning}
+	m.run.awaitingTurns["execution"] = 2
 	m.Update(turnFinishedMsg{executionID: "execution", generation: 1, result: core.TurnResult{Status: core.TaskPaused}})
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskFinished, ExecutionID: "execution", TaskID: "old-attempt", Status: core.TaskPaused})
-	if !m.running || m.hasPausedTask() || m.awaitingTurns["execution"] != 2 || len(m.terminalEvents) != 0 {
-		t.Fatalf("old pause overwrote the resumed attempt: running=%v paused=%v waits=%v", m.running, m.hasPausedTask(), m.awaitingTurns)
+	if !m.run.running || m.hasPausedTask() || m.run.awaitingTurns["execution"] != 2 || len(m.run.terminalEvents) != 0 {
+		t.Fatalf("old pause overwrote the resumed attempt: running=%v paused=%v waits=%v", m.run.running, m.hasPausedTask(), m.run.awaitingTurns)
 	}
 }
 
@@ -184,9 +184,9 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 		t.Fatal("pending two-question batch was not restored")
 	}
 	request := m.activeQuestion.Request
-	oldTaskID := m.taskSnapshot.TaskID
-	m.awaitingTurns[submission.ExecutionID] = 1
-	m.waitGeneration = 1
+	oldTaskID := m.run.taskSnapshot.TaskID
+	m.run.awaitingTurns[submission.ExecutionID] = 1
+	m.run.waitGeneration = 1
 	m.resolveActiveQuestion()
 	_, cmd := m.resolveActiveQuestion()
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskFinished, TaskID: oldTaskID, ExecutionID: submission.ExecutionID, Status: core.TaskPaused})
@@ -211,13 +211,13 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 		}
 		// Core may return the preceding pause to a waiter admitted during resume.
 		// Reconcile it against the completed runtime and fetch the final result.
-		generation := m.awaitingTurns[submission.ExecutionID]
+		generation := m.run.awaitingTurns[submission.ExecutionID]
 		_, resultCmd = m.Update(turnFinishedMsg{sessionID: saved.ID, executionID: submission.ExecutionID, generation: generation, result: paused})
 		if resultCmd == nil {
 			t.Fatal("a delayed paused result hid the completed canonical response")
 		}
 		m.Update(resultCmd())
-		if m.running || m.hasPausedTask() || m.activeQuestion != nil {
+		if m.run.running || m.hasPausedTask() || m.activeQuestion != nil {
 			t.Fatal("completed task left a stale running/pause/question state")
 		}
 		for _, entry := range m.entries {
@@ -226,8 +226,8 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 				// fast task completed. It must still collect the final response.
 				late := newTUIModel(client, runtime, saved.ID)
 				late.entries = nil
-				late.running, late.runningExecution = true, submission.ExecutionID
-				late.taskSnapshot = core.TaskState{}
+				late.run.running, late.run.runningExecution = true, submission.ExecutionID
+				late.run.taskSnapshot = core.TaskState{}
 				state, _ := runtime.State(ctx)
 				_, resultCmd := late.processRuntimeEventNoRefresh(core.Event{
 					Kind: core.EventTaskStarted, TaskID: state.Task.TaskID, ExecutionID: submission.ExecutionID,
@@ -245,16 +245,16 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 		t.Fatal("canonical response from fast resumed model was not displayed")
 	}
 	m.Update(ack)
-	if m.activeQuestion != nil || !m.running || m.hasPausedTask() {
-		t.Fatalf("accepted answer left a stale modal or pause: question=%v running=%v paused=%v", m.activeQuestion != nil, m.running, m.hasPausedTask())
+	if m.activeQuestion != nil || !m.run.running || m.hasPausedTask() {
+		t.Fatalf("accepted answer left a stale modal or pause: question=%v running=%v paused=%v", m.activeQuestion != nil, m.run.running, m.hasPausedTask())
 	}
-	generation := m.awaitingTurns[submission.ExecutionID]
+	generation := m.run.awaitingTurns[submission.ExecutionID]
 	m.Update(turnFinishedMsg{sessionID: saved.ID, executionID: submission.ExecutionID, generation: 1, result: paused})
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventUserQuestionRequired, TaskID: oldTaskID, ExecutionID: submission.ExecutionID, UserQuestion: &request})
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskFinished, TaskID: oldTaskID, ExecutionID: submission.ExecutionID, Status: core.TaskPaused})
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskStarted, TaskID: oldTaskID, ExecutionID: submission.ExecutionID})
 	m.checkPendingState(ctx)
-	if m.activeQuestion != nil || !m.running || m.hasPausedTask() || m.awaitingTurns[submission.ExecutionID] != generation {
+	if m.activeQuestion != nil || !m.run.running || m.hasPausedTask() || m.run.awaitingTurns[submission.ExecutionID] != generation {
 		t.Fatal("old question/pause events overwrote the running attempt")
 	}
 	answerCards := 0

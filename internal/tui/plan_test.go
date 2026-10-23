@@ -76,7 +76,7 @@ func TestPlanTagStripping(t *testing.T) {
 
 func TestGreetingWithDanglingPlanTagDoesNotOpenPlanReview(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.currentStreamText = "你好！我是 Plan 模式下的规划助手。你说明目标后，我会先阅读相关代码，再用 <proposed_plan> 给你完整方案。"
+	m.run.currentStreamText = "你好！我是 Plan 模式下的规划助手。你说明目标后，我会先阅读相关代码，再用 <proposed_plan> 给你完整方案。"
 	m.finalizeTurnOutput("", nil, "exec-1")
 
 	if m.activePlanReview != nil {
@@ -123,7 +123,7 @@ func TestCompleteCoreProposedPlanOpensPlanReview(t *testing.T) {
 
 func TestCompatProposedPlanFinalizationHidesEndMarker(t *testing.T) {
 	m := newTUIModel(nil, nil, "compat-plan")
-	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
+	m.run.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
 	m.finalizeTurnOutput("## Steps\n1. Inspect", nil, "exec-compat-plan")
 
 	if m.activePlanReview == nil || m.activePlanReview.Text != "## Steps\n1. Inspect" {
@@ -141,7 +141,7 @@ func TestCompatProposedPlanFinalizationHidesEndMarker(t *testing.T) {
 	}
 
 	// A repeated finalization must update the three existing blocks in place.
-	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
+	m.run.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."
 	m.finalizeTurnOutput("## Steps\n1. Inspect", nil, "exec-compat-plan")
 	if len(m.entries) != 3 || m.entries[2].Text != "After." {
 		t.Fatalf("repeated plan finalization duplicated transcript blocks: %#v", m.entries)
@@ -150,7 +150,7 @@ func TestCompatProposedPlanFinalizationHidesEndMarker(t *testing.T) {
 
 func TestPlanMarkupInTextWithoutCorePlanDoesNotOpenReview(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.currentStreamText = "Here you go:\n<proposed_plan>1. Do it</proposed_plan>"
+	m.run.currentStreamText = "Here you go:\n<proposed_plan>1. Do it</proposed_plan>"
 	m.finalizeTurnOutput("", nil, "exec-3")
 
 	if m.activePlanReview != nil {
@@ -184,7 +184,7 @@ func TestResumedAnswerIsAppendedAfterQuestionAnswer(t *testing.T) {
 		Questions:   []core.UserQuestionItem{{Question: "Which scope?"}},
 	}}, 0, AnsweredQuestionItem{Question: "Which scope?", Answer: "TUI"})
 
-	m.currentStreamText = "Resumed answer"
+	m.run.currentStreamText = "Resumed answer"
 	m.finalizeTurnOutput("", nil, executionID)
 
 	if len(m.entries) != 4 {
@@ -202,7 +202,7 @@ func TestResumedAnswerIsAppendedAfterQuestionAnswer(t *testing.T) {
 
 	// A later completion event must update the resumed response instead of
 	// creating a second assistant block.
-	m.currentStreamText = "Canonical resumed answer"
+	m.run.currentStreamText = "Canonical resumed answer"
 	m.finalizeTurnOutput("", nil, executionID)
 	if len(m.entries) != 4 || m.entries[3].Text != "Canonical resumed answer" {
 		t.Fatalf("resumed response was not deduplicated after finalization: %#v", m.entries)
@@ -212,15 +212,15 @@ func TestResumedAnswerIsAppendedAfterQuestionAnswer(t *testing.T) {
 func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
 	m := newTUIModel(nil, nil, "live-plan")
 	m.width, m.height = 100, 30
-	m.running = true
-	m.taskStartedAt = time.Now()
+	m.run.running = true
+	m.run.taskStartedAt = time.Now()
 	m.updateLayout()
 
 	for _, stream := range []string{
 		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Fin",
 		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Finish\n<proposed_plan_end/>\nAfter.",
 	} {
-		m.currentStreamText = stream
+		m.run.currentStreamText = stream
 		m.view.invalidateContent()
 		m.refreshViewportContent()
 		view := ansi.Strip(m.viewport.View())
@@ -315,13 +315,13 @@ func TestShiftTabTogglesPlanModeWithGuards(t *testing.T) {
 		t.Fatalf("Shift+Tab should exit Plan mode and restore %s, plan=%v model=%s client=%s", normalMode, m.planMode, m.permissionMode, client.PermissionMode())
 	}
 
-	m.running = true
+	m.run.running = true
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
 	if m.planMode {
 		t.Fatal("Shift+Tab must not enter Plan mode while a task is running")
 	}
-	m.running = false
+	m.run.running = false
 
 	m.activeQuestion = &ActiveQuestion{}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))

@@ -22,11 +22,11 @@ func scrollPillText(m *tuiModel) string {
 	switch {
 	case m.unseenCompletion != "":
 		return m.unseenCompletion + " · " + back
-	case m.running:
-		if m.taskStartedAt.IsZero() {
+	case m.run.running:
+		if m.run.taskStartedAt.IsZero() {
 			return "Working · " + back
 		}
-		return "Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
+		return "Working " + formatDuration(time.Since(m.run.taskStartedAt)) + " · " + back
 	case m.usage.compacting:
 		if m.usage.compactionStartedAt.IsZero() {
 			return "Compacting · " + back
@@ -254,20 +254,20 @@ func renderFooter(m *tuiModel, width int) string {
 
 	// Line 2: 6 token & context diagnostic metrics (left) + contextual hint / shortcuts (right)
 	var line2RightText string
-	if m.running {
+	if m.run.running {
 		line2RightText = "esc to interrupt"
 		if m.totalSubagentsCount() > 0 {
 			line2RightText += " · /agents"
 		}
-		if n := len(m.queuedTurns); n > 0 {
+		if n := len(m.run.queuedTurns); n > 0 {
 			line2RightText += fmt.Sprintf(" · %d queued", n)
 		}
 	} else if m.hasPausedTask() {
 		line2RightText = "task paused · /continue or /discard"
-		if n := len(m.queuedTurns); n > 0 {
+		if n := len(m.run.queuedTurns); n > 0 {
 			line2RightText += fmt.Sprintf(" · %d queued", n)
 		}
-	} else if n := len(m.queuedTurns); n > 0 {
+	} else if n := len(m.run.queuedTurns); n > 0 {
 		line2RightText = fmt.Sprintf("%d queued · /cancel-queue", n)
 	} else if m.input.composer.Value() == "" && len(m.input.history) > 0 {
 		line2RightText = "esc to edit last message"

@@ -17,9 +17,9 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.runtimeCancel != nil {
-		m.runtimeCancel()
-		m.runtimeCancel = nil
+	if m.run.runtimeCancel != nil {
+		m.run.runtimeCancel()
+		m.run.runtimeCancel = nil
 	}
 
 	profile := m.pendingModelProfile
@@ -160,7 +160,7 @@ func (m *tuiModel) handleRewindExecute(turns int) (tea.Model, tea.Cmd) {
 	}
 	m.input.historyIndex = len(m.input.history)
 	m.input.historyDraft = ""
-	m.currentStreamText = ""
+	m.run.currentStreamText = ""
 	m.scrolledUp = false
 	m.view.invalidateBlocks()
 	m.refreshViewportContent()

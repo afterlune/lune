@@ -247,12 +247,12 @@ func TestEstimateDeltaTokens(t *testing.T) {
 
 func TestStreamingGenerationSpeedCalculation(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
+	m.run.running = true
 	// Simulate user submit 5 seconds ago (e.g. prompt overhead, queue, network TTFT)
-	m.turnStreamStartTime = time.Now().Add(-5 * time.Second)
+	m.run.turnStreamStartTime = time.Now().Add(-5 * time.Second)
 
 	// Stream first token arrives now (100 tokens generated in 0.4s)
-	m.streamFirstTokenTime = time.Now().Add(-400 * time.Millisecond)
+	m.run.streamFirstTokenTime = time.Now().Add(-400 * time.Millisecond)
 
 	// Usage event arrives with 100 output tokens
 	usageEvent := core.Event{

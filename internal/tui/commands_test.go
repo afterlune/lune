@@ -42,7 +42,7 @@ func TestTitleCommand(t *testing.T) {
 
 func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	m := newTUIModel(nil, nil, "task-session")
-	m.running = true
+	m.run.running = true
 	allowed := []string{
 		"/permissions ask", "/model", "/effort", "/theme", "/memory", "/memory list",
 		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
@@ -78,8 +78,8 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 		}
 	}
 
-	m.running = false
-	m.queuedTurns = []QueuedItem{{ExecutionID: "queued-task"}}
+	m.run.running = false
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "queued-task"}}
 	if reason := m.slashCommandUnavailable("/new"); reason == "" {
 		t.Fatal("command should remain unavailable while a queued turn is pending")
 	}

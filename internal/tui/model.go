@@ -51,37 +51,17 @@ type tuiModel struct {
 	attentionDecisionShown bool
 	attentionExecutions    map[string]struct{}
 	unseenCompletion       string
-	running                bool
-	taskStartedAt          time.Time
 	roundsCollapsedByUser  bool
-	// restoringSession freezes footer metrics and transcript rebuilds while Core
-	// replays durable events for a freshly loaded session.
-	restoringSession         bool
-	restoreGeneration        uint64
-	restoreStartedAt         time.Time
-	activeQuestion           *ActiveQuestion
-	activeApproval           *ActiveApproval
-	activePlanReview         *ActivePlanReview
-	activeRecovery           *ActiveRecovery
-	activeToolRecovery       *ActiveToolRecovery
-	pausedCheckpoint         *PausedCheckpoint
-	queuedTurns              []QueuedItem
-	cancelingQueuedExecution string
-	discardInFlight          bool
-	scrolledUp               bool
-	runningExecution         string
-	runtimeCancel            context.CancelFunc
-	awaitingTurns            map[string]uint64
-	waitGeneration           uint64
-	taskSnapshot             core.TaskState
-	questionSubmissions      map[questionWaitKey]questionSubmissionState
-	terminalEvents           map[string]core.Event
-	currentStreamText        string
-	currentReasoningText     string
-	taskActivity             string
-	reasoningStartTime       time.Time
-	reasoningLiveCollapsed   bool
-	thinking                 bool
+	scrolledUp             bool
+	activeQuestion         *ActiveQuestion
+	activeApproval         *ActiveApproval
+	activePlanReview       *ActivePlanReview
+	activeRecovery         *ActiveRecovery
+	activeToolRecovery     *ActiveToolRecovery
+	pausedCheckpoint       *PausedCheckpoint
+
+	// Task run state: flags, Core task snapshot, queue, streaming buffers.
+	run runState
 
 	// Rendered transcript blocks and their stale markers.
 	view viewCache
@@ -91,11 +71,7 @@ type tuiModel struct {
 
 	reasoningEffort string
 
-	// Streaming and generation diagnostics
-	turnStreamStartTime    time.Time
-	streamFirstTokenTime   time.Time
-	streamGenerationTokens int64
-	agentMetrics           map[string]*agentRuntimeMetrics
+	agentMetrics map[string]*agentRuntimeMetrics
 
 	// Overlays (shortcuts, pickers, sessions, pager, diff) with exclusive focus.
 	modals modalState
@@ -131,9 +107,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		permissionMode: permMode, savedMode: permMode,
 		input:    composerState{composer: comp, scanner: filemention.NewScanner(workspace)},
 		viewport: vp, entries: []TranscriptEntry{},
-		reasoningLiveCollapsed: true,
-		view:                   viewCache{transcriptDirty: true},
-		awaitingTurns:          map[string]uint64{}, terminalEvents: map[string]core.Event{},
+		view:         viewCache{transcriptDirty: true},
+		run:          newRunState(),
 		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
 	m.ensureAgentMetrics("lead")
@@ -235,13 +210,8 @@ func (m *tuiModel) resetSessionState() {
 	m.currentModel = ""
 	m.currentModelProfile = ""
 	m.usage.reset()
+	m.run.reset()
 	m.reasoningEffort = ""
-	m.running = false
-	m.runningExecution = ""
-	m.cancelingQueuedExecution = ""
-	m.discardInFlight = false
-	m.taskStartedAt = time.Time{}
-	m.queuedTurns = nil
 	m.entries = []TranscriptEntry{}
 	m.input.history = nil
 	m.input.historyIndex = 0
@@ -256,14 +226,6 @@ func (m *tuiModel) resetSessionState() {
 	m.attentionDecisionShown = false
 	m.attentionExecutions = nil
 	m.unseenCompletion = ""
-	m.currentStreamText = ""
-	m.currentReasoningText = ""
-	m.taskActivity = ""
-	m.reasoningStartTime = time.Time{}
-	m.thinking = false
-	m.streamFirstTokenTime = time.Time{}
-	m.turnStreamStartTime = time.Time{}
-	m.streamGenerationTokens = 0
 	m.usage.lastTokensPerSec = 0
 	m.agentMetrics = map[string]*agentRuntimeMetrics{}
 	m.ensureAgentMetrics("lead")
@@ -272,10 +234,6 @@ func (m *tuiModel) resetSessionState() {
 	m.modals.close()
 	m.modals.memory.pendingAdd = false
 	m.modals.memory.pendingCategory = ""
-	m.awaitingTurns = map[string]uint64{}
-	m.taskSnapshot = core.TaskState{}
-	m.questionSubmissions = nil
-	m.terminalEvents = map[string]core.Event{}
 	m.view.invalidateBlocks()
 }
 
@@ -313,10 +271,10 @@ func (m *tuiModel) maxParallelAgents() int {
 }
 
 func (m *tuiModel) delegationExecution() core.ExecutionOptions {
-	switch m.taskSnapshot.Status {
+	switch m.run.taskSnapshot.Status {
 	case core.TaskRunning, core.TaskQueued, core.TaskPaused:
-		if m.taskSnapshot.TaskID != "" {
-			return m.taskSnapshot.Execution
+		if m.run.taskSnapshot.TaskID != "" {
+			return m.run.taskSnapshot.Execution
 		}
 	}
 	if m.client != nil {
@@ -432,7 +390,7 @@ func (m *tuiModel) terminalStatePrefix() string {
 	switch {
 	case m.needsUserDecision():
 		return "waiting · "
-	case m.running:
+	case m.run.running:
 		return "running · "
 	case m.usage.compacting:
 		return "compacting · "

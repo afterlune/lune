@@ -22,7 +22,7 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 		main.Activity = "Compacting context"
 	case "completed":
 		m.usage.finishCompaction(details.AfterTokens)
-		if m.running {
+		if m.run.running {
 			m.ensureAgentMetrics("lead").Activity = "Thinking"
 		}
 		m.addSystemEntry(formatCompactionCompleted(details, mode))

@@ -142,7 +142,7 @@ func (m *tuiModel) seedAgentMetrics(saved core.Session) {
 	if main.ContextWindow <= 0 {
 		main.ContextWindow = m.modelProfileContextWindow(m.currentModelProfile)
 	}
-	if m.running {
+	if m.run.running {
 		main.Status = "Running"
 	}
 	for i := len(m.entries) - 1; i >= 0; i-- {
@@ -320,7 +320,7 @@ func (m *tuiModel) agentMetric(id string) *agentRuntimeMetrics {
 		if stats.ModelProfile == "" {
 			stats.ModelProfile = m.currentModelProfile
 		}
-		if m.running {
+		if m.run.running {
 			stats.Status = "Running"
 		}
 	}

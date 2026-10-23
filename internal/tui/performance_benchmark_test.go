@@ -24,7 +24,7 @@ func BenchmarkRefreshViewportContent_Scales(b *testing.B) {
 					if variant.invalidate {
 						m.view.invalidateBlocks()
 					}
-					m.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
+					m.run.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
 					m.refreshViewportContent()
 				}
 			})
@@ -40,7 +40,7 @@ func BenchmarkTranscriptFrame_Scales(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := range b.N {
-				m.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
+				m.run.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
 				m.refreshViewportContent()
 				_ = m.View()
 			}

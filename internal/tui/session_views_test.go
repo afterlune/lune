@@ -223,7 +223,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 	m.updateLayout()
 
 	// 1. Guard: Cannot open modal when running
-	m.running = true
+	m.run.running = true
 	mod, _ := m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
 	if m.modals.sessions.open {
@@ -233,7 +233,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 	if !strings.Contains(lastSys, "Cannot switch sessions while a task is running") {
 		t.Fatalf("expected running guard warning, got: %s", lastSys)
 	}
-	m.running = false
+	m.run.running = false
 
 	// 2. Open modal via /resume
 	mod, _ = m.handleSlashCommand("/resume")
@@ -503,7 +503,7 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	}
 
 	// 7. Test running guard for /drop
-	m.running = true
+	m.run.running = true
 	m.handleSlashCommand("/drop non-existent")
 	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Cannot delete sessions while a task is running") {
 		t.Fatalf("expected running guard warning for /drop")

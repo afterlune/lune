@@ -43,7 +43,7 @@ func (m *tuiModel) questionKey(request core.UserQuestionRequest) questionWaitKey
 }
 
 func (m *tuiModel) questionInFlight(executionID string) bool {
-	for key, state := range m.questionSubmissions {
+	for key, state := range m.run.questionSubmissions {
 		if key.SessionID == m.sessionID && key.ExecutionID == executionID && state == questionSubmitting {
 			return true
 		}
@@ -79,15 +79,15 @@ func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer Ans
 
 func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 	key := m.questionKey(q.Request)
-	if m.questionSubmissions == nil {
-		m.questionSubmissions = make(map[questionWaitKey]questionSubmissionState)
+	if m.run.questionSubmissions == nil {
+		m.run.questionSubmissions = make(map[questionWaitKey]questionSubmissionState)
 	}
-	m.questionSubmissions[key] = questionSubmitting
+	m.run.questionSubmissions[key] = questionSubmitting
 	q.Submitting, q.Error = true, ""
 	// WaitTurn can still be returning the pause that produced this question.
 	// Its result must not finalize the resumed attempt under the same execution ID.
-	delete(m.awaitingTurns, key.ExecutionID)
-	delete(m.terminalEvents, key.ExecutionID)
+	delete(m.run.awaitingTurns, key.ExecutionID)
+	delete(m.run.terminalEvents, key.ExecutionID)
 	answer := core.UserQuestionAnswer{
 		ExecutionID: q.Request.ExecutionID, RunID: q.Request.RunID,
 		InvocationID: q.Request.InvocationID, CallID: q.Request.CallID,
@@ -103,12 +103,12 @@ func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 }
 
 func (m *tuiModel) finishQuestionSubmission(msg questionSubmittedMsg) tea.Cmd {
-	if msg.key.SessionID != m.sessionID || m.questionSubmissions[msg.key] != questionSubmitting {
+	if msg.key.SessionID != m.sessionID || m.run.questionSubmissions[msg.key] != questionSubmitting {
 		return nil
 	}
 	q := m.activeQuestion
 	if msg.err != nil {
-		delete(m.questionSubmissions, msg.key)
+		delete(m.run.questionSubmissions, msg.key)
 		if q != nil && m.questionKey(q.Request) == msg.key {
 			q.Submitting = false
 			q.Error = "Failed to submit answers: " + msg.err.Error() + ". Press enter to retry."
@@ -116,42 +116,42 @@ func (m *tuiModel) finishQuestionSubmission(msg questionSubmittedMsg) tea.Cmd {
 		m.updateLayout()
 		return nil
 	}
-	m.questionSubmissions[msg.key] = questionAccepted
+	m.run.questionSubmissions[msg.key] = questionAccepted
 	if q != nil && m.questionKey(q.Request) == msg.key {
 		m.activeQuestion = nil
 	}
 	m.restoreRuntimeState(context.Background())
 	m.checkPendingState(context.Background())
-	if m.taskSnapshot.ExecutionID == msg.key.ExecutionID {
-		switch m.taskSnapshot.Status {
+	if m.run.taskSnapshot.ExecutionID == msg.key.ExecutionID {
+		switch m.run.taskSnapshot.Status {
 		case core.TaskCompleted, core.TaskFailed, core.TaskCancelled, core.TaskDiscarded:
 			// A fast resumed model may finish before this acknowledgement is
 			// rendered. Fetch its canonical result even though it is now idle.
-			m.runningExecution = msg.key.ExecutionID
+			m.run.runningExecution = msg.key.ExecutionID
 			m.updateLayout()
 			return m.awaitExecutionResult(msg.key.ExecutionID)
 		}
 	}
-	if m.taskSnapshot.ExecutionID == msg.key.ExecutionID && m.taskSnapshot.Status == core.TaskPaused &&
+	if m.run.taskSnapshot.ExecutionID == msg.key.ExecutionID && m.run.taskSnapshot.Status == core.TaskPaused &&
 		m.activeQuestion == nil && m.activeRecovery == nil && m.activeToolRecovery == nil {
 		// Admission may precede the next task_started event. Do not display the
 		// answered wait's pause banner or wait again on its old paused result.
-		m.running = true
-		m.runningExecution = msg.key.ExecutionID
+		m.run.running = true
+		m.run.runningExecution = msg.key.ExecutionID
 		m.pausedCheckpoint = nil
 		m.updateLayout()
 		return tickClock()
 	}
-	if m.running {
+	if m.run.running {
 		m.pausedCheckpoint = nil
 	}
 	m.updateLayout()
-	return tea.Batch(tickClock(), m.waitForExecution(m.runningExecution))
+	return tea.Batch(tickClock(), m.waitForExecution(m.run.runningExecution))
 }
 
 func (m *tuiModel) staleTaskAttempt(executionID, taskID string) bool {
-	return executionID == m.taskSnapshot.ExecutionID && taskID != "" &&
-		m.taskSnapshot.TaskID != "" && taskID != m.taskSnapshot.TaskID
+	return executionID == m.run.taskSnapshot.ExecutionID && taskID != "" &&
+		m.run.taskSnapshot.TaskID != "" && taskID != m.run.taskSnapshot.TaskID
 }
 
 // A delayed pause belongs to an earlier attempt when Core has already resumed

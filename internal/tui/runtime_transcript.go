@@ -10,13 +10,13 @@ import (
 )
 
 func (m *tuiModel) flushReasoningEntry() {
-	if m.currentReasoningText == "" {
+	if m.run.currentReasoningText == "" {
 		return
 	}
-	trimmed := strings.TrimSpace(m.currentReasoningText)
-	dur := time.Since(m.reasoningStartTime)
-	m.currentReasoningText = ""
-	m.reasoningStartTime = time.Time{}
+	trimmed := strings.TrimSpace(m.run.currentReasoningText)
+	dur := time.Since(m.run.reasoningStartTime)
+	m.run.currentReasoningText = ""
+	m.run.reasoningStartTime = time.Time{}
 	if trimmed == "" {
 		return
 	}
@@ -44,17 +44,17 @@ func (m *tuiModel) flushReasoningEntry() {
 }
 
 func (m *tuiModel) flushStreamTextEntry() {
-	if m.currentStreamText == "" {
+	if m.run.currentStreamText == "" {
 		return
 	}
-	text := tuiMarkdown.StripProposedPlan(m.currentStreamText)
-	m.currentStreamText = ""
+	text := tuiMarkdown.StripProposedPlan(m.run.currentStreamText)
+	m.run.currentStreamText = ""
 	if strings.TrimSpace(text) == "" {
 		return
 	}
 	m.entries = append(m.entries, TranscriptEntry{
 		ID:          fmt.Sprintf("asst-%d", time.Now().UnixNano()),
-		ExecutionID: m.runningExecution,
+		ExecutionID: m.run.runningExecution,
 		Kind:        KindAssistant,
 		Text:        text,
 		Timestamp:   time.Now(),
@@ -66,8 +66,8 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	m.flushReasoningEntry()
 	m.markRunningSubagentsAndToolsDone()
 
-	text := m.currentStreamText
-	m.currentStreamText = ""
+	text := m.run.currentStreamText
+	m.run.currentStreamText = ""
 
 	if len(fallbackResponse) > 0 {
 		if responseText := extractResponseText(fallbackResponse); strings.TrimSpace(responseText) != "" {
@@ -108,8 +108,8 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	var turnDur time.Duration
 	if assistantIndex := m.assistantEntryIndex(executionID); assistantIndex >= 0 {
 		turnDur = m.entries[assistantIndex].TurnDuration
-	} else if !m.taskStartedAt.IsZero() {
-		turnDur = time.Since(m.taskStartedAt)
+	} else if !m.run.taskStartedAt.IsZero() {
+		turnDur = time.Since(m.run.taskStartedAt)
 	}
 
 	stream := tuiMarkdown.SplitProposedPlanStream(text)

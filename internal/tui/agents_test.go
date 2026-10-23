@@ -46,7 +46,7 @@ func TestAgentMetricsTrackPerAgentUsageAndStreamSpeed(t *testing.T) {
 
 func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *testing.T) {
 	m := newTUIModel(nil, nil, "session")
-	m.running = true
+	m.run.running = true
 	m.usage.seededSessionUsage = true
 	m.usage.lastTokensPerSec = 42
 	m.agentMetrics["lead"] = &agentRuntimeMetrics{ID: "lead", Name: "Main agent", Status: "Running"}
@@ -165,7 +165,7 @@ func TestRemovedSlashAliasesAreUnknown(t *testing.T) {
 
 func TestMultiAgentStreamIsolation(t *testing.T) {
 	m := newTUIModel(nil, nil, "multi-agent-sess")
-	m.running = true
+	m.run.running = true
 
 	// 1. Subagent starts and streams reasoning + text
 	m.handleRuntimeEvent(core.Event{
@@ -194,11 +194,11 @@ func TestMultiAgentStreamIsolation(t *testing.T) {
 	})
 
 	// Lead buffers must remain untouched by subagent events
-	if m.currentReasoningText != "" {
-		t.Fatalf("expected lead currentReasoningText to be empty, got %q", m.currentReasoningText)
+	if m.run.currentReasoningText != "" {
+		t.Fatalf("expected lead currentReasoningText to be empty, got %q", m.run.currentReasoningText)
 	}
-	if m.currentStreamText != "" {
-		t.Fatalf("expected lead currentStreamText to be empty, got %q", m.currentStreamText)
+	if m.run.currentStreamText != "" {
+		t.Fatalf("expected lead currentStreamText to be empty, got %q", m.run.currentStreamText)
 	}
 
 	// 2. Background memory stream is also ignored by lead stream
@@ -211,8 +211,8 @@ func TestMultiAgentStreamIsolation(t *testing.T) {
 			Delta:   "internal memory json",
 		},
 	})
-	if m.currentStreamText != "" {
-		t.Fatalf("expected memory purpose delta to be ignored, got %q", m.currentStreamText)
+	if m.run.currentStreamText != "" {
+		t.Fatalf("expected memory purpose delta to be ignored, got %q", m.run.currentStreamText)
 	}
 
 	// 3. Lead agent streams its own reasoning and text
@@ -334,8 +334,7 @@ func TestCodexExecutionTimelineAlignment(t *testing.T) {
 
 func TestSubagentTrackingAndCommands(t *testing.T) {
 	m := &tuiModel{
-		running:       true,
-		taskStartedAt: time.Now().Add(-10 * time.Second),
+		run: runState{running: true, taskStartedAt: time.Now().Add(-10 * time.Second)},
 	}
 
 	// 1. Subagent tool event routing: subagent tools do not mix into lead agent tools
@@ -488,7 +487,7 @@ func TestSummarizeToolRoundRecognizesAskUserAndSubagents(t *testing.T) {
 
 func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
+	m.run.running = true
 	m.usage.contextWindow = 1000000
 
 	m.handleRuntimeEvent(core.Event{

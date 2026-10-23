@@ -97,7 +97,7 @@ func TestCompactCommandStartsAndGuards(t *testing.T) {
 
 	mod, _ := m.submitTurn("hello")
 	m = mod.(*tuiModel)
-	if m.running {
+	if m.run.running {
 		t.Fatalf("submitting during compaction must be refused")
 	}
 	if got := lastEntryText(m); got != "Compaction is in progress; wait for it to finish." {
@@ -231,7 +231,7 @@ func TestCompactionTitleAndPill(t *testing.T) {
 	if got := scrollPillText(m); !strings.HasPrefix(got, "Compacting 3s · ") {
 		t.Fatalf("scroll pill = %q", got)
 	}
-	m.running = true
+	m.run.running = true
 	if got := m.terminalStatePrefix(); got != "running · " {
 		t.Fatalf("running must win over compacting in the title: %q", got)
 	}

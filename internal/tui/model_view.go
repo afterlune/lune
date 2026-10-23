@@ -132,7 +132,7 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
-	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" && m.currentReasoningText == "" {
+	if len(m.entries) == 0 && !m.run.running && m.run.currentStreamText == "" && m.run.currentReasoningText == "" {
 		m.view.cachedBlocks = nil
 		m.view.cachedEntryCount = 0
 		m.view.cachedDirty = false
@@ -281,20 +281,20 @@ func (m *tuiModel) refreshViewportContent() {
 		i++
 	}
 
-	if m.currentReasoningText != "" || m.currentStreamText != "" || m.running {
-		if m.currentReasoningText != "" {
-			elapsed := time.Since(m.reasoningStartTime)
+	if m.run.currentReasoningText != "" || m.run.currentStreamText != "" || m.run.running {
+		if m.run.currentReasoningText != "" {
+			elapsed := time.Since(m.run.reasoningStartTime)
 			liveReasoning := TranscriptEntry{
 				Kind:              KindReasoning,
-				Text:              m.currentReasoningText,
+				Text:              m.run.currentReasoningText,
 				ReasoningDuration: elapsed,
-				ReasoningExpanded: !m.reasoningLiveCollapsed,
+				ReasoningExpanded: !m.run.reasoningLiveCollapsed,
 				ReasoningLive:     true,
 			}
 			appendRendered(renderEntry(liveReasoning, contentWidth), nil)
 		}
-		if m.currentStreamText != "" {
-			stream := tuiMarkdown.SplitProposedPlanStream(m.currentStreamText)
+		if m.run.currentStreamText != "" {
+			stream := tuiMarkdown.SplitProposedPlanStream(m.run.currentStreamText)
 			appendAssistant := func(text string) {
 				if strings.TrimSpace(text) == "" {
 					return
@@ -313,12 +313,12 @@ func (m *tuiModel) refreshViewportContent() {
 				appendAssistant(stream.Before)
 			}
 		}
-		if m.running {
-			elapsed := time.Since(m.taskStartedAt)
-			if m.taskActivity != "" {
-				appendRendered(renderWorkingActivity(elapsed, m.taskActivity, m.subagentsStatusSummary()), nil)
+		if m.run.running {
+			elapsed := time.Since(m.run.taskStartedAt)
+			if m.run.taskActivity != "" {
+				appendRendered(renderWorkingActivity(elapsed, m.run.taskActivity, m.subagentsStatusSummary()), nil)
 			} else {
-				appendRendered(renderWorking(elapsed, m.thinking, m.subagentsStatusSummary()), nil)
+				appendRendered(renderWorking(elapsed, m.run.thinking, m.subagentsStatusSummary()), nil)
 			}
 		}
 	}
@@ -495,7 +495,7 @@ func (m *tuiModel) View() tea.View {
 		gapLine = strings.Repeat(" ", leftPad) + styled
 	} else if m.scrolledUp {
 		gapLine = renderScrollPill(m, contentWidth)
-	} else if m.hasPausedTask() && !m.running {
+	} else if m.hasPausedTask() && !m.run.running {
 		gapLine = renderPausedBanner(contentWidth)
 	}
 	if planReviewGap {

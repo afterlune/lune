@@ -48,7 +48,7 @@ func TestToolSummaryUsesTransientArgumentsRegardlessOfEventOrder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTUIModel(nil, nil, "tool-summary")
 			m.workspace = workspace
-			m.running = true
+			m.run.running = true
 			for _, event := range tc.events {
 				mod, _ := m.handleRuntimeEvent(event)
 				m = mod.(*tuiModel)
@@ -73,7 +73,7 @@ func TestToolSummaryUsesTransientArgumentsRegardlessOfEventOrder(t *testing.T) {
 
 func TestToolDetailsCommandOverridesArgumentSummary(t *testing.T) {
 	m := newTUIModel(nil, nil, "tool-summary-command")
-	m.running = true
+	m.run.running = true
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventToolDetails,
 		Tool: core.ToolCall{
@@ -203,9 +203,9 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 
 func TestTurnFinishedPausedClearsRunningState(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
-	m.runningExecution = "exec-paused"
-	m.thinking = true
+	m.run.running = true
+	m.run.runningExecution = "exec-paused"
+	m.run.thinking = true
 
 	mod, _ := m.Update(turnFinishedMsg{
 		sessionID: "test-sess",
@@ -216,14 +216,14 @@ func TestTurnFinishedPausedClearsRunningState(t *testing.T) {
 	})
 	m = mod.(*tuiModel)
 
-	if m.running {
-		t.Errorf("expected m.running to be false when turn is paused")
+	if m.run.running {
+		t.Errorf("expected m.run.running to be false when turn is paused")
 	}
-	if m.thinking {
-		t.Errorf("expected m.thinking to be false when turn is paused")
+	if m.run.thinking {
+		t.Errorf("expected m.run.thinking to be false when turn is paused")
 	}
-	if m.runningExecution != "exec-paused" {
-		t.Errorf("expected paused execution id to remain available for resolution, got %q", m.runningExecution)
+	if m.run.runningExecution != "exec-paused" {
+		t.Errorf("expected paused execution id to remain available for resolution, got %q", m.run.runningExecution)
 	}
 }
 
@@ -233,8 +233,8 @@ func TestRestoreRuntimeSnapshotIgnoresFinishedExecution(t *testing.T) {
 		ExecutionID: "finished-exec",
 		Status:      core.TaskCompleted,
 	}})
-	if m.running || m.runningExecution != "" {
-		t.Fatalf("finished execution must not be treated as active: running=%v execution=%q", m.running, m.runningExecution)
+	if m.run.running || m.run.runningExecution != "" {
+		t.Fatalf("finished execution must not be treated as active: running=%v execution=%q", m.run.running, m.run.runningExecution)
 	}
 }
 
@@ -244,8 +244,8 @@ func TestTaskStartedEventDoesNotReviveHistory(t *testing.T) {
 		Kind:        core.EventTaskStarted,
 		ExecutionID: "old-exec",
 	})
-	if m.running || m.runningExecution != "" || cmd != nil {
-		t.Fatalf("historical task start must not revive an idle session: running=%v execution=%q cmd=%v", m.running, m.runningExecution, cmd != nil)
+	if m.run.running || m.run.runningExecution != "" || cmd != nil {
+		t.Fatalf("historical task start must not revive an idle session: running=%v execution=%q cmd=%v", m.run.running, m.run.runningExecution, cmd != nil)
 	}
 }
 
@@ -269,14 +269,14 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			m := newTUIModel(nil, nil, "test-sess")
-			m.running = true
-			m.runningExecution = "exec-complete"
-			m.taskStartedAt = time.Now().Add(-time.Second)
+			m.run.running = true
+			m.run.runningExecution = "exec-complete"
+			m.run.taskStartedAt = time.Now().Add(-time.Second)
 			m.entries = append(m.entries,
 				TranscriptEntry{ID: "user-current", Kind: KindUser, Text: "answer"},
 				TranscriptEntry{ID: "assistant-partial", ExecutionID: "exec-complete", Kind: KindAssistant, Text: "Old partial"},
 			)
-			m.currentStreamText = "Latest draft"
+			m.run.currentStreamText = "Latest draft"
 
 			if eventFirst {
 				m.finishTurnEvent(completion)
@@ -297,8 +297,8 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 			if len(assistant) != 1 || assistant[0].Text != "Canonical response" {
 				t.Fatalf("expected one canonical assistant response, got %+v", assistant)
 			}
-			if m.running || m.currentStreamText != "" {
-				t.Fatalf("expected completion to clear live turn state, running=%v stream=%q", m.running, m.currentStreamText)
+			if m.run.running || m.run.currentStreamText != "" {
+				t.Fatalf("expected completion to clear live turn state, running=%v stream=%q", m.run.running, m.run.currentStreamText)
 			}
 		})
 	}
@@ -308,12 +308,12 @@ func TestPlanCompletionEventDefersFinalizationUntilWaiterResult(t *testing.T) {
 	const executionID = "exec-plan-completion"
 	response := json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Before.\n<proposed_plan>## Steps\n1. Inspect<proposed_plan_end/>\nAfter."}]}]}`)
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
-	m.runningExecution = executionID
-	m.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect"
+	m.run.running = true
+	m.run.runningExecution = executionID
+	m.run.currentStreamText = "Before.\n<proposed_plan>## Steps\n1. Inspect"
 	m.finishTurnEvent(core.Event{Kind: core.EventTaskFinished, ExecutionID: executionID, Status: core.TaskCompleted})
-	if m.currentStreamText == "" || m.activePlanReview != nil {
-		t.Fatalf("task event finalized the plan before the authoritative waiter result: stream=%q review=%#v", m.currentStreamText, m.activePlanReview)
+	if m.run.currentStreamText == "" || m.activePlanReview != nil {
+		t.Fatalf("task event finalized the plan before the authoritative waiter result: stream=%q review=%#v", m.run.currentStreamText, m.activePlanReview)
 	}
 
 	m.finishTurn(turnFinishedMsg{
@@ -330,8 +330,8 @@ func TestPlanCompletionEventDefersFinalizationUntilWaiterResult(t *testing.T) {
 
 func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
-	m.runningExecution = "exec-failed"
+	m.run.running = true
+	m.run.runningExecution = "exec-failed"
 	m.finishTurn(turnFinishedMsg{
 		executionID: "exec-failed",
 		result:      core.TurnResult{ExecutionID: "exec-failed", Status: core.TaskFailed},
@@ -347,7 +347,7 @@ func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
 	if !found {
 		t.Fatalf("expected system entry reporting task failure, got entries: %+v", m.entries)
 	}
-	if m.running {
+	if m.run.running {
 		t.Fatal("expected running=false after task failure")
 	}
 }
@@ -443,7 +443,7 @@ func TestPasteMsgSafety(t *testing.T) {
 	mod, _ := m.Update(tea.PasteMsg{Content: pasted})
 	m = mod.(*tuiModel)
 
-	if m.running {
+	if m.run.running {
 		t.Errorf("pasting multiline text must NOT start task execution automatically")
 	}
 	if m.input.composer.Value() != pasted {
@@ -527,7 +527,7 @@ func TestStatusTableUsageFormatting(t *testing.T) {
 
 func TestRewindAndOpenRunningGuards(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
+	m.run.running = true
 
 	// /rewind while running
 	m.handleSlashCommand("/rewind")
@@ -553,8 +553,8 @@ func TestRewindAndOpenRunningGuards(t *testing.T) {
 
 func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.running = true
-	m.runningExecution = "exec-active"
+	m.run.running = true
+	m.run.runningExecution = "exec-active"
 
 	// 1. Submit turn while running -> should enter KindQueued
 	m.submitTurn("Follow-up task while model works")
@@ -580,8 +580,8 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 		},
 	})
 	m = mod.(*tuiModel)
-	if len(m.queuedTurns) != 1 || m.queuedTurns[0].ExecutionID != "exec-queued-1" {
-		t.Fatalf("expected queued turn registered in m.queuedTurns, got %+v", m.queuedTurns)
+	if len(m.run.queuedTurns) != 1 || m.run.queuedTurns[0].ExecutionID != "exec-queued-1" {
+		t.Fatalf("expected queued turn registered in m.run.queuedTurns, got %+v", m.run.queuedTurns)
 	}
 
 	// 3. Simulate Core promoting queued turn via EventTaskStarted
@@ -590,11 +590,11 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 		ExecutionID: "exec-queued-1",
 	})
 	m = mod.(*tuiModel)
-	if len(m.queuedTurns) != 0 {
-		t.Errorf("expected queued turns to be empty after task started, got %d", len(m.queuedTurns))
+	if len(m.run.queuedTurns) != 0 {
+		t.Errorf("expected queued turns to be empty after task started, got %d", len(m.run.queuedTurns))
 	}
-	if m.runningExecution != "exec-queued-1" {
-		t.Errorf("expected runningExecution to be exec-queued-1, got %s", m.runningExecution)
+	if m.run.runningExecution != "exec-queued-1" {
+		t.Errorf("expected runningExecution to be exec-queued-1, got %s", m.run.runningExecution)
 	}
 	// Check the entry was converted to KindUser
 	promoted := false
@@ -609,17 +609,17 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 	}
 
 	// 4. Cancellation is not reflected until Core confirms it.
-	m.queuedTurns = append(m.queuedTurns, QueuedItem{ExecutionID: "exec-q2"})
+	m.run.queuedTurns = append(m.run.queuedTurns, QueuedItem{ExecutionID: "exec-q2"})
 	m.entries = append(m.entries, TranscriptEntry{Kind: KindQueued, ToolCallID: "exec-q2", Text: "Cancel me"})
 	m.cancelQueuedTurn()
-	if len(m.queuedTurns) != 1 {
-		t.Fatalf("queued turn was removed before Core confirmation: %+v", m.queuedTurns)
+	if len(m.run.queuedTurns) != 1 {
+		t.Fatalf("queued turn was removed before Core confirmation: %+v", m.run.queuedTurns)
 	}
-	m.cancelingQueuedExecution = "exec-q2"
+	m.run.cancelingQueuedExecution = "exec-q2"
 	mod, _ = m.Update(queuedTurnCancelledMsg{executionID: "exec-q2"})
 	m = mod.(*tuiModel)
-	if len(m.queuedTurns) != 0 {
-		t.Fatalf("confirmed queued turn was not removed: %+v", m.queuedTurns)
+	if len(m.run.queuedTurns) != 0 {
+		t.Fatalf("confirmed queued turn was not removed: %+v", m.run.queuedTurns)
 	}
 	cancelledFound := false
 	for _, e := range m.entries {
@@ -635,23 +635,23 @@ func TestQueuedTurnWorkflowAndCancellation(t *testing.T) {
 
 func TestQueuedTurnCancellationErrorsDoNotClaimSuccess(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.queuedTurns = []QueuedItem{{ExecutionID: "exec-q1"}, {ExecutionID: "exec-q2"}}
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "exec-q1"}, {ExecutionID: "exec-q2"}}
 	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "exec-q1", Text: "first"}, {Kind: KindQueued, ToolCallID: "exec-q2", Text: "latest"}}
-	m.cancelingQueuedExecution = "exec-q2"
+	m.run.cancelingQueuedExecution = "exec-q2"
 	mod, _ := m.Update(queuedTurnCancelledMsg{executionID: "exec-q2", err: core.ErrQueuedTurnStarted})
 	m = mod.(*tuiModel)
-	if len(m.queuedTurns) != 2 || m.entries[1].Kind != KindQueued || m.cancelingQueuedExecution != "" {
-		t.Fatalf("failed cancellation changed queue state: queue=%+v entry=%+v pending=%q", m.queuedTurns, m.entries[1], m.cancelingQueuedExecution)
+	if len(m.run.queuedTurns) != 2 || m.entries[1].Kind != KindQueued || m.run.cancelingQueuedExecution != "" {
+		t.Fatalf("failed cancellation changed queue state: queue=%+v entry=%+v pending=%q", m.run.queuedTurns, m.entries[1], m.run.cancelingQueuedExecution)
 	}
 	if !strings.Contains(m.entries[len(m.entries)-1].Text, "already started") {
 		t.Fatalf("missing started-task feedback: %+v", m.entries)
 	}
 
-	m.cancelingQueuedExecution = "exec-q2"
+	m.run.cancelingQueuedExecution = "exec-q2"
 	mod, _ = m.Update(queuedTurnCancelledMsg{executionID: "exec-q2", err: core.ErrTurnNotFound})
 	m = mod.(*tuiModel)
-	if len(m.queuedTurns) != 1 || m.entries[1].Kind != KindUser {
-		t.Fatalf("missing queued item was not reconciled: queue=%+v entry=%+v", m.queuedTurns, m.entries[1])
+	if len(m.run.queuedTurns) != 1 || m.entries[1].Kind != KindUser {
+		t.Fatalf("missing queued item was not reconciled: queue=%+v entry=%+v", m.run.queuedTurns, m.entries[1])
 	}
 }
 
@@ -679,14 +679,14 @@ func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T)
 		t.Fatal(err)
 	}
 	m := newTUIModel(client, runtime, session.ID)
-	m.running = true
-	m.runningExecution = "active-exec"
-	m.queuedTurns = []QueuedItem{{ExecutionID: "queued-exec"}}
+	m.run.running = true
+	m.run.runningExecution = "active-exec"
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "queued-exec"}}
 	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "queued-exec", Text: "waiting"}}
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.running || m.pausedCheckpoint == nil || len(m.queuedTurns) != 1 || m.cancelingQueuedExecution != "" {
-		t.Fatalf("Esc did not interrupt active work independently of queued work: running=%t checkpoint=%+v queue=%+v canceling=%q", m.running, m.pausedCheckpoint, m.queuedTurns, m.cancelingQueuedExecution)
+	if m.run.running || m.pausedCheckpoint == nil || len(m.run.queuedTurns) != 1 || m.run.cancelingQueuedExecution != "" {
+		t.Fatalf("Esc did not interrupt active work independently of queued work: running=%t checkpoint=%+v queue=%+v canceling=%q", m.run.running, m.pausedCheckpoint, m.run.queuedTurns, m.run.cancelingQueuedExecution)
 	}
 }
 
@@ -694,21 +694,21 @@ func TestDiscardResultKeepsRecoveryOnErrorAndReportsMissingTask(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.activeRecovery = &ActiveRecovery{ExecutionID: "paused-exec"}
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused-exec"}
-	m.discardInFlight = true
+	m.run.discardInFlight = true
 	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceRecovery, err: errors.New("database locked")})
 	m = mod.(*tuiModel)
-	if m.activeRecovery == nil || m.pausedCheckpoint == nil || m.discardInFlight {
-		t.Fatalf("failed discard lost recovery state: recovery=%+v checkpoint=%+v pending=%t", m.activeRecovery, m.pausedCheckpoint, m.discardInFlight)
+	if m.activeRecovery == nil || m.pausedCheckpoint == nil || m.run.discardInFlight {
+		t.Fatalf("failed discard lost recovery state: recovery=%+v checkpoint=%+v pending=%t", m.activeRecovery, m.pausedCheckpoint, m.run.discardInFlight)
 	}
 	if !strings.Contains(m.entries[len(m.entries)-1].Text, "database locked") {
 		t.Fatalf("discard error not shown: %+v", m.entries)
 	}
 
-	m.discardInFlight = true
+	m.run.discardInFlight = true
 	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceRecovery, discarded: false})
 	m = mod.(*tuiModel)
-	if m.activeRecovery != nil || m.pausedCheckpoint != nil || m.running {
-		t.Fatalf("missing paused task left stale recovery state: recovery=%+v checkpoint=%+v running=%t", m.activeRecovery, m.pausedCheckpoint, m.running)
+	if m.activeRecovery != nil || m.pausedCheckpoint != nil || m.run.running {
+		t.Fatalf("missing paused task left stale recovery state: recovery=%+v checkpoint=%+v running=%t", m.activeRecovery, m.pausedCheckpoint, m.run.running)
 	}
 	if !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
 		t.Fatalf("missing-task outcome not reported: %+v", m.entries)

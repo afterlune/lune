@@ -509,14 +509,14 @@ func TestStreamingFiltersReasoningDelta(t *testing.T) {
 			Delta: "Internal model thoughts...",
 		},
 	})
-	if !m.thinking {
-		t.Errorf("expected m.thinking to be true during reasoning_delta")
+	if !m.run.thinking {
+		t.Errorf("expected m.run.thinking to be true during reasoning_delta")
 	}
-	if m.currentStreamText != "" {
-		t.Errorf("expected currentStreamText to be empty, got: %q", m.currentStreamText)
+	if m.run.currentStreamText != "" {
+		t.Errorf("expected currentStreamText to be empty, got: %q", m.run.currentStreamText)
 	}
-	if m.currentReasoningText != "Internal model thoughts..." {
-		t.Errorf("expected currentReasoningText to be 'Internal model thoughts...', got: %q", m.currentReasoningText)
+	if m.run.currentReasoningText != "Internal model thoughts..." {
+		t.Errorf("expected currentReasoningText to be 'Internal model thoughts...', got: %q", m.run.currentReasoningText)
 	}
 
 	// 2. Text delta should commit reasoning to entries as KindReasoning, append to currentStreamText, and reset thinking
@@ -527,11 +527,11 @@ func TestStreamingFiltersReasoningDelta(t *testing.T) {
 			Delta: "Hello user",
 		},
 	})
-	if m.thinking {
-		t.Errorf("expected m.thinking to be false after text_delta")
+	if m.run.thinking {
+		t.Errorf("expected m.run.thinking to be false after text_delta")
 	}
-	if m.currentStreamText != "Hello user" {
-		t.Errorf("expected currentStreamText to be 'Hello user', got: %q", m.currentStreamText)
+	if m.run.currentStreamText != "Hello user" {
+		t.Errorf("expected currentStreamText to be 'Hello user', got: %q", m.run.currentStreamText)
 	}
 	if len(m.entries) != 1 || m.entries[0].Kind != KindReasoning {
 		t.Fatalf("expected 1 KindReasoning entry committed, got %d", len(m.entries))
@@ -1171,8 +1171,8 @@ func TestViewportAutoStickToBottomOnMultiTurn(t *testing.T) {
 		Kind: KindUser,
 		Text: "Question 2",
 	})
-	m.running = true
-	m.taskStartedAt = time.Now().Add(-5 * time.Second)
+	m.run.running = true
+	m.run.taskStartedAt = time.Now().Add(-5 * time.Second)
 	m.refreshViewportContent()
 
 	if !m.viewport.AtBottom() {
@@ -1271,9 +1271,9 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	m.height = 44
 	m.updateLayout()
 
-	// 1. Simulate an active (live) tool round while m.running == true and currentStreamText == ""
-	m.running = true
-	m.taskStartedAt = time.Now().Add(-46 * time.Second)
+	// 1. Simulate an active (live) tool round while m.run.running == true and currentStreamText == ""
+	m.run.running = true
+	m.run.taskStartedAt = time.Now().Add(-46 * time.Second)
 	m.entries = []TranscriptEntry{
 		{
 			Kind: KindUser,
@@ -1331,9 +1331,9 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	}
 
 	// 2. Complete the turn via finalizeTurnOutput -> round auto-collapses into 1-line summary bar + Worked for 46s
-	m.currentStreamText = "这是一个多形态 AI 编程 Agent 宿主仓库。"
+	m.run.currentStreamText = "这是一个多形态 AI 编程 Agent 宿主仓库。"
 	m.finalizeTurnOutput("", nil, "exec-grok-1")
-	m.running = false
+	m.run.running = false
 	m.refreshViewportContent()
 
 	collapsedView := ansi.Strip(m.viewport.View())
@@ -1533,8 +1533,8 @@ func TestCtrlOCollapsesRunningRound(t *testing.T) {
 	m := newTUIModel(nil, nil, "live-toggle")
 	m.width = 100
 	m.height = 30
-	m.running = true
-	m.taskStartedAt = time.Now()
+	m.run.running = true
+	m.run.taskStartedAt = time.Now()
 	m.entries = []TranscriptEntry{
 		{Kind: KindUser, Text: "sleep for a while"},
 		{Kind: KindTool, ToolName: "run_command", ToolCommand: "sleep 5", ToolRunning: true, ToolStartedAt: time.Now()},
@@ -1572,7 +1572,7 @@ func TestQueuedTurnsStayPinnedAboveComposer(t *testing.T) {
 	m := newTUIModel(nil, nil, "queue-band")
 	m.width = 100
 	m.height = 30
-	m.running = true
+	m.run.running = true
 	m.entries = []TranscriptEntry{
 		{Kind: KindUser, Text: "first task"},
 		{Kind: KindTool, ToolName: "run_command", ToolCommand: "ls", ToolOutput: "a\nb", ToolRunning: true},

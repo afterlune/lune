@@ -11,7 +11,7 @@ import (
 
 func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyStr := msg.String()
-	if m.discardInFlight {
+	if m.run.discardInFlight {
 		return m, nil
 	}
 	if m.activeQuestion != nil && m.activeQuestion.Submitting && keyStr != "ctrl+c" {
@@ -42,7 +42,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleDiffModalKeyPress(msg, keyStr)
 	}
 	// Trigger shortcut modal when typing '?' in an empty composer
-	if keyStr == "?" && m.input.composer.Value() == "" && !m.running {
+	if keyStr == "?" && m.input.composer.Value() == "" && !m.run.running {
 		m.modals.open()
 		m.modals.shortcuts = true
 		m.updateLayout()
@@ -65,7 +65,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.activeQuestion != nil {
 			return m.discardPausedTask(discardSourceQuestion)
 		}
-		if m.running && m.runtime != nil && m.runningExecution != "" {
+		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
 			return m.interruptRunningTask()
 		}
 		m.cancelMCPAuthentication(false)
@@ -135,11 +135,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, nil
 		}
-		if m.running && m.runtime != nil && m.runningExecution != "" {
+		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
 			return m.interruptRunningTask()
 		}
 		// If composer is empty and not running, Esc steps back to edit the last message
-		if !m.running && m.input.composer.Value() == "" && len(m.input.history) > 0 {
+		if !m.run.running && m.input.composer.Value() == "" && len(m.input.history) > 0 {
 			m.input.historyIndex = len(m.input.history) - 1
 			m.input.historyDraft = ""
 			m.input.composer.SetValue(m.input.history[m.input.historyIndex])
@@ -237,8 +237,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.activeRecovery.Selected = 0
 			m.activeRecovery = nil
 			m.pausedCheckpoint = nil
-			m.running = true
-			m.taskStartedAt = time.Now()
+			m.run.running = true
+			m.run.taskStartedAt = time.Now()
 			m.updateLayout()
 			sessionID := m.sessionID
 			return m, func() tea.Msg {
@@ -252,8 +252,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.activeRecovery.Selected == 0 {
 				m.activeRecovery = nil
 				m.pausedCheckpoint = nil
-				m.running = true
-				m.taskStartedAt = time.Now()
+				m.run.running = true
+				m.run.taskStartedAt = time.Now()
 				m.updateLayout()
 				sessionID := m.sessionID
 				return m, func() tea.Msg {

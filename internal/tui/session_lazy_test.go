@@ -115,8 +115,8 @@ func TestFirstLazySessionTurnSubscribesBeforeLiveOutput(t *testing.T) {
 	m := newTUIModel(client, nil, "")
 	mod, submit := m.submitTurn("hello")
 	m = mod.(*tuiModel)
-	if m.sessionID == "" || m.runtime == nil || m.runtimeCancel == nil {
-		t.Fatalf("first prompt did not create and subscribe its session: sessionID=%q runtime=%v cancel=%v", m.sessionID, m.runtime, m.runtimeCancel != nil)
+	if m.sessionID == "" || m.runtime == nil || m.run.runtimeCancel == nil {
+		t.Fatalf("first prompt did not create and subscribe its session: sessionID=%q runtime=%v cancel=%v", m.sessionID, m.runtime, m.run.runtimeCancel != nil)
 	}
 	commandsMsg := submit()
 	commands, ok := commandsMsg.(tea.BatchMsg)
@@ -145,7 +145,7 @@ func TestFirstLazySessionTurnSubscribesBeforeLiveOutput(t *testing.T) {
 	}
 
 	events := ready.events
-	for !strings.Contains(m.currentStreamText, "first live token") {
+	for !strings.Contains(m.run.currentStreamText, "first live token") {
 		msgCh := make(chan tea.Msg, 1)
 		go func() { msgCh <- nextRuntimeEvent(m.sessionID, events)() }()
 		select {
@@ -158,7 +158,7 @@ func TestFirstLazySessionTurnSubscribesBeforeLiveOutput(t *testing.T) {
 			m = mod.(*tuiModel)
 			events = eventMsg.events
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for first live token; current stream=%q", m.currentStreamText)
+			t.Fatalf("timed out waiting for first live token; current stream=%q", m.run.currentStreamText)
 		}
 	}
 	select {

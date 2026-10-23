@@ -13,35 +13,35 @@ import (
 // interruptRunningTask halts an ongoing execution, preserves the execution checkpoint,
 // and presents a rich checkpoint status card in the transcript.
 func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
-	if !m.running || m.runtime == nil || m.runningExecution == "" {
+	if !m.run.running || m.runtime == nil || m.run.runningExecution == "" {
 		return m, nil
 	}
 
-	if m.currentReasoningText != "" {
-		dur := time.Since(m.reasoningStartTime)
+	if m.run.currentReasoningText != "" {
+		dur := time.Since(m.run.reasoningStartTime)
 		m.entries = append(m.entries, TranscriptEntry{
 			Kind:              KindReasoning,
-			Text:              m.currentReasoningText,
+			Text:              m.run.currentReasoningText,
 			ReasoningDuration: dur,
 			ReasoningExpanded: false,
 			Timestamp:         time.Now(),
 		})
-		m.currentReasoningText = ""
-		m.reasoningStartTime = time.Time{}
+		m.run.currentReasoningText = ""
+		m.run.reasoningStartTime = time.Time{}
 		m.view.invalidateBlocks()
 	}
-	if m.currentStreamText != "" {
+	if m.run.currentStreamText != "" {
 		m.entries = append(m.entries, TranscriptEntry{
 			ID:        fmt.Sprintf("asst-%d", time.Now().UnixNano()),
 			Kind:      KindAssistant,
-			Text:      m.currentStreamText,
+			Text:      m.run.currentStreamText,
 			Timestamp: time.Now(),
 		})
-		m.currentStreamText = ""
+		m.run.currentStreamText = ""
 		m.view.invalidateBlocks()
 	}
 
-	execID := m.runningExecution
+	execID := m.run.runningExecution
 	toolCount := 0
 	lastToolName := ""
 	lastToolCmd := ""
@@ -65,8 +65,8 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 	}
 
 	m.runtime.Interrupt(execID)
-	m.running = false
-	m.thinking = false
+	m.run.running = false
+	m.run.thinking = false
 
 	card := m.formatCheckpointCard(m.pausedCheckpoint, lastToolCmd)
 	m.addSystemEntry(card)

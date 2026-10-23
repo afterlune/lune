@@ -47,18 +47,18 @@ type tickMsg time.Time
 
 func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 	streamCmd := m.startRuntimeEventSubscription(false)
-	return tea.Batch(streamCmd, m.waitForExecution(m.runningExecution))
+	return tea.Batch(streamCmd, m.waitForExecution(m.run.runningExecution))
 }
 
 func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 	if m.runtime == nil {
 		return nil
 	}
-	if m.runtimeCancel != nil {
-		m.runtimeCancel()
+	if m.run.runtimeCancel != nil {
+		m.run.runtimeCancel()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.runtimeCancel = cancel
+	m.run.runtimeCancel = cancel
 	runtime := m.runtime
 	sessionID := m.sessionID
 	streamCmd := func() tea.Msg {
@@ -98,13 +98,13 @@ func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 	// race past the subscription command and drop live-only model deltas.
 	ready := streamCmd()
 	if msg, ok := ready.(runtimeStreamReadyMsg); ok && msg.err != nil {
-		m.runtimeCancel = nil
+		m.run.runtimeCancel = nil
 	}
 	return func() tea.Msg { return ready }
 }
 
 func (m *tuiModel) waitForExecution(executionID string) tea.Cmd {
-	if !m.running {
+	if !m.run.running {
 		return nil
 	}
 	return m.awaitExecutionResult(executionID)
@@ -114,12 +114,12 @@ func (m *tuiModel) awaitExecutionResult(executionID string) tea.Cmd {
 	if m.runtime == nil || executionID == "" || m.questionInFlight(executionID) {
 		return nil
 	}
-	if _, waiting := m.awaitingTurns[executionID]; waiting {
+	if _, waiting := m.run.awaitingTurns[executionID]; waiting {
 		return nil
 	}
-	m.waitGeneration++
-	m.awaitingTurns[executionID] = m.waitGeneration
-	return waitForTurn(m.runtime, m.sessionID, executionID, m.waitGeneration)
+	m.run.waitGeneration++
+	m.run.awaitingTurns[executionID] = m.run.waitGeneration
+	return waitForTurn(m.runtime, m.sessionID, executionID, m.run.waitGeneration)
 }
 
 func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
@@ -245,7 +245,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	runtime := m.runtime
 	sessionID := m.sessionID
 
-	if m.running {
+	if m.run.running {
 		// Queue follow-up turn while active task runs
 		m.entries = append(m.entries, TranscriptEntry{
 			ID:            fmt.Sprintf("queued-%d", time.Now().UnixNano()),
@@ -274,16 +274,16 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		AttachedFiles: attachedLabels,
 		Timestamp:     time.Now(),
 	})
-	m.running = true
-	m.thinking = false
-	m.taskActivity = ""
-	m.taskStartedAt = time.Now()
-	m.turnStreamStartTime = time.Now()
-	m.streamFirstTokenTime = time.Time{}
-	m.streamGenerationTokens = 0
-	m.currentStreamText = ""
-	m.currentReasoningText = ""
-	m.reasoningStartTime = time.Time{}
+	m.run.running = true
+	m.run.thinking = false
+	m.run.taskActivity = ""
+	m.run.taskStartedAt = time.Now()
+	m.run.turnStreamStartTime = time.Now()
+	m.run.streamFirstTokenTime = time.Time{}
+	m.run.streamGenerationTokens = 0
+	m.run.currentStreamText = ""
+	m.run.currentReasoningText = ""
+	m.run.reasoningStartTime = time.Time{}
 	m.scrolledUp = false
 	m.activeQuestion = nil
 	m.activeApproval = nil
@@ -295,7 +295,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	main.Task = compactAgentTask(text)
 	main.Status = "Running"
 	main.Activity = "Starting"
-	main.StartedAt = m.taskStartedAt
+	main.StartedAt = m.run.taskStartedAt
 	main.Duration = 0
 	main.ContextWindow = m.usage.contextWindow
 	main.ModelProfile = m.currentModelProfile

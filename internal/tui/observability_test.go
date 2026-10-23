@@ -65,13 +65,13 @@ func TestRunningSubagentShowsLiveElapsed(t *testing.T) {
 
 func TestScrollPillReflectsTaskState(t *testing.T) {
 	m := newTUIModel(nil, nil, "pill-session")
-	m.taskStartedAt = time.Now().Add(-70 * time.Second)
-	m.running = true
+	m.run.taskStartedAt = time.Now().Add(-70 * time.Second)
+	m.run.running = true
 	if got := scrollPillText(m); !strings.Contains(got, "Working 1m 10s") {
 		t.Fatalf("running pill = %q", got)
 	}
 
-	m.running = false
+	m.run.running = false
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused"}
 	if got := scrollPillText(m); !strings.Contains(got, "Paused") {
 		t.Fatalf("paused pill = %q", got)
@@ -95,9 +95,9 @@ func TestScrollPillReflectsTaskState(t *testing.T) {
 func TestFooterShowsQueuedCount(t *testing.T) {
 	m := newTUIModel(nil, nil, "footer-session")
 	m.width, m.height = 120, 40
-	m.running = true
-	m.taskStartedAt = time.Now()
-	m.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
+	m.run.running = true
+	m.run.taskStartedAt = time.Now()
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
 
 	footer := renderFooter(m, 120)
 	if !strings.Contains(footer, "2 queued") {
@@ -107,9 +107,9 @@ func TestFooterShowsQueuedCount(t *testing.T) {
 
 func TestStatusTableShowsTaskAndQueue(t *testing.T) {
 	m := newTUIModel(nil, nil, "status-session")
-	m.running = true
-	m.taskStartedAt = time.Now().Add(-65 * time.Second)
-	m.queuedTurns = []QueuedItem{{ExecutionID: "q1"}}
+	m.run.running = true
+	m.run.taskStartedAt = time.Now().Add(-65 * time.Second)
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "q1"}}
 
 	status := m.renderStatusTable()
 	if !strings.Contains(status, "Task:") || !strings.Contains(status, "running (1m 5s)") {
@@ -129,12 +129,12 @@ func TestTerminalTitleCarriesStateMarker(t *testing.T) {
 		t.Fatalf("idle title = %q", got)
 	}
 
-	m.running = true
+	m.run.running = true
 	if got := m.desiredTerminalTitle(); got != "running · Refactor | demo" {
 		t.Fatalf("running title = %q", got)
 	}
 
-	m.running = false
+	m.run.running = false
 	m.activeApproval = &ActiveApproval{}
 	if got := m.desiredTerminalTitle(); got != "waiting · Refactor | demo" {
 		t.Fatalf("decision title = %q", got)
@@ -190,22 +190,22 @@ func TestStatusSurfacesUseNoEmojiGlyphs(t *testing.T) {
 	}
 
 	m := newTUIModel(nil, nil, "glyph-session")
-	m.taskStartedAt = time.Now().Add(-12 * time.Second)
-	m.running = true
+	m.run.taskStartedAt = time.Now().Add(-12 * time.Second)
+	m.run.running = true
 	assertPlain("running pill", scrollPillText(m))
 	if got := scrollPillText(m); !strings.Contains(got, "Working 12s") {
 		t.Fatalf("running pill lost its state word: %q", got)
 	}
 	assertPlain("running footer", renderFooter(m, 120))
 
-	m.running = false
+	m.run.running = false
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused"}
 	assertPlain("paused pill", scrollPillText(m))
 	assertPlain("paused footer", renderFooter(m, 120))
 	assertPlain("paused banner", renderPausedBanner(80))
 
 	m.pausedCheckpoint = nil
-	m.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
+	m.run.queuedTurns = []QueuedItem{{ExecutionID: "q1"}, {ExecutionID: "q2"}}
 	m.entries = []TranscriptEntry{{Kind: KindQueued, Text: "follow-up"}}
 	band := renderQueuedBand(m, 96)
 	assertPlain("queued band", band)

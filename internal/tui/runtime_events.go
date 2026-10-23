@@ -35,20 +35,20 @@ func replaySafeDuringRestore(kind core.EventKind) bool {
 
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
 	if event.Kind == core.EventRuntimeReplayComplete {
-		if m.restoringSession {
+		if m.run.restoringSession {
 			m.finishSessionRestore()
 		}
 		return m, nil
 	}
-	if m.restoringSession && event.Cursor == 0 {
+	if m.run.restoringSession && event.Cursor == 0 {
 		// Live-only events follow the replay marker in Core; keep this as a
 		// defensive boundary for event sources that only expose live events.
 		m.finishSessionRestore()
 	}
-	if m.restoringSession && event.Kind == core.EventRuntimeStreamFailed {
+	if m.run.restoringSession && event.Kind == core.EventRuntimeStreamFailed {
 		m.finishSessionRestore()
 	}
-	if m.restoringSession && !replaySafeDuringRestore(event.Kind) {
+	if m.run.restoringSession && !replaySafeDuringRestore(event.Kind) {
 		return m, nil
 	}
 	switch event.Kind {
@@ -57,9 +57,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if execID == "" {
 			return m, nil
 		}
-		queued := len(m.queuedTurns) > 0 && m.queuedTurns[0].ExecutionID == execID
+		queued := len(m.run.queuedTurns) > 0 && m.run.queuedTurns[0].ExecutionID == execID
 		if queued {
-			m.queuedTurns = m.queuedTurns[1:]
+			m.run.queuedTurns = m.run.queuedTurns[1:]
 			m.roundsCollapsedByUser = false
 			for i := range m.entries {
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
@@ -69,13 +69,13 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					break
 				}
 			}
-			m.currentStreamText = ""
-			m.currentReasoningText = ""
+			m.run.currentStreamText = ""
+			m.run.currentReasoningText = ""
 		}
-		if !queued && ((!m.running && m.runningExecution != execID) || (m.runningExecution != "" && m.runningExecution != execID)) {
+		if !queued && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
 			return m, nil
 		}
-		if m.runningExecution == execID && m.taskSnapshot.TaskID == event.TaskID && m.running {
+		if m.run.runningExecution == execID && m.run.taskSnapshot.TaskID == event.TaskID && m.run.running {
 			return m, m.waitForExecution(execID)
 		}
 		limits := core.ExecutionOptions{}
@@ -91,26 +91,26 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					m.checkPendingState(context.Background())
 					switch state.Task.Status {
 					case core.TaskCompleted, core.TaskFailed, core.TaskCancelled, core.TaskDiscarded:
-						m.runningExecution = execID
+						m.run.runningExecution = execID
 						return m, m.awaitExecutionResult(execID)
 					}
-					return m, m.waitForExecution(m.runningExecution)
+					return m, m.waitForExecution(m.run.runningExecution)
 				}
 			}
 		}
-		if m.taskSnapshot.TaskID != "" && m.taskSnapshot.TaskID != event.TaskID {
-			delete(m.awaitingTurns, execID)
-			delete(m.terminalEvents, execID)
+		if m.run.taskSnapshot.TaskID != "" && m.run.taskSnapshot.TaskID != event.TaskID {
+			delete(m.run.awaitingTurns, execID)
+			delete(m.run.terminalEvents, execID)
 		}
-		m.taskSnapshot = nextTask
-		m.running = true
-		m.runningExecution = execID
-		m.taskActivity = ""
-		m.taskStartedAt = time.Now()
+		m.run.taskSnapshot = nextTask
+		m.run.running = true
+		m.run.runningExecution = execID
+		m.run.taskActivity = ""
+		m.run.taskStartedAt = time.Now()
 		main := m.ensureAgentMetrics("lead")
 		main.Status = "Running"
 		main.Activity = "Starting"
-		main.StartedAt = m.taskStartedAt
+		main.StartedAt = m.run.taskStartedAt
 		main.Duration = 0
 		for i := len(m.entries) - 1; i >= 0; i-- {
 			if m.entries[i].Kind == KindUser {
@@ -129,7 +129,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if event.Model != "" {
 			main.Model = event.Model
 		}
-		m.thinking = false
+		m.run.thinking = false
 		m.view.invalidateContent()
 		m.updateLayout()
 		return m, m.waitForExecution(execID)
@@ -153,41 +153,41 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 
 		switch event.Stream.Type {
 		case "reasoning_delta":
-			if m.reasoningStartTime.IsZero() {
-				m.reasoningStartTime = time.Now()
+			if m.run.reasoningStartTime.IsZero() {
+				m.run.reasoningStartTime = time.Now()
 			}
-			if m.streamFirstTokenTime.IsZero() {
-				m.streamFirstTokenTime = time.Now()
-				m.streamGenerationTokens = 0
+			if m.run.streamFirstTokenTime.IsZero() {
+				m.run.streamFirstTokenTime = time.Now()
+				m.run.streamGenerationTokens = 0
 			}
-			m.thinking = true
-			m.currentReasoningText += event.Stream.Delta
+			m.run.thinking = true
+			m.run.currentReasoningText += event.Stream.Delta
 			if event.Stream.Delta != "" {
 				toks := estimateDeltaTokens(event.Stream.Delta)
-				m.streamGenerationTokens += toks
-				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
+				m.run.streamGenerationTokens += toks
+				elapsed := time.Since(m.run.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.usage.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+					m.usage.lastTokensPerSec = float64(m.run.streamGenerationTokens) / elapsed
 				}
 			}
 			m.view.invalidateContent()
 
 		case "text_delta", "":
-			if m.currentReasoningText != "" {
+			if m.run.currentReasoningText != "" {
 				m.flushReasoningEntry()
 			}
-			if m.streamFirstTokenTime.IsZero() {
-				m.streamFirstTokenTime = time.Now()
-				m.streamGenerationTokens = 0
+			if m.run.streamFirstTokenTime.IsZero() {
+				m.run.streamFirstTokenTime = time.Now()
+				m.run.streamGenerationTokens = 0
 			}
 			if event.Stream.Delta != "" {
-				m.thinking = false
-				m.currentStreamText += event.Stream.Delta
+				m.run.thinking = false
+				m.run.currentStreamText += event.Stream.Delta
 				toks := estimateDeltaTokens(event.Stream.Delta)
-				m.streamGenerationTokens += toks
-				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
+				m.run.streamGenerationTokens += toks
+				elapsed := time.Since(m.run.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.usage.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+					m.usage.lastTokensPerSec = float64(m.run.streamGenerationTokens) / elapsed
 				}
 				m.view.invalidateContent()
 			}
@@ -211,12 +211,12 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.recordSubagentToolStarted(agentID, event.AgentName, event.AgentRole, event.Tool.Name, string(event.Tool.Arguments))
 			return m, nil
 		}
-		m.streamFirstTokenTime = time.Time{}
-		m.streamGenerationTokens = 0
+		m.run.streamFirstTokenTime = time.Time{}
+		m.run.streamGenerationTokens = 0
 		m.recordAgentToolStarted("lead", event.Tool.Name)
 		m.flushReasoningEntry()
 		m.flushStreamTextEntry()
-		m.thinking = false
+		m.run.thinking = false
 
 		rawArgs := string(event.Tool.Arguments)
 		cmdText := formatToolSummary(event.Tool.Name, rawArgs, m.workspace)
@@ -249,7 +249,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					if len(changes) > 0 {
 						m.entries[i].ToolChanges = changes
 					}
-					if m.running {
+					if m.run.running {
 						m.entries[i].ToolRunning = true
 						if m.entries[i].ToolStartedAt.IsZero() {
 							m.entries[i].ToolStartedAt = time.Now()
@@ -267,7 +267,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			ToolName:    event.Tool.Name,
 			Timestamp:   time.Now(),
 			ToolCommand: cmdText,
-			ToolRunning: m.running,
+			ToolRunning: m.run.running,
 			ToolChanges: changes,
 			ToolOutput:  outText,
 		}
@@ -426,16 +426,16 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
-		if !m.running || event.ExecutionID == "" || event.ExecutionID != m.runningExecution {
+		if !m.run.running || event.ExecutionID == "" || event.ExecutionID != m.run.runningExecution {
 			return m, nil
 		}
 		main := m.ensureAgentMetrics("lead")
 		if event.Kind == core.EventMemoryStarted {
-			m.taskActivity = "Extracting workspace memory"
-			main.Activity = m.taskActivity
-		} else if m.taskActivity == "Extracting workspace memory" {
-			m.taskActivity = "Finishing task"
-			main.Activity = m.taskActivity
+			m.run.taskActivity = "Extracting workspace memory"
+			main.Activity = m.run.taskActivity
+		} else if m.run.taskActivity == "Extracting workspace memory" {
+			m.run.taskActivity = "Finishing task"
+			main.Activity = m.run.taskActivity
 		}
 		m.view.invalidateContent()
 		m.updateLayout()
@@ -449,27 +449,27 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			if request.ExecutionID == "" {
 				request.ExecutionID = event.ExecutionID
 			}
-			if m.questionSubmissions[m.questionKey(request)] != 0 {
+			if m.run.questionSubmissions[m.questionKey(request)] != 0 {
 				return m, nil
 			}
 		}
 		m.checkPendingState(context.Background())
 		if m.activeQuestion != nil && !m.activeQuestion.Submitting {
-			m.thinking = false
-			m.running = false
+			m.run.thinking = false
+			m.run.running = false
 		}
 		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventUserInteractionRequired:
-		m.thinking = false
-		m.running = false
+		m.run.thinking = false
+		m.run.running = false
 		m.checkPendingState(context.Background())
 		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventApprovalRequired:
-		m.thinking = false
+		m.run.thinking = false
 		if event.Approval != nil && m.permissionMode == core.PermissionFullAccess {
 			_ = m.runtime.ResolveApproval(event.Approval.ID, true)
 		} else {
@@ -485,22 +485,22 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventUsage:
-		if m.running || !m.usage.seededSessionUsage {
+		if m.run.running || !m.usage.seededSessionUsage {
 			m.usage.addEventUsage(event.Usage)
 			if strings.TrimSpace(event.AgentID) != "" || isLeadMainUsage(event.AgentID, event.UsagePurpose) {
 				m.recordAgentUsage(event)
 			}
 			if isLeadMainUsage(event.AgentID, event.UsagePurpose) && event.Usage.OutputTokens > 0 {
 				var elapsed float64
-				if !m.streamFirstTokenTime.IsZero() {
-					elapsed = time.Since(m.streamFirstTokenTime).Seconds()
-				} else if !m.turnStreamStartTime.IsZero() {
-					elapsed = time.Since(m.turnStreamStartTime).Seconds()
+				if !m.run.streamFirstTokenTime.IsZero() {
+					elapsed = time.Since(m.run.streamFirstTokenTime).Seconds()
+				} else if !m.run.turnStreamStartTime.IsZero() {
+					elapsed = time.Since(m.run.turnStreamStartTime).Seconds()
 				}
 				if elapsed >= 0.05 {
 					m.usage.lastTokensPerSec = float64(event.Usage.OutputTokens) / elapsed
 				}
-				m.streamFirstTokenTime = time.Time{}
+				m.run.streamFirstTokenTime = time.Time{}
 			}
 		}
 		if isLeadMainUsage(event.AgentID, event.UsagePurpose) {
@@ -509,8 +509,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventModelRecoveryRequired:
-		m.thinking = false
-		m.running = false
+		m.run.thinking = false
+		m.run.running = false
 		m.checkPendingState(context.Background())
 		m.view.invalidateContent()
 		m.updateLayout()
@@ -519,16 +519,16 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventToolRecoveryRequired, core.EventExecutionBlocked:
-		m.thinking = false
-		m.running = false
+		m.run.thinking = false
+		m.run.running = false
 		m.checkPendingState(context.Background())
 		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventRuntimeStreamFailed:
-		m.thinking = false
-		m.running = false
-		m.taskActivity = ""
+		m.run.thinking = false
+		m.run.running = false
+		m.run.taskActivity = ""
 		if event.Err != "" {
 			m.addSystemEntry("Runtime stream error: " + event.Err)
 		}
@@ -538,7 +538,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil
 		m.pausedCheckpoint = nil
-		m.running = true
+		m.run.running = true
 		m.view.invalidateContent()
 		m.updateLayout()
 
@@ -547,9 +547,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		return m, m.waitForExecution(event.ExecutionID)
 
 	case core.EventTaskDiscarded:
-		m.thinking = false
-		m.running = false
-		m.taskActivity = ""
+		m.run.thinking = false
+		m.run.running = false
+		m.run.taskActivity = ""
 		main := m.ensureAgentMetrics("lead")
 		main.Status = "Cancelled"
 		main.Activity = "Cancelled"
@@ -559,8 +559,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
-		m.currentStreamText = ""
-		m.currentReasoningText = ""
+		m.run.currentStreamText = ""
+		m.run.currentReasoningText = ""
 		m.markRunningSubagentsAndToolsDone()
 		m.view.invalidateContent()
 		m.updateLayout()

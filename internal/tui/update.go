@@ -80,7 +80,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.running || (m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero()) {
+		if m.run.running || (m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero()) {
 			m.refreshViewportContent()
 			return m, tickClock()
 		}
@@ -90,7 +90,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			if m.restoringSession {
+			if m.run.restoringSession {
 				m.finishSessionRestore()
 			}
 			m.addSystemEntry("Failed to connect to runtime event stream: " + msg.err.Error())
@@ -104,7 +104,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.event.Kind == "" && msg.events == nil {
-			if m.restoringSession {
+			if m.run.restoringSession {
 				m.finishSessionRestore()
 			}
 			return m, nil
@@ -123,14 +123,14 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if !m.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty) {
+		if !m.run.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty) {
 			m.refreshViewportContent()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
 		return m, tea.Batch(cmds...)
 
 	case runtimeRestoreSettledMsg:
-		if m.restoringSession && msg.generation == m.restoreGeneration {
+		if m.run.restoringSession && msg.generation == m.run.restoreGeneration {
 			m.finishSessionRestore()
 		}
 		return m, nil
@@ -141,15 +141,15 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		}
 		m.pausedCheckpoint = nil
 		if msg.err != nil {
-			if len(m.queuedTurns) == 0 {
-				m.running = false
+			if len(m.run.queuedTurns) == 0 {
+				m.run.running = false
 			}
 			m.addSystemEntry("Failed to submit task: " + msg.err.Error())
 			m.updateLayout()
 			return m, nil
 		}
 		if msg.submission.Status == core.SubmissionQueued {
-			m.queuedTurns = append(m.queuedTurns, QueuedItem{
+			m.run.queuedTurns = append(m.run.queuedTurns, QueuedItem{
 				ExecutionID: msg.submission.ExecutionID,
 			})
 			for i := len(m.entries) - 1; i >= 0; i-- {
@@ -161,8 +161,8 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			m.refreshViewportContent()
 			return m, nil
 		}
-		m.running = true
-		m.runningExecution = msg.submission.ExecutionID
+		m.run.running = true
+		m.run.runningExecution = msg.submission.ExecutionID
 		m.roundsCollapsedByUser = false
 		m.finishSessionRestore()
 		m.refreshViewportContent()
@@ -247,27 +247,27 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			message += fmt.Sprintf(" Archived plan: `%s`.", archivedPath)
 		}
 		m.addSystemEntry(message)
-		m.running = true
-		m.taskStartedAt = time.Now()
-		m.runningExecution = msg.impl.Submission.ExecutionID
+		m.run.running = true
+		m.run.taskStartedAt = time.Now()
+		m.run.runningExecution = msg.impl.Submission.ExecutionID
 		planCmds = append(planCmds, tickClock(), m.waitForExecution(msg.impl.Submission.ExecutionID))
 		return m, tea.Batch(planCmds...)
 
 	case taskDiscardedMsg:
-		m.discardInFlight = false
+		m.run.discardInFlight = false
 		if msg.err != nil {
 			m.addSystemEntry("Discard failed: " + msg.err.Error())
 			m.updateLayout()
 			return m, nil
 		}
 		if m.activeQuestion != nil {
-			delete(m.questionSubmissions, m.questionKey(m.activeQuestion.Request))
+			delete(m.run.questionSubmissions, m.questionKey(m.activeQuestion.Request))
 		}
 		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
 		m.activeQuestion = nil
-		m.running = false
+		m.run.running = false
 		if !msg.discarded {
 			if msg.source == discardSourceQuestion {
 				m.addSystemEntry("The question was already resolved; no paused task remained to discard.")
@@ -453,27 +453,27 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 		executionID = msg.result.ExecutionID
 	}
 	if executionID == "" {
-		executionID = m.runningExecution
+		executionID = m.run.runningExecution
 	}
 	if executionID == "" {
 		return nil
 	}
-	if msg.generation != 0 && m.awaitingTurns[executionID] != msg.generation {
+	if msg.generation != 0 && m.run.awaitingTurns[executionID] != msg.generation {
 		return nil
 	}
 	if msg.result.Status == core.TaskPaused && m.stalePause(executionID, "") {
-		delete(m.awaitingTurns, executionID)
-		if m.taskSnapshot.ExecutionID == executionID {
-			switch m.taskSnapshot.Status {
+		delete(m.run.awaitingTurns, executionID)
+		if m.run.taskSnapshot.ExecutionID == executionID {
+			switch m.run.taskSnapshot.Status {
 			case core.TaskCompleted, core.TaskFailed, core.TaskCancelled, core.TaskDiscarded:
-				m.runningExecution = executionID
+				m.run.runningExecution = executionID
 				return m.awaitExecutionResult(executionID)
 			}
 		}
 		return m.waitForExecution(executionID)
 	}
-	event, eventFinalized := m.terminalEvents[executionID]
-	if m.runningExecution != executionID && !eventFinalized {
+	event, eventFinalized := m.run.terminalEvents[executionID]
+	if m.run.runningExecution != executionID && !eventFinalized {
 		return nil
 	}
 	if eventFinalized {
@@ -484,10 +484,10 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 			msg.err = fmt.Errorf("%s", event.Err)
 		}
 	}
-	delete(m.awaitingTurns, executionID)
-	delete(m.terminalEvents, executionID)
-	if m.taskSnapshot.ExecutionID == executionID {
-		m.taskSnapshot.Status = msg.result.Status
+	delete(m.run.awaitingTurns, executionID)
+	delete(m.run.terminalEvents, executionID)
+	if m.run.taskSnapshot.ExecutionID == executionID {
+		m.run.taskSnapshot.Status = msg.result.Status
 	}
 
 	var planText string
@@ -515,17 +515,17 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 			m.addSystemEntry("Task failed: model request completed without a response. Check .luneagent/agent.log for details.")
 		}
 	}
-	if m.runningExecution == executionID {
-		m.running = false
-		m.thinking = false
-		m.taskActivity = ""
+	if m.run.runningExecution == executionID {
+		m.run.running = false
+		m.run.thinking = false
+		m.run.taskActivity = ""
 		if msg.result.Status == core.TaskPaused {
 			if m.pausedCheckpoint == nil {
 				m.pausedCheckpoint = m.pausedCheckpointFor(executionID)
 			}
 			m.checkPendingState(context.Background())
 		} else {
-			m.runningExecution = ""
+			m.run.runningExecution = ""
 			m.pausedCheckpoint = nil
 			m.activeRecovery = nil
 			m.activeToolRecovery = nil
@@ -538,19 +538,19 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 
 func (m *tuiModel) finishTurnEvent(event core.Event) {
 	executionID := event.ExecutionID
-	if executionID == "" || executionID != m.runningExecution {
+	if executionID == "" || executionID != m.run.runningExecution {
 		return
 	}
 	if m.staleTaskAttempt(executionID, event.TaskID) ||
 		(event.Status == core.TaskPaused && m.stalePause(executionID, event.TaskID)) {
 		return
 	}
-	if event.Status == core.TaskPaused && !m.running {
-		if _, awaiting := m.awaitingTurns[executionID]; !awaiting {
+	if event.Status == core.TaskPaused && !m.run.running {
+		if _, awaiting := m.run.awaitingTurns[executionID]; !awaiting {
 			return
 		}
 	}
-	if _, finalized := m.terminalEvents[executionID]; finalized {
+	if _, finalized := m.run.terminalEvents[executionID]; finalized {
 		return
 	}
 	main := m.ensureAgentMetrics("lead")
@@ -567,14 +567,14 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	if !main.StartedAt.IsZero() {
 		main.Duration = time.Since(main.StartedAt)
 	}
-	if main.Duration <= 0 && !m.taskStartedAt.IsZero() {
-		main.Duration = time.Since(m.taskStartedAt)
+	if main.Duration <= 0 && !m.run.taskStartedAt.IsZero() {
+		main.Duration = time.Since(m.run.taskStartedAt)
 	}
 	m.noteTurnFinished(executionID, event.Status, main.Duration)
-	m.terminalEvents[executionID] = event
-	m.taskSnapshot.Status = event.Status
-	m.thinking = false
-	m.taskActivity = ""
+	m.run.terminalEvents[executionID] = event
+	m.run.taskSnapshot.Status = event.Status
+	m.run.thinking = false
+	m.run.taskActivity = ""
 	m.usage.compacting = false
 	// Keep the live transcript until WaitTurn supplies the authoritative response
 	// and ProposedPlan; finalizing here would briefly erase a completed plan.
