@@ -171,7 +171,7 @@ func TestPlanReviewPositionStaysFixed(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.entries = []TranscriptEntry{{Kind: KindPlan, Text: strings.Repeat("- plan body\n", 80)}}
 	m.activePlanReview = &ActivePlanReview{Text: "plan", Selected: 0}
-	m.composer.SetValue("composer-marker")
+	m.input.composer.SetValue("composer-marker")
 	m.updateLayout()
 	var reviewY, composerY = -1, -1
 	for _, state := range []struct {
@@ -184,8 +184,8 @@ func TestPlanReviewPositionStaysFixed(t *testing.T) {
 		{feedback: "Copied"}, {feedback: "Copy failed", failed: true}, {},
 	} {
 		m.scrolledUp = state.scrolled
-		m.copyFeedback, m.copyFeedbackError = state.feedback, state.failed
-		m.copyFeedbackExpiresAt = time.Now().Add(time.Minute)
+		m.input.copyFeedback, m.input.copyFeedbackError = state.feedback, state.failed
+		m.input.copyFeedbackExpiresAt = time.Now().Add(time.Minute)
 		if state.scrolled {
 			m.viewport.SetYOffset(10)
 		} else {

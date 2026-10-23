@@ -79,14 +79,12 @@ func (m *tuiModel) openDiffModal(targetPath string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.shortcutsOpen = false
-	m.sessionsModalOpen = false
-	m.autocompleteOpen = false
-	m.toolPagerOpen = false
-	m.diffModalOpen = true
-	m.diffFiles = files
-	m.diffFileIndex = 0
-	m.diffScrollY = 0
+	m.modals.open()
+	m.input.autocompleteOpen = false
+	m.modals.diff.open = true
+	m.modals.diff.files = files
+	m.modals.diff.fileIndex = 0
+	m.modals.diff.scrollY = 0
 
 	m.updateLayout()
 	return m, nil

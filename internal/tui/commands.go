@@ -219,13 +219,13 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.currentStreamText = ""
 		m.viewport.SetContent("")
 		m.scrolledUp = false
-		m.isSelecting = false
-		m.selectedText = ""
-		m.selectStartX = 0
-		m.selectEndX = 0
-		m.selectStartY = 0
-		m.selectEndY = 0
-		m.invalidateEntryCache()
+		m.input.selecting = false
+		m.input.selectedText = ""
+		m.input.selectStartX = 0
+		m.input.selectEndX = 0
+		m.input.selectStartY = 0
+		m.input.selectEndY = 0
+		m.view.invalidateBlocks()
 		m.updateLayout()
 		return m, nil
 
@@ -316,13 +316,12 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/compact":
-		if m.compacting {
+		if m.usage.compacting {
 			m.addSystemEntry("Compaction is already in progress.")
 			return m, nil
 		}
 		client, sessionID := m.client, m.sessionID
-		m.compacting = true
-		m.compactionStartedAt = time.Now()
+		m.usage.beginCompaction()
 		m.addSystemEntry("Compacting older conversation history…")
 		m.updateLayout()
 		return m, func() tea.Msg {
@@ -369,7 +368,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m.discardPausedTask(discardSourceCommand)
 
 	case "/shortcuts":
-		m.shortcutsOpen = true
+		m.modals.open()
+		m.modals.shortcuts = true
 		m.updateLayout()
 		return m, nil
 	}
@@ -443,7 +443,7 @@ func (m *tuiModel) settleQueuedTurnCancellation(msg queuedTurnCancelledMsg) {
 				if suffix != "" {
 					m.entries[i].Text += suffix
 				}
-				m.invalidateEntryCache()
+				m.view.invalidateBlocks()
 				break
 			}
 		}

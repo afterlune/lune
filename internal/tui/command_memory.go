@@ -15,10 +15,10 @@ type ActiveMemoryPicker struct {
 }
 
 func (m *tuiModel) openMemoryAddInput(category string) {
-	m.pendingMemoryAdd = true
-	m.pendingMemoryCategory = category
-	m.composer.Placeholder = "Memory content · Enter to save · Esc to cancel"
-	m.autocompleteOpen = false
+	m.modals.memory.pendingAdd = true
+	m.modals.memory.pendingCategory = category
+	m.input.composer.Placeholder = "Memory content · Enter to save · Esc to cancel"
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 }
 
@@ -32,14 +32,15 @@ func (m *tuiModel) openMemoryPicker() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("No workspace memories are available to remove.")
 		return m, nil
 	}
-	m.memoryPicker = &ActiveMemoryPicker{Items: items}
-	m.autocompleteOpen = false
+	m.modals.open()
+	m.modals.memory.picker = &ActiveMemoryPicker{Items: items}
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }
 
 func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
-	if m.memoryClearConfirm {
+	if m.modals.memory.clearConfirm {
 		switch strings.ToLower(keyStr) {
 		case "y":
 			if m.taskBusy() {
@@ -47,7 +48,7 @@ func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd
 				m.updateLayout()
 				return m, nil
 			}
-			m.memoryClearConfirm = false
+			m.modals.memory.clearConfirm = false
 			if err := m.client.ClearMemories(context.Background()); err != nil {
 				m.addSystemEntry("Failed to clear memories: " + err.Error())
 			} else {
@@ -55,23 +56,23 @@ func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd
 			}
 			m.updateLayout()
 		case "n", "esc", "q":
-			m.memoryClearConfirm = false
+			m.modals.memory.clearConfirm = false
 			m.updateLayout()
 		}
 		return m, nil
 	}
-	if m.memoryPicker == nil {
+	if m.modals.memory.picker == nil {
 		return m, nil
 	}
 	switch strings.ToLower(keyStr) {
 	case "esc", "q":
-		m.memoryPicker = nil
+		m.modals.memory.picker = nil
 		m.updateLayout()
 	case "up", "k":
-		m.memoryPicker.Selected = (m.memoryPicker.Selected - 1 + len(m.memoryPicker.Items)) % len(m.memoryPicker.Items)
+		m.modals.memory.picker.Selected = (m.modals.memory.picker.Selected - 1 + len(m.modals.memory.picker.Items)) % len(m.modals.memory.picker.Items)
 		m.updateLayout()
 	case "down", "j":
-		m.memoryPicker.Selected = (m.memoryPicker.Selected + 1) % len(m.memoryPicker.Items)
+		m.modals.memory.picker.Selected = (m.modals.memory.picker.Selected + 1) % len(m.modals.memory.picker.Items)
 		m.updateLayout()
 	case "enter":
 		if m.taskBusy() {
@@ -79,8 +80,8 @@ func (m *tuiModel) handleMemoryPickerKeyPress(keyStr string) (tea.Model, tea.Cmd
 			m.updateLayout()
 			return m, nil
 		}
-		item := m.memoryPicker.Items[m.memoryPicker.Selected]
-		m.memoryPicker = nil
+		item := m.modals.memory.picker.Items[m.modals.memory.picker.Selected]
+		m.modals.memory.picker = nil
 		if err := m.client.DeleteMemory(context.Background(), item.ID); err != nil {
 			m.addSystemEntry("Failed to delete memory: " + err.Error())
 		} else {
@@ -253,7 +254,8 @@ func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if !hasForce {
-			m.memoryClearConfirm = true
+			m.modals.open()
+			m.modals.memory.clearConfirm = true
 			m.updateLayout()
 			return m, nil
 		}

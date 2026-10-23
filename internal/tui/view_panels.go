@@ -280,7 +280,7 @@ func renderEffortPicker(m *tuiModel, width int) string {
 	var rows []string
 	for i, opt := range options {
 		marker := "  "
-		if i == m.effortPicker.Selected {
+		if i == m.modals.effort.Selected {
 			marker = "› "
 		}
 		label := fmt.Sprintf("%d. %-8s", i+1, opt.Label)
@@ -289,7 +289,7 @@ func renderEffortPicker(m *tuiModel, width int) string {
 			suffix = "  ✓ current"
 		}
 		raw := fmt.Sprintf("%s%-42s %s%s", marker, label, opt.Description, suffix)
-		if i == m.effortPicker.Selected {
+		if i == m.modals.effort.Selected {
 			pad := max(0, width-lipgloss.Width(raw)-4)
 			rows = append(rows, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
 		} else {

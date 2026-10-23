@@ -290,7 +290,7 @@ func TestScrollPillAppearsBetweenPlanAndReviewOptions(t *testing.T) {
 	m.entries = []TranscriptEntry{{Kind: KindAssistant, Text: "plan-body-marker"}}
 	m.activePlanReview = &ActivePlanReview{Text: "plan", Selected: 0}
 	m.scrolledUp = true
-	m.transcriptDirty = true
+	m.view.invalidateContent()
 	m.updateLayout()
 
 	view := ansi.Strip(m.View().Content)
@@ -306,7 +306,7 @@ func TestScrollPillAppearsBetweenPlanAndReviewOptions(t *testing.T) {
 
 	expectedHeight := lipgloss.Height(renderHeader(m.workspace)) + m.viewport.Height() +
 		lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, max(20, m.width-4))) + 2 +
-		lipgloss.Height(renderComposerBand(m.composer.View(), max(20, m.width-4))) +
+		lipgloss.Height(renderComposerBand(m.input.composer.View(), max(20, m.width-4))) +
 		lipgloss.Height(renderFooter(m, max(20, m.width-4)))
 	if got := lipgloss.Height(view); got != expectedHeight {
 		t.Fatalf("moving the scroll pill changed the layout height: got %d, want %d", got, expectedHeight)
@@ -364,23 +364,23 @@ func TestModelUpdateKeys(t *testing.T) {
 	}
 
 	// Autocomplete trigger
-	m.composer.SetValue("/pl")
+	m.input.composer.SetValue("/pl")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
 	m = mod.(*tuiModel)
-	if !m.autocompleteOpen {
+	if !m.input.autocompleteOpen {
 		t.Errorf("expected autocomplete to open for /plan")
 	}
 
 	// Shift+Enter inserts newline
-	m.composer.SetValue("line1")
+	m.input.composer.SetValue("line1")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "line1\n" {
-		t.Errorf("expected composer to have newline after Shift+Enter, got: %q", m.composer.Value())
+	if m.input.composer.Value() != "line1\n" {
+		t.Errorf("expected composer to have newline after Shift+Enter, got: %q", m.input.composer.Value())
 	}
 
 	// Composer band covers at least 3 rows
-	renderedBand := renderComposerBand(m.composer.View(), 80)
+	renderedBand := renderComposerBand(m.input.composer.View(), 80)
 	bandLines := strings.Split(renderedBand, "\n")
 	if len(bandLines) < 3 {
 		t.Errorf("expected composer band to have at least 3 lines, got: %d", len(bandLines))
@@ -392,7 +392,7 @@ func TestComposerBandRendering(t *testing.T) {
 	m.width = 80
 	m.height = 24
 	m.updateLayout()
-	rendered := renderComposerBand(m.composer.View(), 76)
+	rendered := renderComposerBand(m.input.composer.View(), 76)
 	lines := strings.Split(rendered, "\n")
 	for i, l := range lines {
 		t.Logf("Line %d: %q", i, l)
@@ -413,10 +413,10 @@ func TestComposerBandRowsMatchSurfaceWidth(t *testing.T) {
 				m := newTUIModel(nil, nil, "test-sess")
 				m.width = width + 4
 				m.height = 30
-				m.composer.SetValue(tc.value)
+				m.input.composer.SetValue(tc.value)
 				m.updateLayout()
 
-				rendered := ansi.Strip(renderComposerBand(m.composer.View(), width))
+				rendered := ansi.Strip(renderComposerBand(m.input.composer.View(), width))
 				lines := strings.Split(rendered, "\n")
 				if len(lines) < 3 {
 					t.Fatalf("expected at least 3 composer rows, got %d:\n%s", len(lines), rendered)
@@ -438,11 +438,11 @@ func TestComposerMouseHitAreaMatchesRenderedWidth(t *testing.T) {
 	m.updateLayout()
 
 	_, y := m.composerMouseOffset()
-	composerViewWidth := m.composer.Width() + lipgloss.Width(m.composer.Prompt)
+	composerViewWidth := m.input.composer.Width() + lipgloss.Width(m.input.composer.Prompt)
 	if composerViewWidth <= 0 {
 		t.Fatalf("expected a positive composer width, got %d", composerViewWidth)
 	}
-	if got := lipgloss.Width(m.composer.View()); got != composerViewWidth {
+	if got := lipgloss.Width(m.input.composer.View()); got != composerViewWidth {
 		t.Fatalf("composer hit width = %d, rendered width = %d", composerViewWidth, got)
 	}
 	if !m.isComposerMousePoint(1, y) {
@@ -710,7 +710,7 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 	m := &tuiModel{
 		viewport: newTUIModel(nil, nil, "test-sess").viewport,
 	}
-	m.clipboardWriter = func(string) error { return nil }
+	m.input.clipboardWriter = func(string) error { return nil }
 	m.width = 80
 	m.height = 24
 	m.viewport.SetWidth(80)
@@ -724,7 +724,7 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 		Button: tea.MouseLeft,
 	})
 	m = mod.(*tuiModel)
-	if !m.isSelecting {
+	if !m.input.selecting {
 		t.Fatalf("expected isSelecting to be true")
 	}
 
@@ -734,8 +734,8 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 		Y: 3,
 	})
 	m = mod.(*tuiModel)
-	if m.selectEndX != 13 || m.selectEndY != 3 {
-		t.Fatalf("expected selectEnd to be (13, 3), got (%d, %d)", m.selectEndX, m.selectEndY)
+	if m.input.selectEndX != 13 || m.input.selectEndY != 3 {
+		t.Fatalf("expected selectEnd to be (13, 3), got (%d, %d)", m.input.selectEndX, m.input.selectEndY)
 	}
 
 	// Release mouse
@@ -745,42 +745,42 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 		Button: tea.MouseLeft,
 	})
 	m = mod.(*tuiModel)
-	if m.isSelecting {
+	if m.input.selecting {
 		t.Fatalf("expected isSelecting to be false after release")
 	}
-	if m.selectedText != "Hello" {
-		t.Fatalf("expected selected text to be 'Hello', got %q", m.selectedText)
+	if m.input.selectedText != "Hello" {
+		t.Fatalf("expected selected text to be 'Hello', got %q", m.input.selectedText)
 	}
-	if !strings.Contains(m.copyFeedback, "Copied 5 chars to host clipboard") {
-		t.Fatalf("expected copyFeedback with 5 chars, got %q", m.copyFeedback)
+	if !strings.Contains(m.input.copyFeedback, "Copied 5 chars to host clipboard") {
+		t.Fatalf("expected copyFeedback with 5 chars, got %q", m.input.copyFeedback)
 	}
 
 	// Esc clears selection
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.selectedText != "" {
-		t.Fatalf("expected selectedText to be cleared on Esc, got %q", m.selectedText)
+	if m.input.selectedText != "" {
+		t.Fatalf("expected selectedText to be cleared on Esc, got %q", m.input.selectedText)
 	}
 }
 
 func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.clipboardWriter = func(string) error { return nil }
+	m.input.clipboardWriter = func(string) error { return nil }
 	m.width = 80
 	m.height = 24
-	m.composer.SetValue("copy me")
+	m.input.composer.SetValue("copy me")
 	m.updateLayout()
 
 	x, y := m.composerMouseOffset()
 	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
-	if y >= len(lines) || !strings.HasPrefix(lines[y], " "+ansi.Strip(m.composer.View())) {
+	if y >= len(lines) || !strings.HasPrefix(lines[y], " "+ansi.Strip(m.input.composer.View())) {
 		t.Fatalf("composer mouse offset (%d, %d) does not point to rendered composer", x, y)
 	}
 
-	textStart := x + lipgloss.Width(m.composer.Prompt)
+	textStart := x + lipgloss.Width(m.input.composer.Prompt)
 	mod, _ := m.Update(tea.MouseClickMsg{X: textStart, Y: y, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if !m.composerMouseSelecting {
+	if !m.input.composerSelecting {
 		t.Fatal("expected a composer selection to start")
 	}
 
@@ -788,10 +788,10 @@ func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 4, Y: y, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if m.composerMouseSelecting {
+	if m.input.composerSelecting {
 		t.Fatal("expected composer selection to end on mouse release")
 	}
-	if got := m.composer.SelectedText(); got != "copy" {
+	if got := m.input.composer.SelectedText(); got != "copy" {
 		t.Fatalf("expected composer selection %q, got %q", "copy", got)
 	}
 
@@ -800,13 +800,13 @@ func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected Ctrl+C to schedule copy feedback")
 	}
-	if got := m.copyFeedback; got != "Copied 4 chars to host clipboard" {
+	if got := m.input.copyFeedback; got != "Copied 4 chars to host clipboard" {
 		t.Fatalf("expected copy feedback for composer selection, got %q", got)
 	}
 
 	mod, _ = m.Update(tea.MouseClickMsg{X: 10, Y: 3, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if m.composer.HasSelection() {
+	if m.input.composer.HasSelection() {
 		t.Fatal("expected clicking outside the composer to clear its selection")
 	}
 }
@@ -815,80 +815,80 @@ func TestComposerMouseSelectionAcrossLinesAndSoftWrap(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.width = 80
 	m.height = 24
-	m.composer.SetValue("第一行\nsecond line")
+	m.input.composer.SetValue("第一行\nsecond line")
 	m.updateLayout()
 
 	x, y := m.composerMouseOffset()
-	textStart := x + lipgloss.Width(m.composer.Prompt)
+	textStart := x + lipgloss.Width(m.input.composer.Prompt)
 	mod, _ := m.Update(tea.MouseClickMsg{X: textStart, Y: y, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.MouseMotionMsg{X: textStart + 3, Y: y + 1})
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 3, Y: y + 1, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if got := m.composer.SelectedText(); got != "第一行\nsec" {
+	if got := m.input.composer.SelectedText(); got != "第一行\nsec" {
 		t.Fatalf("expected multiline selection %q, got %q", "第一行\nsec", got)
 	}
 
 	m = newTUIModel(nil, nil, "test-sess")
 	m.width = 25 // The composer is 20 columns wide after the band's left padding, forcing this line to wrap.
 	m.height = 24
-	m.composer.SetValue("abcdefghijklmnopqrst")
+	m.input.composer.SetValue("abcdefghijklmnopqrst")
 	m.updateLayout()
 	x, y = m.composerMouseOffset()
-	textStart = x + lipgloss.Width(m.composer.Prompt)
+	textStart = x + lipgloss.Width(m.input.composer.Prompt)
 	mod, _ = m.Update(tea.MouseClickMsg{X: textStart + 16, Y: y, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if !m.composerMouseSelecting {
+	if !m.input.composerSelecting {
 		t.Fatal("expected soft-wrap composer selection to start")
 	}
 	mod, _ = m.Update(tea.MouseMotionMsg{X: textStart + 2, Y: y + 1})
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.MouseReleaseMsg{X: textStart + 2, Y: y + 1, Button: tea.MouseLeft})
 	m = mod.(*tuiModel)
-	if got := m.composer.SelectedText(); got != "qrst" {
+	if got := m.input.composer.SelectedText(); got != "qrst" {
 		t.Fatalf("expected selection across soft wrap %q, got %q", "qrst", got)
 	}
 }
 
 func TestComposerKeyboardSelectionAndCtrlCPrecedence(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.clipboardWriter = func(string) error { return nil }
-	m.composer.SetValue("hello")
-	m.composer.CursorStart()
+	m.input.clipboardWriter = func(string) error { return nil }
+	m.input.composer.SetValue("hello")
+	m.input.composer.CursorStart()
 	for range 2 {
 		mod, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModShift})
 		m = mod.(*tuiModel)
 	}
-	if got := m.composer.SelectedText(); got != "he" {
+	if got := m.input.composer.SelectedText(); got != "he" {
 		t.Fatalf("expected keyboard selection %q, got %q", "he", got)
 	}
 
 	// The composer is the active copy target when both selection stores happen
 	// to contain text.
-	m.selectedText = "transcript selection"
+	m.input.selectedText = "transcript selection"
 	mod, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = mod.(*tuiModel)
-	if cmd == nil || m.copyFeedback != "Copied 2 chars to host clipboard" {
-		t.Fatalf("Ctrl+C did not copy the composer selection: cmd=%v feedback=%q", cmd != nil, m.copyFeedback)
+	if cmd == nil || m.input.copyFeedback != "Copied 2 chars to host clipboard" {
+		t.Fatalf("Ctrl+C did not copy the composer selection: cmd=%v feedback=%q", cmd != nil, m.input.copyFeedback)
 	}
 
-	m.composer.ClearSelection()
-	m.composer.CursorStart()
+	m.input.composer.ClearSelection()
+	m.input.composer.CursorStart()
 	mod, _ = m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	m = mod.(*tuiModel)
-	if got := m.composer.SelectedText(); got != "hello" {
+	if got := m.input.composer.SelectedText(); got != "hello" {
 		t.Fatalf("expected Ctrl+G to select all input, got %q", got)
 	}
 	mod, cmd = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl | tea.ModShift})
 	m = mod.(*tuiModel)
-	if cmd == nil || m.copyFeedback != "Copied 5 chars to host clipboard" {
-		t.Fatalf("Ctrl+Shift+C did not use the safe composer copy path: cmd=%v feedback=%q", cmd != nil, m.copyFeedback)
+	if cmd == nil || m.input.copyFeedback != "Copied 5 chars to host clipboard" {
+		t.Fatalf("Ctrl+Shift+C did not use the safe composer copy path: cmd=%v feedback=%q", cmd != nil, m.input.copyFeedback)
 	}
 	mod, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mod.(*tuiModel)
-	if m.composer.HasSelection() || m.composer.Value() != "hello" {
-		t.Fatalf("Esc should clear the input selection without changing its content: value=%q selected=%t", m.composer.Value(), m.composer.HasSelection())
+	if m.input.composer.HasSelection() || m.input.composer.Value() != "hello" {
+		t.Fatalf("Esc should clear the input selection without changing its content: value=%q selected=%t", m.input.composer.Value(), m.input.composer.HasSelection())
 	}
 }
 
@@ -938,121 +938,121 @@ func TestShortcutsModalInteractions(t *testing.T) {
 	// 1. Press '?' when composer is empty opens shortcuts
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	m = mod.(*tuiModel)
-	if !m.shortcutsOpen {
+	if !m.modals.shortcuts {
 		t.Fatalf("expected shortcutsOpen to be true after typing '?'")
 	}
 
 	// 2. Press '?' again closes shortcuts
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	m = mod.(*tuiModel)
-	if m.shortcutsOpen {
+	if m.modals.shortcuts {
 		t.Fatalf("expected shortcutsOpen to be false after typing '?' again")
 	}
 
 	// 3. /shortcuts slash command opens shortcuts
-	m.composer.SetValue("/shortcuts")
+	m.input.composer.SetValue("/shortcuts")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if !m.shortcutsOpen {
+	if !m.modals.shortcuts {
 		t.Fatalf("expected shortcutsOpen to be true after /shortcuts command")
 	}
 
 	// 4. Esc closes shortcuts
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.shortcutsOpen {
+	if m.modals.shortcuts {
 		t.Fatalf("expected shortcutsOpen to be false after Esc")
 	}
 
 	// 5. Typing '?' when composer has text does NOT open shortcuts
-	m.composer.SetValue("Is this a test?")
+	m.input.composer.SetValue("Is this a test?")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"}))
 	m = mod.(*tuiModel)
-	if m.shortcutsOpen {
+	if m.modals.shortcuts {
 		t.Fatalf("expected shortcutsOpen to remain false when typing '?' with existing text")
 	}
 }
 
 func TestPromptHistoryNavigationAndEscSemantics(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.promptHistory = []string{"First prompt", "Second prompt", "Third prompt"}
-	m.historyIndex = len(m.promptHistory)
+	m.input.history = []string{"First prompt", "Second prompt", "Third prompt"}
+	m.input.historyIndex = len(m.input.history)
 
 	// User types an unsent draft
-	m.composer.SetValue("My draft")
+	m.input.composer.SetValue("My draft")
 
 	// Up key saves draft and loads last history prompt ("Third prompt")
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Third prompt" {
-		t.Fatalf("expected 'Third prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Third prompt" {
+		t.Fatalf("expected 'Third prompt', got %q", m.input.composer.Value())
 	}
-	if m.historyDraft != "My draft" {
-		t.Fatalf("expected historyDraft to be 'My draft', got %q", m.historyDraft)
+	if m.input.historyDraft != "My draft" {
+		t.Fatalf("expected historyDraft to be 'My draft', got %q", m.input.historyDraft)
 	}
 
 	// Up key again loads "Second prompt"
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Second prompt" {
-		t.Fatalf("expected 'Second prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Second prompt" {
+		t.Fatalf("expected 'Second prompt', got %q", m.input.composer.Value())
 	}
 
 	// Up key again loads "First prompt"
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "First prompt" {
-		t.Fatalf("expected 'First prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "First prompt" {
+		t.Fatalf("expected 'First prompt', got %q", m.input.composer.Value())
 	}
 
 	// Down key moves forward to "Second prompt"
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Second prompt" {
-		t.Fatalf("expected 'Second prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Second prompt" {
+		t.Fatalf("expected 'Second prompt', got %q", m.input.composer.Value())
 	}
 
 	// Down key moves forward to "Third prompt"
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Third prompt" {
-		t.Fatalf("expected 'Third prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Third prompt" {
+		t.Fatalf("expected 'Third prompt', got %q", m.input.composer.Value())
 	}
 
 	// Down key restores original draft "My draft"
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "My draft" {
-		t.Fatalf("expected restored draft 'My draft', got %q", m.composer.Value())
+	if m.input.composer.Value() != "My draft" {
+		t.Fatalf("expected restored draft 'My draft', got %q", m.input.composer.Value())
 	}
 
 	// Esc does NOT clear composer or restore history; draft remains intact
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "My draft" {
-		t.Fatalf("expected Esc to leave composer draft intact, got %q", m.composer.Value())
+	if m.input.composer.Value() != "My draft" {
+		t.Fatalf("expected Esc to leave composer draft intact, got %q", m.input.composer.Value())
 	}
 
 	// Esc when composer is empty steps back to edit last message ("Third prompt")
-	m.composer.SetValue("")
+	m.input.composer.SetValue("")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Third prompt" {
-		t.Fatalf("expected Esc on empty composer to restore 'Third prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Third prompt" {
+		t.Fatalf("expected Esc on empty composer to restore 'Third prompt', got %q", m.input.composer.Value())
 	}
 
 	// Esc when text is present leaves composer text intact
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Third prompt" {
-		t.Fatalf("expected Esc on non-empty composer to leave text intact, got %q", m.composer.Value())
+	if m.input.composer.Value() != "Third prompt" {
+		t.Fatalf("expected Esc on non-empty composer to leave text intact, got %q", m.input.composer.Value())
 	}
 
 	// Up key navigates to previous message ("Second prompt")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Second prompt" {
-		t.Fatalf("expected Up to load 'Second prompt', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Second prompt" {
+		t.Fatalf("expected Up to load 'Second prompt', got %q", m.input.composer.Value())
 	}
 }
 
@@ -1226,8 +1226,8 @@ func TestComposerBandUsesThemeCardBackground(t *testing.T) {
 	} {
 		SetThemeMode(test.mode)
 		m := newTUIModel(nil, nil, "test-sess")
-		m.composer.SetWidth(40)
-		rendered := renderComposerBand(m.composer.View(), 40)
+		m.input.composer.SetWidth(40)
+		rendered := renderComposerBand(m.input.composer.View(), 40)
 		r, g, b, ok := parseHexRGB(test.bg)
 		if !ok {
 			t.Fatalf("invalid test background %q", test.bg)
@@ -1309,7 +1309,7 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		},
 	}
 
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 	m.refreshViewportContent()
 	liveView := ansi.Strip(m.viewport.View())
 
@@ -1349,14 +1349,14 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 
 	// 3. Level 1 Click: Click on the collapsed round header bar -> expands the round tree (⌄ Explored ...)
 	var roundHeaderLine int = -1
-	for _, rng := range m.entryLineRanges {
+	for _, rng := range m.view.entryLineRanges {
 		if rng.IsRoundHeader && rng.EntryIndex == 1 {
 			roundHeaderLine = rng.StartLine
 			break
 		}
 	}
 	if roundHeaderLine < 0 {
-		t.Fatalf("expected round header range for EntryIndex 1, got %+v", m.entryLineRanges)
+		t.Fatalf("expected round header range for EntryIndex 1, got %+v", m.view.entryLineRanges)
 	}
 
 	clickLine := func(absLine int) {
@@ -1389,14 +1389,14 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 
 	// 4. Level 2 Click: Click on the child step "│ › Ran git status --short" (EntryIndex 5) -> expands its output inline
 	var childCmdLine int = -1
-	for _, rng := range m.entryLineRanges {
+	for _, rng := range m.view.entryLineRanges {
 		if !rng.IsRoundHeader && rng.EntryIndex == 5 {
 			childCmdLine = rng.StartLine
 			break
 		}
 	}
 	if childCmdLine < 0 {
-		t.Fatalf("expected child range for EntryIndex 5, got %+v", m.entryLineRanges)
+		t.Fatalf("expected child range for EntryIndex 5, got %+v", m.view.entryLineRanges)
 	}
 	clickLine(childCmdLine)
 	if !m.entries[5].ToolExpanded {
@@ -1443,14 +1443,14 @@ func TestExpandedToolRoundShowLessRow(t *testing.T) {
 	}
 
 	footerLine := -1
-	for _, rng := range m.entryLineRanges {
+	for _, rng := range m.view.entryLineRanges {
 		if rng.IsRoundFooter && rng.EntryIndex == 1 {
 			footerLine = rng.StartLine
 			break
 		}
 	}
 	if footerLine < 0 {
-		t.Fatalf("expected a round footer range for EntryIndex 1, got %+v", m.entryLineRanges)
+		t.Fatalf("expected a round footer range for EntryIndex 1, got %+v", m.view.entryLineRanges)
 	}
 
 	vpY := footerLine - m.viewport.YOffset() + 3
@@ -1623,13 +1623,13 @@ func TestRemovedCtrlRAndCtrlTHotkeys(t *testing.T) {
 
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		t.Fatalf("expected Ctrl+T to no longer open the tool output pager")
 	}
 
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'o', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected Ctrl+O to no longer open the session switcher")
 	}
 }

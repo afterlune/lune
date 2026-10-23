@@ -36,15 +36,16 @@ type tuiModel struct {
 	currentModelProfile string
 	// pendingModelProfile holds a model profile chosen before the draft session
 	// exists; it is applied when the first message creates the session.
-	pendingModelProfile    string
-	permissionMode         core.PermissionMode
-	planMode               bool
-	savedMode              core.PermissionMode
-	width                  int
-	height                 int
-	composer               textarea.Model
-	viewport               viewport.Model
-	entries                []TranscriptEntry
+	pendingModelProfile string
+	permissionMode      core.PermissionMode
+	planMode            bool
+	savedMode           core.PermissionMode
+	width               int
+	height              int
+	viewport            viewport.Model
+	entries             []TranscriptEntry
+	// Input line, autocomplete, prompt history, selection and copy feedback.
+	input                  composerState
 	terminalTitle          *terminalTitleManager
 	attentionInitialized   bool
 	attentionDecisionShown bool
@@ -61,23 +62,12 @@ type tuiModel struct {
 	activeQuestion           *ActiveQuestion
 	activeApproval           *ActiveApproval
 	activePlanReview         *ActivePlanReview
-	effortPicker             *ActiveEffortPicker
-	themePicker              *ActiveThemePicker
-	modelPicker              *ActiveModelPicker
-	permissionPicker         *ActivePermissionPicker
 	activeRecovery           *ActiveRecovery
 	activeToolRecovery       *ActiveToolRecovery
 	pausedCheckpoint         *PausedCheckpoint
 	queuedTurns              []QueuedItem
 	cancelingQueuedExecution string
 	discardInFlight          bool
-	autocompleteOpen         bool
-	autocompleteMode         AutocompleteMode
-	autocompleteItems        []AutocompleteItem
-	autocompleteIndex        int
-	autocompleteStart        int
-	autocompleteEnd          int
-	fileScanner              *filemention.Scanner
 	scrolledUp               bool
 	runningExecution         string
 	runtimeCancel            context.CancelFunc
@@ -93,31 +83,11 @@ type tuiModel struct {
 	reasoningLiveCollapsed   bool
 	thinking                 bool
 
-	// Viewport transcript cache
-	cachedBlocks     []string
-	cachedEntryCount int
-	cachedWidth      int
-	cachedThemeBg    string
-	cachedDirty      bool
-	transcriptDirty  bool
-	entryLineRanges  []entryLineRange
+	// Rendered transcript blocks and their stale markers.
+	view viewCache
 
-	// Token usage and context window statistics
-	totalInputTokens     int64
-	totalOutputTokens    int64
-	cachedTokens         int64
-	reasoningTokens      int64
-	contextWindow        int64
-	lastInputTokens      int64
-	lastRequestID        string
-	lastRequestAttempt   int
-	lastRequestChanges   []string
-	lastCachedTokens     int64
-	estimatedInputTokens int64
-	seededSessionUsage   bool
-	// Context compaction state
-	compacting          bool
-	compactionStartedAt time.Time
+	// Token usage, context window, compaction and generation speed.
+	usage sessionUsage
 
 	reasoningEffort string
 
@@ -125,71 +95,12 @@ type tuiModel struct {
 	turnStreamStartTime    time.Time
 	streamFirstTokenTime   time.Time
 	streamGenerationTokens int64
-	lastTokensPerSec       float64
 	agentMetrics           map[string]*agentRuntimeMetrics
-	agentsPanelOpen        bool
-	agentsPanelSelected    int
-	agentsPanelDetail      bool
-	agentsPanelDetailID    string
 
-	// Mouse text selection and copy feedback
-	isSelecting            bool
-	composerMouseSelecting bool
-	selectStartX           int
-	selectStartY           int
-	selectEndX             int
-	selectEndY             int
-	selectedText           string
-	copyFeedback           string
-	copyFeedbackError      bool
-	copyFeedbackExpiresAt  time.Time
-	// copiedViaTerminal records that the last copy used an OSC 52 terminal
-	// clipboard write instead of a host clipboard bridge.
-	copiedViaTerminal     bool
-	clipboardWriter       func(string) error
-	shortcutsOpen         bool
-	sessionsModalOpen     bool
-	sessionsItems         []core.Session
-	sessionsFiltered      []core.Session
-	sessionsFilter        string
-	sessionsIndex         int
-	sessionsConfirmDelete bool
-	sessionsDeletingID    string
-	sessionsDeleteMode    bool
+	// Overlays (shortcuts, pickers, sessions, pager, diff) with exclusive focus.
+	modals modalState
 
 	settingsStore *settings.Store
-
-	pendingMemoryAdd      bool
-	pendingMemoryCategory string
-	memoryPicker          *ActiveMemoryPicker
-	memoryClearConfirm    bool
-	mcpServerPicker       *ActiveMCPServerPicker
-
-	mcpAuthName       string
-	mcpAuthCancel     context.CancelFunc
-	mcpAuthGeneration uint64
-	mcpAuthRunner     func(context.Context, string) error
-
-	processPickerOpen     bool
-	processPickerMode     processPickerMode
-	processPickerItems    []core.CommandInfo
-	processPickerSelected int
-
-	// Tool output pager modal
-	toolPagerOpen    bool
-	toolPagerIndex   int
-	toolPagerScrollY int
-
-	// Diff viewer modal
-	diffModalOpen bool
-	diffFiles     []DiffFile
-	diffFileIndex int
-	diffScrollY   int
-
-	// Prompt history navigation
-	promptHistory []string
-	historyIndex  int
-	historyDraft  string
 }
 
 func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID string) *tuiModel {
@@ -218,10 +129,11 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		client: client, runtime: runtime, workspace: workspace, sessionID: sessionID,
 		currentModel: currentModel, currentModelProfile: currentModel,
 		permissionMode: permMode, savedMode: permMode,
-		composer: comp, viewport: vp, entries: []TranscriptEntry{},
-		fileScanner: filemention.NewScanner(workspace), reasoningLiveCollapsed: true,
-		transcriptDirty: true,
-		awaitingTurns:   map[string]uint64{}, terminalEvents: map[string]core.Event{},
+		input:    composerState{composer: comp, scanner: filemention.NewScanner(workspace)},
+		viewport: vp, entries: []TranscriptEntry{},
+		reasoningLiveCollapsed: true,
+		view:                   viewCache{transcriptDirty: true},
+		awaitingTurns:          map[string]uint64{}, terminalEvents: map[string]core.Event{},
 		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
 	m.ensureAgentMetrics("lead")
@@ -253,73 +165,64 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 		m.currentModelProfile = m.currentModel
 	}
 	m.reasoningEffort = saved.Settings.ReasoningEffort
-	m.totalInputTokens = saved.SessionUsage.Input
-	m.totalOutputTokens = saved.SessionUsage.Output
-	m.cachedTokens = saved.SessionUsage.Cached
-	m.reasoningTokens = saved.SessionUsage.Reasoning
-	m.seededSessionUsage = saved.SessionUsage.Input > 0 || saved.SessionUsage.Output > 0 || saved.SessionUsage.Cached > 0 || saved.SessionUsage.Reasoning > 0
-	m.compacting = false
-	m.compactionStartedAt = time.Time{}
-	m.lastInputTokens = 0
-	m.lastCachedTokens = 0
-	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
-	m.estimatedInputTokens = 0
-	m.contextWindow = 0
+	m.usage.applyTotals(saved.SessionUsage)
+	m.usage.compacting = false
+	m.usage.compactionStartedAt = time.Time{}
+	m.usage.clearLastRequest()
+	m.usage.contextWindow = 0
 	contextWindowConfigured := false
 	if saved.Settings.ContextWindow != nil {
-		m.contextWindow = *saved.Settings.ContextWindow
+		m.usage.contextWindow = *saved.Settings.ContextWindow
 		contextWindowConfigured = true
 	} else if m.client != nil {
 		if projectContext := m.client.ProjectContextDefaults().ContextWindow; projectContext > 0 {
-			m.contextWindow = projectContext
+			m.usage.contextWindow = projectContext
 			contextWindowConfigured = true
 		}
 	}
 	if last, ok := latestLeadUsageRecord(saved.UsageRequests); ok {
-		m.lastInputTokens = last.Usage.InputTokens
-		m.lastCachedTokens = last.Usage.InputTokensDetails.CachedTokens
-		m.lastRequestID, m.lastRequestAttempt = last.RequestID, last.RequestAttempt
-		m.lastRequestChanges = append([]string(nil), last.RequestChanges...)
-		m.estimatedInputTokens = last.EstimatedInputTokens
+		window := int64(0)
 		if !contextWindowConfigured {
-			m.contextWindow = last.ContextWindow
+			window = last.ContextWindow
 		}
+		m.usage.applyLeadRequest(last.Usage.InputTokens, last.Usage.InputTokensDetails.CachedTokens,
+			last.EstimatedInputTokens, window, last.RequestID, last.RequestAttempt, last.RequestChanges)
 	}
-	if m.contextWindow <= 0 {
-		m.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+	if m.usage.contextWindow <= 0 {
+		m.usage.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
 	}
 	m.entries = transcriptFromHistory(saved.History)
 	if m.entries == nil {
 		m.entries = []TranscriptEntry{}
 	}
 	m.seedAgentMetrics(saved)
-	m.promptHistory = nil
+	m.input.history = nil
 	for _, entry := range m.entries {
 		if entry.Kind == KindUser && entry.Text != "" {
-			m.promptHistory = append(m.promptHistory, entry.Text)
+			m.input.history = append(m.input.history, entry.Text)
 		}
 	}
-	m.historyIndex = len(m.promptHistory)
-	m.historyDraft = ""
-	m.invalidateEntryCache()
+	m.input.historyIndex = len(m.input.history)
+	m.input.historyDraft = ""
+	m.view.invalidateBlocks()
 	m.refreshViewportContent()
 }
 
 func (m *tuiModel) refreshMainContextWindow() {
-	m.contextWindow = 0
+	m.usage.contextWindow = 0
 	if m.client != nil {
 		if saved, err := m.client.GetSession(context.Background(), m.sessionID); err == nil && saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0 {
-			m.contextWindow = *saved.Settings.ContextWindow
+			m.usage.contextWindow = *saved.Settings.ContextWindow
 		}
-		if m.contextWindow <= 0 {
-			m.contextWindow = m.client.ProjectContextDefaults().ContextWindow
+		if m.usage.contextWindow <= 0 {
+			m.usage.contextWindow = m.client.ProjectContextDefaults().ContextWindow
 		}
 	}
-	if m.contextWindow <= 0 {
-		m.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+	if m.usage.contextWindow <= 0 {
+		m.usage.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
 	}
 	if main := m.ensureAgentMetrics("lead"); main != nil {
-		main.ContextWindow = m.contextWindow
+		main.ContextWindow = m.usage.contextWindow
 		main.ModelProfile = m.currentModelProfile
 		main.Model = m.currentModel
 	}
@@ -327,22 +230,11 @@ func (m *tuiModel) refreshMainContextWindow() {
 
 // resetSessionState clears data that belongs to the previous session before a new snapshot is applied.
 func (m *tuiModel) resetSessionState() {
-	m.composer.Placeholder = "Ask Lune to do anything"
+	m.input.composer.Placeholder = "Ask Lune to do anything"
 	m.sessionTitle = ""
 	m.currentModel = ""
 	m.currentModelProfile = ""
-	m.totalInputTokens = 0
-	m.totalOutputTokens = 0
-	m.cachedTokens = 0
-	m.reasoningTokens = 0
-	m.contextWindow = 0
-	m.lastInputTokens = 0
-	m.lastCachedTokens = 0
-	m.lastRequestID, m.lastRequestAttempt, m.lastRequestChanges = "", 0, nil
-	m.estimatedInputTokens = 0
-	m.seededSessionUsage = false
-	m.compacting = false
-	m.compactionStartedAt = time.Time{}
+	m.usage.reset()
 	m.reasoningEffort = ""
 	m.running = false
 	m.runningExecution = ""
@@ -351,13 +243,13 @@ func (m *tuiModel) resetSessionState() {
 	m.taskStartedAt = time.Time{}
 	m.queuedTurns = nil
 	m.entries = []TranscriptEntry{}
-	m.promptHistory = nil
-	m.historyIndex = 0
-	m.historyDraft = ""
+	m.input.history = nil
+	m.input.historyIndex = 0
+	m.input.historyDraft = ""
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
-	m.effortPicker = nil
+	m.modals.effort = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	m.pausedCheckpoint = nil
@@ -372,36 +264,19 @@ func (m *tuiModel) resetSessionState() {
 	m.streamFirstTokenTime = time.Time{}
 	m.turnStreamStartTime = time.Time{}
 	m.streamGenerationTokens = 0
-	m.lastTokensPerSec = 0
+	m.usage.lastTokensPerSec = 0
 	m.agentMetrics = map[string]*agentRuntimeMetrics{}
 	m.ensureAgentMetrics("lead")
-	m.agentsPanelOpen = false
-	m.agentsPanelSelected = 0
-	m.agentsPanelDetail = false
-	m.agentsPanelDetailID = ""
 	m.scrolledUp = false
-	m.autocompleteOpen = false
-	m.shortcutsOpen = false
-	m.modelPicker = nil
-	m.permissionPicker = nil
-	m.memoryPicker = nil
-	m.memoryClearConfirm = false
-	m.mcpServerPicker = nil
-	m.pendingMemoryAdd = false
-	m.pendingMemoryCategory = ""
-	m.sessionsModalOpen = false
-	m.sessionsConfirmDelete = false
-	m.sessionsDeletingID = ""
-	m.sessionsDeleteMode = false
-	m.processPickerOpen = false
-	m.processPickerItems = nil
-	m.toolPagerOpen = false
-	m.diffModalOpen = false
+	m.input.autocompleteOpen = false
+	m.modals.close()
+	m.modals.memory.pendingAdd = false
+	m.modals.memory.pendingCategory = ""
 	m.awaitingTurns = map[string]uint64{}
 	m.taskSnapshot = core.TaskState{}
 	m.questionSubmissions = nil
 	m.terminalEvents = map[string]core.Event{}
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 // restoreRuntimeState restores the current execution state for the bound session.
@@ -465,20 +340,12 @@ func (m *tuiModel) delegationLimitsLabel() string {
 		m.maxParallelAgents(), limits.MaxTeamChildrenPerAgent, limits.MaxTeamDepth)
 }
 
-func (m *tuiModel) invalidateEntryCache() {
-	m.cachedDirty = true
-	m.transcriptDirty = true
-}
-
 func (m *tuiModel) getFileScanner() *filemention.Scanner {
-	if m.fileScanner == nil {
-		ws := m.workspace
-		if ws == "" && m.client != nil {
-			ws = m.client.Workspace()
-		}
-		m.fileScanner = filemention.NewScanner(ws)
+	ws := m.workspace
+	if ws == "" && m.client != nil {
+		ws = m.client.Workspace()
 	}
-	return m.fileScanner
+	return m.input.scannerFor(ws)
 }
 
 // currentModelDisplayName returns the user-friendly display name of the active model.
@@ -567,7 +434,7 @@ func (m *tuiModel) terminalStatePrefix() string {
 		return "waiting · "
 	case m.running:
 		return "running · "
-	case m.compacting:
+	case m.usage.compacting:
 		return "compacting · "
 	case m.hasPausedTask():
 		return "paused · "
@@ -612,7 +479,7 @@ func (m *tuiModel) applyThemeStyles() {
 	styles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Background(bg)
 	styles.Blurred.EndOfBuffer = lipgloss.NewStyle().Background(bg)
 
-	m.composer.SetStyles(styles)
+	m.input.composer.SetStyles(styles)
 }
 
 func (m *tuiModel) Init() tea.Cmd {

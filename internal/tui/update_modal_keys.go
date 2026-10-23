@@ -11,10 +11,10 @@ import (
 
 func (m *tuiModel) handleShortcutModalKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
 	// 0. Shortcut Help Modal handling
-	if m.shortcutsOpen {
+	if m.modals.shortcuts {
 		switch keyStr {
 		case "esc", "?", "q", "enter":
-			m.shortcutsOpen = false
+			m.modals.shortcuts = false
 			m.updateLayout()
 			return m, nil
 		}
@@ -24,52 +24,52 @@ func (m *tuiModel) handleShortcutModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 }
 
 func (m *tuiModel) handleAgentsPanelKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
-	if m.agentsPanelOpen {
+	if m.modals.agents.open {
 		ids := m.agentMetricIDs()
 		switch keyStr {
 		case "esc":
 			m.closeAgentsPanel()
 			return m, nil
 		case "backspace", "left":
-			if m.agentsPanelDetail {
-				m.agentsPanelDetail = false
-				m.agentsPanelDetailID = ""
+			if m.modals.agents.detail {
+				m.modals.agents.detail = false
+				m.modals.agents.detailID = ""
 				m.updateLayout()
 			}
 			return m, nil
 		case "up", "ctrl+p":
 			if len(ids) > 0 {
-				if m.agentsPanelSelected > 0 {
-					m.agentsPanelSelected--
+				if m.modals.agents.selected > 0 {
+					m.modals.agents.selected--
 				} else {
-					m.agentsPanelSelected = len(ids) - 1
+					m.modals.agents.selected = len(ids) - 1
 				}
-				if m.agentsPanelDetail {
-					m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+				if m.modals.agents.detail {
+					m.modals.agents.detailID = ids[m.modals.agents.selected]
 				}
 				m.updateLayout()
 			}
 			return m, nil
 		case "down", "ctrl+n":
 			if len(ids) > 0 {
-				if m.agentsPanelSelected < len(ids)-1 {
-					m.agentsPanelSelected++
+				if m.modals.agents.selected < len(ids)-1 {
+					m.modals.agents.selected++
 				} else {
-					m.agentsPanelSelected = 0
+					m.modals.agents.selected = 0
 				}
-				if m.agentsPanelDetail {
-					m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+				if m.modals.agents.detail {
+					m.modals.agents.detailID = ids[m.modals.agents.selected]
 				}
 				m.updateLayout()
 			}
 			return m, nil
 		case "enter", "right":
-			if m.agentsPanelDetail {
-				m.agentsPanelDetail = false
-				m.agentsPanelDetailID = ""
-			} else if len(ids) > 0 && m.agentsPanelSelected >= 0 && m.agentsPanelSelected < len(ids) {
-				m.agentsPanelDetail = true
-				m.agentsPanelDetailID = ids[m.agentsPanelSelected]
+			if m.modals.agents.detail {
+				m.modals.agents.detail = false
+				m.modals.agents.detailID = ""
+			} else if len(ids) > 0 && m.modals.agents.selected >= 0 && m.modals.agents.selected < len(ids) {
+				m.modals.agents.detail = true
+				m.modals.agents.detailID = ids[m.modals.agents.selected]
 			}
 			m.updateLayout()
 			return m, nil
@@ -82,20 +82,20 @@ func (m *tuiModel) handleAgentsPanelKeyPress(msg tea.KeyPressMsg, keyStr string)
 
 func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
 	// 0.1 Session Switcher Modal handling
-	if m.sessionsModalOpen {
-		if m.sessionsConfirmDelete {
+	if m.modals.sessions.open {
+		if m.modals.sessions.confirmDelete {
 			switch keyStr {
 			case "y", "Y":
 				if m.taskBusy() {
-					m.sessionsConfirmDelete = false
-					m.sessionsDeletingID = ""
+					m.modals.sessions.confirmDelete = false
+					m.modals.sessions.deletingID = ""
 					m.addSystemEntry("Cannot delete sessions while a task is running.")
 					m.updateLayout()
 					return m, nil
 				}
-				targetID := m.sessionsDeletingID
-				m.sessionsConfirmDelete = false
-				m.sessionsDeletingID = ""
+				targetID := m.modals.sessions.deletingID
+				m.modals.sessions.confirmDelete = false
+				m.modals.sessions.deletingID = ""
 				if targetID == m.sessionID {
 					m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
 					m.updateLayout()
@@ -107,19 +107,19 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 					return m, nil
 				}
 				var updated []core.Session
-				for _, s := range m.sessionsItems {
+				for _, s := range m.modals.sessions.items {
 					if s.ID != targetID {
 						updated = append(updated, s)
 					}
 				}
-				m.sessionsItems = updated
+				m.modals.sessions.items = updated
 				m.filterSessions()
 				m.addSystemEntry("Deleted session: " + targetID)
 				m.updateLayout()
 				return m, nil
 			case "n", "N", "esc":
-				m.sessionsConfirmDelete = false
-				m.sessionsDeletingID = ""
+				m.modals.sessions.confirmDelete = false
+				m.modals.sessions.deletingID = ""
 				m.updateLayout()
 				return m, nil
 			default:
@@ -129,56 +129,56 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 
 		switch keyStr {
 		case "esc":
-			m.sessionsModalOpen = false
-			m.sessionsFilter = ""
-			m.sessionsConfirmDelete = false
-			m.sessionsDeletingID = ""
-			m.sessionsDeleteMode = false
+			m.modals.sessions.open = false
+			m.modals.sessions.filter = ""
+			m.modals.sessions.confirmDelete = false
+			m.modals.sessions.deletingID = ""
+			m.modals.sessions.deleteMode = false
 			m.updateLayout()
 			return m, nil
 		case "ctrl+d", "delete":
-			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
+			if len(m.modals.sessions.filtered) > 0 && m.modals.sessions.index >= 0 && m.modals.sessions.index < len(m.modals.sessions.filtered) {
 				if m.taskBusy() {
 					m.addSystemEntry("Cannot delete sessions while a task is running.")
 					m.updateLayout()
 					return m, nil
 				}
-				target := m.sessionsFiltered[m.sessionsIndex]
+				target := m.modals.sessions.filtered[m.modals.sessions.index]
 				if target.ID == m.sessionID {
 					m.addSystemEntry("Cannot delete currently active session. Switch to another session first.")
 					m.updateLayout()
 					return m, nil
 				}
-				m.sessionsConfirmDelete = true
-				m.sessionsDeletingID = target.ID
+				m.modals.sessions.confirmDelete = true
+				m.modals.sessions.deletingID = target.ID
 				m.updateLayout()
 				return m, nil
 			}
 			return m, nil
 		case "up", "ctrl+p":
-			if len(m.sessionsFiltered) > 0 {
-				if m.sessionsIndex > 0 {
-					m.sessionsIndex--
+			if len(m.modals.sessions.filtered) > 0 {
+				if m.modals.sessions.index > 0 {
+					m.modals.sessions.index--
 				} else {
-					m.sessionsIndex = len(m.sessionsFiltered) - 1
+					m.modals.sessions.index = len(m.modals.sessions.filtered) - 1
 				}
 				m.updateLayout()
 			}
 			return m, nil
 		case "down", "ctrl+n":
-			if len(m.sessionsFiltered) > 0 {
-				if m.sessionsIndex < len(m.sessionsFiltered)-1 {
-					m.sessionsIndex++
+			if len(m.modals.sessions.filtered) > 0 {
+				if m.modals.sessions.index < len(m.modals.sessions.filtered)-1 {
+					m.modals.sessions.index++
 				} else {
-					m.sessionsIndex = 0
+					m.modals.sessions.index = 0
 				}
 				m.updateLayout()
 			}
 			return m, nil
 		case "enter":
-			if len(m.sessionsFiltered) > 0 && m.sessionsIndex >= 0 && m.sessionsIndex < len(m.sessionsFiltered) {
-				targetID := m.sessionsFiltered[m.sessionsIndex].ID
-				if m.sessionsDeleteMode {
+			if len(m.modals.sessions.filtered) > 0 && m.modals.sessions.index >= 0 && m.modals.sessions.index < len(m.modals.sessions.filtered) {
+				targetID := m.modals.sessions.filtered[m.modals.sessions.index].ID
+				if m.modals.sessions.deleteMode {
 					if m.taskBusy() {
 						m.addSystemEntry("Cannot delete sessions while a task is running.")
 						m.updateLayout()
@@ -189,13 +189,13 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 						m.updateLayout()
 						return m, nil
 					}
-					m.sessionsConfirmDelete = true
-					m.sessionsDeletingID = targetID
+					m.modals.sessions.confirmDelete = true
+					m.modals.sessions.deletingID = targetID
 					m.updateLayout()
 					return m, nil
 				}
-				m.sessionsModalOpen = false
-				m.sessionsFilter = ""
+				m.modals.sessions.open = false
+				m.modals.sessions.filter = ""
 				if targetID == m.sessionID {
 					m.addSystemEntry("Already in session: " + targetID)
 					m.updateLayout()
@@ -203,14 +203,14 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 				}
 				return m.switchToSession(targetID)
 			}
-			m.sessionsModalOpen = false
-			m.sessionsFilter = ""
+			m.modals.sessions.open = false
+			m.modals.sessions.filter = ""
 			m.updateLayout()
 			return m, nil
 		case "backspace":
-			if len(m.sessionsFilter) > 0 {
-				runes := []rune(m.sessionsFilter)
-				m.sessionsFilter = string(runes[:len(runes)-1])
+			if len(m.modals.sessions.filter) > 0 {
+				runes := []rune(m.modals.sessions.filter)
+				m.modals.sessions.filter = string(runes[:len(runes)-1])
 				m.filterSessions()
 				m.updateLayout()
 			}
@@ -221,7 +221,7 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 				text = string(msg.Key().Code)
 			}
 			if text != "" {
-				m.sessionsFilter += text
+				m.modals.sessions.filter += text
 				m.filterSessions()
 				m.updateLayout()
 				return m, nil
@@ -234,21 +234,21 @@ func (m *tuiModel) handleSessionsModalKeyPress(msg tea.KeyPressMsg, keyStr strin
 
 func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
 	// 0.2 Tool Output Pager Modal handling
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		toolIndices := m.getToolEntryIndices()
 		toolCount := len(toolIndices)
 		if toolCount == 0 {
-			m.toolPagerOpen = false
+			m.modals.toolPager.open = false
 			m.updateLayout()
 			return m, nil
 		}
-		if m.toolPagerIndex < 0 {
-			m.toolPagerIndex = 0
-		} else if m.toolPagerIndex >= toolCount {
-			m.toolPagerIndex = toolCount - 1
+		if m.modals.toolPager.index < 0 {
+			m.modals.toolPager.index = 0
+		} else if m.modals.toolPager.index >= toolCount {
+			m.modals.toolPager.index = toolCount - 1
 		}
 
-		entry := m.entries[toolIndices[m.toolPagerIndex]]
+		entry := m.entries[toolIndices[m.modals.toolPager.index]]
 		trimmedOut := strings.TrimRight(entry.ToolOutput, "\r\n")
 		var rawLines []string
 		if strings.TrimSpace(trimmedOut) == "" {
@@ -262,61 +262,61 @@ func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr stri
 
 		switch keyStr {
 		case "esc", "q":
-			m.toolPagerOpen = false
+			m.modals.toolPager.open = false
 			m.updateLayout()
 			return m, nil
 
 		case "up", "k":
-			if m.toolPagerScrollY > 0 {
-				m.toolPagerScrollY--
+			if m.modals.toolPager.scrollY > 0 {
+				m.modals.toolPager.scrollY--
 				m.updateLayout()
 			}
 			return m, nil
 
 		case "down", "j":
-			if m.toolPagerScrollY < maxScroll {
-				m.toolPagerScrollY++
+			if m.modals.toolPager.scrollY < maxScroll {
+				m.modals.toolPager.scrollY++
 				m.updateLayout()
 			}
 			return m, nil
 
 		case "pgup":
-			m.toolPagerScrollY = max(0, m.toolPagerScrollY-visibleLines)
+			m.modals.toolPager.scrollY = max(0, m.modals.toolPager.scrollY-visibleLines)
 			m.updateLayout()
 			return m, nil
 
 		case "pgdown":
-			m.toolPagerScrollY = min(maxScroll, m.toolPagerScrollY+visibleLines)
+			m.modals.toolPager.scrollY = min(maxScroll, m.modals.toolPager.scrollY+visibleLines)
 			m.updateLayout()
 			return m, nil
 
 		case "home", "g":
-			m.toolPagerScrollY = 0
+			m.modals.toolPager.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
 		case "end", "G":
-			m.toolPagerScrollY = maxScroll
+			m.modals.toolPager.scrollY = maxScroll
 			m.updateLayout()
 			return m, nil
 
 		case "[", "p", "ctrl+p":
-			if m.toolPagerIndex > 0 {
-				m.toolPagerIndex--
+			if m.modals.toolPager.index > 0 {
+				m.modals.toolPager.index--
 			} else {
-				m.toolPagerIndex = toolCount - 1
+				m.modals.toolPager.index = toolCount - 1
 			}
-			m.toolPagerScrollY = 0
+			m.modals.toolPager.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
 		case "]", "n", "ctrl+n":
-			if m.toolPagerIndex < toolCount-1 {
-				m.toolPagerIndex++
+			if m.modals.toolPager.index < toolCount-1 {
+				m.modals.toolPager.index++
 			} else {
-				m.toolPagerIndex = 0
+				m.modals.toolPager.index = 0
 			}
-			m.toolPagerScrollY = 0
+			m.modals.toolPager.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
@@ -334,96 +334,96 @@ func (m *tuiModel) handleToolPagerModalKeyPress(msg tea.KeyPressMsg, keyStr stri
 
 func (m *tuiModel) handleDiffModalKeyPress(msg tea.KeyPressMsg, keyStr string) (tea.Model, tea.Cmd) {
 	// 0.3 Workspace Diff Viewer Modal handling
-	if m.diffModalOpen {
-		fileCount := len(m.diffFiles)
+	if m.modals.diff.open {
+		fileCount := len(m.modals.diff.files)
 		if fileCount == 0 {
-			m.diffModalOpen = false
+			m.modals.diff.open = false
 			m.updateLayout()
 			return m, nil
 		}
-		if m.diffFileIndex < 0 {
-			m.diffFileIndex = 0
-		} else if m.diffFileIndex >= fileCount {
-			m.diffFileIndex = fileCount - 1
+		if m.modals.diff.fileIndex < 0 {
+			m.modals.diff.fileIndex = 0
+		} else if m.modals.diff.fileIndex >= fileCount {
+			m.modals.diff.fileIndex = fileCount - 1
 		}
 
-		file := m.diffFiles[m.diffFileIndex]
+		file := m.modals.diff.files[m.modals.diff.fileIndex]
 		totalLines := len(file.Lines)
 		visibleLines := m.diffModalVisibleLines()
 		maxScroll := max(0, totalLines-visibleLines)
 
 		switch keyStr {
 		case "esc", "q", "ctrl+d":
-			m.diffModalOpen = false
+			m.modals.diff.open = false
 			m.updateLayout()
 			return m, nil
 
 		case "up", "k":
-			if m.diffScrollY > 0 {
-				m.diffScrollY--
+			if m.modals.diff.scrollY > 0 {
+				m.modals.diff.scrollY--
 				m.updateLayout()
 			}
 			return m, nil
 
 		case "down", "j":
-			if m.diffScrollY < maxScroll {
-				m.diffScrollY++
+			if m.modals.diff.scrollY < maxScroll {
+				m.modals.diff.scrollY++
 				m.updateLayout()
 			}
 			return m, nil
 
 		case "pgup":
-			m.diffScrollY = max(0, m.diffScrollY-visibleLines)
+			m.modals.diff.scrollY = max(0, m.modals.diff.scrollY-visibleLines)
 			m.updateLayout()
 			return m, nil
 
 		case "pgdown":
-			m.diffScrollY = min(maxScroll, m.diffScrollY+visibleLines)
+			m.modals.diff.scrollY = min(maxScroll, m.modals.diff.scrollY+visibleLines)
 			m.updateLayout()
 			return m, nil
 
 		case "home", "g":
-			m.diffScrollY = 0
+			m.modals.diff.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
 		case "end", "G":
-			m.diffScrollY = maxScroll
+			m.modals.diff.scrollY = maxScroll
 			m.updateLayout()
 			return m, nil
 
 		case "tab", "]", "n", "ctrl+n":
-			if m.diffFileIndex < fileCount-1 {
-				m.diffFileIndex++
+			if m.modals.diff.fileIndex < fileCount-1 {
+				m.modals.diff.fileIndex++
 			} else {
-				m.diffFileIndex = 0
+				m.modals.diff.fileIndex = 0
 			}
-			m.diffScrollY = 0
+			m.modals.diff.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
 		case "shift+tab", "[", "p", "ctrl+p":
-			if m.diffFileIndex > 0 {
-				m.diffFileIndex--
+			if m.modals.diff.fileIndex > 0 {
+				m.modals.diff.fileIndex--
 			} else {
-				m.diffFileIndex = fileCount - 1
+				m.modals.diff.fileIndex = fileCount - 1
 			}
-			m.diffScrollY = 0
+			m.modals.diff.scrollY = 0
 			m.updateLayout()
 			return m, nil
 
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			targetIdx := int(keyStr[0] - '1')
 			if targetIdx < fileCount {
-				m.diffFileIndex = targetIdx
-				m.diffScrollY = 0
+				m.modals.diff.fileIndex = targetIdx
+				m.modals.diff.scrollY = 0
 				m.updateLayout()
 			}
 			return m, nil
 
 		case "a":
 			var allDiffs []string
-			for _, f := range m.diffFiles {
+			for _, f := range m.modals.diff.files {
 				allDiffs = append(allDiffs, f.RawDiff)
 			}
 			fullText := strings.Join(allDiffs, "\n\n")

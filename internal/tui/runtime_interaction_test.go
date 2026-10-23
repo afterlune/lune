@@ -426,13 +426,13 @@ func TestThemeSwitching(t *testing.T) {
 
 	// /theme opens the interactive selector and Enter applies its current selection.
 	m.handleSlashCommand("/theme")
-	if m.themePicker == nil || m.themePicker.Selected != 0 {
-		t.Fatalf("expected theme picker to open on current auto mode: %+v", m.themePicker)
+	if m.modals.theme == nil || m.modals.theme.Selected != 0 {
+		t.Fatalf("expected theme picker to open on current auto mode: %+v", m.modals.theme)
 	}
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if m.themePicker != nil || CurrentThemeMode() != ThemeModeAuto {
-		t.Fatalf("expected Enter to apply auto theme, picker=%v mode=%q", m.themePicker, CurrentThemeMode())
+	if m.modals.theme != nil || CurrentThemeMode() != ThemeModeAuto {
+		t.Fatalf("expected Enter to apply auto theme, picker=%v mode=%q", m.modals.theme, CurrentThemeMode())
 	}
 }
 
@@ -446,8 +446,8 @@ func TestPasteMsgSafety(t *testing.T) {
 	if m.running {
 		t.Errorf("pasting multiline text must NOT start task execution automatically")
 	}
-	if m.composer.Value() != pasted {
-		t.Errorf("expected composer to contain pasted text, got: %q", m.composer.Value())
+	if m.input.composer.Value() != pasted {
+		t.Errorf("expected composer to contain pasted text, got: %q", m.input.composer.Value())
 	}
 }
 
@@ -503,12 +503,12 @@ func TestActiveRecoveryModalNavigationAndEsc(t *testing.T) {
 
 func TestStatusTableUsageFormatting(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.contextWindow = 128000
-	m.estimatedInputTokens = 4200
-	m.totalInputTokens = 12450
-	m.cachedTokens = 8192
-	m.totalOutputTokens = 3210
-	m.reasoningTokens = 512
+	m.usage.contextWindow = 128000
+	m.usage.estimatedInputTokens = 4200
+	m.usage.totalInputTokens = 12450
+	m.usage.cachedTokens = 8192
+	m.usage.totalOutputTokens = 3210
+	m.usage.reasoningTokens = 512
 
 	table := m.renderStatusTable()
 	if !strings.Contains(table, "Context Window: 128,000 tokens") {

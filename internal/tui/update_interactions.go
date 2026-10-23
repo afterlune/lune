@@ -206,7 +206,7 @@ func (m *tuiModel) toggleReasoningExpansion() (tea.Model, tea.Cmd) {
 			if m.entries[i].ReasoningExpanded {
 				m.entries[roundStartIndex(m.entries, i)].RoundExpanded = true
 			}
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 			m.refreshViewportContent()
 			return m, nil
 		}
@@ -305,7 +305,7 @@ func (m *tuiModel) toggleAllToolRounds() (tea.Model, tea.Cmd) {
 		m.entries[start].RoundExpanded = expand
 	}
 	m.roundsCollapsedByUser = !expand
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 	m.refreshViewportContent()
 	return m, nil
 }

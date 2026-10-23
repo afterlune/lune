@@ -14,7 +14,7 @@ import (
 func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	mod, cmd := m.processRuntimeEventNoRefresh(event)
 	m = mod.(*tuiModel)
-	if m.transcriptDirty || m.cachedDirty {
+	if m.view.transcriptDirty || m.view.cachedDirty {
 		m.refreshViewportContent()
 	}
 	return m, cmd
@@ -65,7 +65,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
 					m.entries[i].Kind = KindUser
 					m.entries[i].ToolCallID = execID
-					m.invalidateEntryCache()
+					m.view.invalidateBlocks()
 					break
 				}
 			}
@@ -120,7 +120,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		if event.ContextWindow > 0 {
 			main.ContextWindow = event.ContextWindow
-			m.contextWindow = event.ContextWindow
+			m.usage.contextWindow = event.ContextWindow
 		}
 		if event.ModelProfile != "" {
 			main.ModelProfile = event.ModelProfile
@@ -130,7 +130,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			main.Model = event.Model
 		}
 		m.thinking = false
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 		return m, m.waitForExecution(execID)
 
@@ -167,10 +167,10 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.streamGenerationTokens += toks
 				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+					m.usage.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
 				}
 			}
-			m.transcriptDirty = true
+			m.view.invalidateContent()
 
 		case "text_delta", "":
 			if m.currentReasoningText != "" {
@@ -187,9 +187,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.streamGenerationTokens += toks
 				elapsed := time.Since(m.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
+					m.usage.lastTokensPerSec = float64(m.streamGenerationTokens) / elapsed
 				}
-				m.transcriptDirty = true
+				m.view.invalidateContent()
 			}
 		}
 
@@ -255,7 +255,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 							m.entries[i].ToolStartedAt = time.Now()
 						}
 					}
-					m.invalidateEntryCache()
+					m.view.invalidateBlocks()
 					return m, nil
 				}
 			}
@@ -276,7 +276,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		m.beginRoundIfNeeded()
 		m.entries = append(m.entries, entry)
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 
 	case core.EventToolDetails:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
@@ -344,7 +344,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			if event.Tool.Duration > 0 {
 				m.entries[i].ToolDuration = event.Tool.Duration
 			}
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 			found = true
 			break
 		}
@@ -367,7 +367,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			m.beginRoundIfNeeded()
 			m.entries = append(m.entries, entry)
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 		}
 
 	case core.EventToolFinished:
@@ -415,7 +415,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 						m.entries[i].ToolChanges = event.Tool.Details.Changes
 					}
 				}
-				m.invalidateEntryCache()
+				m.view.invalidateBlocks()
 				break
 			}
 		}
@@ -437,7 +437,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.taskActivity = "Finishing task"
 			main.Activity = m.taskActivity
 		}
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventUserQuestionRequired:
@@ -458,14 +458,14 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.thinking = false
 			m.running = false
 		}
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventUserInteractionRequired:
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventApprovalRequired:
@@ -474,7 +474,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			_ = m.runtime.ResolveApproval(event.Approval.ID, true)
 		} else {
 			m.checkPendingState(context.Background())
-			m.transcriptDirty = true
+			m.view.invalidateContent()
 			m.updateLayout()
 		}
 
@@ -485,11 +485,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 
 	case core.EventUsage:
-		if m.running || !m.seededSessionUsage {
-			m.totalInputTokens += event.Usage.InputTokens
-			m.totalOutputTokens += event.Usage.OutputTokens
-			m.cachedTokens += event.Usage.InputTokensDetails.CachedTokens
-			m.reasoningTokens += event.Usage.OutputTokensDetails.ReasoningTokens
+		if m.running || !m.usage.seededSessionUsage {
+			m.usage.addEventUsage(event.Usage)
 			if strings.TrimSpace(event.AgentID) != "" || isLeadMainUsage(event.AgentID, event.UsagePurpose) {
 				m.recordAgentUsage(event)
 			}
@@ -501,27 +498,21 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					elapsed = time.Since(m.turnStreamStartTime).Seconds()
 				}
 				if elapsed >= 0.05 {
-					m.lastTokensPerSec = float64(event.Usage.OutputTokens) / elapsed
+					m.usage.lastTokensPerSec = float64(event.Usage.OutputTokens) / elapsed
 				}
 				m.streamFirstTokenTime = time.Time{}
 			}
 		}
 		if isLeadMainUsage(event.AgentID, event.UsagePurpose) {
-			if event.ContextWindow > 0 {
-				m.contextWindow = event.ContextWindow
-			}
-			m.lastInputTokens = event.Usage.InputTokens
-			m.lastCachedTokens = event.Usage.InputTokensDetails.CachedTokens
-			m.lastRequestID, m.lastRequestAttempt = event.RequestID, event.RequestAttempt
-			m.lastRequestChanges = append([]string(nil), event.RequestChanges...)
-			m.estimatedInputTokens = event.EstimatedInputTokens
+			m.usage.applyLeadRequest(event.Usage.InputTokens, event.Usage.InputTokensDetails.CachedTokens,
+				event.EstimatedInputTokens, event.ContextWindow, event.RequestID, event.RequestAttempt, event.RequestChanges)
 		}
 
 	case core.EventModelRecoveryRequired:
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 		if m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero() {
 			return m, tickClock()
@@ -531,7 +522,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.thinking = false
 		m.running = false
 		m.checkPendingState(context.Background())
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventRuntimeStreamFailed:
@@ -541,14 +532,14 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if event.Err != "" {
 			m.addSystemEntry("Runtime stream error: " + event.Err)
 		}
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil
 		m.pausedCheckpoint = nil
 		m.running = true
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 
 	case core.EventTaskFinished:
@@ -571,7 +562,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.currentStreamText = ""
 		m.currentReasoningText = ""
 		m.markRunningSubagentsAndToolsDone()
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.updateLayout()
 	}
 

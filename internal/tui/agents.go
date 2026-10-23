@@ -59,8 +59,8 @@ func (m *tuiModel) resolvedAgentContextWindow(profileID string, reported int64) 
 	if window := m.modelProfileContextWindow(profileID); window > 0 {
 		return window
 	}
-	if m.contextWindow > 0 {
-		return m.contextWindow
+	if m.usage.contextWindow > 0 {
+		return m.usage.contextWindow
 	}
 	if m.client != nil {
 		return m.client.ProjectContextDefaults().ContextWindow
@@ -138,7 +138,7 @@ func (m *tuiModel) seedAgentMetrics(saved core.Session) {
 	main := m.ensureAgentMetrics("lead")
 	main.Name, main.Role = "Main agent", "main"
 	main.ModelProfile = m.currentModelProfile
-	main.ContextWindow = m.contextWindow
+	main.ContextWindow = m.usage.contextWindow
 	if main.ContextWindow <= 0 {
 		main.ContextWindow = m.modelProfileContextWindow(m.currentModelProfile)
 	}
@@ -312,8 +312,8 @@ func (m *tuiModel) agentMetric(id string) *agentRuntimeMetrics {
 		if m.currentModel != "" {
 			stats.Model = m.currentModel
 		}
-		if m.contextWindow > 0 {
-			stats.ContextWindow = m.contextWindow
+		if m.usage.contextWindow > 0 {
+			stats.ContextWindow = m.usage.contextWindow
 		} else if stats.ContextWindow <= 0 {
 			stats.ContextWindow = m.modelProfileContextWindow(m.currentModelProfile)
 		}
@@ -329,38 +329,39 @@ func (m *tuiModel) agentMetric(id string) *agentRuntimeMetrics {
 
 func (m *tuiModel) openAgentsPanel(target string) bool {
 	ids := m.agentMetricIDs()
-	m.agentsPanelOpen = true
-	m.agentsPanelDetail = false
-	m.agentsPanelDetailID = ""
-	m.agentsPanelSelected = 0
+	m.modals.open()
+	m.modals.agents.open = true
+	m.modals.agents.detail = false
+	m.modals.agents.detailID = ""
+	m.modals.agents.selected = 0
 	if target != "" {
 		for i, id := range ids {
 			stats := m.agentMetric(id)
 			if strings.EqualFold(target, id) || strings.EqualFold(target, stats.Name) {
-				m.agentsPanelSelected = i
-				m.agentsPanelDetail = true
-				m.agentsPanelDetailID = id
+				m.modals.agents.selected = i
+				m.modals.agents.detail = true
+				m.modals.agents.detailID = id
 				return true
 			}
 		}
 		if number, err := strconv.Atoi(target); err == nil {
 			if number >= 1 && number <= len(ids) {
-				m.agentsPanelSelected = number - 1
-				m.agentsPanelDetail = true
-				m.agentsPanelDetailID = ids[number-1]
+				m.modals.agents.selected = number - 1
+				m.modals.agents.detail = true
+				m.modals.agents.detailID = ids[number-1]
 				return true
 			}
 		}
-		m.agentsPanelOpen = false
+		m.modals.agents.open = false
 		return false
 	}
 	return true
 }
 
 func (m *tuiModel) closeAgentsPanel() {
-	m.agentsPanelOpen = false
-	m.agentsPanelDetail = false
-	m.agentsPanelDetailID = ""
+	m.modals.agents.open = false
+	m.modals.agents.detail = false
+	m.modals.agents.detailID = ""
 	m.updateLayout()
 }
 
@@ -369,8 +370,8 @@ func (m *tuiModel) renderAgentsPanel(width int) string {
 	cardStyle := panelCardStyle(width)
 	ids := m.agentMetricIDs()
 	var lines []string
-	if m.agentsPanelDetail {
-		stats := m.agentMetric(m.agentsPanelDetailID)
+	if m.modals.agents.detail {
+		stats := m.agentMetric(m.modals.agents.detailID)
 		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Agent details · "+stats.Name))
 		lines = append(lines, styleTextMuted().Render("ID: "+stats.ID+" · Role: "+displayDash(stats.Role)+" · Status: "+displayDash(stats.Status)))
 		model := stats.ModelProfile
@@ -396,8 +397,8 @@ func (m *tuiModel) renderAgentsPanel(width int) string {
 		lines = append(lines, "")
 		maxVisible := 6
 		start := 0
-		if m.agentsPanelSelected >= maxVisible {
-			start = m.agentsPanelSelected - maxVisible + 1
+		if m.modals.agents.selected >= maxVisible {
+			start = m.modals.agents.selected - maxVisible + 1
 		}
 		end := min(len(ids), start+maxVisible)
 		availWidth := max(20, width-4)
@@ -409,12 +410,12 @@ func (m *tuiModel) renderAgentsPanel(width int) string {
 			}
 			status := strings.ToLower(stats.Status)
 			activity := sanitizeAndTruncateLine(stats.Activity, max(12, availWidth-24-lipgloss.Width(name)))
-			row := fmt.Sprintf("%s%s · %s · %s", map[bool]string{true: "› ", false: "  "}[i == m.agentsPanelSelected], name, status, activity)
+			row := fmt.Sprintf("%s%s · %s · %s", map[bool]string{true: "› ", false: "  "}[i == m.modals.agents.selected], name, status, activity)
 			row = sanitizeAndTruncateLine(row, availWidth)
 			statsLine := fmt.Sprintf("   ctx %s · cache %s · %s · total %s",
 				agentContextLabel(stats), agentCachePercentLabel(stats), agentSpeedLabel(stats), formatTokens(stats.InputTokens+stats.OutputTokens))
 			statsLine = sanitizeAndTruncateLine(statsLine, availWidth)
-			if i == m.agentsPanelSelected {
+			if i == m.modals.agents.selected {
 				lines = append(lines, styleSelectedRow().Render(row))
 				lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Render(statsLine))
 			} else {

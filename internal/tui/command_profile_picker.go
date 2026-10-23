@@ -41,7 +41,8 @@ func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("No model profiles are configured.")
 		return m, nil
 	}
-	m.modelPicker = &ActiveModelPicker{}
+	m.modals.open()
+	m.modals.model = &ActiveModelPicker{}
 	active := m.currentModelProfile
 	if strings.TrimSpace(active) == "" {
 		active = m.currentModel
@@ -53,12 +54,12 @@ func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
 			Model:       profile.Model,
 			DisplayName: profile.DisplayName,
 		}
-		m.modelPicker.Items = append(m.modelPicker.Items, choice)
+		m.modals.model.Items = append(m.modals.model.Items, choice)
 		if strings.EqualFold(profile.Profile, active) || (strings.TrimSpace(m.currentModelProfile) == "" && strings.EqualFold(profile.Model, active)) {
-			m.modelPicker.Selected = len(m.modelPicker.Items) - 1
+			m.modals.model.Selected = len(m.modals.model.Items) - 1
 		}
 	}
-	m.autocompleteOpen = false
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }
@@ -79,8 +80,9 @@ func (m *tuiModel) openPermissionPicker() (tea.Model, tea.Cmd) {
 			break
 		}
 	}
-	m.permissionPicker = &ActivePermissionPicker{Selected: selected}
-	m.autocompleteOpen = false
+	m.modals.open()
+	m.modals.permission = &ActivePermissionPicker{Selected: selected}
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }
@@ -88,43 +90,43 @@ func (m *tuiModel) openPermissionPicker() (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleProfilePickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
 	switch strings.ToLower(keyStr) {
 	case "esc", "q":
-		m.modelPicker = nil
-		m.permissionPicker = nil
+		m.modals.model = nil
+		m.modals.permission = nil
 		m.updateLayout()
 		return m, nil
 	case "up", "k":
-		if m.modelPicker != nil {
-			m.modelPicker.Selected = (m.modelPicker.Selected - 1 + len(m.modelPicker.Items)) % len(m.modelPicker.Items)
-		} else if m.permissionPicker != nil {
-			m.permissionPicker.Selected = (m.permissionPicker.Selected - 1 + len(permissionModes)) % len(permissionModes)
+		if m.modals.model != nil {
+			m.modals.model.Selected = (m.modals.model.Selected - 1 + len(m.modals.model.Items)) % len(m.modals.model.Items)
+		} else if m.modals.permission != nil {
+			m.modals.permission.Selected = (m.modals.permission.Selected - 1 + len(permissionModes)) % len(permissionModes)
 		}
 		m.updateLayout()
 		return m, nil
 	case "down", "j":
-		if m.modelPicker != nil {
-			m.modelPicker.Selected = (m.modelPicker.Selected + 1) % len(m.modelPicker.Items)
-		} else if m.permissionPicker != nil {
-			m.permissionPicker.Selected = (m.permissionPicker.Selected + 1) % len(permissionModes)
+		if m.modals.model != nil {
+			m.modals.model.Selected = (m.modals.model.Selected + 1) % len(m.modals.model.Items)
+		} else if m.modals.permission != nil {
+			m.modals.permission.Selected = (m.modals.permission.Selected + 1) % len(permissionModes)
 		}
 		m.updateLayout()
 		return m, nil
 	case "enter":
-		if m.modelPicker != nil {
-			selected := m.modelPicker.Selected
-			if selected < 0 || selected >= len(m.modelPicker.Items) {
+		if m.modals.model != nil {
+			selected := m.modals.model.Selected
+			if selected < 0 || selected >= len(m.modals.model.Items) {
 				return m, nil
 			}
-			profile := m.modelPicker.Items[selected].Profile
-			m.modelPicker = nil
+			profile := m.modals.model.Items[selected].Profile
+			m.modals.model = nil
 			return m.handleModelCommand([]string{"/model", profile})
 		}
-		if m.permissionPicker != nil {
-			selected := m.permissionPicker.Selected
+		if m.modals.permission != nil {
+			selected := m.modals.permission.Selected
 			if selected < 0 || selected >= len(permissionModes) {
 				return m, nil
 			}
 			mode := permissionModes[selected]
-			m.permissionPicker = nil
+			m.modals.permission = nil
 			if err := m.client.SetPermissionMode(mode); err != nil {
 				m.addSystemEntry("Failed to set permission mode: " + err.Error())
 			} else {

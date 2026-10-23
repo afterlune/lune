@@ -43,46 +43,46 @@ func (m *tuiModel) openProcessPicker(mode processPickerMode) (tea.Model, tea.Cmd
 		}
 		return m, nil
 	}
-	m.processPickerOpen = true
-	m.processPickerMode = mode
-	m.processPickerItems = items
-	m.processPickerSelected = 0
-	m.sessionsModalOpen = false
-	m.autocompleteOpen = false
+	m.modals.open()
+	m.modals.process.open = true
+	m.modals.process.mode = mode
+	m.modals.process.items = items
+	m.modals.process.selected = 0
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }
 
 func (m *tuiModel) handleProcessPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
-	if !m.processPickerOpen {
+	if !m.modals.process.open {
 		return m, nil
 	}
 	switch keyStr {
 	case "esc", "q":
-		m.processPickerOpen = false
-		m.processPickerItems = nil
+		m.modals.process.open = false
+		m.modals.process.items = nil
 		m.updateLayout()
 		return m, nil
 	case "up", "k":
-		if len(m.processPickerItems) > 0 {
-			m.processPickerSelected = (m.processPickerSelected - 1 + len(m.processPickerItems)) % len(m.processPickerItems)
+		if len(m.modals.process.items) > 0 {
+			m.modals.process.selected = (m.modals.process.selected - 1 + len(m.modals.process.items)) % len(m.modals.process.items)
 		}
 		m.updateLayout()
 		return m, nil
 	case "down", "j":
-		if len(m.processPickerItems) > 0 {
-			m.processPickerSelected = (m.processPickerSelected + 1) % len(m.processPickerItems)
+		if len(m.modals.process.items) > 0 {
+			m.modals.process.selected = (m.modals.process.selected + 1) % len(m.modals.process.items)
 		}
 		m.updateLayout()
 		return m, nil
 	case "enter":
-		if m.processPickerSelected < 0 || m.processPickerSelected >= len(m.processPickerItems) {
+		if m.modals.process.selected < 0 || m.modals.process.selected >= len(m.modals.process.items) {
 			return m, nil
 		}
-		item := m.processPickerItems[m.processPickerSelected]
-		mode := m.processPickerMode
-		m.processPickerOpen = false
-		m.processPickerItems = nil
+		item := m.modals.process.items[m.modals.process.selected]
+		mode := m.modals.process.mode
+		m.modals.process.open = false
+		m.modals.process.items = nil
 		m.updateLayout()
 		if mode == processPickerStop {
 			return m.handleStopCommand([]string{"/stop", item.ID})

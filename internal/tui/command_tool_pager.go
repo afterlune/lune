@@ -39,16 +39,15 @@ func (m *tuiModel) openToolPager(targetIndex int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.shortcutsOpen = false
-	m.sessionsModalOpen = false
-	m.autocompleteOpen = false
-	m.toolPagerOpen = true
-	m.toolPagerScrollY = 0
+	m.modals.open()
+	m.input.autocompleteOpen = false
+	m.modals.toolPager.open = true
+	m.modals.toolPager.scrollY = 0
 
 	if targetIndex < 0 || targetIndex >= len(indices) {
-		m.toolPagerIndex = len(indices) - 1
+		m.modals.toolPager.index = len(indices) - 1
 	} else {
-		m.toolPagerIndex = targetIndex
+		m.modals.toolPager.index = targetIndex
 	}
 
 	m.updateLayout()

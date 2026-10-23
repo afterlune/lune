@@ -39,7 +39,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		UpdateTerminalBackground(msg.IsDark())
 		m.applyThemeStyles()
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 		m.refreshViewportContent()
 		m.updateLayout()
 		return m, nil
@@ -69,7 +69,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.composer.InsertString(msg.Content)
+		m.input.composer.InsertString(msg.Content)
 		m.updateLayout()
 		return m, nil
 
@@ -123,7 +123,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if !m.restoringSession && (m.transcriptDirty || m.cachedDirty) {
+		if !m.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty) {
 			m.refreshViewportContent()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
@@ -182,14 +182,14 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		m.compacting = false
+		m.usage.compacting = false
 		switch {
 		case msg.err != nil:
 			m.addSystemEntry("Compaction failed: " + msg.err.Error())
 		case msg.result.Compacted && msg.result.Turns > 0:
-			m.lastInputTokens = 0
-			m.lastCachedTokens = 0
-			m.estimatedInputTokens = msg.result.After
+			m.usage.lastInputTokens = 0
+			m.usage.lastCachedTokens = 0
+			m.usage.estimatedInputTokens = msg.result.After
 			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns, %s → %s tokens.",
 				msg.result.Turns, formatCompactTokens(msg.result.Before), formatCompactTokens(msg.result.After)))
 		default:
@@ -199,14 +199,14 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case mcpAuthDoneMsg:
-		if msg.generation != m.mcpAuthGeneration {
+		if msg.generation != m.modals.mcp.authGeneration {
 			return m, nil
 		}
-		if m.mcpAuthCancel != nil {
-			m.mcpAuthCancel()
-			m.mcpAuthCancel = nil
+		if m.modals.mcp.authCancel != nil {
+			m.modals.mcp.authCancel()
+			m.modals.mcp.authCancel = nil
 		}
-		m.mcpAuthName = ""
+		m.modals.mcp.authName = ""
 		if msg.err != nil {
 			m.addSystemEntry(fmt.Sprintf("Failed to authenticate MCP server `%s`: %v", msg.name, msg.err))
 		} else {
@@ -292,9 +292,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case clearCopyFeedbackMsg:
-		if msg.at.Equal(m.copyFeedbackExpiresAt) && !time.Now().Before(msg.at) {
-			m.copyFeedback = ""
-			m.copyFeedbackError = false
+		if msg.at.Equal(m.input.copyFeedbackExpiresAt) && !time.Now().Before(msg.at) {
+			m.input.copyFeedback = ""
+			m.input.copyFeedbackError = false
 		}
 		return m, nil
 
@@ -308,86 +308,86 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, vpCmd
 
 	case tea.MouseClickMsg:
-		if m.shortcutsOpen {
-			m.shortcutsOpen = false
+		if m.modals.shortcuts {
+			m.modals.shortcuts = false
 			m.updateLayout()
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft && m.isComposerMousePoint(msg.X, msg.Y) {
-			m.isSelecting = false
-			m.selectedText = ""
-			m.composerMouseSelecting = true
-			m.composer.Focus()
+			m.input.selecting = false
+			m.input.selectedText = ""
+			m.input.composerSelecting = true
+			m.input.composer.Focus()
 			x, y := m.composerMousePosition(msg.X, msg.Y)
-			m.composer.BeginSelection(x, y)
+			m.input.composer.BeginSelection(x, y)
 			return m, nil
 		}
-		m.composerMouseSelecting = false
-		m.composer.ClearSelection()
+		m.input.composerSelecting = false
+		m.input.composer.ClearSelection()
 		headerHeight := 3
 		vpEnd := headerHeight + m.viewport.Height()
 		if msg.Button == tea.MouseLeft {
 			if msg.Y >= headerHeight && msg.Y < vpEnd {
-				m.isSelecting = true
-				m.selectStartX = msg.X
-				m.selectStartY = msg.Y
-				m.selectEndX = msg.X
-				m.selectEndY = msg.Y
-				m.selectedText = ""
+				m.input.selecting = true
+				m.input.selectStartX = msg.X
+				m.input.selectStartY = msg.Y
+				m.input.selectEndX = msg.X
+				m.input.selectEndY = msg.Y
+				m.input.selectedText = ""
 				return m, nil
 			}
 			if m.scrolledUp {
 				m.viewport.GotoBottom()
 				m.scrolledUp = false
-				m.isSelecting = false
-				m.selectedText = ""
-				m.selectStartX = 0
-				m.selectEndX = 0
-				m.selectStartY = 0
-				m.selectEndY = 0
+				m.input.selecting = false
+				m.input.selectedText = ""
+				m.input.selectStartX = 0
+				m.input.selectEndX = 0
+				m.input.selectStartY = 0
+				m.input.selectEndY = 0
 				return m, nil
 			}
-			m.isSelecting = false
-			m.selectedText = ""
-			m.selectStartX = 0
-			m.selectEndX = 0
-			m.selectStartY = 0
-			m.selectEndY = 0
+			m.input.selecting = false
+			m.input.selectedText = ""
+			m.input.selectStartX = 0
+			m.input.selectEndX = 0
+			m.input.selectStartY = 0
+			m.input.selectEndY = 0
 		}
 
 	case tea.MouseMotionMsg:
-		if m.composerMouseSelecting {
+		if m.input.composerSelecting {
 			x, y := m.composerMousePosition(msg.X, msg.Y)
-			m.composer.ExtendSelection(x, y)
+			m.input.composer.ExtendSelection(x, y)
 			return m, nil
 		}
-		if m.isSelecting {
-			m.selectEndX = msg.X
-			m.selectEndY = msg.Y
+		if m.input.selecting {
+			m.input.selectEndX = msg.X
+			m.input.selectEndY = msg.Y
 			return m, nil
 		}
 
 	case tea.MouseReleaseMsg:
-		if m.composerMouseSelecting {
-			m.composerMouseSelecting = false
-			m.composer.EndSelection()
+		if m.input.composerSelecting {
+			m.input.composerSelecting = false
+			m.input.composer.EndSelection()
 			return m, nil
 		}
-		if m.isSelecting {
-			m.selectEndX = msg.X
-			m.selectEndY = msg.Y
+		if m.input.selecting {
+			m.input.selectEndX = msg.X
+			m.input.selectEndY = msg.Y
 			text := m.extractSelectedText()
-			m.isSelecting = false
+			m.input.selecting = false
 			if strings.TrimSpace(text) != "" {
-				m.selectedText = text
+				m.input.selectedText = text
 				return m, m.copyTextToClipboard(text)
 			}
-			if msg.X == m.selectStartX && msg.Y == m.selectStartY {
+			if msg.X == m.input.selectStartX && msg.Y == m.input.selectStartY {
 				headerHeight := 3
 				vpRow := msg.Y - headerHeight
 				absLine := m.viewport.YOffset() + vpRow
 				toggled := false
-				for _, rng := range m.entryLineRanges {
+				for _, rng := range m.view.entryLineRanges {
 					if absLine >= rng.StartLine && absLine <= rng.EndLine && rng.EntryIndex >= 0 && rng.EntryIndex < len(m.entries) {
 						if rng.IsRoundHeader || rng.IsRoundFooter {
 							m.toggleRoundExpansion(rng.EntryIndex)
@@ -424,22 +424,22 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 					}
 				}
 				if toggled {
-					m.invalidateEntryCache()
+					m.view.invalidateBlocks()
 					m.refreshViewportContent()
 				}
 			}
-			m.selectedText = ""
-			m.selectStartX = 0
-			m.selectEndX = 0
-			m.selectStartY = 0
-			m.selectEndY = 0
+			m.input.selectedText = ""
+			m.input.selectStartX = 0
+			m.input.selectEndX = 0
+			m.input.selectStartY = 0
+			m.input.selectEndY = 0
 			return m, nil
 		}
 	}
 
 	// Default composer update
 	var compCmd tea.Cmd
-	m.composer, compCmd = m.composer.Update(msg)
+	m.input.composer, compCmd = m.input.composer.Update(msg)
 	if compCmd != nil {
 		cmds = append(cmds, compCmd)
 	}
@@ -575,7 +575,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	m.taskSnapshot.Status = event.Status
 	m.thinking = false
 	m.taskActivity = ""
-	m.compacting = false
+	m.usage.compacting = false
 	// Keep the live transcript until WaitTurn supplies the authoritative response
 	// and ProposedPlan; finalizing here would briefly erase a completed plan.
 	if event.Status == core.TaskPaused {
@@ -588,7 +588,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
 	}
-	m.transcriptDirty = true
+	m.view.invalidateContent()
 	m.updateLayout()
 }
 

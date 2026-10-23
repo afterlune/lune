@@ -18,39 +18,33 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.shortcutsOpen {
+	// Exactly one overlay can own the keyboard; modalState decides which one.
+	switch m.modals.active() {
+	case modalShortcuts:
 		return m.handleShortcutModalKeyPress(msg, keyStr)
-	}
-	if m.memoryPicker != nil || m.memoryClearConfirm {
+	case modalMemoryClear, modalMemoryPicker:
 		return m.handleMemoryPickerKeyPress(keyStr)
-	}
-	if m.mcpServerPicker != nil {
+	case modalMCPPicker:
 		return m.handleMCPServerPickerKeyPress(keyStr)
-	}
-	if m.themePicker != nil {
+	case modalTheme:
 		return m.handleThemePickerKeyPress(keyStr)
-	}
-	if m.modelPicker != nil || m.permissionPicker != nil {
+	case modalModel, modalPermission:
 		return m.handleProfilePickerKeyPress(keyStr)
-	}
-	if m.processPickerOpen {
+	case modalProcess:
 		return m.handleProcessPickerKeyPress(keyStr)
-	}
-	if m.agentsPanelOpen {
+	case modalAgents:
 		return m.handleAgentsPanelKeyPress(msg, keyStr)
-	}
-	if m.sessionsModalOpen {
+	case modalSessions:
 		return m.handleSessionsModalKeyPress(msg, keyStr)
-	}
-	if m.toolPagerOpen {
+	case modalToolPager:
 		return m.handleToolPagerModalKeyPress(msg, keyStr)
-	}
-	if m.diffModalOpen {
+	case modalDiff:
 		return m.handleDiffModalKeyPress(msg, keyStr)
 	}
 	// Trigger shortcut modal when typing '?' in an empty composer
-	if keyStr == "?" && m.composer.Value() == "" && !m.running {
-		m.shortcutsOpen = true
+	if keyStr == "?" && m.input.composer.Value() == "" && !m.running {
+		m.modals.open()
+		m.modals.shortcuts = true
 		m.updateLayout()
 		return m, nil
 	}
@@ -58,13 +52,13 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// 1. Interrupt / Quit / Esc
 	switch keyStr {
 	case "ctrl+c":
-		if m.composer.HasSelection() {
-			return m, m.copyTextToClipboard(m.composer.SelectedText())
+		if m.input.composer.HasSelection() {
+			return m, m.copyTextToClipboard(m.input.composer.SelectedText())
 		}
-		if m.selectedText != "" {
-			return m, m.copyTextToClipboard(m.selectedText)
+		if m.input.selectedText != "" {
+			return m, m.copyTextToClipboard(m.input.selectedText)
 		}
-		if m.compacting {
+		if m.usage.compacting {
 			m.addSystemEntry("Compaction is in progress; wait for it to finish.")
 			return m, nil
 		}
@@ -78,62 +72,39 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "ctrl+shift+c":
-		if m.composer.HasSelection() {
-			return m, m.copyTextToClipboard(m.composer.SelectedText())
+		if m.input.composer.HasSelection() {
+			return m, m.copyTextToClipboard(m.input.composer.SelectedText())
 		}
 
 	case "esc":
-		if m.compacting {
+		if m.usage.compacting {
 			return m, nil
 		}
-		if m.pendingMemoryAdd {
-			m.pendingMemoryAdd = false
-			m.pendingMemoryCategory = ""
-			m.composer.Placeholder = "Ask Lune to do anything"
+		if m.modals.memory.pendingAdd {
+			m.modals.memory.pendingAdd = false
+			m.modals.memory.pendingCategory = ""
+			m.input.composer.Placeholder = "Ask Lune to do anything"
 			m.addSystemEntry("Memory entry cancelled; the draft remains in the composer.")
 			m.updateLayout()
 			return m, nil
 		}
-		if m.mcpAuthCancel != nil {
+		if m.modals.mcp.authCancel != nil {
 			m.cancelMCPAuthentication(true)
 			return m, nil
 		}
-		if m.shortcutsOpen {
-			m.shortcutsOpen = false
+		if m.modals.active() != modalNone {
+			// Every overlay handler consumes Esc itself; this is the safety net
+			// for a modal opened by a path that never reached its handler.
+			m.modals.close()
 			m.updateLayout()
 			return m, nil
 		}
-		if m.sessionsModalOpen {
-			m.sessionsModalOpen = false
-			m.sessionsFilter = ""
-			m.sessionsConfirmDelete = false
-			m.sessionsDeletingID = ""
-			m.updateLayout()
+		if m.input.selectedText != "" || m.hasSelection() || m.input.composer.HasSelection() {
+			m.input.clearSelection()
 			return m, nil
 		}
-		if m.toolPagerOpen {
-			m.toolPagerOpen = false
-			m.updateLayout()
-			return m, nil
-		}
-		if m.diffModalOpen {
-			m.diffModalOpen = false
-			m.updateLayout()
-			return m, nil
-		}
-		if m.selectedText != "" || m.hasSelection() || m.composer.HasSelection() {
-			m.isSelecting = false
-			m.composerMouseSelecting = false
-			m.composer.ClearSelection()
-			m.selectedText = ""
-			m.selectStartX = 0
-			m.selectEndX = 0
-			m.selectStartY = 0
-			m.selectEndY = 0
-			return m, nil
-		}
-		if m.autocompleteOpen {
-			m.autocompleteOpen = false
+		if m.input.autocompleteOpen {
+			m.input.autocompleteOpen = false
 			m.updateLayout()
 			return m, nil
 		}
@@ -151,8 +122,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.activeApproval.Selected = 1
 			return m.resolveActiveApproval()
 		}
-		if m.effortPicker != nil {
-			m.effortPicker = nil
+		if m.modals.effort != nil {
+			m.modals.effort = nil
 			m.updateLayout()
 			return m, nil
 		}
@@ -168,11 +139,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.interruptRunningTask()
 		}
 		// If composer is empty and not running, Esc steps back to edit the last message
-		if !m.running && m.composer.Value() == "" && len(m.promptHistory) > 0 {
-			m.historyIndex = len(m.promptHistory) - 1
-			m.historyDraft = ""
-			m.composer.SetValue(m.promptHistory[m.historyIndex])
-			m.composer.CursorEnd()
+		if !m.running && m.input.composer.Value() == "" && len(m.input.history) > 0 {
+			m.input.historyIndex = len(m.input.history) - 1
+			m.input.historyDraft = ""
+			m.input.composer.SetValue(m.input.history[m.input.historyIndex])
+			m.input.composer.CursorEnd()
 			m.updateLayout()
 			return m, nil
 		}
@@ -189,31 +160,31 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// 2. Navigation in Modal / Autocomplete
-	if m.autocompleteOpen && len(m.autocompleteItems) > 0 {
+	if m.input.autocompleteOpen && len(m.input.autocompleteItems) > 0 {
 		switch keyStr {
 		case "up":
-			if m.autocompleteIndex > 0 {
-				m.autocompleteIndex--
+			if m.input.autocompleteIndex > 0 {
+				m.input.autocompleteIndex--
 			} else {
-				m.autocompleteIndex = len(m.autocompleteItems) - 1
+				m.input.autocompleteIndex = len(m.input.autocompleteItems) - 1
 			}
 			return m, nil
 		case "down":
-			if m.autocompleteIndex < len(m.autocompleteItems)-1 {
-				m.autocompleteIndex++
+			if m.input.autocompleteIndex < len(m.input.autocompleteItems)-1 {
+				m.input.autocompleteIndex++
 			} else {
-				m.autocompleteIndex = 0
+				m.input.autocompleteIndex = 0
 			}
 			return m, nil
 		case "tab", "enter":
-			if m.autocompleteMode == AutocompleteModeFile {
-				selected := m.autocompleteItems[m.autocompleteIndex].Command
+			if m.input.autocompleteMode == AutocompleteModeFile {
+				selected := m.input.autocompleteItems[m.input.autocompleteIndex].Command
 				if !strings.HasPrefix(selected, "@") {
 					selected = "@" + selected
 				}
-				val := m.composer.Value()
-				start := m.autocompleteStart
-				end := m.autocompleteEnd
+				val := m.input.composer.Value()
+				start := m.input.autocompleteStart
+				end := m.input.autocompleteEnd
 				if start < 0 {
 					start = 0
 				}
@@ -226,22 +197,22 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 						replacement += " "
 					}
 					newVal := val[:start] + replacement + val[end:]
-					m.composer.SetValue(newVal)
+					m.input.composer.SetValue(newVal)
 					m.setCursorTo(start + len(replacement))
 				}
-				m.autocompleteOpen = false
+				m.input.autocompleteOpen = false
 				m.updateLayout()
 				return m, nil
 			}
-			selected := m.autocompleteItems[m.autocompleteIndex].Command
+			selected := m.input.autocompleteItems[m.input.autocompleteIndex].Command
 			if keyStr == "enter" {
-				m.autocompleteOpen = false
-				m.composer.SetValue(selected)
-				m.composer.CursorEnd()
+				m.input.autocompleteOpen = false
+				m.input.composer.SetValue(selected)
+				m.input.composer.CursorEnd()
 				// Let the normal Enter path execute the selected command now.
 			} else {
-				m.composer.SetValue(selected + " ")
-				m.autocompleteOpen = false
+				m.input.composer.SetValue(selected + " ")
+				m.input.autocompleteOpen = false
 				m.updateLayout()
 				return m, nil
 			}
@@ -438,36 +409,36 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.effortPicker != nil {
+	if m.modals.effort != nil {
 		options := reasoningEffortOptions()
 		switch keyStr {
 		case "esc", "ctrl+c", "q":
-			m.effortPicker = nil
+			m.modals.effort = nil
 			m.updateLayout()
 			return m, nil
 		case "up", "k", "ctrl+p":
-			if m.effortPicker.Selected > 0 {
-				m.effortPicker.Selected--
+			if m.modals.effort.Selected > 0 {
+				m.modals.effort.Selected--
 			} else {
-				m.effortPicker.Selected = len(options) - 1
+				m.modals.effort.Selected = len(options) - 1
 			}
 			m.updateLayout()
 			return m, nil
 		case "down", "j", "ctrl+n":
-			if m.effortPicker.Selected < len(options)-1 {
-				m.effortPicker.Selected++
+			if m.modals.effort.Selected < len(options)-1 {
+				m.modals.effort.Selected++
 			} else {
-				m.effortPicker.Selected = 0
+				m.modals.effort.Selected = 0
 			}
 			m.updateLayout()
 			return m, nil
 		case "enter":
-			if m.effortPicker.Selected >= 0 && m.effortPicker.Selected < len(options) {
-				value := options[m.effortPicker.Selected].Value
-				m.effortPicker = nil
+			if m.modals.effort.Selected >= 0 && m.modals.effort.Selected < len(options) {
+				value := options[m.modals.effort.Selected].Value
+				m.modals.effort = nil
 				return m.applyReasoningEffort(value)
 			}
-			m.effortPicker = nil
+			m.modals.effort = nil
 			m.updateLayout()
 			return m, nil
 		default:
@@ -475,7 +446,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				idx := int(keyStr[0] - '1')
 				if idx < len(options) {
 					value := options[idx].Value
-					m.effortPicker = nil
+					m.modals.effort = nil
 					return m.applyReasoningEffort(value)
 				}
 			}
@@ -513,34 +484,34 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// 2.5 Prompt History Navigation (Up / Down)
-	if !m.autocompleteOpen && m.activeApproval == nil && m.activeQuestion == nil && m.activePlanReview == nil {
+	if !m.input.autocompleteOpen && m.activeApproval == nil && m.activeQuestion == nil && m.activePlanReview == nil {
 		switch keyStr {
 		case "up":
-			if m.composer.Line() == 0 && len(m.promptHistory) > 0 {
-				if m.historyIndex == len(m.promptHistory) {
-					m.historyDraft = m.composer.Value()
+			if m.input.composer.Line() == 0 && len(m.input.history) > 0 {
+				if m.input.historyIndex == len(m.input.history) {
+					m.input.historyDraft = m.input.composer.Value()
 				}
-				if m.historyIndex > 0 {
-					m.historyIndex--
-					m.composer.SetValue(m.promptHistory[m.historyIndex])
-					m.composer.CursorEnd()
+				if m.input.historyIndex > 0 {
+					m.input.historyIndex--
+					m.input.composer.SetValue(m.input.history[m.input.historyIndex])
+					m.input.composer.CursorEnd()
 					m.updateLayout()
 					return m, nil
 				}
 			}
 		case "down":
-			if (m.composer.Line() >= m.composer.LineCount()-1 || m.composer.LineCount() <= 1) && len(m.promptHistory) > 0 {
-				if m.historyIndex < len(m.promptHistory)-1 {
-					m.historyIndex++
-					m.composer.SetValue(m.promptHistory[m.historyIndex])
-					m.composer.CursorEnd()
+			if (m.input.composer.Line() >= m.input.composer.LineCount()-1 || m.input.composer.LineCount() <= 1) && len(m.input.history) > 0 {
+				if m.input.historyIndex < len(m.input.history)-1 {
+					m.input.historyIndex++
+					m.input.composer.SetValue(m.input.history[m.input.historyIndex])
+					m.input.composer.CursorEnd()
 					m.updateLayout()
 					return m, nil
-				} else if m.historyIndex == len(m.promptHistory)-1 {
-					m.historyIndex = len(m.promptHistory)
-					m.composer.SetValue(m.historyDraft)
-					m.historyDraft = ""
-					m.composer.CursorEnd()
+				} else if m.input.historyIndex == len(m.input.history)-1 {
+					m.input.historyIndex = len(m.input.history)
+					m.input.composer.SetValue(m.input.historyDraft)
+					m.input.historyDraft = ""
+					m.input.composer.CursorEnd()
 					m.updateLayout()
 					return m, nil
 				}
@@ -569,20 +540,20 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	isShiftEnter := (key.Code == tea.KeyEnter && (key.Mod&tea.ModShift != 0 || key.Mod&tea.ModAlt != 0 || key.Mod&tea.ModCtrl != 0)) ||
 		keyStr == "shift+enter" || keyStr == "alt+enter" || keyStr == "ctrl+enter"
 	if isShiftEnter {
-		m.composer.InsertRune('\n')
+		m.input.composer.InsertRune('\n')
 		m.updateLayout()
 		return m, nil
 	}
 
 	// 5. Enter to submit Composer
 	if keyStr == "enter" {
-		if m.pendingMemoryAdd {
-			content := strings.TrimSpace(m.composer.Value())
-			category := m.pendingMemoryCategory
-			m.pendingMemoryAdd = false
-			m.pendingMemoryCategory = ""
-			m.composer.Reset()
-			m.composer.Placeholder = "Ask Lune to do anything"
+		if m.modals.memory.pendingAdd {
+			content := strings.TrimSpace(m.input.composer.Value())
+			category := m.modals.memory.pendingCategory
+			m.modals.memory.pendingAdd = false
+			m.modals.memory.pendingCategory = ""
+			m.input.composer.Reset()
+			m.input.composer.Placeholder = "Ask Lune to do anything"
 			if content == "" {
 				m.addSystemEntry("Memory content cannot be empty.")
 				m.updateLayout()
@@ -595,7 +566,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			parts = append(parts, content)
 			return m.handleMemoryCommand(parts)
 		}
-		val := strings.TrimSpace(m.composer.Value())
+		val := strings.TrimSpace(m.input.composer.Value())
 		if val == "" {
 			return m, nil
 		}
@@ -607,8 +578,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.composer.Reset()
-		m.autocompleteOpen = false
+		m.input.composer.Reset()
+		m.input.autocompleteOpen = false
 		m.updateLayout()
 
 		if isCommand {
@@ -621,28 +592,28 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// 5. Update composer text & autocomplete triggers
 	var cmd tea.Cmd
-	m.composer, cmd = m.composer.Update(msg)
-	val := m.composer.Value()
-	if m.pendingMemoryAdd {
-		m.autocompleteOpen = false
+	m.input.composer, cmd = m.input.composer.Update(msg)
+	val := m.input.composer.Value()
+	if m.modals.memory.pendingAdd {
+		m.input.autocompleteOpen = false
 	} else if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
 		items := m.commandsForAutocomplete(val)
 		if len(items) > 0 {
-			m.autocompleteOpen = true
-			m.autocompleteMode = AutocompleteModeCommand
-			m.autocompleteItems = items
-			m.autocompleteIndex = 0
+			m.input.autocompleteOpen = true
+			m.input.autocompleteMode = AutocompleteModeCommand
+			m.input.autocompleteItems = items
+			m.input.autocompleteIndex = 0
 		} else {
-			m.autocompleteOpen = false
+			m.input.autocompleteOpen = false
 		}
 	} else if query, start, end, ok := filemention.DetectAtQuery(val, m.cursorOffset()); ok {
 		matches := m.getFileScanner().Search(query, 50)
 		if len(matches) > 0 {
-			m.autocompleteOpen = true
-			m.autocompleteMode = AutocompleteModeFile
-			m.autocompleteStart = start
-			m.autocompleteEnd = end
-			m.autocompleteIndex = 0
+			m.input.autocompleteOpen = true
+			m.input.autocompleteMode = AutocompleteModeFile
+			m.input.autocompleteStart = start
+			m.input.autocompleteEnd = end
+			m.input.autocompleteIndex = 0
 			var items []AutocompleteItem
 			for _, match := range matches {
 				desc := filemention.FormatFileSize(match.Size)
@@ -654,12 +625,12 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					Description: desc,
 				})
 			}
-			m.autocompleteItems = items
+			m.input.autocompleteItems = items
 		} else {
-			m.autocompleteOpen = false
+			m.input.autocompleteOpen = false
 		}
 	} else {
-		m.autocompleteOpen = false
+		m.input.autocompleteOpen = false
 	}
 	m.updateLayout()
 
@@ -667,9 +638,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) cursorOffset() int {
-	val := m.composer.Value()
+	val := m.input.composer.Value()
 	lines := strings.Split(val, "\n")
-	line := m.composer.Line()
+	line := m.input.composer.Line()
 	if line < 0 {
 		return 0
 	}
@@ -682,7 +653,7 @@ func (m *tuiModel) cursorOffset() int {
 		offset += len(lines[i]) + 1
 	}
 
-	col := m.composer.Column()
+	col := m.input.composer.Column()
 	currentRunes := []rune(lines[line])
 	if col > len(currentRunes) {
 		col = len(currentRunes)
@@ -698,13 +669,13 @@ func (m *tuiModel) cursorOffset() int {
 }
 
 func (m *tuiModel) setCursorTo(targetOffset int) {
-	val := m.composer.Value()
+	val := m.input.composer.Value()
 	if targetOffset >= len(val) {
-		m.composer.CursorEnd()
+		m.input.composer.CursorEnd()
 		return
 	}
 	if targetOffset <= 0 {
-		m.composer.MoveToBegin()
+		m.input.composer.MoveToBegin()
 		return
 	}
 
@@ -722,9 +693,9 @@ func (m *tuiModel) setCursorTo(targetOffset int) {
 		curr += lineLen + 1
 	}
 
-	m.composer.MoveToBegin()
+	m.input.composer.MoveToBegin()
 	for i := 0; i < targetRow; i++ {
-		m.composer.CursorDown()
+		m.input.composer.CursorDown()
 	}
-	m.composer.SetCursorColumn(targetCol)
+	m.input.composer.SetCursorColumn(targetCol)
 }

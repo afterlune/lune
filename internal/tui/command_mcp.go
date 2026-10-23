@@ -36,33 +36,34 @@ func (m *tuiModel) openMCPServerPicker(action string) (tea.Model, tea.Cmd) {
 		m.addSystemEntry(fmt.Sprintf("No MCP servers are available to %s.", action))
 		return m, nil
 	}
-	m.mcpServerPicker = &ActiveMCPServerPicker{Action: action, Names: names}
-	m.autocompleteOpen = false
+	m.modals.open()
+	m.modals.mcp.picker = &ActiveMCPServerPicker{Action: action, Names: names}
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }
 
 func (m *tuiModel) handleMCPServerPickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
-	if m.mcpServerPicker == nil {
+	if m.modals.mcp.picker == nil {
 		return m, nil
 	}
 	switch strings.ToLower(keyStr) {
 	case "esc", "q":
-		m.mcpServerPicker = nil
+		m.modals.mcp.picker = nil
 		m.updateLayout()
 		return m, nil
 	case "up", "k":
-		m.mcpServerPicker.Selected = (m.mcpServerPicker.Selected - 1 + len(m.mcpServerPicker.Names)) % len(m.mcpServerPicker.Names)
+		m.modals.mcp.picker.Selected = (m.modals.mcp.picker.Selected - 1 + len(m.modals.mcp.picker.Names)) % len(m.modals.mcp.picker.Names)
 		m.updateLayout()
 		return m, nil
 	case "down", "j":
-		m.mcpServerPicker.Selected = (m.mcpServerPicker.Selected + 1) % len(m.mcpServerPicker.Names)
+		m.modals.mcp.picker.Selected = (m.modals.mcp.picker.Selected + 1) % len(m.modals.mcp.picker.Names)
 		m.updateLayout()
 		return m, nil
 	case "enter":
-		name := m.mcpServerPicker.Names[m.mcpServerPicker.Selected]
-		action := m.mcpServerPicker.Action
-		m.mcpServerPicker = nil
+		name := m.modals.mcp.picker.Names[m.modals.mcp.picker.Selected]
+		action := m.modals.mcp.picker.Action
+		m.modals.mcp.picker = nil
 		return m.handleMCPCommand([]string{"/mcp", action, name})
 	default:
 		return m, nil
@@ -70,34 +71,34 @@ func (m *tuiModel) handleMCPServerPickerKeyPress(keyStr string) (tea.Model, tea.
 }
 
 func (m *tuiModel) startMCPAuthentication(name string) tea.Cmd {
-	if m.mcpAuthCancel != nil {
+	if m.modals.mcp.authCancel != nil {
 		m.addSystemEntry("An MCP authorization is already in progress. Press Esc to cancel it first.")
 		return nil
 	}
-	if m.mcpAuthRunner == nil {
-		m.mcpAuthRunner = m.client.AuthenticateMCPServer
+	if m.modals.mcp.authRunner == nil {
+		m.modals.mcp.authRunner = m.client.AuthenticateMCPServer
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.mcpAuthGeneration++
-	generation := m.mcpAuthGeneration
-	m.mcpAuthName = name
-	m.mcpAuthCancel = cancel
+	m.modals.mcp.authGeneration++
+	generation := m.modals.mcp.authGeneration
+	m.modals.mcp.authName = name
+	m.modals.mcp.authCancel = cancel
 	m.updateLayout()
-	runner := m.mcpAuthRunner
+	runner := m.modals.mcp.authRunner
 	return func() tea.Msg {
 		return mcpAuthDoneMsg{generation: generation, name: name, err: runner(ctx, name)}
 	}
 }
 
 func (m *tuiModel) cancelMCPAuthentication(report bool) {
-	if m.mcpAuthCancel == nil {
+	if m.modals.mcp.authCancel == nil {
 		return
 	}
-	name := m.mcpAuthName
-	m.mcpAuthGeneration++
-	m.mcpAuthCancel()
-	m.mcpAuthCancel = nil
-	m.mcpAuthName = ""
+	name := m.modals.mcp.authName
+	m.modals.mcp.authGeneration++
+	m.modals.mcp.authCancel()
+	m.modals.mcp.authCancel = nil
+	m.modals.mcp.authName = ""
 	if report {
 		m.addSystemEntry(fmt.Sprintf("Cancelled MCP authorization for `%s`.", name))
 	}

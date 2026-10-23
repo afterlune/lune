@@ -27,11 +27,11 @@ func scrollPillText(m *tuiModel) string {
 			return "Working · " + back
 		}
 		return "Working " + formatDuration(time.Since(m.taskStartedAt)) + " · " + back
-	case m.compacting:
-		if m.compactionStartedAt.IsZero() {
+	case m.usage.compacting:
+		if m.usage.compactionStartedAt.IsZero() {
 			return "Compacting · " + back
 		}
-		return "Compacting " + formatDuration(time.Since(m.compactionStartedAt)) + " · " + back
+		return "Compacting " + formatDuration(time.Since(m.usage.compactionStartedAt)) + " · " + back
 	case m.hasPausedTask():
 		return "Paused · /continue or /discard · " + back
 	}
@@ -108,20 +108,17 @@ func formatCompactTokens(n int64) string {
 // 5. Generation speed (X.X tok/s)
 // 6. Cumulative session total tokens (Total: X tok)
 func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
-	totalCtx := m.contextWindow
+	totalCtx := m.usage.contextWindow
 	if totalCtx <= 0 {
 		totalCtx = 200000 // Standard fallback context window
 	}
 
 	var ctxStr string
 	switch {
-	case m.compacting:
+	case m.usage.compacting:
 		ctxStr = fmt.Sprintf("Context: compacting…/%s", formatCompactTokens(totalCtx))
 	default:
-		usedCtx := m.lastInputTokens
-		if usedCtx == 0 {
-			usedCtx = m.estimatedInputTokens
-		}
+		usedCtx := m.usage.usedContext()
 		pct := 0.0
 		if totalCtx > 0 {
 			pct = float64(usedCtx) / float64(totalCtx) * 100.0
@@ -132,23 +129,16 @@ func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
 		ctxStr = fmt.Sprintf("Context: %s/%s (%.1f%%)", formatCompactTokens(usedCtx), formatCompactTokens(totalCtx), pct)
 	}
 
-	cachePct := 0.0
-	if m.totalInputTokens > 0 {
-		cachePct = float64(m.cachedTokens) / float64(m.totalInputTokens) * 100.0
-		if cachePct > 100.0 {
-			cachePct = 100.0
-		}
-	}
-	cacheStr := fmt.Sprintf("Cache: %.0f%% session", cachePct)
+	cacheStr := fmt.Sprintf("Cache: %.0f%% session", m.usage.cachePercent())
 
 	var speedStr string
-	if m.lastTokensPerSec > 0 {
-		speedStr = fmt.Sprintf("%.1f tok/s", m.lastTokensPerSec)
+	if m.usage.lastTokensPerSec > 0 {
+		speedStr = fmt.Sprintf("%.1f tok/s", m.usage.lastTokensPerSec)
 	} else {
 		speedStr = "0.0 tok/s"
 	}
 
-	totalToks := m.totalInputTokens + m.totalOutputTokens
+	totalToks := m.usage.totalTokens()
 	totalStr := fmt.Sprintf("Total: %s tok", formatCompactTokens(totalToks))
 
 	full := fmt.Sprintf("%s · %s · %s · %s", ctxStr, cacheStr, speedStr, totalStr)
@@ -279,7 +269,7 @@ func renderFooter(m *tuiModel, width int) string {
 		}
 	} else if n := len(m.queuedTurns); n > 0 {
 		line2RightText = fmt.Sprintf("%d queued · /cancel-queue", n)
-	} else if m.composer.Value() == "" && len(m.promptHistory) > 0 {
+	} else if m.input.composer.Value() == "" && len(m.input.history) > 0 {
 		line2RightText = "esc to edit last message"
 	} else if m.totalSubagentsCount() > 0 || m.delegationEnabled() {
 		line2RightText = "? for shortcuts · /agents to inspect"

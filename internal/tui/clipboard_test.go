@@ -21,7 +21,7 @@ func TestClipboardFallsBackToOSC52(t *testing.T) {
 	if err := m.writeClipboardWith(func(string) error { return errors.New("clipboard unavailable") }, "hello"); err != nil {
 		t.Fatalf("OSC 52 fallback failed: %v", err)
 	}
-	if !m.copiedViaTerminal {
+	if !m.input.copiedViaTerminal {
 		t.Fatalf("expected the OSC 52 path to be recorded")
 	}
 	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte("hello")) + "\x07"
@@ -34,8 +34,8 @@ func TestClipboardFallsBackToOSC52(t *testing.T) {
 	if err := m.writeClipboardWith(func(string) error { return nil }, "hi"); err != nil {
 		t.Fatalf("host clipboard copy failed: %v", err)
 	}
-	if m.copiedViaTerminal || out.Len() != 0 {
-		t.Fatalf("host clipboard path wrote terminal output: copiedViaTerminal=%t out=%q", m.copiedViaTerminal, out.String())
+	if m.input.copiedViaTerminal || out.Len() != 0 {
+		t.Fatalf("host clipboard path wrote terminal output: copiedViaTerminal=%t out=%q", m.input.copiedViaTerminal, out.String())
 	}
 
 	// Without a terminal writer the original clipboard error must surface.
@@ -62,24 +62,24 @@ func TestClipboardCopyFeedbackReportsSuccessAndFailure(t *testing.T) {
 		copied = text
 		return nil
 	})
-	if copied != "hello" || m.copyFeedbackError || m.copyFeedback != "Copied 5 chars" {
-		t.Fatalf("success copy = %q, error=%t, feedback=%q", copied, m.copyFeedbackError, m.copyFeedback)
+	if copied != "hello" || m.input.copyFeedbackError || m.input.copyFeedback != "Copied 5 chars" {
+		t.Fatalf("success copy = %q, error=%t, feedback=%q", copied, m.input.copyFeedbackError, m.input.copyFeedback)
 	}
 
 	wantErr := errors.New("clipboard unavailable")
 	m.copyTextToClipboardUsing("hello", successText, func(string) error { return wantErr })
-	if !m.copyFeedbackError || !strings.Contains(m.copyFeedback, wantErr.Error()) || strings.Contains(m.copyFeedback, "Copied") {
-		t.Fatalf("failed copy feedback = %q, error=%t", m.copyFeedback, m.copyFeedbackError)
+	if !m.input.copyFeedbackError || !strings.Contains(m.input.copyFeedback, wantErr.Error()) || strings.Contains(m.input.copyFeedback, "Copied") {
+		t.Fatalf("failed copy feedback = %q, error=%t", m.input.copyFeedback, m.input.copyFeedbackError)
 	}
 }
 
 func TestClipboardFeedbackErrorUsesWarningMarkerInModal(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.toolPagerOpen = true
+	m.modals.toolPager.open = true
 	m.entries = []TranscriptEntry{{Kind: KindTool, ToolName: "read", ToolOutput: "contents"}}
-	m.copyFeedback = "Copy failed: clipboard unavailable"
-	m.copyFeedbackError = true
-	m.copyFeedbackExpiresAt = time.Now().Add(time.Second)
+	m.input.copyFeedback = "Copy failed: clipboard unavailable"
+	m.input.copyFeedbackError = true
+	m.input.copyFeedbackExpiresAt = time.Now().Add(time.Second)
 	got := ansi.Strip(renderToolPagerModal(m, 80))
 	if !strings.Contains(got, "! Copy failed: clipboard unavailable") || strings.Contains(got, "✓ Copy failed:") {
 		t.Fatalf("modal copy feedback = %q, want warning marker rather than success check", got)
@@ -90,13 +90,13 @@ func TestOlderClipboardTimerDoesNotClearNewFeedback(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	oldExpiry := time.Now().Add(-time.Second)
 	newExpiry := time.Now().Add(time.Second)
-	m.copyFeedback = "Copied newer text"
-	m.copyFeedbackExpiresAt = newExpiry
-	m.copyFeedbackError = true
+	m.input.copyFeedback = "Copied newer text"
+	m.input.copyFeedbackExpiresAt = newExpiry
+	m.input.copyFeedbackError = true
 
 	mod, _ := m.Update(clearCopyFeedbackMsg{at: oldExpiry})
 	m = mod.(*tuiModel)
-	if m.copyFeedback != "Copied newer text" || !m.copyFeedbackError || !m.copyFeedbackExpiresAt.Equal(newExpiry) {
-		t.Fatalf("old timer cleared newer feedback: text=%q error=%t expires=%v", m.copyFeedback, m.copyFeedbackError, m.copyFeedbackExpiresAt)
+	if m.input.copyFeedback != "Copied newer text" || !m.input.copyFeedbackError || !m.input.copyFeedbackExpiresAt.Equal(newExpiry) {
+		t.Fatalf("old timer cleared newer feedback: text=%q error=%t expires=%v", m.input.copyFeedback, m.input.copyFeedbackError, m.input.copyFeedbackExpiresAt)
 	}
 }

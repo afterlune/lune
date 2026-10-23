@@ -14,6 +14,24 @@ For detailed interface design, layout, keyboard shortcuts, and interaction life-
 
 The interactive TUI owns the terminal's alternate screen so its transcript, composer, and status remain in fixed positions.
 
+## State ownership
+
+`tuiModel` keeps only cross-cutting state (session identity, task run state, task cards). Everything else lives in a value type with one writer, so a change never has to chase the same number through several files:
+
+| Owner | File | Holds |
+| --- | --- | --- |
+| `sessionUsage` | `internal/tui/usage.go` | Session totals, context window, last main-agent request, compaction markers, generation speed |
+| `viewCache` | `internal/tui/view_cache.go` | Rendered entry blocks, line ranges, and the two stale markers (`cachedDirty` needs a re-render, `transcriptDirty` only needs a re-compose) |
+| `modalState` | `internal/tui/modal_state.go` | Every overlay (shortcuts, agents, sessions, memory, MCP, theme/model/permission/effort pickers, process, pager, diff) with `active()`, `open()` and `close()` |
+| `composerState` | `internal/tui/composer_state.go` | Textarea, autocomplete popup, `@` file scanner, prompt history, selection and copy feedback |
+
+Rules that follow from this split:
+
+- Usage numbers are written only through `sessionUsage` methods (`applyTotals`, `applyLeadRequest`, `addEventUsage`, `beginCompaction`, `finishCompaction`); `loadSessionSnapshot` and `refreshSessionUsageSnapshot` share them so a restored session renders a final footer in one pass.
+- At most one overlay is open. Opening an overlay calls `modalState.open()`, which closes the previous one, so key routing (`handleKeyPress`) and layout (`overlaySection`) can never disagree.
+- `overlaySection` is the single ordered list of overlays and task cards; it returns both the rendered text and the reserved height, so the layout can no longer measure one panel and draw another.
+- The effort picker and a running MCP authentication are rendered inside the same order but are not overlays: they never take the keyboard away from a pending question or approval.
+
 ## Questions, Approvals, and Execution Records
 
 - **User Questions (`ask_user`)**: Interactive card in the transcript with radio-style choices and free text. Navigated via `Up`/`Down`, confirmed via `Enter`. The complete batch remains visible while Core accepts the answers; failures retain choices and notes for retry. Exact wait identities and task-attempt generations prevent delayed pause notifications from reopening an answered batch.

@@ -16,12 +16,12 @@ import (
 
 func TestFooterLiveTokenDiagnostics(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.estimatedInputTokens = 12400
-	m.contextWindow = 200000
-	m.totalInputTokens = 15000
-	m.cachedTokens = 12750 // 85% cache
-	m.totalOutputTokens = 9500
-	m.lastTokensPerSec = 48.5
+	m.usage.estimatedInputTokens = 12400
+	m.usage.contextWindow = 200000
+	m.usage.totalInputTokens = 15000
+	m.usage.cachedTokens = 12750 // 85% cache
+	m.usage.totalOutputTokens = 9500
+	m.usage.lastTokensPerSec = 48.5
 
 	summary := formatContextAndTokenSummary(m, 120)
 	if !strings.Contains(summary, "Context: 12.4k/200k (6.2%)") {
@@ -58,12 +58,12 @@ func TestModelDisplayName(t *testing.T) {
 
 func TestContextMetricsUseLatestPromptNotCumulative(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
-	m.contextWindow = 1000000
-	m.lastInputTokens = 42000
-	m.totalInputTokens = 794000
-	m.totalOutputTokens = 12000
-	m.cachedTokens = 754300 // ~95%
-	m.lastTokensPerSec = 20.4
+	m.usage.contextWindow = 1000000
+	m.usage.lastInputTokens = 42000
+	m.usage.totalInputTokens = 794000
+	m.usage.totalOutputTokens = 12000
+	m.usage.cachedTokens = 754300 // ~95%
+	m.usage.lastTokensPerSec = 20.4
 
 	summary := formatContextAndTokenSummary(m, 120)
 	if !strings.Contains(summary, "Context: 42k/1M (4.2%)") {
@@ -134,7 +134,7 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 func TestEffortPickerRendering(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.reasoningEffort = "high"
-	m.effortPicker = &ActiveEffortPicker{Selected: 5}
+	m.modals.effort = &ActiveEffortPicker{Selected: 5}
 	rendered := ansi.Strip(renderEffortPicker(m, 80))
 	for _, want := range []string{"Reasoning effort", "6. high", "✓ current", "enter apply"} {
 		if !strings.Contains(rendered, want) {
@@ -171,11 +171,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 
 	// 2. /effort without arguments opens the interactive picker instead of printing usage.
 	m.handleSlashCommand("/effort")
-	if m.effortPicker == nil {
+	if m.modals.effort == nil {
 		t.Fatalf("expected /effort to open the interactive effort picker")
 	}
-	if m.effortPicker.Selected != 0 {
-		t.Fatalf("expected picker to start at current level (default), got %d", m.effortPicker.Selected)
+	if m.modals.effort.Selected != 0 {
+		t.Fatalf("expected picker to start at current level (default), got %d", m.modals.effort.Selected)
 	}
 	if len(m.entries) != 0 {
 		t.Fatalf("expected no system entry when opening the picker, got: %+v", m.entries)
@@ -185,11 +185,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
-		t.Fatalf("expected picker selection at high, got %+v", m.effortPicker)
+	if m.modals.effort == nil || m.modals.effort.Selected != 5 {
+		t.Fatalf("expected picker selection at high, got %+v", m.modals.effort)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.effortPicker != nil {
+	if m.modals.effort != nil {
 		t.Fatalf("expected picker to close after applying")
 	}
 	if m.reasoningEffort != "high" {
@@ -202,11 +202,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 
 	// 4. Reopening the picker selects the active level.
 	m.handleSlashCommand("/effort")
-	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
-		t.Fatalf("expected picker to remember active level high, got %+v", m.effortPicker)
+	if m.modals.effort == nil || m.modals.effort.Selected != 5 {
+		t.Fatalf("expected picker to remember active level high, got %+v", m.modals.effort)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m.effortPicker != nil {
+	if m.modals.effort != nil {
 		t.Fatalf("expected Esc to close the picker")
 	}
 
@@ -265,7 +265,7 @@ func TestStreamingGenerationSpeedCalculation(t *testing.T) {
 	updated := res.(*tuiModel)
 
 	// 100 tokens / 0.4s = 250 tok/s! Should NOT be 100 / 5.4s = 18 tok/s!
-	if updated.lastTokensPerSec < 200.0 || updated.lastTokensPerSec > 300.0 {
-		t.Fatalf("expected generation speed ~250 tok/s, got %.1f tok/s", updated.lastTokensPerSec)
+	if updated.usage.lastTokensPerSec < 200.0 || updated.usage.lastTokensPerSec > 300.0 {
+		t.Fatalf("expected generation speed ~250 tok/s, got %.1f tok/s", updated.usage.lastTokensPerSec)
 	}
 }

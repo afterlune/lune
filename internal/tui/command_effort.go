@@ -46,7 +46,8 @@ func (m *tuiModel) openEffortPicker() {
 			break
 		}
 	}
-	m.effortPicker = &ActiveEffortPicker{Selected: selected}
+	m.modals.open()
+	m.modals.effort = &ActiveEffortPicker{Selected: selected}
 	m.updateLayout()
 }
 

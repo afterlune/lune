@@ -28,7 +28,7 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 		})
 		m.currentReasoningText = ""
 		m.reasoningStartTime = time.Time{}
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 	}
 	if m.currentStreamText != "" {
 		m.entries = append(m.entries, TranscriptEntry{
@@ -38,7 +38,7 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 			Timestamp: time.Now(),
 		})
 		m.currentStreamText = ""
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 	}
 
 	execID := m.runningExecution

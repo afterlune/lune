@@ -107,13 +107,13 @@ func TestMCPCommand(t *testing.T) {
 func TestMCPAuthenticationIsCancelableAndDoesNotBlockInput(t *testing.T) {
 	m := newTUIModel(nil, nil, "mcp-auth")
 	started := make(chan struct{})
-	m.mcpAuthRunner = func(ctx context.Context, _ string) error {
+	m.modals.mcp.authRunner = func(ctx context.Context, _ string) error {
 		close(started)
 		<-ctx.Done()
 		return ctx.Err()
 	}
 	cmd := m.startMCPAuthentication("test-server")
-	if cmd == nil || m.mcpAuthName != "test-server" {
+	if cmd == nil || m.modals.mcp.authName != "test-server" {
 		t.Fatal("expected MCP authorization to start with visible state")
 	}
 	view := ansi.Strip(m.View().Content)
@@ -126,12 +126,12 @@ func TestMCPAuthenticationIsCancelableAndDoesNotBlockInput(t *testing.T) {
 	<-started
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'x', Text: "x"}))
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "x" {
+	if m.input.composer.Value() != "x" {
 		t.Fatal("composer input should remain responsive during OAuth authorization")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.mcpAuthCancel != nil || m.mcpAuthName != "" {
+	if m.modals.mcp.authCancel != nil || m.modals.mcp.authName != "" {
 		t.Fatal("Esc should cancel and clear the active OAuth state")
 	}
 	mod, _ = m.Update(<-done)
@@ -363,9 +363,9 @@ func TestContextCommand(t *testing.T) {
 	agentsFile := filepath.Join(tmpDir, "AGENTS.md")
 	_ = os.WriteFile(agentsFile, []byte("# Test Rules\nDo something good."), 0644)
 
-	m.totalInputTokens = 15000
-	m.contextWindow = 128000
-	m.estimatedInputTokens = 12000
+	m.usage.totalInputTokens = 15000
+	m.usage.contextWindow = 128000
+	m.usage.estimatedInputTokens = 12000
 
 	m.handleSlashCommand("/context")
 	lastEntry := m.entries[len(m.entries)-1].Text
@@ -391,7 +391,7 @@ func TestContextCommand(t *testing.T) {
 }
 
 func TestContextDiagnosticsShowsLastPromptCacheBreakdown(t *testing.T) {
-	model := tuiModel{lastInputTokens: 1000, lastCachedTokens: 320, lastRequestID: "request-main", lastRequestAttempt: 2, lastRequestChanges: []string{"tools_changed"}}
+	model := tuiModel{usage: sessionUsage{lastInputTokens: 1000, lastCachedTokens: 320, lastRequestID: "request-main", lastRequestAttempt: 2, lastRequestChanges: []string{"tools_changed"}}}
 	diagnostics := model.renderContextDiagnostics()
 	if !strings.Contains(diagnostics, "Last prompt cache: 320 cached, 680 uncached (32.0% hit)") {
 		t.Fatalf("context diagnostics = %q, want per-request cache hit and miss", diagnostics)
@@ -444,27 +444,27 @@ func TestCommandAutocompleteEnterExecutesSelectedCandidate(t *testing.T) {
 	for _, input := range []string{"/the", "/theme"} {
 		t.Run(input, func(t *testing.T) {
 			m := newTUIModel(nil, nil, "autocomplete-enter")
-			m.composer.SetValue(input)
-			m.composer.CursorEnd()
-			m.autocompleteMode = AutocompleteModeCommand
-			m.autocompleteItems = filterCommands(input)
-			m.autocompleteOpen = true
-			for i, item := range m.autocompleteItems {
+			m.input.composer.SetValue(input)
+			m.input.composer.CursorEnd()
+			m.input.autocompleteMode = AutocompleteModeCommand
+			m.input.autocompleteItems = filterCommands(input)
+			m.input.autocompleteOpen = true
+			for i, item := range m.input.autocompleteItems {
 				if item.Command == "/theme" {
-					m.autocompleteIndex = i
+					m.input.autocompleteIndex = i
 					break
 				}
 			}
 
 			mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 			m = mod.(*tuiModel)
-			if m.themePicker == nil {
+			if m.modals.theme == nil {
 				t.Fatal("Enter should execute the selected command, not leave it in the composer")
 			}
-			if m.composer.Value() != "" {
-				t.Fatalf("composer should be cleared after command execution, got %q", m.composer.Value())
+			if m.input.composer.Value() != "" {
+				t.Fatalf("composer should be cleared after command execution, got %q", m.input.composer.Value())
 			}
-			if m.autocompleteOpen {
+			if m.input.autocompleteOpen {
 				t.Fatal("command autocomplete should close after execution")
 			}
 		})
@@ -527,89 +527,89 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	client := newLazySessionTestCore(t)
 	m := newTUIModel(client, nil, "")
 	m.workspace = tempDir
-	m.fileScanner = filemention.NewScanner(tempDir)
-	m.composer = textarea.New()
-	m.composer.Focus()
+	m.input.scanner = filemention.NewScanner(tempDir)
+	m.input.composer = textarea.New()
+	m.input.composer.Focus()
 
 	// 1. Trigger @
-	m.composer.SetValue("@")
-	m.composer.CursorEnd()
+	m.input.composer.SetValue("@")
+	m.input.composer.CursorEnd()
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "t"}))
 	m = mod.(*tuiModel)
-	if !m.autocompleteOpen {
+	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for @t")
 	}
-	if m.autocompleteMode != AutocompleteModeFile {
-		t.Errorf("expected AutocompleteModeFile, got: %v", m.autocompleteMode)
+	if m.input.autocompleteMode != AutocompleteModeFile {
+		t.Errorf("expected AutocompleteModeFile, got: %v", m.input.autocompleteMode)
 	}
 
 	// 2. Select with Enter
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if m.autocompleteOpen {
+	if m.input.autocompleteOpen {
 		t.Errorf("expected autocomplete to close after Enter")
 	}
-	if !strings.Contains(m.composer.Value(), "@internal/tui/tui.go ") {
-		t.Errorf("expected composer to contain '@internal/tui/tui.go ', got: %q", m.composer.Value())
+	if !strings.Contains(m.input.composer.Value(), "@internal/tui/tui.go ") {
+		t.Errorf("expected composer to contain '@internal/tui/tui.go ', got: %q", m.input.composer.Value())
 	}
 
 	// 3. Email address test: should not open autocomplete
-	m.composer.SetValue("contact alice@example.com")
-	m.composer.CursorEnd()
+	m.input.composer.SetValue("contact alice@example.com")
+	m.input.composer.CursorEnd()
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: ' ', Text: " "}))
 	m = mod.(*tuiModel)
-	if m.autocompleteOpen {
+	if m.input.autocompleteOpen {
 		t.Errorf("expected autocomplete to remain closed for email address")
 	}
 
 	// 4. Esc closes autocomplete
-	m.composer.SetValue("review @c")
-	m.composer.CursorEnd()
+	m.input.composer.SetValue("review @c")
+	m.input.composer.CursorEnd()
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm', Text: "m"}))
 	m = mod.(*tuiModel)
-	if !m.autocompleteOpen {
+	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for @cm")
 	}
 	// 5. Trigger @ alone in empty composer
-	m.composer.SetValue("")
+	m.input.composer.SetValue("")
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '@', Text: "@"}))
 	m = mod.(*tuiModel)
-	if !m.autocompleteOpen {
+	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for single '@'")
 	}
-	if len(m.autocompleteItems) != 2 {
-		t.Fatalf("expected 2 files in autocomplete items, got: %d", len(m.autocompleteItems))
+	if len(m.input.autocompleteItems) != 2 {
+		t.Fatalf("expected 2 files in autocomplete items, got: %d", len(m.input.autocompleteItems))
 	}
 
 	// 6. Select with Tab
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	m = mod.(*tuiModel)
-	if m.autocompleteOpen {
+	if m.input.autocompleteOpen {
 		t.Errorf("expected autocomplete to close after Tab")
 	}
-	if !strings.HasPrefix(m.composer.Value(), "@") || !strings.HasSuffix(m.composer.Value(), " ") {
-		t.Errorf("expected completed file mention with space, got: %q", m.composer.Value())
+	if !strings.HasPrefix(m.input.composer.Value(), "@") || !strings.HasSuffix(m.input.composer.Value(), " ") {
+		t.Errorf("expected completed file mention with space, got: %q", m.input.composer.Value())
 	}
 
 	// 7. Completion with trailing text avoids double spaces
-	m.composer.SetValue("inspect @t for issues")
+	m.input.composer.SetValue("inspect @t for issues")
 	// Position cursor after @t (offset 10)
 	m.setCursorTo(10)
 	// Trigger re-detect
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'u', Text: "u"}))
 	m = mod.(*tuiModel)
-	if !m.autocompleteOpen {
+	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for 'inspect @tu for issues'")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	m = mod.(*tuiModel)
 	expectedVal := "inspect @internal/tui/tui.go for issues"
-	if m.composer.Value() != expectedVal {
-		t.Errorf("expected %q, got %q", expectedVal, m.composer.Value())
+	if m.input.composer.Value() != expectedVal {
+		t.Errorf("expected %q, got %q", expectedVal, m.input.composer.Value())
 	}
 
 	// 8. Submit turn with @ mention: verify attachments and visual chip
-	m.submitTurn(m.composer.Value())
+	m.submitTurn(m.input.composer.Value())
 	if len(m.entries) == 0 {
 		t.Fatalf("expected user entry after submission")
 	}
@@ -670,10 +670,10 @@ func TestMemoryCommand(t *testing.T) {
 
 	// Missing content opens a composer input flow and Enter saves it.
 	mWithClient.handleSlashCommand("/memory add convention")
-	if !mWithClient.pendingMemoryAdd || mWithClient.pendingMemoryCategory != "convention" {
+	if !mWithClient.modals.memory.pendingAdd || mWithClient.modals.memory.pendingCategory != "convention" {
 		t.Fatal("expected missing memory content to open an input flow")
 	}
-	mWithClient.composer.SetValue("Always verify tests")
+	mWithClient.input.composer.SetValue("Always verify tests")
 	mod, _ := mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	mWithClient = mod.(*tuiModel)
 	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
@@ -704,12 +704,12 @@ func TestMemoryCommand(t *testing.T) {
 
 	// Missing remove ID opens a selector and removes the highlighted item on Enter.
 	mWithClient.handleSlashCommand("/memory remove")
-	if mWithClient.memoryPicker == nil {
+	if mWithClient.modals.memory.picker == nil {
 		t.Fatal("expected missing memory ID to open a selector")
 	}
 	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	mWithClient = mod.(*tuiModel)
-	if mWithClient.memoryPicker != nil || !strings.Contains(mWithClient.entries[len(mWithClient.entries)-1].Text, "Deleted workspace memory") {
+	if mWithClient.modals.memory.picker != nil || !strings.Contains(mWithClient.entries[len(mWithClient.entries)-1].Text, "Deleted workspace memory") {
 		t.Fatal("expected Enter to remove the selected memory")
 	}
 
@@ -728,12 +728,12 @@ func TestMemoryCommand(t *testing.T) {
 
 	// Clear requires confirmation
 	mWithClient.handleSlashCommand("/memory clear")
-	if !mWithClient.memoryClearConfirm {
+	if !mWithClient.modals.memory.clearConfirm {
 		t.Fatal("expected /memory clear to open confirmation")
 	}
 	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
 	mWithClient = mod.(*tuiModel)
-	if mWithClient.memoryClearConfirm {
+	if mWithClient.modals.memory.clearConfirm {
 		t.Fatal("expected n to cancel memory clear")
 	}
 	mWithClient.handleSlashCommand("/memory clear")
@@ -797,16 +797,16 @@ func TestProcessCommands(t *testing.T) {
 
 	// Settings commands open real choice pickers when selected without arguments.
 	mWithRuntime.handleSlashCommand("/model")
-	if mWithRuntime.modelPicker == nil || len(mWithRuntime.modelPicker.Items) != 1 {
-		t.Fatalf("expected /model to open configured model picker, got: %+v", mWithRuntime.modelPicker)
+	if mWithRuntime.modals.model == nil || len(mWithRuntime.modals.model.Items) != 1 {
+		t.Fatalf("expected /model to open configured model picker, got: %+v", mWithRuntime.modals.model)
 	}
 	_, _ = mWithRuntime.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	mWithRuntime.handleSlashCommand("/permissions")
-	if mWithRuntime.permissionPicker == nil {
+	if mWithRuntime.modals.permission == nil {
 		t.Fatal("expected /permissions to open the permission mode picker")
 	}
 	_, _ = mWithRuntime.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if mWithRuntime.permissionPicker != nil {
+	if mWithRuntime.modals.permission != nil {
 		t.Fatal("Enter should apply and close the permission picker")
 	}
 
@@ -849,8 +849,8 @@ func TestProcessCommands(t *testing.T) {
 func TestUnknownSlashTextSubmitsAsMessage(t *testing.T) {
 	client := newLazySessionTestCore(t)
 	m := newTUIModel(client, nil, "")
-	m.composer.SetValue("/home/iacsadmin/cntb/屏幕截图 2026-10-22 131712.png 执行过程像这样")
-	m.composer.CursorEnd()
+	m.input.composer.SetValue("/home/iacsadmin/cntb/屏幕截图 2026-10-22 131712.png 执行过程像这样")
+	m.input.composer.CursorEnd()
 
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
@@ -872,8 +872,8 @@ func TestUnknownSlashTextSubmitsAsMessage(t *testing.T) {
 func TestKnownSlashCommandStillDispatches(t *testing.T) {
 	client := newLazySessionTestCore(t)
 	m := newTUIModel(client, nil, "")
-	m.composer.SetValue("/model fast")
-	m.composer.CursorEnd()
+	m.input.composer.SetValue("/model fast")
+	m.input.composer.CursorEnd()
 
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)

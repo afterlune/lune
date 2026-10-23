@@ -123,10 +123,10 @@ func (m *tuiModel) exportMarkdown(targetPath, title, modelName string, userTurns
 	sb.WriteString(fmt.Sprintf("- **Workspace:** `%s`\n", m.workspace))
 	sb.WriteString(fmt.Sprintf("- **Model:** `%s`\n", modelName))
 	sb.WriteString(fmt.Sprintf("- **Exported At:** %s\n", time.Now().Format(time.RFC3339)))
-	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+	if m.usage.totalInputTokens > 0 || m.usage.totalOutputTokens > 0 {
 		sb.WriteString(fmt.Sprintf("- **Token Usage:** %s in (cached: %s) · %s out (reasoning: %s)\n",
-			formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
-			formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+			formatTokens(m.usage.totalInputTokens), formatTokens(m.usage.cachedTokens),
+			formatTokens(m.usage.totalOutputTokens), formatTokens(m.usage.reasoningTokens)))
 	}
 	sb.WriteString(fmt.Sprintf("- **Statistics:** %d user turn(s) · %d assistant message(s) · %d tool execution(s)\n",
 		userTurns, assistantCount, toolCount))
@@ -191,10 +191,10 @@ func (m *tuiModel) exportJSONL(targetPath, title, modelName string, userTurns, a
 		"model":       modelName,
 		"exported_at": time.Now().Format(time.RFC3339),
 		"token_usage": map[string]int64{
-			"input_tokens":     m.totalInputTokens,
-			"cached_tokens":    m.cachedTokens,
-			"output_tokens":    m.totalOutputTokens,
-			"reasoning_tokens": m.reasoningTokens,
+			"input_tokens":     m.usage.totalInputTokens,
+			"cached_tokens":    m.usage.cachedTokens,
+			"output_tokens":    m.usage.totalOutputTokens,
+			"reasoning_tokens": m.usage.reasoningTokens,
 		},
 		"statistics": map[string]int{
 			"user_turns":         userTurns,
@@ -408,9 +408,9 @@ pre {
 	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><strong>Model:</strong> %s</div>\n", html.EscapeString(modelName)))
 	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><strong>Workspace:</strong> <code>%s</code></div>\n", html.EscapeString(m.workspace)))
 	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><strong>Exported:</strong> %s</div>\n", time.Now().Format("2006-01-02 15:04:05")))
-	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+	if m.usage.totalInputTokens > 0 || m.usage.totalOutputTokens > 0 {
 		sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><strong>Token Usage:</strong> %s in · %s out</div>\n",
-			formatTokens(m.totalInputTokens), formatTokens(m.totalOutputTokens)))
+			formatTokens(m.usage.totalInputTokens), formatTokens(m.usage.totalOutputTokens)))
 	}
 	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><strong>Turns / Tools:</strong> %d turns · %d tools</div>\n",
 		userTurns, toolCount))

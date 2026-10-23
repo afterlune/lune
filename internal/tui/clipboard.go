@@ -22,7 +22,7 @@ func writeClipboardTextWith(text string, writeAll func(string) error) (string, e
 
 func (m *tuiModel) copyTextToClipboard(text string) tea.Cmd {
 	return m.copyTextToClipboardAs(text, func(count int) string {
-		if m.copiedViaTerminal {
+		if m.input.copiedViaTerminal {
 			return fmt.Sprintf("Copied %d chars to terminal clipboard", count)
 		}
 		return fmt.Sprintf("Copied %d chars to host clipboard", count)
@@ -32,7 +32,7 @@ func (m *tuiModel) copyTextToClipboard(text string) tea.Cmd {
 // writeClipboard prefers the host clipboard bridge and falls back to an OSC 52
 // escape sequence so copying works on terminals without xclip/xsel/wl-copy.
 func (m *tuiModel) writeClipboard(text string) error {
-	native := m.clipboardWriter
+	native := m.input.clipboardWriter
 	if native == nil {
 		native = clipboard.WriteAll
 	}
@@ -41,7 +41,7 @@ func (m *tuiModel) writeClipboard(text string) error {
 
 // writeClipboardWith runs the host clipboard bridge and falls back to OSC 52.
 func (m *tuiModel) writeClipboardWith(native func(string) error, text string) error {
-	m.copiedViaTerminal = false
+	m.input.copiedViaTerminal = false
 	nativeErr := native(text)
 	if nativeErr == nil {
 		return nil
@@ -49,7 +49,7 @@ func (m *tuiModel) writeClipboardWith(native func(string) error, text string) er
 	if err := m.terminalTitle.WriteRaw(osc52Sequence(text)); err != nil {
 		return nativeErr
 	}
-	m.copiedViaTerminal = true
+	m.input.copiedViaTerminal = true
 	return nil
 }
 
@@ -59,7 +59,7 @@ func osc52Sequence(text string) string {
 }
 
 func (m *tuiModel) copyTextToClipboardAs(text string, successMessage func(int) string) tea.Cmd {
-	writeAll := m.clipboardWriter
+	writeAll := m.input.clipboardWriter
 	if writeAll == nil {
 		writeAll = m.writeClipboard
 	}
@@ -71,14 +71,14 @@ func (m *tuiModel) copyTextToClipboardUsing(text string, successMessage func(int
 		return nil
 	}
 	cleaned, err := writeClipboardTextWith(text, writeAll)
-	m.copyFeedbackError = err != nil
+	m.input.copyFeedbackError = err != nil
 	if err != nil {
-		m.copyFeedback = "Copy failed: " + err.Error()
+		m.input.copyFeedback = "Copy failed: " + err.Error()
 	} else {
-		m.copyFeedback = successMessage(utf8.RuneCountInString(cleaned))
+		m.input.copyFeedback = successMessage(utf8.RuneCountInString(cleaned))
 	}
-	m.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
-	expiresAt := m.copyFeedbackExpiresAt
+	m.input.copyFeedbackExpiresAt = time.Now().Add(3 * time.Second)
+	expiresAt := m.input.copyFeedbackExpiresAt
 	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
 		return clearCopyFeedbackMsg{at: expiresAt}
 	})

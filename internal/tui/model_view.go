@@ -19,7 +19,7 @@ func (m *tuiModel) updateLayout() {
 
 	contentWidth := max(20, m.width-4)
 	// renderComposerBand reserves one leading column for the card surface.
-	m.composer.SetWidth(contentWidth - 1)
+	m.input.composer.SetWidth(contentWidth - 1)
 
 	// Measure bottom components height:
 	// - Header: ~2-3 lines
@@ -29,10 +29,10 @@ func (m *tuiModel) updateLayout() {
 	// - Popup / Question / Approval / Plan review / Recovery if open
 	headerHeight := 3
 	gapHeight := 1
-	composerBandHeight := m.composer.Height() + 2
+	composerBandHeight := m.input.composer.Height() + 2
 	footerHeight := 2
 
-	modalHeight := m.modalHeight(contentWidth)
+	_, modalHeight := m.overlaySection(contentWidth)
 	queuedHeight := 0
 	if band := renderQueuedBand(m, contentWidth); band != "" {
 		queuedHeight = lipgloss.Height(band)
@@ -54,62 +54,73 @@ func (m *tuiModel) updateLayout() {
 		}
 	}
 
-	entriesChanged := (len(m.entries) != m.cachedEntryCount)
-	needRefresh := widthChanged || entriesChanged || m.cachedDirty || m.transcriptDirty
+	entriesChanged := (len(m.entries) != m.view.cachedEntryCount)
+	needRefresh := widthChanged || entriesChanged || m.view.cachedDirty || m.view.transcriptDirty
 	if needRefresh {
 		m.refreshViewportContent()
 	}
 }
 
-func (m *tuiModel) modalHeight(contentWidth int) int {
-	var modalHeight int
-	if m.shortcutsOpen {
-		modalHeight = lipgloss.Height(renderShortcutsPanel(contentWidth)) + 1
-	} else if m.agentsPanelOpen {
-		modalHeight = lipgloss.Height(m.renderAgentsPanel(contentWidth)) + 1
-	} else if m.sessionsModalOpen {
-		modalHeight = lipgloss.Height(renderSessionsModal(m, contentWidth)) + 1
-	} else if m.memoryClearConfirm {
-		modalHeight = lipgloss.Height(renderMemoryClearConfirm(m, contentWidth)) + 1
-	} else if m.memoryPicker != nil {
-		modalHeight = lipgloss.Height(renderMemoryPicker(m, contentWidth)) + 1
-	} else if m.mcpServerPicker != nil {
-		modalHeight = lipgloss.Height(renderMCPServerPicker(m, contentWidth)) + 1
-	} else if m.pendingMemoryAdd {
-		modalHeight = lipgloss.Height(renderMemoryInputPrompt(m, contentWidth)) + 1
-	} else if m.themePicker != nil {
-		modalHeight = lipgloss.Height(renderThemePicker(m, contentWidth)) + 1
-	} else if m.modelPicker != nil {
-		modalHeight = lipgloss.Height(renderModelPicker(m, contentWidth)) + 1
-	} else if m.permissionPicker != nil {
-		modalHeight = lipgloss.Height(renderPermissionPicker(m, contentWidth)) + 1
-	} else if m.processPickerOpen {
-		modalHeight = lipgloss.Height(renderProcessPicker(m, contentWidth)) + 1
-	} else if m.mcpAuthName != "" {
-		modalHeight = lipgloss.Height(renderMCPAuthPanel(m, contentWidth)) + 1
-	} else if m.toolPagerOpen {
-		modalHeight = lipgloss.Height(renderToolPagerModal(m, contentWidth)) + 1
-	} else if m.diffModalOpen {
-		modalHeight = lipgloss.Height(renderDiffModal(m, contentWidth)) + 1
-	} else if m.activeRecovery != nil {
-		modalHeight = lipgloss.Height(renderRecoveryPanel(m.activeRecovery, contentWidth)) + 1
-	} else if m.activeToolRecovery != nil {
-		modalHeight = lipgloss.Height(renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)) + 1
-	} else if m.activeQuestion != nil {
-		modalHeight = lipgloss.Height(renderQuestionPanel(m.activeQuestion, contentWidth)) + 1
-	} else if m.effortPicker != nil {
-		modalHeight = lipgloss.Height(renderEffortPicker(m, contentWidth)) + 1
-	} else if m.activeApproval != nil {
-		modalHeight = lipgloss.Height(renderApprovalPanel(m.activeApproval, contentWidth)) + 1
-	} else if m.activePlanReview != nil {
-		// The extra row is the fixed hint slot above the review, in addition
-		// to the composer gap accounted for by updateLayout.
-		modalHeight = lipgloss.Height(renderPlanReviewPanel(m.activePlanReview, contentWidth)) + 1
-	} else if m.autocompleteOpen && len(m.autocompleteItems) > 0 {
-		visibleCount := min(len(m.autocompleteItems), maxVisibleAutocomplete)
-		modalHeight = visibleCount + 1
+// overlaySection returns the one overlay the layout must reserve space for, its
+// rendered text and the rows it occupies. Modal overlays come from modalState; the
+// memory input prompt, the MCP authentication panel, the task cards and the
+// autocomplete popup follow in the same priority order so the reserved height and
+// the rendered text can never disagree.
+func (m *tuiModel) overlaySection(contentWidth int) (string, int) {
+	active := m.modals.active()
+	var view string
+	switch {
+	case active == modalShortcuts:
+		view = renderShortcutsPanel(contentWidth)
+	case active == modalAgents:
+		view = m.renderAgentsPanel(contentWidth)
+	case active == modalSessions:
+		view = renderSessionsModal(m, contentWidth)
+	case active == modalMemoryClear:
+		view = renderMemoryClearConfirm(m, contentWidth)
+	case active == modalMemoryPicker:
+		view = renderMemoryPicker(m, contentWidth)
+	case active == modalMCPPicker:
+		view = renderMCPServerPicker(m, contentWidth)
+	case m.modals.memory.pendingAdd:
+		view = renderMemoryInputPrompt(m, contentWidth)
+	case active == modalTheme:
+		view = renderThemePicker(m, contentWidth)
+	case active == modalModel:
+		view = renderModelPicker(m, contentWidth)
+	case active == modalPermission:
+		view = renderPermissionPicker(m, contentWidth)
+	case active == modalProcess:
+		view = renderProcessPicker(m, contentWidth)
+	case m.modals.mcp.authName != "":
+		view = renderMCPAuthPanel(m, contentWidth)
+	case active == modalToolPager:
+		view = renderToolPagerModal(m, contentWidth)
+	case active == modalDiff:
+		view = renderDiffModal(m, contentWidth)
+	case m.activeRecovery != nil:
+		view = renderRecoveryPanel(m.activeRecovery, contentWidth)
+	case m.activeToolRecovery != nil:
+		view = renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)
+	case m.activeQuestion != nil:
+		view = renderQuestionPanel(m.activeQuestion, contentWidth)
+	case m.modals.effort != nil:
+		view = renderEffortPicker(m, contentWidth)
+	case m.activeApproval != nil:
+		view = renderApprovalPanel(m.activeApproval, contentWidth)
+	case m.activePlanReview != nil:
+		view = renderPlanReviewPanel(m.activePlanReview, contentWidth)
+	case m.input.autocompleteOpen && len(m.input.autocompleteItems) > 0:
+		// The popup sizes itself by its visible candidates plus the hint row,
+		// not by its rendered height.
+		return renderAutocompletePopup(m.input.autocompleteItems, m.input.autocompleteIndex, contentWidth),
+			min(len(m.input.autocompleteItems), maxVisibleAutocomplete) + 1
+	default:
+		return "", 0
 	}
-	return modalHeight
+	// The extra row is the fixed hint slot above the panel, in addition to the
+	// composer gap accounted for by updateLayout.
+	return view, lipgloss.Height(view) + 1
 }
 
 // refreshViewportContent builds the entire transcript text and updates the viewport.
@@ -122,42 +133,42 @@ func (m *tuiModel) refreshViewportContent() {
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
 	if len(m.entries) == 0 && !m.running && m.currentStreamText == "" && m.currentReasoningText == "" {
-		m.cachedBlocks = nil
-		m.cachedEntryCount = 0
-		m.cachedDirty = false
-		m.transcriptDirty = false
-		m.entryLineRanges = nil
+		m.view.cachedBlocks = nil
+		m.view.cachedEntryCount = 0
+		m.view.cachedDirty = false
+		m.view.transcriptDirty = false
+		m.view.entryLineRanges = nil
 		m.viewport.SoftWrap = false
 		m.viewport.SetContent("")
 		return
 	}
 
 	curThemeBg := activeTheme().CardBg
-	rebuildEntryCache := m.cachedDirty || m.cachedWidth != contentWidth || m.cachedThemeBg != curThemeBg || len(m.entries) < m.cachedEntryCount
+	rebuildEntryCache := m.view.cachedDirty || m.view.cachedWidth != contentWidth || m.view.cachedThemeBg != curThemeBg || len(m.entries) < m.view.cachedEntryCount
 	if rebuildEntryCache {
 		m.viewport.SoftWrap = false
-		m.cachedBlocks = make([]string, len(m.entries))
+		m.view.cachedBlocks = make([]string, len(m.entries))
 		for i, entry := range m.entries {
 			if !isRoundMember(m.entries, i) {
-				m.cachedBlocks[i] = renderEntry(entry, contentWidth)
+				m.view.cachedBlocks[i] = renderEntry(entry, contentWidth)
 			}
 		}
-		m.cachedEntryCount = len(m.entries)
-		m.cachedWidth = contentWidth
-		m.cachedThemeBg = curThemeBg
-		m.cachedDirty = false
-	} else if len(m.entries) > m.cachedEntryCount {
-		for i := m.cachedEntryCount; i < len(m.entries); i++ {
+		m.view.cachedEntryCount = len(m.entries)
+		m.view.cachedWidth = contentWidth
+		m.view.cachedThemeBg = curThemeBg
+		m.view.cachedDirty = false
+	} else if len(m.entries) > m.view.cachedEntryCount {
+		for i := m.view.cachedEntryCount; i < len(m.entries); i++ {
 			if !isRoundMember(m.entries, i) {
-				m.cachedBlocks = append(m.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+				m.view.cachedBlocks = append(m.view.cachedBlocks, renderEntry(m.entries[i], contentWidth))
 			} else {
-				m.cachedBlocks = append(m.cachedBlocks, "")
+				m.view.cachedBlocks = append(m.view.cachedBlocks, "")
 			}
 		}
-		m.cachedEntryCount = len(m.entries)
+		m.view.cachedEntryCount = len(m.entries)
 	}
 
-	m.entryLineRanges = make([]entryLineRange, 0, len(m.entries)+4)
+	m.view.entryLineRanges = make([]entryLineRange, 0, len(m.entries)+4)
 	blocks := make([]string, 0, len(m.entries)+3)
 	currentLine := 0
 	pendingRule := false
@@ -199,7 +210,7 @@ func (m *tuiModel) refreshViewportContent() {
 		flushRule()
 		start := nextBlockStart()
 		for _, rr := range relRanges {
-			m.entryLineRanges = append(m.entryLineRanges, entryLineRange{
+			m.view.entryLineRanges = append(m.view.entryLineRanges, entryLineRange{
 				EntryIndex:    rr.EntryIndex,
 				StartLine:     start + rr.StartLine,
 				EndLine:       start + rr.EndLine,
@@ -242,10 +253,10 @@ func (m *tuiModel) refreshViewportContent() {
 			continue
 		}
 
-		block := m.cachedBlocks[i]
+		block := m.view.cachedBlocks[i]
 		if block == "" {
 			block = renderEntry(m.entries[i], contentWidth)
-			m.cachedBlocks[i] = block
+			m.view.cachedBlocks[i] = block
 		}
 		if block == "" {
 			i++
@@ -320,7 +331,7 @@ func (m *tuiModel) refreshViewportContent() {
 	if !m.scrolledUp {
 		m.viewport.GotoBottom()
 	}
-	m.transcriptDirty = false
+	m.view.transcriptDirty = false
 }
 
 func transcriptNeedsSoftWrap(blocks []string, width int) bool {
@@ -347,15 +358,15 @@ func transcriptNeedsSoftWrap(blocks []string, width int) bool {
 }
 
 func (m *tuiModel) hasSelection() bool {
-	return m.selectStartX != m.selectEndX || m.selectStartY != m.selectEndY
+	return m.input.selectStartX != m.input.selectEndX || m.input.selectStartY != m.input.selectEndY
 }
 
 func (m *tuiModel) normalizedSelection() (r1, c1, r2, c2 int) {
 	headerHeight := 3
-	r1 = m.selectStartY - headerHeight
-	c1 = m.selectStartX
-	r2 = m.selectEndY - headerHeight
-	c2 = m.selectEndX
+	r1 = m.input.selectStartY - headerHeight
+	c1 = m.input.selectStartX
+	r2 = m.input.selectEndY - headerHeight
+	c2 = m.input.selectEndX
 	if r1 > r2 || (r1 == r2 && c1 > c2) {
 		r1, r2 = r2, r1
 		c1, c2 = c2, c1
@@ -471,15 +482,15 @@ func (m *tuiModel) View() tea.View {
 
 	// Keep permanent gaps above and below the review. Changing the hint must
 	// never move the review choices or the composer.
-	copyFeedbackActive := m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt)
+	copyFeedbackActive := m.input.copyFeedback != "" && time.Now().Before(m.input.copyFeedbackExpiresAt)
 	planReviewGap := m.activePlanReview != nil
 	gapLine := ""
 	if copyFeedbackActive {
 		color := activeTheme().AccentBlue
-		if m.copyFeedbackError {
+		if m.input.copyFeedbackError {
 			color = activeTheme().WarningAmber
 		}
-		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(m.copyFeedback)
+		styled := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(m.input.copyFeedback)
 		leftPad := max(0, contentWidth-lipgloss.Width(styled))
 		gapLine = strings.Repeat(" ", leftPad) + styled
 	} else if m.scrolledUp {
@@ -491,49 +502,9 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, gapLine)
 	}
 
-	// 3. Modal (Shortcuts / Sessions / Recovery / Question / Approval / Plan Review / Autocomplete)
-	if m.shortcutsOpen {
-		sections = append(sections, renderShortcutsPanel(contentWidth))
-	} else if m.agentsPanelOpen {
-		sections = append(sections, m.renderAgentsPanel(contentWidth))
-	} else if m.sessionsModalOpen {
-		sections = append(sections, renderSessionsModal(m, contentWidth))
-	} else if m.memoryClearConfirm {
-		sections = append(sections, renderMemoryClearConfirm(m, contentWidth))
-	} else if m.memoryPicker != nil {
-		sections = append(sections, renderMemoryPicker(m, contentWidth))
-	} else if m.mcpServerPicker != nil {
-		sections = append(sections, renderMCPServerPicker(m, contentWidth))
-	} else if m.pendingMemoryAdd {
-		sections = append(sections, renderMemoryInputPrompt(m, contentWidth))
-	} else if m.themePicker != nil {
-		sections = append(sections, renderThemePicker(m, contentWidth))
-	} else if m.modelPicker != nil {
-		sections = append(sections, renderModelPicker(m, contentWidth))
-	} else if m.permissionPicker != nil {
-		sections = append(sections, renderPermissionPicker(m, contentWidth))
-	} else if m.processPickerOpen {
-		sections = append(sections, renderProcessPicker(m, contentWidth))
-	} else if m.mcpAuthName != "" {
-		sections = append(sections, renderMCPAuthPanel(m, contentWidth))
-	} else if m.toolPagerOpen {
-		sections = append(sections, renderToolPagerModal(m, contentWidth))
-	} else if m.diffModalOpen {
-		sections = append(sections, renderDiffModal(m, contentWidth))
-	} else if m.activeRecovery != nil {
-		sections = append(sections, renderRecoveryPanel(m.activeRecovery, contentWidth))
-	} else if m.activeToolRecovery != nil {
-		sections = append(sections, renderToolRecoveryPanel(m.activeToolRecovery, contentWidth))
-	} else if m.activeQuestion != nil {
-		sections = append(sections, renderQuestionPanel(m.activeQuestion, contentWidth))
-	} else if m.effortPicker != nil {
-		sections = append(sections, renderEffortPicker(m, contentWidth))
-	} else if m.activeApproval != nil {
-		sections = append(sections, renderApprovalPanel(m.activeApproval, contentWidth))
-	} else if m.activePlanReview != nil {
-		sections = append(sections, renderPlanReviewPanel(m.activePlanReview, contentWidth))
-	} else if m.autocompleteOpen && len(m.autocompleteItems) > 0 {
-		sections = append(sections, renderAutocompletePopup(m.autocompleteItems, m.autocompleteIndex, contentWidth))
+	// 3. The one overlay that owns the screen (modal, task card or autocomplete).
+	if overlay, _ := m.overlaySection(contentWidth); overlay != "" {
+		sections = append(sections, overlay)
 	}
 
 	// 4. Composer gap (shared with copy feedback, scroll pill, paused task banner, or blank line)
@@ -544,7 +515,7 @@ func (m *tuiModel) View() tea.View {
 	}
 
 	// 5. Composer
-	sections = append(sections, renderComposerBand(m.composer.View(), contentWidth))
+	sections = append(sections, renderComposerBand(m.input.composer.View(), contentWidth))
 
 	// 6. Footer
 	sections = append(sections, renderFooter(m, contentWidth))

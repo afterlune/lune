@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"time"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -18,33 +17,27 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 	}
 	switch details.Stage {
 	case "started":
-		m.compacting = true
-		m.compactionStartedAt = time.Now()
+		m.usage.beginCompaction()
 		main := m.ensureAgentMetrics("lead")
 		main.Activity = "Compacting context"
 	case "completed":
-		m.compacting = false
-		if details.AfterTokens > 0 {
-			m.estimatedInputTokens = details.AfterTokens
-			m.lastInputTokens = 0
-			m.lastCachedTokens = 0
-		}
+		m.usage.finishCompaction(details.AfterTokens)
 		if m.running {
 			m.ensureAgentMetrics("lead").Activity = "Thinking"
 		}
 		m.addSystemEntry(formatCompactionCompleted(details, mode))
 	case "fallback":
-		m.compacting = false
+		m.usage.finishCompaction(0)
 		m.addSystemEntry("Provider compaction unavailable; fell back to a local summary.")
 	case "skipped":
-		m.compacting = false
+		m.usage.finishCompaction(0)
 		if details.Err != "" {
 			m.addSystemEntry("Automatic compaction skipped: " + details.Err)
 		} else {
 			m.addSystemEntry("Automatic compaction skipped.")
 		}
 	case "failed":
-		m.compacting = false
+		m.usage.finishCompaction(0)
 		if details.Err != "" {
 			m.addSystemEntry("Context compaction failed: " + details.Err)
 		} else {
@@ -89,7 +82,7 @@ func (m *tuiModel) compactionSettingsLabel() string {
 	}
 	window := defaults.ContextWindow
 	if window <= 0 {
-		window = m.contextWindow
+		window = m.usage.contextWindow
 	}
 	threshold := compactionThresholdTokens(window, defaults.ReserveOutputTokens, ratio)
 	return fmt.Sprintf("on at %.0f%% (%s tokens)", ratio*100, formatTokens(threshold))

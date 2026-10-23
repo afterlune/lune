@@ -221,7 +221,7 @@ func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
 		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Finish\n<proposed_plan_end/>\nAfter.",
 	} {
 		m.currentStreamText = stream
-		m.transcriptDirty = true
+		m.view.invalidateContent()
 		m.refreshViewportContent()
 		view := ansi.Strip(m.viewport.View())
 		if !strings.Contains(view, "Proposed Plan") || !strings.Contains(view, "Steps") || !strings.Contains(view, "1. Fin") || strings.Contains(view, "proposed_plan_end") {
@@ -305,7 +305,7 @@ func TestShiftTabTogglesPlanModeWithGuards(t *testing.T) {
 	}
 
 	m.handleSlashCommand("/permissions")
-	if m.permissionPicker != nil {
+	if m.modals.permission != nil {
 		t.Fatal("permissions picker must stay unavailable while Plan mode is active")
 	}
 

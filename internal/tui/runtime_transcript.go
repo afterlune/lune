@@ -29,7 +29,7 @@ func (m *tuiModel) flushReasoningEntry() {
 		}
 		last.Text += trimmed
 		last.ReasoningDuration += dur
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 		return
 	}
 	m.beginRoundIfNeeded()
@@ -40,7 +40,7 @@ func (m *tuiModel) flushReasoningEntry() {
 		ReasoningExpanded: false,
 		Timestamp:         time.Now(),
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) flushStreamTextEntry() {
@@ -59,7 +59,7 @@ func (m *tuiModel) flushStreamTextEntry() {
 		Text:        text,
 		Timestamp:   time.Now(),
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json.RawMessage, executionID string) {
@@ -102,7 +102,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		if strings.TrimSpace(m.entries[i].Text) == "" {
 			m.entries = append(m.entries[:i], m.entries[i+1:]...)
 		}
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 	}
 
 	var turnDur time.Duration
@@ -136,7 +136,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 			m.upsertAssistantSegment(executionID, id, visibleText, turnDur)
 		} else if turnDur >= time.Second && len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindAssistant && m.entries[len(m.entries)-1].TurnDuration == 0 {
 			m.entries[len(m.entries)-1].TurnDuration = turnDur
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 		}
 		if strings.TrimSpace(proposedPlan) != "" {
 			m.upsertPlanEntry(executionID, proposedPlan)
@@ -164,7 +164,7 @@ func (m *tuiModel) upsertAssistantSegment(executionID, id, text string, turnDur 
 	if trimmed == "" {
 		if index >= 0 {
 			m.entries = append(m.entries[:index], m.entries[index+1:]...)
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 		}
 		return
 	}
@@ -173,7 +173,7 @@ func (m *tuiModel) upsertAssistantSegment(executionID, id, text string, turnDur 
 		if turnDur > 0 && m.entries[index].TurnDuration == 0 {
 			m.entries[index].TurnDuration = turnDur
 		}
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 		return
 	}
 	if id == "" {
@@ -183,7 +183,7 @@ func (m *tuiModel) upsertAssistantSegment(executionID, id, text string, turnDur 
 		ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: trimmed,
 		TurnDuration: turnDur, Timestamp: time.Now(),
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) upsertPlanEntry(executionID, text string) {
@@ -201,7 +201,7 @@ func (m *tuiModel) upsertPlanEntry(executionID, text string) {
 		ID: fmt.Sprintf("plan-%d", time.Now().UnixNano()), ExecutionID: executionID,
 		Kind: KindPlan, Text: trimmed, Timestamp: time.Now(),
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) assistantEntryIndex(executionID string) int {

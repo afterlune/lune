@@ -47,8 +47,8 @@ func TestAgentMetricsTrackPerAgentUsageAndStreamSpeed(t *testing.T) {
 func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *testing.T) {
 	m := newTUIModel(nil, nil, "session")
 	m.running = true
-	m.seededSessionUsage = true
-	m.lastTokensPerSec = 42
+	m.usage.seededSessionUsage = true
+	m.usage.lastTokensPerSec = 42
 	m.agentMetrics["lead"] = &agentRuntimeMetrics{ID: "lead", Name: "Main agent", Status: "Running"}
 	m.agentMetrics["lead/worker"] = &agentRuntimeMetrics{ID: "lead/worker", Name: "worker", Role: "worker", Status: "Running", ContextWindow: 128000}
 	m.processRuntimeEventNoRefresh(core.Event{
@@ -56,8 +56,8 @@ func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *test
 		ContextWindow: 128000,
 		Usage:         core.Usage{InputTokens: 900, InputTokensDetails: core.TokenInputDetails{CachedTokens: 300}, OutputTokens: 100, TotalTokens: 1000},
 	})
-	if m.lastTokensPerSec != 42 {
-		t.Fatalf("worker usage replaced main speed: got %v", m.lastTokensPerSec)
+	if m.usage.lastTokensPerSec != 42 {
+		t.Fatalf("worker usage replaced main speed: got %v", m.usage.lastTokensPerSec)
 	}
 	if m.agentMetric("lead/worker").InputTokens != 900 {
 		t.Fatalf("worker usage was not recorded: %#v", m.agentMetric("lead/worker"))
@@ -77,7 +77,7 @@ func TestWorkerUsageDoesNotOverwriteMainSpeedAndAgentsPanelIsInteractive(t *test
 		t.Fatalf("agent details omitted context:\n%s", detail)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m.agentsPanelOpen {
+	if m.modals.agents.open {
 		t.Fatal("agents panel remained open after escape")
 	}
 	for _, command := range builtinCommands {
@@ -402,7 +402,7 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 		InputTokens: 1000, InputTokensDetails: core.TokenInputDetails{CachedTokens: 400}, OutputTokens: 200, TotalTokens: 1200,
 	}})
 	_, _ = m.handleAgentsCommand([]string{"/agents"})
-	if !m.agentsPanelOpen {
+	if !m.modals.agents.open {
 		t.Fatal("/agents did not open the interactive panel")
 	}
 	panel := ansi.Strip(m.renderAgentsPanel(120))
@@ -414,11 +414,11 @@ func TestSubagentTrackingAndCommands(t *testing.T) {
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
 	detail := ansi.Strip(m.renderAgentsPanel(120))
-	if !m.agentsPanelDetail || !strings.Contains(detail, "Agent details · code_researcher") || !strings.Contains(strings.ToLower(detail), "tools: 1") {
+	if !m.modals.agents.detail || !strings.Contains(detail, "Agent details · code_researcher") || !strings.Contains(strings.ToLower(detail), "tools: 1") {
 		t.Fatalf("expected interactive agent details, got:\n%s", detail)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m.agentsPanelOpen {
+	if m.modals.agents.open {
 		t.Fatal("escape did not close the agents panel")
 	}
 }
@@ -489,7 +489,7 @@ func TestSummarizeToolRoundRecognizesAskUserAndSubagents(t *testing.T) {
 func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.running = true
-	m.contextWindow = 1000000
+	m.usage.contextWindow = 1000000
 
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
@@ -504,18 +504,18 @@ func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
 		EstimatedInputTokens: 9000, Usage: core.Usage{InputTokens: 9000},
 	})
 
-	if m.lastInputTokens != 42000 || m.estimatedInputTokens != 0 || m.contextWindow != 1000000 {
-		t.Fatalf("subagent usage changed lead context metrics: input=%d estimated=%d context=%d", m.lastInputTokens, m.estimatedInputTokens, m.contextWindow)
+	if m.usage.lastInputTokens != 42000 || m.usage.estimatedInputTokens != 0 || m.usage.contextWindow != 1000000 {
+		t.Fatalf("subagent usage changed lead context metrics: input=%d estimated=%d context=%d", m.usage.lastInputTokens, m.usage.estimatedInputTokens, m.usage.contextWindow)
 	}
-	if m.totalInputTokens != 231000 || m.totalOutputTokens != 1200 {
-		t.Fatalf("session totals should include all agent usage: input=%d output=%d", m.totalInputTokens, m.totalOutputTokens)
+	if m.usage.totalInputTokens != 231000 || m.usage.totalOutputTokens != 1200 {
+		t.Fatalf("session totals should include all agent usage: input=%d output=%d", m.usage.totalInputTokens, m.usage.totalOutputTokens)
 	}
 
 	m.handleRuntimeEvent(core.Event{
 		Kind: core.EventUsage, AgentID: "lead", UsagePurpose: core.UsagePurposeMain, ContextWindow: 1000000,
 		EstimatedInputTokens: 55000,
 	})
-	if m.lastInputTokens != 0 || m.estimatedInputTokens != 55000 {
-		t.Fatalf("latest lead estimate should replace prior measured input: input=%d estimated=%d", m.lastInputTokens, m.estimatedInputTokens)
+	if m.usage.lastInputTokens != 0 || m.usage.estimatedInputTokens != 55000 {
+		t.Fatalf("latest lead estimate should replace prior measured input: input=%d estimated=%d", m.usage.lastInputTokens, m.usage.estimatedInputTokens)
 	}
 }

@@ -32,7 +32,7 @@ func (m *tuiModel) markRunningSubagentsAndToolsDone() {
 		}
 	}
 	if changed {
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 	}
 }
 
@@ -60,7 +60,7 @@ func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, run
 			if !running && m.entries[i].SubagentPreview == "" {
 				m.entries[i].SubagentPreview = "Completed"
 			}
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 			return
 		}
 	}
@@ -79,7 +79,7 @@ func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, run
 		SubagentDuration: duration,
 		Timestamp:        time.Now(),
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) activeSubagentsCount() int {
@@ -156,8 +156,7 @@ func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, tool
 			if agentRole != "" {
 				m.entries[i].AgentRole = agentRole
 			}
-			m.transcriptDirty = true
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 			return
 		}
 	}
@@ -173,8 +172,7 @@ func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, tool
 		SubagentPreview:  preview,
 		Timestamp:        time.Now(),
 	})
-	m.transcriptDirty = true
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) recordSubagentToolFinished(agentID, toolName string, dur time.Duration) {
@@ -188,8 +186,7 @@ func (m *tuiModel) recordSubagentToolFinished(agentID, toolName string, dur time
 				m.entries[i].SubagentDuration += dur
 			}
 			m.entries[i].SubagentPreview = fmt.Sprintf("Finished %s", toolName)
-			m.transcriptDirty = true
-			m.invalidateEntryCache()
+			m.view.invalidateBlocks()
 			return
 		}
 	}
@@ -245,5 +242,5 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 			break
 		}
 	}
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }

@@ -48,36 +48,36 @@ func (m *tuiModel) renderStatusTable() string {
 		fmt.Sprintf("Queued:         %d waiting", len(m.queuedTurns)),
 	}
 
-	if m.contextWindow > 0 {
+	if m.usage.contextWindow > 0 {
 		var inputLabel string
 		var usedCtx int64
-		if m.lastInputTokens > 0 {
-			usedCtx = m.lastInputTokens
+		if m.usage.lastInputTokens > 0 {
+			usedCtx = m.usage.lastInputTokens
 			inputLabel = "active prompt"
 		} else {
-			usedCtx = m.estimatedInputTokens
+			usedCtx = m.usage.estimatedInputTokens
 			inputLabel = "est. input"
 		}
 		pct := 0.0
 		if usedCtx > 0 {
-			pct = float64(usedCtx) / float64(m.contextWindow) * 100.0
+			pct = float64(usedCtx) / float64(m.usage.contextWindow) * 100.0
 		}
 		lines = append(lines, fmt.Sprintf("Context Window: %s tokens (%s: %s, %.1f%% full)",
-			formatTokens(m.contextWindow), inputLabel, formatTokens(usedCtx), pct))
+			formatTokens(m.usage.contextWindow), inputLabel, formatTokens(usedCtx), pct))
 	}
 	if label := m.compactionSettingsLabel(); label != "" {
 		lines = append(lines, "Auto-compaction: "+label)
 	}
-	if m.compacting {
+	if m.usage.compacting {
 		lines = append(lines, "Compaction:      in progress…")
 	}
-	if m.lastInputTokens > 0 {
-		lines = append(lines, "Last Prompt Cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
+	if m.usage.lastInputTokens > 0 {
+		lines = append(lines, "Last Prompt Cache: "+formatPromptCacheBreakdown(m.usage.lastInputTokens, m.usage.lastCachedTokens))
 	}
-	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+	if m.usage.totalInputTokens > 0 || m.usage.totalOutputTokens > 0 {
 		lines = append(lines, fmt.Sprintf("Total Tokens:   in: %s (cached: %s) · out: %s (reasoning: %s)",
-			formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
-			formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
+			formatTokens(m.usage.totalInputTokens), formatTokens(m.usage.cachedTokens),
+			formatTokens(m.usage.totalOutputTokens), formatTokens(m.usage.reasoningTokens)))
 	}
 
 	if m.runtime != nil {
@@ -200,15 +200,15 @@ func (m *tuiModel) renderContextDiagnostics() string {
 
 	// 4. Context Window & Token Utilization
 	lines = append(lines, "\n**Context Window Utilization:**")
-	if m.contextWindow > 0 {
+	if m.usage.contextWindow > 0 {
 		ratio := 0.0
-		if m.estimatedInputTokens > 0 {
-			ratio = float64(m.estimatedInputTokens) / float64(m.contextWindow)
+		if m.usage.estimatedInputTokens > 0 {
+			ratio = float64(m.usage.estimatedInputTokens) / float64(m.usage.contextWindow)
 		}
 		pct := ratio * 100.0
 		progressBar := renderProgressBar(ratio, 20)
 		lines = append(lines, fmt.Sprintf("- Budget: %s %.1f%% (%s / %s tokens)",
-			progressBar, pct, formatTokens(m.estimatedInputTokens), formatTokens(m.contextWindow)))
+			progressBar, pct, formatTokens(m.usage.estimatedInputTokens), formatTokens(m.usage.contextWindow)))
 	} else {
 		lines = append(lines, "- Budget: Standard context window (no provider limit reported yet)")
 	}
@@ -216,13 +216,13 @@ func (m *tuiModel) renderContextDiagnostics() string {
 		lines = append(lines, "- Auto-compaction: "+label)
 	}
 	lines = append(lines, fmt.Sprintf("- Session Cumulative Tokens: in: %s (cached: %s) · out: %s (reasoning: %s)",
-		formatTokens(m.totalInputTokens), formatTokens(m.cachedTokens),
-		formatTokens(m.totalOutputTokens), formatTokens(m.reasoningTokens)))
-	if m.lastInputTokens > 0 {
-		lines = append(lines, "- Last prompt cache: "+formatPromptCacheBreakdown(m.lastInputTokens, m.lastCachedTokens))
-		if m.lastRequestID != "" {
-			lines = append(lines, fmt.Sprintf("- Last main request: %s (attempt %d, input %s)", m.lastRequestID, m.lastRequestAttempt, formatTokens(m.lastInputTokens)))
-			changes := strings.Join(m.lastRequestChanges, ", ")
+		formatTokens(m.usage.totalInputTokens), formatTokens(m.usage.cachedTokens),
+		formatTokens(m.usage.totalOutputTokens), formatTokens(m.usage.reasoningTokens)))
+	if m.usage.lastInputTokens > 0 {
+		lines = append(lines, "- Last prompt cache: "+formatPromptCacheBreakdown(m.usage.lastInputTokens, m.usage.lastCachedTokens))
+		if m.usage.lastRequestID != "" {
+			lines = append(lines, fmt.Sprintf("- Last main request: %s (attempt %d, input %s)", m.usage.lastRequestID, m.usage.lastRequestAttempt, formatTokens(m.usage.lastInputTokens)))
+			changes := strings.Join(m.usage.lastRequestChanges, ", ")
 			if changes == "" {
 				changes = "no local prefix changes"
 			}

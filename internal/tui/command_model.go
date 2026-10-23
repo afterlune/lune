@@ -57,7 +57,7 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		m.planMode = true
 		m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
 	}
-	m.autocompleteOpen = false
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 	return m, nil
 }

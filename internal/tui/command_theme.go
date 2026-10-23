@@ -21,8 +21,9 @@ func (m *tuiModel) openThemePicker() {
 			break
 		}
 	}
-	m.themePicker = &ActiveThemePicker{Selected: selected}
-	m.autocompleteOpen = false
+	m.modals.open()
+	m.modals.theme = &ActiveThemePicker{Selected: selected}
+	m.input.autocompleteOpen = false
 	m.updateLayout()
 }
 
@@ -47,33 +48,33 @@ func (m *tuiModel) applyThemeMode(mode ThemeMode) {
 }
 
 func (m *tuiModel) handleThemePickerKeyPress(keyStr string) (tea.Model, tea.Cmd) {
-	if m.themePicker == nil {
+	if m.modals.theme == nil {
 		return m, nil
 	}
 	switch strings.ToLower(keyStr) {
 	case "esc", "q":
-		m.themePicker = nil
+		m.modals.theme = nil
 		m.updateLayout()
 		return m, nil
 	case "up", "k":
-		if m.themePicker.Selected > 0 {
-			m.themePicker.Selected--
+		if m.modals.theme.Selected > 0 {
+			m.modals.theme.Selected--
 		} else {
-			m.themePicker.Selected = len(themeModes) - 1
+			m.modals.theme.Selected = len(themeModes) - 1
 		}
 		m.updateLayout()
 		return m, nil
 	case "down", "j":
-		if m.themePicker.Selected < len(themeModes)-1 {
-			m.themePicker.Selected++
+		if m.modals.theme.Selected < len(themeModes)-1 {
+			m.modals.theme.Selected++
 		} else {
-			m.themePicker.Selected = 0
+			m.modals.theme.Selected = 0
 		}
 		m.updateLayout()
 		return m, nil
 	case "enter":
-		selected := m.themePicker.Selected
-		m.themePicker = nil
+		selected := m.modals.theme.Selected
+		m.modals.theme = nil
 		m.applyThemeMode(themeModes[selected])
 		return m, nil
 	default:

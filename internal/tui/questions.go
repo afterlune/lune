@@ -67,14 +67,14 @@ func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer Ans
 		} else {
 			entry.AnsweredQuestions = append(entry.AnsweredQuestions, answer)
 		}
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 		return
 	}
 	m.entries = append(m.entries, TranscriptEntry{
 		Kind: KindQuestionAnswered, ExecutionID: q.Request.ExecutionID, QuestionBatchID: batchID,
 		QuestionsTotal: len(q.Request.Questions), AnsweredQuestions: []AnsweredQuestionItem{answer},
 	})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {

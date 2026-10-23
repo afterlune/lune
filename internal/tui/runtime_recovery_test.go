@@ -60,7 +60,7 @@ func BenchmarkRefreshViewportContent_Uncached(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		m.invalidateEntryCache()
+		m.view.invalidateBlocks()
 		m.refreshViewportContent()
 	}
 }
@@ -125,15 +125,15 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	// 1. /sessions without arguments lists sessions without switching modes.
 	mod, _ := m.handleSlashCommand("/sessions")
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, s2.ID[:12]) {
-		t.Fatalf("expected /sessions to list the second session without opening a modal: modal=%v entry=%q", m.sessionsModalOpen, m.entries[len(m.entries)-1].Text)
+	if m.modals.sessions.open || !strings.Contains(m.entries[len(m.entries)-1].Text, s2.ID[:12]) {
+		t.Fatalf("expected /sessions to list the second session without opening a modal: modal=%v entry=%q", m.modals.sessions.open, m.entries[len(m.entries)-1].Text)
 	}
 
 	// 2. /sessions with a query lists matching sessions without switching.
 	mod, _ = m.handleSlashCommand("/sessions Beta")
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "Sessions matching \"beta\"") || m.sessionID != s1.ID {
-		t.Fatalf("expected /sessions Beta to list matches without switching: modal=%v session=%s entry=%q", m.sessionsModalOpen, m.sessionID, m.entries[len(m.entries)-1].Text)
+	if m.modals.sessions.open || !strings.Contains(m.entries[len(m.entries)-1].Text, "Sessions matching \"beta\"") || m.sessionID != s1.ID {
+		t.Fatalf("expected /sessions Beta to list matches without switching: modal=%v session=%s entry=%q", m.modals.sessions.open, m.sessionID, m.entries[len(m.entries)-1].Text)
 	}
 
 	// 3. /resume with a unique prefix switches directly without starting a model turn.
@@ -146,7 +146,7 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	if m.running {
 		t.Fatal("switching sessions must not start a model turn")
 	}
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected direct switch instead of opening modal for unique prefix")
 	}
 	if m.sessionID != s2.ID {
@@ -161,10 +161,10 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	// 4. /resume without an ID opens the session picker.
 	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		t.Fatal("expected /resume without arguments to open the session picker")
 	}
-	m.sessionsModalOpen = false
+	m.modals.sessions.open = false
 
 	// 5. Checkpoint recovery has a separate /continue command.
 	s1Prefix := s1.ID
@@ -180,7 +180,7 @@ func TestSessionsCommandAndResumeWorkflows(t *testing.T) {
 	// 6. /continue without a paused task reports that no checkpoint is available.
 	mod, _ = m.handleSlashCommand("/continue")
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to continue") {
+	if m.modals.sessions.open || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to continue") {
 		t.Fatalf("expected /continue to report no paused task without opening a modal")
 	}
 }
@@ -189,12 +189,11 @@ func TestExportMultiFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 	exitZero := 0
 	m := &tuiModel{
-		workspace:         tmpDir,
-		sessionID:         "test-export-id-12345",
-		sessionTitle:      "Multi-Format Export Test",
-		currentModel:      "test-model-pro",
-		totalInputTokens:  1200,
-		totalOutputTokens: 600,
+		workspace:    tmpDir,
+		sessionID:    "test-export-id-12345",
+		sessionTitle: "Multi-Format Export Test",
+		currentModel: "test-model-pro",
+		usage:        sessionUsage{totalInputTokens: 1200, totalOutputTokens: 600},
 		entries: []TranscriptEntry{
 			{
 				ID:        "u1",
@@ -299,10 +298,10 @@ func TestRewindPreviewAndRestoration(t *testing.T) {
 	m.entries = transcriptFromHistory(json.RawMessage(historyJSON))
 	for _, entry := range m.entries {
 		if entry.Kind == KindUser && entry.Text != "" {
-			m.promptHistory = append(m.promptHistory, entry.Text)
+			m.input.history = append(m.input.history, entry.Text)
 		}
 	}
-	m.historyIndex = len(m.promptHistory)
+	m.input.historyIndex = len(m.input.history)
 	m.updateLayout()
 
 	// 1. Preview mode does not delete history
@@ -316,8 +315,8 @@ func TestRewindPreviewAndRestoration(t *testing.T) {
 	// 2. Execute rewind 1 turn: removes turn 2, restores "Detailed prompt turn 2" to composer
 	mod, _ = m.handleSlashCommand("/rewind 1")
 	m = mod.(*tuiModel)
-	if m.composer.Value() != "Detailed prompt turn 2" {
-		t.Fatalf("expected composer to restore 'Detailed prompt turn 2', got %q", m.composer.Value())
+	if m.input.composer.Value() != "Detailed prompt turn 2" {
+		t.Fatalf("expected composer to restore 'Detailed prompt turn 2', got %q", m.input.composer.Value())
 	}
 	lastSys2 := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys2, "Rewound 1 turn(s)") {
@@ -651,28 +650,28 @@ func TestDiffModalTabBarAndNavigation(t *testing.T) {
 	m := newTUIModel(nil, nil, "diff-test-sess")
 	m.width = 100
 	m.height = 30
-	m.diffModalOpen = true
-	m.diffFiles = files
-	m.diffFileIndex = 0
+	m.modals.diff.open = true
+	m.modals.diff.files = files
+	m.modals.diff.fileIndex = 0
 
 	// Press '2' -> jumps to file index 1 (view.go)
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '2'}))
 	m = mod.(*tuiModel)
-	if m.diffFileIndex != 1 {
-		t.Errorf("expected diffFileIndex=1 after pressing '2', got %d", m.diffFileIndex)
+	if m.modals.diff.fileIndex != 1 {
+		t.Errorf("expected diffFileIndex=1 after pressing '2', got %d", m.modals.diff.fileIndex)
 	}
 
 	// Press '3' -> jumps to file index 2 (main.go)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '3'}))
 	m = mod.(*tuiModel)
-	if m.diffFileIndex != 2 {
-		t.Errorf("expected diffFileIndex=2 after pressing '3', got %d", m.diffFileIndex)
+	if m.modals.diff.fileIndex != 2 {
+		t.Errorf("expected diffFileIndex=2 after pressing '3', got %d", m.modals.diff.fileIndex)
 	}
 
 	// The diff viewer remains read-only when the old commit shortcut is pressed.
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm'}))
 	m = mod.(*tuiModel)
-	if !m.diffModalOpen || m.composer.Value() != "" {
+	if !m.modals.diff.open || m.input.composer.Value() != "" {
 		t.Fatal("diff viewer must not draft a Git write command")
 	}
 }

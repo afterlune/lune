@@ -59,8 +59,8 @@ func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.
 	if got, want := m.desiredTerminalTitle(), "Second session | "+filepath.Base(m.workspace); got != want {
 		t.Fatalf("session switch did not update the terminal title: got %q, want %q", got, want)
 	}
-	if len(m.promptHistory) != 1 || m.promptHistory[0] != "Second session prompt" {
-		t.Fatalf("session prompt history was not restored: %+v", m.promptHistory)
+	if len(m.input.history) != 1 || m.input.history[0] != "Second session prompt" {
+		t.Fatalf("session prompt history was not restored: %+v", m.input.history)
 	}
 	if len(m.entries) != 1 || m.entries[0].Text != "Second session prompt" {
 		t.Fatalf("session transcript was not replaced from snapshot: %+v", m.entries)
@@ -103,8 +103,8 @@ func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 	}
 	saved.UsageRequests = []core.UsageRecord{{ContextWindow: 200000}}
 	m.loadSessionSnapshot(saved)
-	if m.contextWindow != 1000000 {
-		t.Fatalf("project context default must override stale usage history, got %d", m.contextWindow)
+	if m.usage.contextWindow != 1000000 {
+		t.Fatalf("project context default must override stale usage history, got %d", m.usage.contextWindow)
 	}
 	if summary := formatContextAndTokenSummary(m, 120); !strings.Contains(summary, "/1M") {
 		t.Fatalf("footer should show the configured context window before usage events, got %q", summary)
@@ -113,8 +113,8 @@ func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 	sessionOverride := int64(1200000)
 	saved.Settings.ContextWindow = &sessionOverride
 	m.loadSessionSnapshot(saved)
-	if m.contextWindow != sessionOverride {
-		t.Fatalf("session context override must win over the project default, got %d", m.contextWindow)
+	if m.usage.contextWindow != sessionOverride {
+		t.Fatalf("session context override must win over the project default, got %d", m.usage.contextWindow)
 	}
 	m.loadSessionSnapshot(saved)
 	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{
@@ -122,8 +122,8 @@ func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 		ExecutionID: "queued-paused-execution",
 		QueueID:     "queue-id",
 	}})
-	if m.contextWindow != sessionOverride {
-		t.Fatalf("queued paused state without a task snapshot must keep session settings, got %d", m.contextWindow)
+	if m.usage.contextWindow != sessionOverride {
+		t.Fatalf("queued paused state without a task snapshot must keep session settings, got %d", m.usage.contextWindow)
 	}
 	m.restoreRuntimeSnapshot(core.RuntimeState{Task: core.TaskState{
 		Status:        core.TaskRunning,
@@ -131,8 +131,8 @@ func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 		ExecutionID:   "active-execution",
 		ContextWindow: 900000,
 	}})
-	if m.contextWindow != 900000 {
-		t.Fatalf("active execution must retain its pinned context window, got %d", m.contextWindow)
+	if m.usage.contextWindow != 900000 {
+		t.Fatalf("active execution must retain its pinned context window, got %d", m.usage.contextWindow)
 	}
 }
 
@@ -173,9 +173,9 @@ func TestSessionSnapshotRestoresLeadContextUsage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTUIModel(nil, nil, "test-sess")
 			m.loadSessionSnapshot(core.Session{UsageRequests: tt.records})
-			if m.lastInputTokens != tt.wantInput || m.estimatedInputTokens != tt.wantEstimated || m.contextWindow != tt.wantContextWindow {
+			if m.usage.lastInputTokens != tt.wantInput || m.usage.estimatedInputTokens != tt.wantEstimated || m.usage.contextWindow != tt.wantContextWindow {
 				t.Fatalf("restored usage input=%d estimated=%d context=%d, want input=%d estimated=%d context=%d",
-					m.lastInputTokens, m.estimatedInputTokens, m.contextWindow, tt.wantInput, tt.wantEstimated, tt.wantContextWindow)
+					m.usage.lastInputTokens, m.usage.estimatedInputTokens, m.usage.contextWindow, tt.wantInput, tt.wantEstimated, tt.wantContextWindow)
 			}
 		})
 	}
@@ -226,7 +226,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 	m.running = true
 	mod, _ := m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected sessions modal NOT to open while task is running")
 	}
 	lastSys := m.entries[len(m.entries)-1].Text
@@ -238,14 +238,14 @@ func TestSessionsModalInteractions(t *testing.T) {
 	// 2. Open modal via /resume
 	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		t.Fatalf("expected sessions modal to open via /resume")
 	}
-	if len(m.sessionsItems) != 3 {
-		t.Fatalf("expected 3 sessions in modal, got %d", len(m.sessionsItems))
+	if len(m.modals.sessions.items) != 3 {
+		t.Fatalf("expected 3 sessions in modal, got %d", len(m.modals.sessions.items))
 	}
-	if len(m.sessionsFiltered) != 3 {
-		t.Fatalf("expected 3 filtered sessions, got %d", len(m.sessionsFiltered))
+	if len(m.modals.sessions.filtered) != 3 {
+		t.Fatalf("expected 3 filtered sessions, got %d", len(m.modals.sessions.filtered))
 	}
 	// Verify view rendering
 	viewStr := ansi.Strip(m.View().Content)
@@ -254,15 +254,15 @@ func TestSessionsModalInteractions(t *testing.T) {
 	}
 
 	// 3. Navigation with Down and Up
-	initialIdx := m.sessionsIndex
+	initialIdx := m.modals.sessions.index
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.sessionsIndex == initialIdx && len(m.sessionsFiltered) > 1 {
+	if m.modals.sessions.index == initialIdx && len(m.modals.sessions.filtered) > 1 {
 		t.Fatalf("expected sessionsIndex to change on Down")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.sessionsIndex != initialIdx {
+	if m.modals.sessions.index != initialIdx {
 		t.Fatalf("expected sessionsIndex to return to initialIdx on Up")
 	}
 
@@ -273,34 +273,34 @@ func TestSessionsModalInteractions(t *testing.T) {
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
 	m = mod.(*tuiModel)
-	if m.sessionsFilter != "bug" {
-		t.Fatalf("expected filter to be 'bug', got %q", m.sessionsFilter)
+	if m.modals.sessions.filter != "bug" {
+		t.Fatalf("expected filter to be 'bug', got %q", m.modals.sessions.filter)
 	}
-	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s2.ID {
-		t.Fatalf("expected filtered to contain only s2, got %d items", len(m.sessionsFiltered))
+	if len(m.modals.sessions.filtered) != 1 || m.modals.sessions.filtered[0].ID != s2.ID {
+		t.Fatalf("expected filtered to contain only s2, got %d items", len(m.modals.sessions.filtered))
 	}
 
 	// 5. Backspace removes last char
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyBackspace}))
 	m = mod.(*tuiModel)
-	if m.sessionsFilter != "bu" {
-		t.Fatalf("expected filter to be 'bu' after backspace, got %q", m.sessionsFilter)
+	if m.modals.sessions.filter != "bu" {
+		t.Fatalf("expected filter to be 'bu' after backspace, got %q", m.modals.sessions.filter)
 	}
 
 	// 6. Dismiss with Esc
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected sessions modal to close on Esc")
 	}
-	if m.sessionsFilter != "" {
+	if m.modals.sessions.filter != "" {
 		t.Fatalf("expected filter to reset on Esc")
 	}
 
 	// 7. Open with /resume command (without arguments)
 	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		t.Fatalf("expected /resume without args to open modal")
 	}
 
@@ -313,13 +313,13 @@ func TestSessionsModalInteractions(t *testing.T) {
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'a', Text: "a"}))
 	m = mod.(*tuiModel)
-	if len(m.sessionsFiltered) != 1 || m.sessionsFiltered[0].ID != s3.ID {
-		t.Fatalf("expected filtered to match s3, got %d items", len(m.sessionsFiltered))
+	if len(m.modals.sessions.filtered) != 1 || m.modals.sessions.filtered[0].ID != s3.ID {
+		t.Fatalf("expected filtered to match s3, got %d items", len(m.modals.sessions.filtered))
 	}
 
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected modal to close after Enter")
 	}
 	if m.sessionID != s3.ID {
@@ -329,12 +329,12 @@ func TestSessionsModalInteractions(t *testing.T) {
 	// 9. Reopening via /resume and closing with Esc
 	mod, _ = m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		t.Fatalf("expected modal to open via /resume")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.sessionsModalOpen {
+	if m.modals.sessions.open {
 		t.Fatalf("expected modal to close on Esc")
 	}
 
@@ -395,20 +395,20 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	// 1. Open sessions modal
 	mod, _ := m.handleSlashCommand("/resume")
 	m = mod.(*tuiModel)
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		t.Fatalf("expected modal to open via /resume")
 	}
 
 	// 2. Select active session (s1) and try Ctrl+D -> blocked
-	for i, s := range m.sessionsFiltered {
+	for i, s := range m.modals.sessions.filtered {
 		if s.ID == s1.ID {
-			m.sessionsIndex = i
+			m.modals.sessions.index = i
 			break
 		}
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
-	if m.sessionsConfirmDelete {
+	if m.modals.sessions.confirmDelete {
 		t.Fatalf("expected deletion confirmation NOT to trigger for active session")
 	}
 	lastSys := m.entries[len(m.entries)-1].Text
@@ -417,16 +417,16 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	}
 
 	// 3. Select disposable session (s2) and press Ctrl+D -> enter confirmation
-	for i, s := range m.sessionsFiltered {
+	for i, s := range m.modals.sessions.filtered {
 		if s.ID == s2.ID {
-			m.sessionsIndex = i
+			m.modals.sessions.index = i
 			break
 		}
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'd', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
-	if !m.sessionsConfirmDelete || m.sessionsDeletingID != s2.ID {
-		t.Fatalf("expected sessionsConfirmDelete for s2, got %v (id: %s)", m.sessionsConfirmDelete, m.sessionsDeletingID)
+	if !m.modals.sessions.confirmDelete || m.modals.sessions.deletingID != s2.ID {
+		t.Fatalf("expected sessionsConfirmDelete for s2, got %v (id: %s)", m.modals.sessions.confirmDelete, m.modals.sessions.deletingID)
 	}
 	// Verify view rendering contains confirmation warning
 	viewStr := ansi.Strip(m.View().Content)
@@ -437,23 +437,23 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	// 4. Press 'n' to cancel
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
 	m = mod.(*tuiModel)
-	if m.sessionsConfirmDelete {
+	if m.modals.sessions.confirmDelete {
 		t.Fatalf("expected sessionsConfirmDelete to cancel on 'n'")
 	}
 
 	// 5. Press Delete key (tea.KeyDelete) on s2 and press 'y' to confirm
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDelete}))
 	m = mod.(*tuiModel)
-	if !m.sessionsConfirmDelete {
+	if !m.modals.sessions.confirmDelete {
 		t.Fatalf("expected sessionsConfirmDelete on Delete key")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
 	m = mod.(*tuiModel)
-	if m.sessionsConfirmDelete {
+	if m.modals.sessions.confirmDelete {
 		t.Fatalf("expected confirmation to clear after 'y'")
 	}
 	// Verify s2 is gone from sessionsItems
-	for _, s := range m.sessionsItems {
+	for _, s := range m.modals.sessions.items {
 		if s.ID == s2.ID {
 			t.Fatalf("expected s2 to be deleted from sessionsItems")
 		}
@@ -470,8 +470,8 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	// 6. Test /drop command
 	// No arguments opens the interactive delete picker.
 	m.handleSlashCommand("/drop")
-	if !m.sessionsModalOpen || !m.sessionsDeleteMode {
-		t.Fatalf("expected /drop to open delete picker, open=%v deleteMode=%v", m.sessionsModalOpen, m.sessionsDeleteMode)
+	if !m.modals.sessions.open || !m.modals.sessions.deleteMode {
+		t.Fatalf("expected /drop to open delete picker, open=%v deleteMode=%v", m.modals.sessions.open, m.modals.sessions.deleteMode)
 	}
 	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 
@@ -484,17 +484,17 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	// Delete s3 via prefix
 	s3Prefix := s3.ID[:8]
 	m.handleSlashCommand("/drop " + s3Prefix)
-	if !m.sessionsModalOpen || !m.sessionsConfirmDelete || m.sessionsDeletingID != s3.ID {
-		t.Fatalf("expected /drop to request confirmation for s3, open=%v confirm=%v id=%q", m.sessionsModalOpen, m.sessionsConfirmDelete, m.sessionsDeletingID)
+	if !m.modals.sessions.open || !m.modals.sessions.confirmDelete || m.modals.sessions.deletingID != s3.ID {
+		t.Fatalf("expected /drop to request confirmation for s3, open=%v confirm=%v id=%q", m.modals.sessions.open, m.modals.sessions.confirmDelete, m.modals.sessions.deletingID)
 	}
 	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
-	if !m.sessionsModalOpen || m.sessionsConfirmDelete {
+	if !m.modals.sessions.open || m.modals.sessions.confirmDelete {
 		t.Fatal("expected n to cancel the deletion and return to the picker")
 	}
 	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m.handleSlashCommand("/drop " + s3Prefix)
 	_, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
-	if m.sessionsConfirmDelete {
+	if m.modals.sessions.confirmDelete {
 		t.Fatal("expected y to complete the confirmed deletion")
 	}
 	lastSys = m.entries[len(m.entries)-1].Text
@@ -512,7 +512,7 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 
 func TestToolPagerModalInteractions(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-tool-pager")
-	m.clipboardWriter = func(string) error { return nil }
+	m.input.clipboardWriter = func(string) error { return nil }
 	m.width = 100
 	m.height = 30
 	m.updateLayout()
@@ -520,7 +520,7 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	// 1. Opening the pager with no tool executions reports it instead of opening
 	mod, _ := m.handleSlashCommand("/detail")
 	m = mod.(*tuiModel)
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		t.Fatalf("expected toolPagerOpen to be false when no tools exist")
 	}
 	if len(m.entries) == 0 || !strings.Contains(m.entries[len(m.entries)-1].Text, "No tool executions in current session.") {
@@ -567,14 +567,14 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	// 3. Open pager via /detail
 	mod, _ = m.handleSlashCommand("/detail")
 	m = mod.(*tuiModel)
-	if !m.toolPagerOpen {
+	if !m.modals.toolPager.open {
 		t.Fatalf("expected toolPagerOpen to be true after /detail")
 	}
-	if m.toolPagerIndex != 2 {
-		t.Fatalf("expected toolPagerIndex to point to latest tool (2), got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 2 {
+		t.Fatalf("expected toolPagerIndex to point to latest tool (2), got %d", m.modals.toolPager.index)
 	}
-	if m.toolPagerScrollY != 0 {
-		t.Fatalf("expected toolPagerScrollY to be 0, got %d", m.toolPagerScrollY)
+	if m.modals.toolPager.scrollY != 0 {
+		t.Fatalf("expected toolPagerScrollY to be 0, got %d", m.modals.toolPager.scrollY)
 	}
 
 	// Verify modal rendering contains tool 3 info and failure badge
@@ -589,8 +589,8 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	// 4. Switch to previous tool using '[' or 'p'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '[', Text: "["}))
 	m = mod.(*tuiModel)
-	if m.toolPagerIndex != 1 {
-		t.Fatalf("expected toolPagerIndex to be 1 after '[', got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 1 {
+		t.Fatalf("expected toolPagerIndex to be 1 after '[', got %d", m.modals.toolPager.index)
 	}
 	renderedTool2 := renderToolPagerModal(m, 100)
 	if !strings.Contains(renderedTool2, "(Tool 2 of 3)") || !strings.Contains(renderedTool2, "go test ./...") {
@@ -602,37 +602,37 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	// Scroll down with 'j'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'j', Text: "j"}))
 	m = mod.(*tuiModel)
-	if m.toolPagerScrollY != 1 {
-		t.Fatalf("expected scrollY to be 1 after 'j', got %d", m.toolPagerScrollY)
+	if m.modals.toolPager.scrollY != 1 {
+		t.Fatalf("expected scrollY to be 1 after 'j', got %d", m.modals.toolPager.scrollY)
 	}
 
 	// Scroll down with 'pgdown'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyPgDown}))
 	m = mod.(*tuiModel)
-	if m.toolPagerScrollY != 1+visible {
-		t.Fatalf("expected scrollY to be %d after pgdown, got %d", 1+visible, m.toolPagerScrollY)
+	if m.modals.toolPager.scrollY != 1+visible {
+		t.Fatalf("expected scrollY to be %d after pgdown, got %d", 1+visible, m.modals.toolPager.scrollY)
 	}
 
 	// Scroll to end with 'end' / 'G'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'G', Text: "G"}))
 	m = mod.(*tuiModel)
 	maxScroll := max(0, 50-visible)
-	if m.toolPagerScrollY != maxScroll {
-		t.Fatalf("expected scrollY to be maxScroll (%d), got %d", maxScroll, m.toolPagerScrollY)
+	if m.modals.toolPager.scrollY != maxScroll {
+		t.Fatalf("expected scrollY to be maxScroll (%d), got %d", maxScroll, m.modals.toolPager.scrollY)
 	}
 
 	// Scroll to top with 'home' / 'g'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
 	m = mod.(*tuiModel)
-	if m.toolPagerScrollY != 0 {
-		t.Fatalf("expected scrollY to be 0 after 'g', got %d", m.toolPagerScrollY)
+	if m.modals.toolPager.scrollY != 0 {
+		t.Fatalf("expected scrollY to be 0 after 'g', got %d", m.modals.toolPager.scrollY)
 	}
 
 	// 6. Test copying tool output with 'c'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'c', Text: "c"}))
 	m = mod.(*tuiModel)
-	if !strings.Contains(m.copyFeedback, "Copied") {
-		t.Fatalf("expected copy feedback, got %q", m.copyFeedback)
+	if !strings.Contains(m.input.copyFeedback, "Copied") {
+		t.Fatalf("expected copy feedback, got %q", m.input.copyFeedback)
 	}
 	renderedWithCopy := renderToolPagerModal(m, 100)
 	if !strings.Contains(renderedWithCopy, "Copied") {
@@ -642,50 +642,50 @@ func TestToolPagerModalInteractions(t *testing.T) {
 	// 7. Cycle previous to tool 0, then wrap around
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'p', Text: "p"}))
 	m = mod.(*tuiModel)
-	if m.toolPagerIndex != 0 {
-		t.Fatalf("expected toolPagerIndex to be 0 after 'p', got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 0 {
+		t.Fatalf("expected toolPagerIndex to be 0 after 'p', got %d", m.modals.toolPager.index)
 	}
 	// Wrap around backwards to 2
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '[', Text: "["}))
 	m = mod.(*tuiModel)
-	if m.toolPagerIndex != 2 {
-		t.Fatalf("expected toolPagerIndex to wrap to 2, got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 2 {
+		t.Fatalf("expected toolPagerIndex to wrap to 2, got %d", m.modals.toolPager.index)
 	}
 	// Cycle next with ']'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: ']', Text: "]"}))
 	m = mod.(*tuiModel)
-	if m.toolPagerIndex != 0 {
-		t.Fatalf("expected toolPagerIndex to wrap to 0, got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 0 {
+		t.Fatalf("expected toolPagerIndex to wrap to 0, got %d", m.modals.toolPager.index)
 	}
 
 	// 8. Close with 'q'
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'q', Text: "q"}))
 	m = mod.(*tuiModel)
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		t.Fatalf("expected toolPagerOpen to be false after 'q'")
 	}
 
 	// 9. Open via /detail command with specific 1-based index
 	mod, _ = m.handleSlashCommand("/detail 2")
 	m = mod.(*tuiModel)
-	if !m.toolPagerOpen {
+	if !m.modals.toolPager.open {
 		t.Fatalf("expected toolPagerOpen to be true after /detail 2")
 	}
-	if m.toolPagerIndex != 1 {
-		t.Fatalf("expected toolPagerIndex to be 1 (/detail 2), got %d", m.toolPagerIndex)
+	if m.modals.toolPager.index != 1 {
+		t.Fatalf("expected toolPagerIndex to be 1 (/detail 2), got %d", m.modals.toolPager.index)
 	}
 
 	// Close with Esc
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		t.Fatalf("expected toolPagerOpen to be false after Esc")
 	}
 
 	// Ctrl+T is no longer bound: it must not reopen the pager
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Mod: tea.ModCtrl}))
 	m = mod.(*tuiModel)
-	if m.toolPagerOpen {
+	if m.modals.toolPager.open {
 		t.Fatalf("expected Ctrl+T to no longer open the tool output pager")
 	}
 }
@@ -743,13 +743,13 @@ index 3333333..4444444 100644
 
 	// 2. Setup model with diff files
 	m := newTUIModel(nil, nil, "test-sess")
-	m.clipboardWriter = func(string) error { return nil }
+	m.input.clipboardWriter = func(string) error { return nil }
 	m.width = 100
 	m.height = 30
-	m.diffModalOpen = true
-	m.diffFiles = parsed
-	m.diffFileIndex = 0
-	m.diffScrollY = 0
+	m.modals.diff.open = true
+	m.modals.diff.files = parsed
+	m.modals.diff.fileIndex = 0
+	m.modals.diff.scrollY = 0
 	m.updateLayout()
 
 	// Verify renderDiffModal output
@@ -770,21 +770,21 @@ index 3333333..4444444 100644
 	// 3. Test scrolling (down/up)
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.diffScrollY != 1 {
-		t.Errorf("expected diffScrollY to be 1 after down arrow, got %d", m.diffScrollY)
+	if m.modals.diff.scrollY != 1 {
+		t.Errorf("expected diffScrollY to be 1 after down arrow, got %d", m.modals.diff.scrollY)
 	}
 
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp}))
 	m = mod.(*tuiModel)
-	if m.diffScrollY != 0 {
-		t.Errorf("expected diffScrollY to be 0 after up arrow, got %d", m.diffScrollY)
+	if m.modals.diff.scrollY != 0 {
+		t.Errorf("expected diffScrollY to be 0 after up arrow, got %d", m.modals.diff.scrollY)
 	}
 
 	// 4. Test file switching (Tab / ])
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	m = mod.(*tuiModel)
-	if m.diffFileIndex != 1 {
-		t.Errorf("expected diffFileIndex to be 1 after Tab, got %d", m.diffFileIndex)
+	if m.modals.diff.fileIndex != 1 {
+		t.Errorf("expected diffFileIndex to be 1 after Tab, got %d", m.modals.diff.fileIndex)
 	}
 	viewContent2 := ansi.Strip(m.View().Content)
 	if !strings.Contains(viewContent2, "File 2 of 2") || !strings.Contains(viewContent2, "pkg/auth/token.go") {
@@ -794,21 +794,21 @@ index 3333333..4444444 100644
 	// Previous file ([ / p)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '['}))
 	m = mod.(*tuiModel)
-	if m.diffFileIndex != 0 {
-		t.Errorf("expected diffFileIndex to wrap back to 0, got %d", m.diffFileIndex)
+	if m.modals.diff.fileIndex != 0 {
+		t.Errorf("expected diffFileIndex to wrap back to 0, got %d", m.modals.diff.fileIndex)
 	}
 
 	// 5. Test Copy (c)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'c'}))
 	m = mod.(*tuiModel)
-	if !strings.Contains(m.copyFeedback, "Copied") {
-		t.Errorf("expected copy feedback, got %q", m.copyFeedback)
+	if !strings.Contains(m.input.copyFeedback, "Copied") {
+		t.Errorf("expected copy feedback, got %q", m.input.copyFeedback)
 	}
 
 	// 6. Test Esc closes modal
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.diffModalOpen {
+	if m.modals.diff.open {
 		t.Fatalf("expected diffModalOpen to be false after Esc")
 	}
 

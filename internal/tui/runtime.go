@@ -180,7 +180,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	if text == "" {
 		return m, nil
 	}
-	if m.compacting {
+	if m.usage.compacting {
 		m.addSystemEntry("Compaction is in progress; wait for it to finish.")
 		return m, nil
 	}
@@ -195,11 +195,11 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	// events are counted immediately.
 	m.finishSessionRestore()
 
-	m.promptHistory = append(m.promptHistory, text)
-	m.historyIndex = len(m.promptHistory)
-	m.historyDraft = ""
-	m.shortcutsOpen = false
-	m.autocompleteOpen = false
+	m.input.history = append(m.input.history, text)
+	m.input.historyIndex = len(m.input.history)
+	m.input.historyDraft = ""
+	m.modals.shortcuts = false
+	m.input.autocompleteOpen = false
 
 	if strings.TrimSpace(m.sessionTitle) == "" || m.sessionTitle == "<untitled>" || isTrivialGreeting(m.sessionTitle) {
 		if autoTitle := deriveSessionTitleText(text); autoTitle != "" {
@@ -288,7 +288,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
-	m.effortPicker = nil
+	m.modals.effort = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	main := m.ensureAgentMetrics("lead")
@@ -297,7 +297,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	main.Activity = "Starting"
 	main.StartedAt = m.taskStartedAt
 	main.Duration = 0
-	main.ContextWindow = m.contextWindow
+	main.ContextWindow = m.usage.contextWindow
 	main.ModelProfile = m.currentModelProfile
 	main.StreamStartedAt = time.Time{}
 	main.StreamGenerationTokens = 0

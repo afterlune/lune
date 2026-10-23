@@ -152,22 +152,22 @@ func (m *tuiModel) handleRewindExecute(turns int) (tea.Model, tea.Cmd) {
 	if m.entries == nil {
 		m.entries = []TranscriptEntry{}
 	}
-	m.promptHistory = nil
+	m.input.history = nil
 	for _, entry := range m.entries {
 		if entry.Kind == KindUser && entry.Text != "" {
-			m.promptHistory = append(m.promptHistory, entry.Text)
+			m.input.history = append(m.input.history, entry.Text)
 		}
 	}
-	m.historyIndex = len(m.promptHistory)
-	m.historyDraft = ""
+	m.input.historyIndex = len(m.input.history)
+	m.input.historyDraft = ""
 	m.currentStreamText = ""
 	m.scrolledUp = false
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 	m.refreshViewportContent()
 
 	if lastRewoundPrompt != "" {
-		m.composer.SetValue(lastRewoundPrompt)
-		m.composer.CursorEnd()
+		m.input.composer.SetValue(lastRewoundPrompt)
+		m.input.composer.CursorEnd()
 		m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s). Restored prompt to input composer: %q", removed, truncateString(lastRewoundPrompt, 40)))
 	} else {
 		m.addSystemEntry(fmt.Sprintf("Rewound %d turn(s).", removed))
@@ -235,19 +235,19 @@ func (m *tuiModel) openSessionsModalWithFilter(filter string) (tea.Model, tea.Cm
 		m.addSystemEntry("Failed to query sessions: " + err.Error())
 		return m, nil
 	}
-	m.sessionsModalOpen = true
-	m.shortcutsOpen = false
-	m.autocompleteOpen = false
-	m.sessionsConfirmDelete = false
-	m.sessionsDeletingID = ""
-	m.sessionsDeleteMode = false
-	m.sessionsItems = sessions
-	m.sessionsFilter = strings.TrimSpace(filter)
+	m.modals.open()
+	m.modals.sessions.open = true
+	m.input.autocompleteOpen = false
+	m.modals.sessions.confirmDelete = false
+	m.modals.sessions.deletingID = ""
+	m.modals.sessions.deleteMode = false
+	m.modals.sessions.items = sessions
+	m.modals.sessions.filter = strings.TrimSpace(filter)
 	m.filterSessions()
-	m.sessionsIndex = 0
-	for i, s := range m.sessionsFiltered {
+	m.modals.sessions.index = 0
+	for i, s := range m.modals.sessions.filtered {
 		if s.ID == m.sessionID {
-			m.sessionsIndex = i
+			m.modals.sessions.index = i
 			break
 		}
 	}
@@ -293,16 +293,16 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 	if len(parts) < 2 {
 		mod, cmd := m.openSessionsModal()
-		if m.sessionsModalOpen {
-			m.sessionsDeleteMode = true
-			m.sessionsIndex = -1
-			for i, session := range m.sessionsFiltered {
+		if m.modals.sessions.open {
+			m.modals.sessions.deleteMode = true
+			m.modals.sessions.index = -1
+			for i, session := range m.modals.sessions.filtered {
 				if session.ID != m.sessionID {
-					m.sessionsIndex = i
+					m.modals.sessions.index = i
 					break
 				}
 			}
-			if m.sessionsIndex < 0 {
+			if m.modals.sessions.index < 0 {
 				m.addSystemEntry("No other saved sessions are available to delete.")
 			}
 			m.updateLayout()
@@ -321,12 +321,12 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		mod, cmd := m.openSessionsModal()
-		if m.sessionsModalOpen {
-			m.sessionsDeleteMode = true
-			m.sessionsIndex = -1
-			for i, session := range m.sessionsFiltered {
+		if m.modals.sessions.open {
+			m.modals.sessions.deleteMode = true
+			m.modals.sessions.index = -1
+			for i, session := range m.modals.sessions.filtered {
 				if session.ID != m.sessionID {
-					m.sessionsIndex = i
+					m.modals.sessions.index = i
 					break
 				}
 			}
@@ -341,19 +341,19 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 
 	mod, cmd := m.openSessionsModalWithFilter("")
-	if !m.sessionsModalOpen {
+	if !m.modals.sessions.open {
 		return mod, cmd
 	}
-	m.sessionsDeleteMode = true
-	for i, session := range m.sessionsFiltered {
+	m.modals.sessions.deleteMode = true
+	for i, session := range m.modals.sessions.filtered {
 		if session.ID == targetID {
-			m.sessionsIndex = i
-			m.sessionsDeletingID = targetID
-			m.sessionsConfirmDelete = true
+			m.modals.sessions.index = i
+			m.modals.sessions.deletingID = targetID
+			m.modals.sessions.confirmDelete = true
 			break
 		}
 	}
-	if !m.sessionsConfirmDelete {
+	if !m.modals.sessions.confirmDelete {
 		m.addSystemEntry("Session is no longer available to delete: " + targetID)
 	}
 	m.updateLayout()
@@ -362,20 +362,20 @@ func (m *tuiModel) handleDropCommand(parts []string) (tea.Model, tea.Cmd) {
 
 // filterSessions updates sessionsFiltered according to the current sessionsFilter.
 func (m *tuiModel) filterSessions() {
-	query := strings.ToLower(strings.TrimSpace(m.sessionsFilter))
+	query := strings.ToLower(strings.TrimSpace(m.modals.sessions.filter))
 	if query == "" {
-		m.sessionsFiltered = m.sessionsItems
+		m.modals.sessions.filtered = m.modals.sessions.items
 	} else {
 		var matches []core.Session
-		for _, s := range m.sessionsItems {
+		for _, s := range m.modals.sessions.items {
 			if strings.Contains(strings.ToLower(s.ID), query) || strings.Contains(strings.ToLower(s.Title), query) {
 				matches = append(matches, s)
 			}
 		}
-		m.sessionsFiltered = matches
+		m.modals.sessions.filtered = matches
 	}
-	if m.sessionsIndex >= len(m.sessionsFiltered) {
-		m.sessionsIndex = max(0, len(m.sessionsFiltered)-1)
+	if m.modals.sessions.index >= len(m.modals.sessions.filtered) {
+		m.modals.sessions.index = max(0, len(m.modals.sessions.filtered)-1)
 	}
 }
 

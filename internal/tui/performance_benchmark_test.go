@@ -22,7 +22,7 @@ func BenchmarkRefreshViewportContent_Scales(b *testing.B) {
 				b.ResetTimer()
 				for i := range b.N {
 					if variant.invalidate {
-						m.invalidateEntryCache()
+						m.view.invalidateBlocks()
 					}
 					m.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
 					m.refreshViewportContent()
@@ -85,7 +85,7 @@ func TestRefreshViewportContentUsesSoftWrapOnlyWhenNeeded(t *testing.T) {
 	}
 
 	m.entries = append(m.entries, TranscriptEntry{Kind: KindUser, Text: strings.Repeat("界", 100)})
-	m.invalidateEntryCache()
+	m.view.invalidateBlocks()
 	m.refreshViewportContent()
 	if m.viewport.SoftWrap {
 		t.Fatal("user cards wrap their content to the viewport width before rendering")

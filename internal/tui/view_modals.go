@@ -17,10 +17,10 @@ func renderSessionsModal(m *tuiModel, width int) string {
 
 	var lines []string
 
-	total := len(m.sessionsItems)
-	filteredCount := len(m.sessionsFiltered)
+	total := len(m.modals.sessions.items)
+	filteredCount := len(m.modals.sessions.filtered)
 	countInfo := ""
-	if m.sessionsFilter != "" {
+	if m.modals.sessions.filter != "" {
 		countInfo = fmt.Sprintf(" (%d/%d)", filteredCount, total)
 	} else if total > 0 {
 		countInfo = fmt.Sprintf(" (%d)", total)
@@ -32,10 +32,10 @@ func renderSessionsModal(m *tuiModel, width int) string {
 
 	filterLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("Filter: ")
 	var filterVal string
-	if m.sessionsFilter == "" {
+	if m.modals.sessions.filter == "" {
 		filterVal = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true).Render("type to filter...")
 	} else {
-		filterVal = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(m.sessionsFilter)
+		filterVal = lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render(m.modals.sessions.filter)
 	}
 	lines = append(lines, filterLabel+filterVal)
 	lines = append(lines, "")
@@ -45,8 +45,8 @@ func renderSessionsModal(m *tuiModel, width int) string {
 	} else {
 		maxVisible := 8
 		startIdx := 0
-		if m.sessionsIndex >= maxVisible {
-			startIdx = m.sessionsIndex - maxVisible + 1
+		if m.modals.sessions.index >= maxVisible {
+			startIdx = m.modals.sessions.index - maxVisible + 1
 		}
 		endIdx := min(filteredCount, startIdx+maxVisible)
 
@@ -55,9 +55,9 @@ func renderSessionsModal(m *tuiModel, width int) string {
 		baseTitleWidth := max(10, availWidth-28)
 
 		for i := startIdx; i < endIdx; i++ {
-			s := m.sessionsFiltered[i]
+			s := m.modals.sessions.filtered[i]
 			marker := "  "
-			if i == m.sessionsIndex {
+			if i == m.modals.sessions.index {
 				marker = "› "
 			}
 			shortID := s.ID
@@ -76,7 +76,7 @@ func renderSessionsModal(m *tuiModel, width int) string {
 			titlePad := max(0, rowTitleWidth-lipgloss.Width(truncTitle))
 			paddedTitle := truncTitle + strings.Repeat(" ", titlePad)
 
-			if i == m.sessionsIndex {
+			if i == m.modals.sessions.index {
 				raw := fmt.Sprintf("%s%-12s  %s%s  %-10s", marker, shortID, paddedTitle, currentBadge, timeStr)
 				pad := max(0, availWidth-lipgloss.Width(raw))
 				lines = append(lines, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
@@ -93,16 +93,16 @@ func renderSessionsModal(m *tuiModel, width int) string {
 		}
 	}
 
-	if m.sessionsConfirmDelete {
+	if m.modals.sessions.confirmDelete {
 		lines = append(lines, "")
 		warn := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).
-			Render(fmt.Sprintf("Delete session %s? (y to confirm · n/esc to cancel)", truncateString(m.sessionsDeletingID, 16)))
+			Render(fmt.Sprintf("Delete session %s? (y to confirm · n/esc to cancel)", truncateString(m.modals.sessions.deletingID, 16)))
 		lines = append(lines, "  "+warn)
 	}
 
 	lines = append(lines, "")
 	hint := "↑/↓ navigate · enter select · ctrl+d/del delete · esc close"
-	if m.sessionsDeleteMode {
+	if m.modals.sessions.deleteMode {
 		hint = "↑/↓ navigate · enter choose session to delete · y confirm · n/esc cancel · esc close"
 	}
 	lines = append(lines, styleTextMuted().Render(hint))
@@ -119,7 +119,7 @@ func renderThemePicker(m *tuiModel, width int) string {
 		if mode == CurrentThemeMode() {
 			label += " · current"
 		}
-		if i == m.themePicker.Selected {
+		if i == m.modals.theme.Selected {
 			lines = append(lines, styleSelectedRow().Render("› "+label))
 		} else {
 			lines = append(lines, "  "+label)
@@ -132,15 +132,15 @@ func renderThemePicker(m *tuiModel, width int) string {
 func renderModelPicker(m *tuiModel, width int) string {
 	th := activeTheme()
 	cardStyle := panelCardStyle(width)
-	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("Model profile (%d)", len(m.modelPicker.Items)))}
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("Model profile (%d)", len(m.modals.model.Items)))}
 	visible := 8
 	start := 0
-	if m.modelPicker.Selected >= visible {
-		start = m.modelPicker.Selected - visible + 1
+	if m.modals.model.Selected >= visible {
+		start = m.modals.model.Selected - visible + 1
 	}
-	end := min(len(m.modelPicker.Items), start+visible)
+	end := min(len(m.modals.model.Items), start+visible)
 	for i := start; i < end; i++ {
-		item := m.modelPicker.Items[i]
+		item := m.modals.model.Items[i]
 		modelName := item.Model
 		if item.DisplayName != "" && item.DisplayName != item.Model {
 			modelName = item.DisplayName + " · " + item.Model
@@ -150,7 +150,7 @@ func renderModelPicker(m *tuiModel, width int) string {
 			label += " · current"
 		}
 		label = sanitizeAndTruncateLine(label, max(12, width-8))
-		if i == m.modelPicker.Selected {
+		if i == m.modals.model.Selected {
 			lines = append(lines, styleSelectedRow().Render("› "+label))
 		} else {
 			lines = append(lines, "  "+label)
@@ -169,7 +169,7 @@ func renderPermissionPicker(m *tuiModel, width int) string {
 		if mode == m.permissionMode {
 			label += " · current"
 		}
-		if i == m.permissionPicker.Selected {
+		if i == m.modals.permission.Selected {
 			lines = append(lines, styleSelectedRow().Render("› "+label))
 		} else {
 			lines = append(lines, "  "+label)
@@ -182,8 +182,8 @@ func renderPermissionPicker(m *tuiModel, width int) string {
 func renderMemoryInputPrompt(m *tuiModel, width int) string {
 	cardStyle := panelCardStyle(width)
 	category := "preference"
-	if m.pendingMemoryCategory != "" {
-		category = m.pendingMemoryCategory
+	if m.modals.memory.pendingCategory != "" {
+		category = m.modals.memory.pendingCategory
 	}
 	content := fmt.Sprintf("Add workspace memory (%s)\nType the memory in the composer. Enter saves · Esc cancels.", category)
 	return renderCardSurface(cardStyle, content)
@@ -195,18 +195,18 @@ func renderMemoryPicker(m *tuiModel, width int) string {
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Remove workspace memory")}
 	visible := 8
 	start := 0
-	if m.memoryPicker.Selected >= visible {
-		start = m.memoryPicker.Selected - visible + 1
+	if m.modals.memory.picker.Selected >= visible {
+		start = m.modals.memory.picker.Selected - visible + 1
 	}
-	end := min(len(m.memoryPicker.Items), start+visible)
+	end := min(len(m.modals.memory.picker.Items), start+visible)
 	for i := start; i < end; i++ {
-		item := m.memoryPicker.Items[i]
+		item := m.modals.memory.picker.Items[i]
 		id := item.ID
 		if len(id) > 8 {
 			id = id[:8]
 		}
 		label := fmt.Sprintf("[%s] %s · %s", id, item.Category, sanitizeAndTruncateLine(item.Content, max(10, width-36)))
-		if i == m.memoryPicker.Selected {
+		if i == m.modals.memory.picker.Selected {
 			lines = append(lines, styleSelectedRow().Render("› "+label))
 		} else {
 			lines = append(lines, "  "+label)
@@ -227,17 +227,17 @@ func renderMemoryClearConfirm(m *tuiModel, width int) string {
 func renderMCPServerPicker(m *tuiModel, width int) string {
 	th := activeTheme()
 	cardStyle := panelCardStyle(width)
-	title := map[string]string{"enable": "Enable MCP server", "disable": "Disable MCP server", "auth": "Authorize MCP server"}[m.mcpServerPicker.Action]
+	title := map[string]string{"enable": "Enable MCP server", "disable": "Disable MCP server", "auth": "Authorize MCP server"}[m.modals.mcp.picker.Action]
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(title)}
 	visible := 8
 	start := 0
-	if m.mcpServerPicker.Selected >= visible {
-		start = m.mcpServerPicker.Selected - visible + 1
+	if m.modals.mcp.picker.Selected >= visible {
+		start = m.modals.mcp.picker.Selected - visible + 1
 	}
-	end := min(len(m.mcpServerPicker.Names), start+visible)
+	end := min(len(m.modals.mcp.picker.Names), start+visible)
 	for i := start; i < end; i++ {
-		name := sanitizeAndTruncateLine(m.mcpServerPicker.Names[i], max(10, width-8))
-		if i == m.mcpServerPicker.Selected {
+		name := sanitizeAndTruncateLine(m.modals.mcp.picker.Names[i], max(10, width-8))
+		if i == m.modals.mcp.picker.Selected {
 			lines = append(lines, styleSelectedRow().Render("› "+name))
 		} else {
 			lines = append(lines, "  "+name)
@@ -251,24 +251,24 @@ func renderProcessPicker(m *tuiModel, width int) string {
 	th := activeTheme()
 	cardStyle := panelCardStyle(width)
 	title := "Select process logs"
-	if m.processPickerMode == processPickerStop {
+	if m.modals.process.mode == processPickerStop {
 		title = "Select process to stop"
 	}
-	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%s (%d)", title, len(m.processPickerItems)))}
+	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render(fmt.Sprintf("%s (%d)", title, len(m.modals.process.items)))}
 	visible := 8
 	start := 0
-	if m.processPickerSelected >= visible {
-		start = m.processPickerSelected - visible + 1
+	if m.modals.process.selected >= visible {
+		start = m.modals.process.selected - visible + 1
 	}
-	end := min(len(m.processPickerItems), start+visible)
+	end := min(len(m.modals.process.items), start+visible)
 	for i := start; i < end; i++ {
-		command := m.processPickerItems[i]
+		command := m.modals.process.items[i]
 		id := command.ID
 		if len(id) > 8 {
 			id = id[:8]
 		}
 		row := fmt.Sprintf("[%s] %s · %s", id, command.Status, sanitizeAndTruncateLine(command.Command, max(10, width-30)))
-		if i == m.processPickerSelected {
+		if i == m.modals.process.selected {
 			lines = append(lines, styleSelectedRow().Render("› "+row))
 		} else {
 			lines = append(lines, "  "+row)
@@ -280,7 +280,7 @@ func renderProcessPicker(m *tuiModel, width int) string {
 
 func renderMCPAuthPanel(m *tuiModel, width int) string {
 	cardStyle := panelCardStyle(width)
-	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", terminaltext.Sanitize(m.mcpAuthName))
+	content := fmt.Sprintf("Authorizing MCP server `%s`\nComplete the browser flow. Press Esc to cancel.", terminaltext.Sanitize(m.modals.mcp.authName))
 	return renderCardSurface(cardStyle, content)
 }
 
@@ -294,7 +294,7 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 		return renderCardSurface(cardStyle, styleTextMuted().Render("No tool executions in current session."))
 	}
 
-	idx := m.toolPagerIndex
+	idx := m.modals.toolPager.index
 	if idx < 0 {
 		idx = 0
 	} else if idx >= len(indices) {
@@ -343,7 +343,7 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 
 	visibleLines := m.toolPagerVisibleLines()
 	maxScroll := max(0, totalLines-visibleLines)
-	scrollY := m.toolPagerScrollY
+	scrollY := m.modals.toolPager.scrollY
 	if scrollY > maxScroll {
 		scrollY = maxScroll
 	}
@@ -395,12 +395,12 @@ func renderToolPagerModal(m *tuiModel, width int) string {
 	lines = append(lines, "")
 
 	// Footer hint or copy feedback
-	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
+	if m.input.copyFeedback != "" && time.Now().Before(m.input.copyFeedbackExpiresAt) {
 		mark, color := "✓", th.SuccessGreen
-		if m.copyFeedbackError {
+		if m.input.copyFeedbackError {
 			mark, color = "!", th.WarningAmber
 		}
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.copyFeedback))
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.input.copyFeedback))
 	} else {
 		hint := styleTextMuted().Render("↑/↓ scroll · pgup/pgdn · [/] switch tool · c copy · esc/q close")
 		lines = append(lines, hint)
@@ -420,27 +420,27 @@ func renderDiffModal(m *tuiModel, width int) string {
 		Padding(1, 2).
 		Width(width)
 
-	if len(m.diffFiles) == 0 {
+	if len(m.modals.diff.files) == 0 {
 		emptyLine := styleTextMuted().Italic(true).Render("No git changes detected in workspace.")
 		hint := styleTextMuted().Render("esc/q/ctrl+d close")
 		return renderCardSurface(cardStyle, emptyLine+"\n\n"+hint)
 	}
 
-	idx := m.diffFileIndex
+	idx := m.modals.diff.fileIndex
 	if idx < 0 {
 		idx = 0
-	} else if idx >= len(m.diffFiles) {
-		idx = len(m.diffFiles) - 1
+	} else if idx >= len(m.modals.diff.files) {
+		idx = len(m.modals.diff.files) - 1
 	}
 
-	file := m.diffFiles[idx]
+	file := m.modals.diff.files[idx]
 	fileNum := idx + 1
-	totalFiles := len(m.diffFiles)
+	totalFiles := len(m.modals.diff.files)
 
 	availWidth := max(20, width-4)
 
 	// Header line with total workspace stats
-	totAdds, totDels := computeDiffStats(m.diffFiles)
+	totAdds, totDels := computeDiffStats(m.modals.diff.files)
 	titleLeft := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).
 		Render("Workspace Diff Pager") +
 		styleTextMuted().Render(fmt.Sprintf(" (File %d of %d · %d files +%d/-%d)", fileNum, totalFiles, totalFiles, totAdds, totDels))
@@ -448,7 +448,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	totalLines := len(file.Lines)
 	visibleLines := m.diffModalVisibleLines()
 	maxScroll := max(0, totalLines-visibleLines)
-	scrollY := m.diffScrollY
+	scrollY := m.modals.diff.scrollY
 	if scrollY > maxScroll {
 		scrollY = maxScroll
 	}
@@ -468,7 +468,7 @@ func renderDiffModal(m *tuiModel, width int) string {
 	headerLine := titleLeft + strings.Repeat(" ", headerGap) + scrollInfo
 
 	// Multi-file tab bar
-	tabBar := renderDiffTabBar(m.diffFiles, idx, availWidth)
+	tabBar := renderDiffTabBar(m.modals.diff.files, idx, availWidth)
 
 	// File info line with path, additions (+) and deletions (-)
 	pathStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary)).Render(file.Path)
@@ -527,12 +527,12 @@ func renderDiffModal(m *tuiModel, width int) string {
 	lines = append(lines, "")
 
 	// Footer hint or copy feedback
-	if m.copyFeedback != "" && time.Now().Before(m.copyFeedbackExpiresAt) {
+	if m.input.copyFeedback != "" && time.Now().Before(m.input.copyFeedbackExpiresAt) {
 		mark, color := "✓", th.SuccessGreen
-		if m.copyFeedbackError {
+		if m.input.copyFeedbackError {
 			mark, color = "!", th.WarningAmber
 		}
-		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.copyFeedback))
+		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(mark+" "+m.input.copyFeedback))
 	} else {
 		hint := styleTextMuted().Render("1-9 jump · [/] or tab switch · c copy · esc/q close")
 		lines = append(lines, hint)
