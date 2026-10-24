@@ -348,11 +348,15 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 	}
 }
 
+const questionPendingNotice = "This task is waiting for your answer. Answer it, or run `/discard` to abandon the paused task."
+
 // noteQuestionPending explains that a paused task is waiting for an answer and
-// that discarding it stays an explicit action.
+// that discarding it stays an explicit action. Consecutive duplicates are suppressed.
 func (m *tuiModel) noteQuestionPending() (tea.Model, tea.Cmd) {
-	m.addSystemEntry("This task is waiting for your answer. Answer it, or run `/discard` to abandon the paused task.")
-	m.updateLayout()
+	if len(m.entries) == 0 || m.entries[len(m.entries)-1].Kind != KindSystem || m.entries[len(m.entries)-1].Text != questionPendingNotice {
+		m.addSystemEntry(questionPendingNotice)
+		m.updateLayout()
+	}
 	return m, nil
 }
 

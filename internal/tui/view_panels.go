@@ -128,7 +128,13 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		optionsRows = append(optionsRows, styleTextPrimary().Render(notesLine))
 	}
 
-	hint := styleTextMuted().Render("tab to add notes | enter to submit answer | esc to interrupt")
+	hintText := "tab to add notes | enter to submit answer | /discard to drop"
+	if q.NotesOpen {
+		hintText = "tab or enter to finish notes | esc to cancel notes"
+	} else if len(qItem.Options) > 0 && q.Selected == len(qItem.Options) {
+		hintText = "enter to submit custom answer | esc to cancel | /discard to drop"
+	}
+	hint := styleTextMuted().Render(hintText)
 	if q.Submitting {
 		hint = styleTextMuted().Render("Waiting for Core to accept answers…")
 	}

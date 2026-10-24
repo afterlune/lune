@@ -63,6 +63,16 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.activeQuestion != nil {
+			if m.input.composer.Value() != "" {
+				m.input.composer.Reset()
+				m.input.autocompleteOpen = false
+				m.updateLayout()
+				return m, nil
+			}
+			if len(m.entries) > 0 && m.entries[len(m.entries)-1].Kind == KindSystem && m.entries[len(m.entries)-1].Text == questionPendingNotice {
+				m.cancelMCPAuthentication(false)
+				return m, tea.Quit
+			}
 			return m.noteQuestionPending()
 		}
 		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
@@ -116,6 +126,25 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.resolveActiveToolRecovery()
 		}
 		if m.activeQuestion != nil {
+			if m.input.composer.Value() != "" {
+				m.input.composer.Reset()
+				m.updateLayout()
+				return m, nil
+			}
+			if m.activeQuestion.NotesOpen {
+				m.activeQuestion.NotesOpen = false
+				m.updateLayout()
+				return m, nil
+			}
+			currIdx := m.activeQuestion.CurrentIndex
+			if currIdx < len(m.activeQuestion.Request.Questions) {
+				maxOpt := len(m.activeQuestion.Request.Questions[currIdx].Options)
+				if m.activeQuestion.Selected == maxOpt && m.activeQuestion.Custom != "" {
+					m.activeQuestion.Custom = ""
+					m.updateLayout()
+					return m, nil
+				}
+			}
 			return m.noteQuestionPending()
 		}
 		if m.activeApproval != nil {
@@ -332,84 +361,127 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		inCustomInput := m.activeQuestion.Selected == maxOpt
 		inNotesInput := m.activeQuestion.NotesOpen
 
-		switch keyStr {
-		case "up":
-			if m.activeQuestion.Selected > 0 {
-				m.activeQuestion.Selected--
-			} else {
-				m.activeQuestion.Selected = maxOpt
-			}
-			m.updateLayout()
-			return m, nil
-		case "down":
-			if m.activeQuestion.Selected < maxOpt {
-				m.activeQuestion.Selected++
-			} else {
-				m.activeQuestion.Selected = 0
-			}
-			m.updateLayout()
-			return m, nil
-		case "tab":
-			m.activeQuestion.NotesOpen = !m.activeQuestion.NotesOpen
-			m.updateLayout()
-			return m, nil
-		case "enter":
-			return m.resolveActiveQuestion()
-		case "backspace":
+		// When composer has text, keyboard input targets composer directly.
+		if m.input.composer.Value() == "" {
 			if inNotesInput {
-				if len(m.activeQuestion.NoteText) > 0 {
-					runes := []rune(m.activeQuestion.NoteText)
-					m.activeQuestion.NoteText = string(runes[:len(runes)-1])
-					m.updateLayout()
-				}
-				return m, nil
-			}
-			if inCustomInput {
-				if len(m.activeQuestion.Custom) > 0 {
-					runes := []rune(m.activeQuestion.Custom)
-					m.activeQuestion.Custom = string(runes[:len(runes)-1])
-					m.updateLayout()
-				}
-				return m, nil
-			}
-			return m, nil
-		case "space":
-			if inNotesInput {
-				m.activeQuestion.NoteText += " "
-				m.updateLayout()
-				return m, nil
-			}
-			if inCustomInput {
-				m.activeQuestion.Custom += " "
-				m.updateLayout()
-				return m, nil
-			}
-		default:
-			text := msg.Key().Text
-			if text == "" && msg.Key().Code >= ' ' && msg.Key().Code <= '~' && msg.Key().Mod == 0 {
-				text = string(msg.Key().Code)
-			}
-			if inNotesInput && text != "" {
-				m.activeQuestion.NoteText += text
-				m.updateLayout()
-				return m, nil
-			}
-			if inCustomInput && text != "" {
-				m.activeQuestion.Custom += text
-				m.updateLayout()
-				return m, nil
-			}
-			// Quick numeric option selection when not typing in custom/notes input
-			if len(keyStr) == 1 && keyStr[0] >= '1' && keyStr[0] <= '9' {
-				idx := int(keyStr[0] - '1')
-				if idx <= maxOpt {
-					m.activeQuestion.Selected = idx
+				switch keyStr {
+				case "tab":
+					m.activeQuestion.NotesOpen = false
 					m.updateLayout()
 					return m, nil
+				case "enter":
+					return m.resolveActiveQuestion()
+				case "backspace":
+					if len(m.activeQuestion.NoteText) > 0 {
+						runes := []rune(m.activeQuestion.NoteText)
+						m.activeQuestion.NoteText = string(runes[:len(runes)-1])
+						m.updateLayout()
+					}
+					return m, nil
+				case "space":
+					m.activeQuestion.NoteText += " "
+					m.updateLayout()
+					return m, nil
+				default:
+					text := msg.Key().Text
+					if text == "" && msg.Key().Code >= ' ' && msg.Key().Code <= '~' && msg.Key().Mod == 0 {
+						text = string(msg.Key().Code)
+					}
+					if text != "" {
+						m.activeQuestion.NoteText += text
+						m.updateLayout()
+						return m, nil
+					}
 				}
+				return m, nil
+			}
+
+			if inCustomInput {
+				switch keyStr {
+				case "up":
+					if m.activeQuestion.Selected > 0 {
+						m.activeQuestion.Selected--
+					} else {
+						m.activeQuestion.Selected = maxOpt
+					}
+					m.updateLayout()
+					return m, nil
+				case "down":
+					if m.activeQuestion.Selected < maxOpt {
+						m.activeQuestion.Selected++
+					} else {
+						m.activeQuestion.Selected = 0
+					}
+					m.updateLayout()
+					return m, nil
+				case "tab":
+					m.activeQuestion.NotesOpen = !m.activeQuestion.NotesOpen
+					m.updateLayout()
+					return m, nil
+				case "enter":
+					return m.resolveActiveQuestion()
+				case "backspace":
+					if len(m.activeQuestion.Custom) > 0 {
+						runes := []rune(m.activeQuestion.Custom)
+						m.activeQuestion.Custom = string(runes[:len(runes)-1])
+						m.updateLayout()
+					}
+					return m, nil
+				case "space":
+					m.activeQuestion.Custom += " "
+					m.updateLayout()
+					return m, nil
+				default:
+					text := msg.Key().Text
+					if text == "" && msg.Key().Code >= ' ' && msg.Key().Code <= '~' && msg.Key().Mod == 0 {
+						text = string(msg.Key().Code)
+					}
+					if text != "" {
+						m.activeQuestion.Custom += text
+						m.updateLayout()
+						return m, nil
+					}
+				}
+				return m, nil
+			}
+
+			// Option selection mode (not typing custom or notes text)
+			switch keyStr {
+			case "up":
+				if m.activeQuestion.Selected > 0 {
+					m.activeQuestion.Selected--
+				} else {
+					m.activeQuestion.Selected = maxOpt
+				}
+				m.updateLayout()
+				return m, nil
+			case "down":
+				if m.activeQuestion.Selected < maxOpt {
+					m.activeQuestion.Selected++
+				} else {
+					m.activeQuestion.Selected = 0
+				}
+				m.updateLayout()
+				return m, nil
+			case "tab":
+				m.activeQuestion.NotesOpen = !m.activeQuestion.NotesOpen
+				m.updateLayout()
+				return m, nil
+			case "enter":
+				return m.resolveActiveQuestion()
+			default:
+				// Quick numeric option selection when on options list
+				if len(keyStr) == 1 && keyStr[0] >= '1' && keyStr[0] <= '9' {
+					idx := int(keyStr[0] - '1')
+					if idx <= maxOpt {
+						m.activeQuestion.Selected = idx
+						m.updateLayout()
+						return m, nil
+					}
+				}
+				// Any other key (such as "/", letters, symbols) falls through to Composer!
 			}
 		}
-		return m, nil
 	}
 
 	if m.effortPicker != nil {

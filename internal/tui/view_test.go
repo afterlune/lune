@@ -144,7 +144,7 @@ func TestQuestionPanelRendering(t *testing.T) {
 	if !strings.Contains(rendered, "整体代码审查  [Recommended]") {
 		t.Errorf("expected options list, got: %s", rendered)
 	}
-	if !strings.Contains(rendered, "tab to add notes | enter to submit answer | esc to interrupt") {
+	if !strings.Contains(rendered, "tab to add notes | enter to submit answer | /discard to drop") {
 		t.Errorf("expected question footer controls, got: %s", rendered)
 	}
 }
