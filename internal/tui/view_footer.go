@@ -277,7 +277,9 @@ func renderFooter(m *tuiModel, width int) string {
 		line2RightText = "? for shortcuts"
 	}
 
-	if goalHint:=m.goalFooter();goalHint!="" { line2RightText=goalHint }
+	if goalHint := m.goalFooter(); goalHint != "" {
+		line2RightText = goalHint
+	}
 	line2Right := styleTextMuted().Render(line2RightText)
 	right2Len := lipgloss.Width(line2Right)
 

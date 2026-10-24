@@ -52,18 +52,18 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		return m, nil
 	}
 	switch event.Kind {
-	case core.EventGoalUpdated,core.EventGoalCleared:
+	case core.EventGoalUpdated, core.EventGoalCleared:
 		m.refreshGoal()
 		m.view.invalidateContent()
 		m.updateLayout()
-		return m,nil
+		return m, nil
 	case core.EventTaskStarted:
 		execID := event.ExecutionID
 		if execID == "" {
 			return m, nil
 		}
 		queued := len(m.run.queuedTurns) > 0 && m.run.queuedTurns[0].ExecutionID == execID
-		goalTurn := event.GoalID!="" && m.runtime!=nil
+		goalTurn := event.GoalID != "" && m.runtime != nil
 		if queued {
 			m.run.queuedTurns = m.run.queuedTurns[1:]
 			m.roundsCollapsedByUser = false

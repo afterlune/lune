@@ -15,7 +15,7 @@ import (
 // checkpoint) stay on the model: they are shown in the transcript, not owned by
 // the run.
 type runState struct {
-	goal *core.Goal
+	goal             *core.Goal
 	running          bool
 	taskStartedAt    time.Time
 	runningExecution string

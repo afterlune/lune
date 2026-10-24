@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
 	"github.com/afterlune/lune/internal/goalcmd"
 )
 
@@ -49,7 +50,9 @@ func (m *tuiModel) renderStatusTable() string {
 		fmt.Sprintf("Queued:         %d waiting", len(m.run.queuedTurns)),
 	}
 
-	if m.run.goal!=nil { lines=append(lines,goalcmd.Summary(m.run.goal)) }
+	if m.run.goal != nil {
+		lines = append(lines, goalcmd.Summary(m.run.goal))
+	}
 	if m.usage.contextWindow > 0 {
 		var inputLabel string
 		var usedCtx int64
