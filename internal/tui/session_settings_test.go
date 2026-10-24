@@ -35,7 +35,7 @@ func TestApplySessionModelProfilePreservesSettingsAndRejectsUnknownProfile(t *te
 	autoCompact := true
 	threshold := 0.82
 	settings := core.SessionSettings{
-		ModelProfile: "primary", ReasoningEffort: "high", Goal: "preserve this goal",
+		ModelProfile: "primary", ReasoningEffort: "high",
 		ContextWindow: &window, ReserveOutputTokens: &reserve, AutoCompact: &autoCompact, AutoCompactThreshold: &threshold,
 	}
 	if err := client.SetSessionSettings(ctx, session.ID, settings); err != nil {
@@ -49,7 +49,7 @@ func TestApplySessionModelProfilePreservesSettingsAndRejectsUnknownProfile(t *te
 		t.Fatal(err)
 	}
 	got := saved.Settings
-	if got.ModelProfile != "fast" || got.ReasoningEffort != settings.ReasoningEffort || got.Goal != settings.Goal || got.ContextWindow == nil || *got.ContextWindow != window || got.ReserveOutputTokens == nil || *got.ReserveOutputTokens != reserve || got.AutoCompact == nil || !*got.AutoCompact || got.AutoCompactThreshold == nil || *got.AutoCompactThreshold != threshold {
+	if got.ModelProfile != "fast" || got.ReasoningEffort != settings.ReasoningEffort || got.ContextWindow == nil || *got.ContextWindow != window || got.ReserveOutputTokens == nil || *got.ReserveOutputTokens != reserve || got.AutoCompact == nil || !*got.AutoCompact || got.AutoCompactThreshold == nil || *got.AutoCompactThreshold != threshold {
 		t.Fatalf("model profile update lost session settings: %+v", got)
 	}
 	if err := applySessionModelProfile(ctx, client, session.ID, "missing"); err == nil {

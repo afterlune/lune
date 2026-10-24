@@ -98,6 +98,7 @@
 | **`Ctrl+D`** | **交互式工作区 Diff 检视翻页浮层 (Workspace Diff Pager Modal)**：呼出专用 Git 差异浮层检视器，绝不污染聊天主视口；支持按文件分页查看、`Tab`/`Shift+Tab` 或 `[`/`]`（`p`/`n`）快速切换不同被改动文件、`↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`c`/`Ctrl+C` 一键复制当前文件 diff 至剪贴板、`Esc`/`q`/`Ctrl+D` 退出 |
 | **`/detail [index]`** | **超长工具输出检视翻页浮层 (Tool Output Pager Modal)**：展示指定工具执行的全量原始输出（无参数默认最新，支持 1-based 序号）；浮层内 `↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`[`/`]`（`p`/`n`）切换历史工具执行、`c`/`Ctrl+C` 一键完整复制至剪贴板、`Esc`/`q` 退出；CLI 模式下直接向终端输出指定工具的全量原始结果 |
 | **`/plan`** | 切换进入/退出 Plan 规划模式（等价于 `Shift+Tab`；进入时锁定为 `read-only`，退出时恢复之前档位） |
+| **`/goal [subcmd]`** | 查看或管理跨回合持续目标：无参数显示当前目标、状态与用量预算；`/goal [--tokens N] <目标>` 创建并立即执行；`/goal edit [目标]` 编辑暂停的目标；`/goal budget <N|off>` 设置 Token 预算或取消限制；`/goal pause` 暂停；`/goal resume` 恢复执行；`/goal clear` 清除目标 |
 | **`/permissions [mode]`** | 无参数时打开权限模式选择器；带参数时直接设置（`read-only`、`workspace`、`ask`、`full-access`）。Plan 模式下不能提升权限 |
 | **`/model [name]`** | 无参数时打开模型 profile 选择器；带参数时直接切换会话绑定的 profile |
 | **`/effort [level]`** | **交互式选择思考等级**：无参数时唤起选择器，`↑`/`↓`（或 `j`/`k`、`1`-`8`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |

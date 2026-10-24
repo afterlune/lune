@@ -191,6 +191,7 @@ func (m *tuiModel) ensureSession(ctx context.Context) error {
 }
 
 func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
+	m.run.goal=state.Goal
 	m.pausedCheckpoint = nil
 	m.run.restoreFrom(state.Task)
 	contextWindowKnown := state.Task.ContextWindow > 0 || state.Task.TaskID != ""

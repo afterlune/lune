@@ -1098,12 +1098,12 @@ func TestCLIModelProfilePreservesSessionSettings(t *testing.T) {
 	autoCompact := true
 	threshold := 0.82
 	client := &fakeCLICore{latest: core.Session{ID: "session-1", Settings: core.SessionSettings{
-		ModelProfile: "primary", ReasoningEffort: "high", Goal: "keep this goal",
+		ModelProfile: "primary", ReasoningEffort: "high",
 		ContextWindow: &window, ReserveOutputTokens: &reserve, AutoCompact: &autoCompact, AutoCompactThreshold: &threshold,
 	}}}
 	var stdout, stderr bytes.Buffer
 	handleCoreCLIModel(client, "session-1", "/model fast", &stdout, &stderr)
-	if got := client.latest.Settings; got.ModelProfile != "fast" || got.ReasoningEffort != "high" || got.Goal != "keep this goal" || got.ContextWindow == nil || *got.ContextWindow != window || got.ReserveOutputTokens == nil || *got.ReserveOutputTokens != reserve || got.AutoCompact == nil || !*got.AutoCompact || got.AutoCompactThreshold == nil || *got.AutoCompactThreshold != threshold {
+	if got := client.latest.Settings; got.ModelProfile != "fast" || got.ReasoningEffort != "high" || got.ContextWindow == nil || *got.ContextWindow != window || got.ReserveOutputTokens == nil || *got.ReserveOutputTokens != reserve || got.AutoCompact == nil || !*got.AutoCompact || got.AutoCompactThreshold == nil || *got.AutoCompactThreshold != threshold {
 		t.Fatalf("model switch replaced unrelated session settings: %+v", got)
 	}
 	if stderr.Len() != 0 || !strings.Contains(stdout.String(), "Active model set to") {

@@ -138,6 +138,64 @@ func TestOneShotFiltersOtherStreamsAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestOneShotReconcilesBestEffortStream(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		deltas  []string
+		want    string
+		warning bool
+	}{
+		{name: "missing_tail", deltas: []string{"hello "}, want: "hello world\n"},
+		{name: "missing_middle", deltas: []string{"hello ", "ld"}, want: "hello ld\nhello world\n", warning: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			r := &oneShotTestRuntime{result: core.TurnResult{Status: core.TaskCompleted, Response: oneShotText("hello world")}, ready: make(chan struct{}), interrupted: make(chan struct{})}
+			close(r.ready)
+			events := make(chan core.Event, len(test.deltas)+1)
+			for _, delta := range test.deltas {
+				events <- deltaEvent(delta)
+			}
+			events <- finishedEvent()
+			var stdout, stderr bytes.Buffer
+			if err := awaitOneShotTurn(ctx, r, "session", "exec", events, func() {}, &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if got := stdout.String(); got != test.want {
+				t.Fatalf("stdout=%q, want %q", got, test.want)
+			}
+			if got := strings.Contains(stderr.String(), "complete answer follows"); got != test.warning {
+				t.Fatalf("stderr=%q, want warning=%v", stderr.String(), test.warning)
+			}
+		})
+	}
+}
+
+func TestOneShotReconcilesOnlyFinalRequest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	r := &oneShotTestRuntime{result: core.TurnResult{Status: core.TaskCompleted, Response: oneShotText("hello world")}, ready: make(chan struct{}), interrupted: make(chan struct{})}
+	close(r.ready)
+	events := make(chan core.Event, 3)
+	for i, text := range []string{"Checking files...\n", "hello "} {
+		event := deltaEvent(text)
+		event.Stream.RequestID = []string{"narration", "answer"}[i]
+		events <- event
+	}
+	events <- finishedEvent()
+	var stdout, stderr bytes.Buffer
+	if err := awaitOneShotTurn(ctx, r, "session", "exec", events, func() {}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "Checking files...\nhello world\n" {
+		t.Fatalf("stdout=%q", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+}
+
 type shortOneShotWriter struct{}
 
 func (shortOneShotWriter) Write([]byte) (int, error) { return 0, nil }

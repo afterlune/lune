@@ -27,8 +27,7 @@ func replaySafeDuringRestore(kind core.EventKind) bool {
 	switch kind {
 	case core.EventToolStarted, core.EventToolDetails, core.EventToolFinished,
 		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed,
-		core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed,
-		core.EventCapabilityStarted, core.EventCapabilitySaved, core.EventCapabilitySkipped, core.EventCapabilityFailed:
+		core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
 		return true
 	}
 	return false
@@ -53,12 +52,18 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		return m, nil
 	}
 	switch event.Kind {
+	case core.EventGoalUpdated,core.EventGoalCleared:
+		m.refreshGoal()
+		m.view.invalidateContent()
+		m.updateLayout()
+		return m,nil
 	case core.EventTaskStarted:
 		execID := event.ExecutionID
 		if execID == "" {
 			return m, nil
 		}
 		queued := len(m.run.queuedTurns) > 0 && m.run.queuedTurns[0].ExecutionID == execID
+		goalTurn := event.GoalID!="" && m.runtime!=nil
 		if queued {
 			m.run.queuedTurns = m.run.queuedTurns[1:]
 			m.roundsCollapsedByUser = false
@@ -73,7 +78,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.run.currentStreamText = ""
 			m.run.currentReasoningText = ""
 		}
-		if !queued && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
+		if !queued && !goalTurn && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
 			return m, nil
 		}
 		if m.run.runningExecution == execID && m.run.taskSnapshot.TaskID == event.TaskID && m.run.running {
@@ -436,28 +441,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			main.Activity = m.run.taskActivity
 		} else if m.run.taskActivity == "Extracting workspace memory" {
 			m.run.taskActivity = "Finishing task"
-			main.Activity = m.run.taskActivity
-		}
-		m.view.invalidateContent()
-		m.updateLayout()
-
-	case core.EventCapabilityStarted, core.EventCapabilitySaved, core.EventCapabilitySkipped, core.EventCapabilityFailed:
-		if !m.run.running || event.ExecutionID == "" || event.ExecutionID != m.run.runningExecution {
-			return m, nil
-		}
-		main := m.ensureAgentMetrics("lead")
-		if event.Kind == core.EventCapabilityStarted {
-			m.run.taskActivity = "Creating reusable generated tool"
-			main.Activity = m.run.taskActivity
-		} else if m.run.taskActivity == "Creating reusable generated tool" {
-			switch event.Kind {
-			case core.EventCapabilitySaved:
-				m.run.taskActivity = "Saved reusable generated tool"
-			case core.EventCapabilityFailed:
-				m.run.taskActivity = "Generated tool creation failed"
-			default:
-				m.run.taskActivity = "Finishing task"
-			}
 			main.Activity = m.run.taskActivity
 		}
 		m.view.invalidateContent()

@@ -123,7 +123,7 @@ func TestOneShotModelProfilePreservesSessionSettings(t *testing.T) {
 	}
 	window := int64(1_000_000)
 	if err := client.SetSessionSettings(ctx, session.ID, core.SessionSettings{
-		ModelProfile: "primary", ReasoningEffort: "high", Goal: "preserve this goal", ContextWindow: &window,
+		ModelProfile: "primary", ReasoningEffort: "high", ContextWindow: &window,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestOneShotModelProfilePreservesSessionSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Settings.ModelProfile != "fast" || saved.Settings.ReasoningEffort != "high" || saved.Settings.Goal != "preserve this goal" || saved.Settings.ContextWindow == nil || *saved.Settings.ContextWindow != window {
+	if saved.Settings.ModelProfile != "fast" || saved.Settings.ReasoningEffort != "high" || saved.Settings.ContextWindow == nil || *saved.Settings.ContextWindow != window {
 		t.Fatalf("model profile update lost session settings: %+v", saved.Settings)
 	}
 }

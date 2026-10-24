@@ -55,7 +55,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 	streamCtx, stopStream := context.WithCancel(ctx)
 	defer stopStream()
 
-	events, err := runtime.SubscribeEventsWithOptions(streamCtx, 0, core.EventSubscriptionOptions{Reliable: true})
+	events, err := runtime.SubscribeEvents(streamCtx, 0)
 	if err != nil {
 		return fmt.Errorf("subscribe events: %w", err)
 	}
@@ -119,6 +119,8 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 		return err
 	}
 	var result core.TurnResult
+	var streamedText strings.Builder
+	var streamRequestID string
 	haveResult, finished, streamed, endsWithNewline := false, false, false, false
 	for !haveResult || !finished {
 		select {
@@ -150,9 +152,14 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 				if !oneShotAssistantDelta(event) {
 					continue
 				}
+				if requestID := event.Stream.RequestID; requestID != "" && requestID != streamRequestID {
+					streamRequestID = requestID
+					streamedText.Reset()
+				}
 				delta := terminaltext.Sanitize(event.Stream.Delta)
 				if delta != "" {
 					writeErr = writeText(delta)
+					streamedText.WriteString(delta)
 					streamed, endsWithNewline = true, strings.HasSuffix(delta, "\n")
 				}
 			case core.EventToolStarted:
@@ -167,20 +174,6 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 					}
 					_, writeErr = fmt.Fprintf(stderr, "• %s (%s)\n", terminaltext.Sanitize(event.Tool.Name), status)
 				}
-			case core.EventCapabilityStarted:
-				_, writeErr = fmt.Fprintln(stderr, "Learning a reusable generated tool...")
-			case core.EventCapabilitySaved:
-				if len(event.CapabilityIDs) > 0 {
-					id := event.CapabilityIDs[0]
-					if len(id) > 8 {
-						id = id[:8]
-					}
-					_, writeErr = fmt.Fprintf(stderr, "Saved generated tool [%s].\n", terminaltext.Sanitize(id))
-				}
-			case core.EventCapabilitySkipped:
-				_, writeErr = fmt.Fprintln(stderr, "No reusable generated tool was saved.")
-			case core.EventCapabilityFailed:
-				_, writeErr = fmt.Fprintln(stderr, "Generated tool learning failed; the completed task is unaffected.")
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
 					_, writeErr = fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
@@ -205,15 +198,35 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 	if result.Status != core.TaskCompleted {
 		return fmt.Errorf("task ended with status %s", result.Status)
 	}
-	if !streamed && len(result.Response) > 0 {
+	if len(result.Response) > 0 {
 		text, err := coreExtractText(result.Response)
 		if err != nil {
 			return err
 		}
-		if text != "" {
-			return writeText(terminaltext.Sanitize(text) + "\n")
+		text = terminaltext.Sanitize(text)
+		if text != "" && !streamed {
+			return writeText(text + "\n")
 		}
-	} else if streamed && !endsWithNewline {
+		// Core's live deltas are best effort. Complete a streamed prefix from the
+		// authoritative response, or print the full answer if a gap cannot be
+		// repaired in output that has already been written.
+		if text != "" && !strings.HasSuffix(streamedText.String(), text) {
+			if strings.HasPrefix(text, streamedText.String()) {
+				if err := writeText(text[streamedText.Len():]); err != nil {
+					return err
+				}
+			} else {
+				if _, err := fmt.Fprintln(stderr, "warning: streamed output was incomplete; the complete answer follows."); err != nil {
+					return err
+				}
+				if err := writeText("\n" + text); err != nil {
+					return err
+				}
+			}
+			endsWithNewline = strings.HasSuffix(text, "\n")
+		}
+	}
+	if streamed && !endsWithNewline {
 		return writeText("\n")
 	}
 	return nil

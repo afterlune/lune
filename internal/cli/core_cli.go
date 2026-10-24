@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/afterlune/lune/internal/filemention"
+	"github.com/afterlune/lune/internal/goalcmd"
 	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
@@ -284,6 +285,15 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			continue
 		}
 		switch {
+		case goalcmd.IsCommand(line):
+			command,err:=goalcmd.Parse(line)
+			if err!=nil { fmt.Fprintln(stderr,"error:",err); continue }
+			if planMode && !command.AllowedInPlan() { fmt.Fprintln(stderr,"Exit Plan mode before starting or changing a goal."); continue }
+			if sessionID=="" {
+				if command.Action!="create" { fmt.Fprintln(stdout,goalcmd.Summary(nil)); continue }
+				if err:=ensureSession();err!=nil { fmt.Fprintln(stderr,"error: create session:",err); continue }
+			}
+			if err:=handleCoreCLIGoal(runtime,workspace,command,watchKeys,stdout,stderr);err!=nil { return err }
 		case line == "/help":
 			fmt.Fprint(stdout, cliHelpText())
 		case line == "/exit":
@@ -299,6 +309,9 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			fmt.Fprintln(stdout, "Started a fresh session; it is saved with your first message.")
 		case line == "/plan":
 			if !planMode {
+				if manager,ok:=runtime.(goalcmd.Runtime);ok {
+					if goal,err:=manager.GetGoal(ctx);err==nil && goal!=nil && goal.Status==core.GoalActive { if _,err:=manager.PauseGoal(ctx);err!=nil { fmt.Fprintln(stderr,"error: pause goal:",err); continue } }
+				}
 				previousMode := client.PermissionMode()
 				if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
 					fmt.Fprintf(stderr, "error: enter Plan mode: %v\n", err)
@@ -317,12 +330,12 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 		case line == "/status":
 			handleCoreCLIStatus(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
+			if manager,ok:=runtime.(goalcmd.Runtime);ok { if goal,err:=manager.GetGoal(ctx);err==nil && goal!=nil { fmt.Fprintln(stdout,goalcmd.Summary(goal)) } }
 		case line == "/context":
 			handleCoreCLIContext(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
+			if manager,ok:=runtime.(goalcmd.Runtime);ok { if goal,err:=manager.GetGoal(ctx);err==nil && goal!=nil { fmt.Fprintln(stdout,goalcmd.Summary(goal)) } }
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
 			handleCoreCLIMemory(client, line, stdout, stderr)
-		case line == "/capability" || strings.HasPrefix(line, "/capability "):
-			handleCoreCLICapability(client, line, stdout, stderr)
 		case line == "/ps" || strings.HasPrefix(line, "/ps "):
 			handleCoreCLIPS(runtime, stdout, stderr)
 		case line == "/stop" || strings.HasPrefix(line, "/stop "):
@@ -412,6 +425,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			state, err := runtime.State(ctx)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
+			} else if state.Goal != nil && state.Task.GoalID == state.Goal.ID {
+				fmt.Fprintln(stdout, "Use /goal resume to continue this goal and its checkpoint.")
 			} else if state.Task.Status != core.TaskPaused {
 				fmt.Fprintln(stdout, "No paused task to continue.")
 			} else {

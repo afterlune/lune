@@ -95,16 +95,6 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 			default:
 				return ""
 			}
-		case "/capability":
-			if len(parts) == 1 || strings.EqualFold(parts[1], "list") || strings.EqualFold(parts[1], "help") {
-				return ""
-			}
-			switch strings.ToLower(parts[1]) {
-			case "enable", "disable", "delete":
-				return "Generated tool changes are unavailable while a task is running."
-			default:
-				return ""
-			}
 		}
 	}
 	if spec != nil && spec.AvailableDuringTask {
@@ -158,6 +148,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	switch cmdName {
+	case "/goal":
+		return m.handleGoalCommand(raw)
 	case "/exit":
 		m.cancelMCPAuthentication(false)
 		return m, tea.Quit
@@ -254,8 +246,6 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m.handleExportCommand(parts)
 	case "/memory":
 		return m.handleMemoryCommand(parts)
-	case "/capability":
-		return m.handleCapabilityCommand(parts)
 
 	case "/ps":
 		return m.handlePsCommand(parts)
@@ -303,6 +293,12 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/continue":
+		if m.runtime != nil {
+			if state, err := m.runtime.State(context.Background()); err == nil && state.Goal != nil && state.Task.GoalID == state.Goal.ID {
+				m.addSystemEntry("Use `/goal resume` to continue this goal and its checkpoint.")
+				return m, nil
+			}
+		}
 		if len(parts) > 1 {
 			m.addSystemEntry("Usage: `/continue` continues the paused task in this session.")
 			return m, nil

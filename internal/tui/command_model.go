@@ -48,6 +48,12 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Exited **Plan mode** (permissions restored).")
 	} else {
 		savedMode := m.client.PermissionMode()
+		if m.runtime!=nil {
+			if goal,err:=m.runtime.GetGoal(context.Background());err==nil && goal!=nil && goal.Status==core.GoalActive {
+				if _,err:=m.runtime.PauseGoal(context.Background());err!=nil { m.addSystemEntry("Failed to pause goal before entering Plan mode: "+err.Error()); return m,nil }
+				m.refreshGoal()
+			}
+		}
 		if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
 			m.addSystemEntry("Failed to enter Plan mode: " + err.Error())
 			return m, nil

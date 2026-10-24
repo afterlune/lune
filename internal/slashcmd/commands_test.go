@@ -81,7 +81,7 @@ func TestDraftCommandsMatchTUIDraftGate(t *testing.T) {
 
 func TestAvailableDuringTaskSetIsStable(t *testing.T) {
 	want := []string{
-		"/agents", "/cancel-queue", "/context", "/detail", "/diff", "/effort", "/help",
+		"/agents", "/cancel-queue", "/context", "/detail", "/diff", "/effort", "/goal", "/help",
 		"/logs", "/mcp", "/memory", "/model", "/permissions", "/ps", "/sessions",
 		"/shortcuts", "/status", "/stop", "/theme", "/thought", "/title",
 	}
