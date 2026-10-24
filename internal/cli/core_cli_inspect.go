@@ -3,32 +3,35 @@ package cli
 import (
 	"context"
 	"fmt"
-	core "github.com/afterlune/luneCore"
-	"github.com/afterlune/luneCore/memory"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/afterlune/lune/internal/slashcmd"
+	core "github.com/afterlune/luneCore"
+	"github.com/afterlune/luneCore/memory"
 )
 
 func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout, stderr io.Writer) {
 	fields := strings.Fields(line)
 	if len(fields) == 1 {
 		mode := client.PermissionMode()
-		fmt.Fprintf(stdout, "Permission mode: %s\nAvailable modes: read-only, workspace, auto, full-access\n", mode)
+		fmt.Fprintf(stdout, "Permission mode: %s\nAvailable modes: %s\n", mode, slashcmd.PermissionModeUsage())
 		return
 	}
 	if len(fields) != 2 {
-		fmt.Fprintln(stderr, "usage: /permissions [read-only|workspace|auto|full-access]")
+		fmt.Fprintf(stderr, "usage: /permissions [%s]\n", strings.Join(slashcmd.PermissionModeNames(), "|"))
 		return
 	}
 	if planMode {
 		fmt.Fprintln(stderr, "Cannot change permissions while Plan mode is active.")
 		return
 	}
-	mode := core.PermissionMode(fields[1])
-	if mode == "ask" {
-		mode = core.PermissionAuto
+	mode, err := slashcmd.ParsePermissionMode(fields[1])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return
 	}
 	if err := client.SetPermissionMode(mode); err != nil {
 		fmt.Fprintln(stderr, err)

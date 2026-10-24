@@ -619,10 +619,22 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 		t.Fatalf("stdout=%q stderr=%q, want Auto mode confirmation", stdout.String(), stderr.String())
 	}
 
-	// Also supports ask alias
+	// The legacy ask alias is rejected instead of silently mapped to auto.
+	stderr.Reset()
 	handleCoreCLIPermissions(client, false, "/permissions ask", &stdout, &stderr)
 	if client.PermissionMode() != core.PermissionAuto {
-		t.Fatalf("permission mode = %q, want auto via ask alias", client.PermissionMode())
+		t.Fatalf("permission mode = %q, want auto unchanged after a rejected alias", client.PermissionMode())
+	}
+	if !strings.Contains(stderr.String(), "unknown permission mode") {
+		t.Fatalf("stderr=%q, want an unknown-mode error", stderr.String())
+	}
+
+	// Any other value is rejected with the accepted modes instead of being
+	// forwarded to Core.
+	stderr.Reset()
+	handleCoreCLIPermissions(client, false, "/permissions nonsense", &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "read-only, workspace, auto, full-access") {
+		t.Fatalf("stderr=%q, want the accepted modes listed", stderr.String())
 	}
 
 	stdout.Reset()
@@ -637,6 +649,21 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	handleCoreCLIPermissions(client, true, "/permissions full-access", &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "Cannot change permissions while Plan mode is active") {
 		t.Fatalf("stderr=%q, want Plan mode lock error", stderr.String())
+	}
+}
+
+func TestCLIPermissionsTableKeepsFrontendsOnOneParser(t *testing.T) {
+	for _, raw := range []string{"ask", "nonsense", "readonly", "full_access"} {
+		client := &fakeCLICore{}
+		initial := client.PermissionMode()
+		var stdout, stderr bytes.Buffer
+		handleCoreCLIPermissions(client, false, "/permissions "+raw, &stdout, &stderr)
+		if client.PermissionMode() != initial {
+			t.Fatalf("/permissions %s reached Core and changed it to %q", raw, client.PermissionMode())
+		}
+		if !strings.Contains(stderr.String(), "unknown permission mode") {
+			t.Fatalf("/permissions %s: stderr=%q, want an unknown-mode error", raw, stderr.String())
+		}
 	}
 }
 

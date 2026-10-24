@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -154,14 +155,9 @@ func (s *DesktopService) SetPermissionMode(sessionID, mode string) (SessionContr
 	if err := idleSession(c); err != nil {
 		return SessionControlsView{}, err
 	}
-	permMode := core.PermissionMode(mode)
-	if permMode == "ask" {
-		permMode = core.PermissionAuto
-	}
-	switch permMode {
-	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
-	default:
-		return SessionControlsView{}, errors.New("未知的权限档位")
+	permMode, err := slashcmd.ParsePermissionMode(mode)
+	if err != nil {
+		return SessionControlsView{}, errors.New("未知的权限档位: " + err.Error())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

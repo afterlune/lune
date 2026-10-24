@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -169,15 +170,11 @@ func ParseFlags(args []string) (CLIFlags, error) {
 
 	// Validate permission mode if specified
 	if flags.PermissionMode != "" {
-		if flags.PermissionMode == "ask" {
-			flags.PermissionMode = core.PermissionAuto
+		mode, err := slashcmd.ParsePermissionMode(string(flags.PermissionMode))
+		if err != nil {
+			return flags, err
 		}
-		switch flags.PermissionMode {
-		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
-			// valid
-		default:
-			return flags, fmt.Errorf("invalid permission mode %q (must be 'read-only', 'workspace', 'auto', or 'full-access')", flags.PermissionMode)
-		}
+		flags.PermissionMode = mode
 	}
 
 	// Normalize workspace if provided

@@ -44,7 +44,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	m := newTUIModel(nil, nil, "task-session")
 	m.run.running = true
 	allowed := []string{
-		"/permissions ask", "/model", "/effort", "/theme", "/memory", "/memory list",
+		"/permissions auto", "/model", "/effort", "/theme", "/memory", "/memory list",
 		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
 		"/logs process", "/sessions", "/detail", "/title In progress", "/context", "/diff",
 		"/mcp", "/mcp list", "/cancel-queue", "/status", "/shortcuts", "/thought", "/help",
@@ -147,6 +147,36 @@ func TestMCPAuthenticationIsCancelableAndDoesNotBlockInput(t *testing.T) {
 	}
 	if !foundCancel {
 		t.Fatal("expected a cancellation notice")
+	}
+}
+
+func TestPermissionsCommandRejectsModesOutsideTheRegistry(t *testing.T) {
+	workspace := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	m := newTUIModel(client, nil, "permission-table")
+	for _, raw := range []string{"ask", "nonsense", "readonly", "full_access"} {
+		m.handleSlashCommand("/permissions " + raw)
+		last := m.entries[len(m.entries)-1].Text
+		if !strings.Contains(last, "Unknown permission mode") {
+			t.Fatalf("/permissions %s was accepted: %q", raw, last)
+		}
+		if client.PermissionMode() != core.PermissionWorkspace {
+			t.Fatalf("/permissions %s changed the client to %q", raw, client.PermissionMode())
+		}
+	}
+
+	m.handleSlashCommand("/permissions  AUTO ")
+	if m.permissionMode != core.PermissionAuto || client.PermissionMode() != core.PermissionAuto {
+		t.Fatalf("model=%q client=%q, want auto", m.permissionMode, client.PermissionMode())
 	}
 }
 

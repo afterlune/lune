@@ -9,6 +9,22 @@ import (
 	core "github.com/afterlune/luneCore"
 )
 
+func TestSetPermissionModeRejectsModesOutsideTheRegistry(t *testing.T) {
+	s, _, sessionID := newDesktopServiceForTest(t, immediateDesktopProvider{})
+	for _, raw := range []string{"ask", "nonsense", "readonly", "", "full_access"} {
+		if _, err := s.SetPermissionMode(sessionID, raw); err == nil {
+			t.Fatalf("SetPermissionMode(%q) was accepted", raw)
+		}
+	}
+	controls, err := s.SetPermissionMode(sessionID, " AUTO ")
+	if err != nil {
+		t.Fatalf("SetPermissionMode(\" AUTO \") failed: %v", err)
+	}
+	if controls.PermissionMode != "auto" {
+		t.Fatalf("controls=%+v", controls)
+	}
+}
+
 func TestSessionControlsAreIndependentInSharedCore(t *testing.T) {
 	s, agent, first := newDesktopServiceForTest(t, immediateDesktopProvider{})
 	second, err := agent.CreateSession(context.Background(), nil)

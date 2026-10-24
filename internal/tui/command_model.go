@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -78,24 +79,18 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	if len(parts) > 1 {
-		mode := core.PermissionMode(strings.ToLower(parts[1]))
-		if mode == "ask" {
-			mode = core.PermissionAuto
+		mode, err := slashcmd.ParsePermissionMode(parts[1])
+		if err != nil {
+			m.addSystemEntry("Unknown permission mode. Choose: `" + strings.Join(slashcmd.PermissionModeNames(), "`, `") + "`.")
+			return m, nil
 		}
-		switch mode {
-		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
-			if m.planMode {
-				m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
-			} else {
-				if err := m.client.SetPermissionMode(mode); err != nil {
-					m.addSystemEntry("Failed to set permission mode: " + err.Error())
-				} else {
-					m.permissionMode = mode
-					m.addSystemEntry(fmt.Sprintf("Permission mode set to `%s`.", mode))
-				}
-			}
-		default:
-			m.addSystemEntry("Unknown permission mode. Choose: `read-only`, `workspace`, `auto`, `full-access`.")
+		if m.planMode {
+			m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
+		} else if err := m.client.SetPermissionMode(mode); err != nil {
+			m.addSystemEntry("Failed to set permission mode: " + err.Error())
+		} else {
+			m.permissionMode = mode
+			m.addSystemEntry(fmt.Sprintf("Permission mode set to `%s`.", mode))
 		}
 		return m, nil
 	}
