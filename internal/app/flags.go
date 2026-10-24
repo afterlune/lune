@@ -169,11 +169,14 @@ func ParseFlags(args []string) (CLIFlags, error) {
 
 	// Validate permission mode if specified
 	if flags.PermissionMode != "" {
+		if flags.PermissionMode == "ask" {
+			flags.PermissionMode = core.PermissionAuto
+		}
 		switch flags.PermissionMode {
-		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
+		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
 			// valid
 		default:
-			return flags, fmt.Errorf("invalid permission mode %q (must be 'read-only', 'workspace', 'ask', or 'full-access')", flags.PermissionMode)
+			return flags, fmt.Errorf("invalid permission mode %q (must be 'read-only', 'workspace', 'auto', or 'full-access')", flags.PermissionMode)
 		}
 	}
 
@@ -202,7 +205,7 @@ Usage:
 Flags:
   -C, --workspace <dir>      Set working directory (default: current directory)
   -m, --model <profile>      Set model profile for session
-  -p, --permission <mode>    Set permission mode: read-only, workspace, ask, full-access
+  -p, --permission <mode>    Set permission mode: read-only, workspace, auto, full-access
   -s, --session <id|prefix>  Resume or open an existing session
       --prompt <text>        Instruction prompt (can also be passed as positional arguments)
       --plan                 Start in Plan mode (read-only exploration)

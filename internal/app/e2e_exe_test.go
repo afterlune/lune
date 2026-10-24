@@ -193,7 +193,7 @@ func TestLuneExeCLIInteractive(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, exePath, "--cli", "-C", ws)
-	cmd.Stdin = strings.NewReader("/status\n/permissions ask\n/plan\n/plan\nHello from CLI\n/exit\n")
+	cmd.Stdin = strings.NewReader("/status\n/permissions auto\n/plan\n/plan\nHello from CLI\n/exit\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -205,7 +205,7 @@ func TestLuneExeCLIInteractive(t *testing.T) {
 	out := stdout.String()
 	for _, expected := range []string{
 		"gpt-test",
-		"Permission mode set to ask.",
+		"Permission mode set to auto.",
 		"Switched to Plan mode",
 		"Exited Plan mode",
 		"internal/tui/view.go:100",

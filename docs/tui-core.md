@@ -52,7 +52,7 @@ Rules that follow from this split:
 
 ## Permissions, Modes, and Themes
 
-- Four permission modes: `read-only`, `workspace` (default), `ask`, `full-access`. Open the selector with `/permissions` or set one directly with `/permissions <mode>`; `Shift+Tab` toggles Plan mode instead of cycling permissions.
+- Four permission modes: `read-only`, `workspace` (default), `auto`, `full-access`. Open the selector with `/permissions` or set one directly with `/permissions <mode>`; `Shift+Tab` toggles Plan mode instead of cycling permissions.
 - `read-only` permits workspace reads and can approve external-directory reads; `ask` prompts for every operation except workspace reads; `workspace` permits workspace reads/writes and asks for external paths, commands, and web; `full-access` permits registered tools except the permanent extreme-danger command denylist. External file grants are per-session, cover a directory subtree with read or read/write access, survive reopening that session, and do not apply to shell commands.
 - Plan mode (`/plan` or `Shift+Tab`): Locks permissions to `read-only` while planning. Restores the previous permission mode when Plan mode ends or implementation is chosen.
 - Theme Adaptability (`/theme`): Native background color negotiation via Bubble Tea v2 `tea.RequestBackgroundColor` and `tea.BackgroundColorMsg`, with manual override (`dark`, `light`, `auto`).

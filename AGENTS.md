@@ -43,12 +43,12 @@ Capability extension must go through the existing mechanisms instead:
 The tool permission setting has four modes:
 工具权限设置有四档：
 
-- `read-only`: workspace reads are allowed; reads outside the workspace and web tools require approval; writes and commands are blocked.
-  `read-only`：默认允许读取工作区；读取工作区外目录和 web 工具需授权；写入与命令会被阻止。
-- `ask`: workspace reads are allowed; all other tool operations require approval, including workspace writes and external-directory access.
-  `ask`：默认允许读取工作区；其他工具操作均需授权，包括工作区写入和工作区外目录访问。
-- `workspace`: workspace reads and writes are allowed; external filesystem access, commands, and web tools require approval.
-  `workspace`：默认允许读取和写入工作区；工作区外文件访问、命令和 web 工具需授权。
+- `read-only`: workspace reads are allowed; reads outside the workspace, web tools, and unclassified tools require approval; writes and commands are blocked.
+  `read-only`：默认允许读取工作区；读取工作区外目录、web 工具及未分类工具需授权；写入与命令会被阻止。
+- `workspace`: workspace reads and writes are allowed; external filesystem access, commands, web tools, and unclassified tools require approval.
+  `workspace`：默认允许读取和写入工作区；工作区外文件访问、命令、web 工具及未分类工具需授权。
+- `auto`: based on `workspace` permissions with automatic model review; safe operations and commands run without prompts, while risky actions or review failures prompt for approval.
+  `auto`：基于 `workspace` 档位并增加模型自动审查；安全操作与命令自动放行无需弹窗，有风险或审查失败的操作弹出交互式授权。
 - `full-access`: registered tools run without approval and may use current-user filesystem access; extremely dangerous commands are always blocked.
   `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；极度危险命令始终被阻止。
 
@@ -67,8 +67,10 @@ Approved commands and commands run under `full-access` have network access enabl
   所有会生成仓库二进制文件的 Go 构建均需传入 `-trimpath`，包括开发构建和会编译可执行文件的测试辅助代码。脚本与文档中的构建命令需保持一致。
 - Register each tool with metadata for its category, permission class, and read-only behavior; an empty category means the tool is not discovered by category. Keep permission decisions and Plan mode filtering based on this metadata rather than tool names.
   注册工具时统一声明类别、权限类别和只读属性；类别为空表示该工具不参与按类别发现。权限判断和 Plan 模式筛选均读取元数据，不按工具名称判断。
-- Unclassified tools are blocked in `read-only` and `workspace` modes; `workspace` does not prompt for missing metadata. `ask` prompts for unclassified tools, while `full-access` allows every registered tool.
-  未分类工具在 `read-only` 和 `workspace` 模式下会被阻止；`workspace` 不会为缺失元数据弹出授权。`ask` 会请求授权，`full-access` 允许所有已注册工具。
+- Unclassified tools require approval in `read-only`, `workspace`, and `auto` modes; `full-access` allows every registered tool.
+  未分类工具在 `read-only`、`workspace` 和 `auto` 模式下需交互授权；`full-access` 允许所有已注册工具。
+- Approved tool operations (both interactively approved and auto-reviewed) are remembered for the session; subsequent identical tool calls within the same session do not require re-approval.
+  已授权的工具操作（包括交互式授权与自动审查放行）在会话中予以记录；同会话中后续相同操作无需重复授权。
 - Built-in file tools can request a session-scoped directory grant for paths outside the workspace. A grant covers that directory and descendants with either `read` or `read_write` access; a write grant also covers reads. Denials are not remembered, grants persist when reopening the same session, and new or forked sessions do not inherit them. Deleting a session deletes its grants. There is no separate grant-management UI. These grants apply only to built-in file tools, never to shell commands.
   内置文件工具可为工作区外路径请求会话级目录授权。授权范围覆盖指定目录及其子目录，权限为 `read` 或 `read_write`；读写授权也包含读取。拒绝不会被记住；重新打开同一会话时授权继续有效；新会话和分叉会话不继承授权。删除会话即删除授权，不另设授权管理界面。目录授权只作用于内置文件工具，不作用于 Shell 命令。
 - Commands that can be approved interactively are not permanently denied just because they match a high-risk pattern. A narrow extreme-danger denylist remains blocked in every mode, including `full-access`; non-interactive plan execution still requires exact authorization for high-risk commands.

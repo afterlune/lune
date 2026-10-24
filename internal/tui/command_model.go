@@ -76,8 +76,11 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 	}
 	if len(parts) > 1 {
 		mode := core.PermissionMode(strings.ToLower(parts[1]))
+		if mode == "ask" {
+			mode = core.PermissionAuto
+		}
 		switch mode {
-		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
+		case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
 			if m.planMode {
 				m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
 			} else {
@@ -89,7 +92,7 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 				}
 			}
 		default:
-			m.addSystemEntry("Unknown permission mode. Choose: `read-only`, `workspace`, `ask`, `full-access`.")
+			m.addSystemEntry("Unknown permission mode. Choose: `read-only`, `workspace`, `auto`, `full-access`.")
 		}
 		return m, nil
 	}

@@ -31,7 +31,7 @@ func TestSessionControlsAreIndependentInSharedCore(t *testing.T) {
 	if agent.PermissionMode() != core.PermissionWorkspace {
 		t.Fatal("session policy changed shared Core")
 	}
-	if _, err = s.SetPermissionMode(second.ID, "ask"); err != nil {
+	if _, err = s.SetPermissionMode(second.ID, "auto"); err != nil {
 		t.Fatal(err)
 	}
 	state, err := s.OpenSession(first)
@@ -52,7 +52,7 @@ func TestSessionControlsAreIndependentInSharedCore(t *testing.T) {
 		t.Fatalf("restored=%+v", restored)
 	}
 	state, err = s.RefreshSession(second.ID)
-	if err != nil || state.Controls.PermissionMode != "ask" || state.Controls.PlanMode {
+	if err != nil || state.Controls.PermissionMode != "auto" || state.Controls.PlanMode {
 		t.Fatalf("second=%+v err=%v", state.Controls, err)
 	}
 	if _, err = s.Submit("missing", SubmitInput{Text: "wrong target"}); err == nil {

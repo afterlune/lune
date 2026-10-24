@@ -584,7 +584,7 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if err := client.SetPermissionMode(core.PermissionAsk); err != nil {
+	if err := client.SetPermissionMode(core.PermissionAuto); err != nil {
 		t.Fatal(err)
 	}
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
@@ -598,10 +598,10 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	m := newTUIModel(client, runtime, session.ID)
 	m.workspace = workspace
 	m.planMode = true
-	m.savedMode = core.PermissionAsk
+	m.savedMode = core.PermissionAuto
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "1. Read code\n2. Run tests", Selected: 0}
 	_, cmd := m.resolveActivePlanReview()
-	if cmd == nil || m.activePlanReview != nil || m.planMode || m.permissionMode != core.PermissionAsk {
+	if cmd == nil || m.activePlanReview != nil || m.planMode || m.permissionMode != core.PermissionAuto {
 		t.Fatal("plan implementation must dismiss review and restore the previous permission mode")
 	}
 	m.Update(planImplementedMsg{impl: core.PlanImplementation{Submission: core.TurnSubmission{ExecutionID: "implementation"}}, planText: "1. Read code\n2. Run tests"})

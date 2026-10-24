@@ -133,7 +133,7 @@ func (f *fakeCLICore) SetPermissionMode(mode core.PermissionMode) error {
 		return f.permissionErr
 	}
 	switch mode {
-	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
+	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionAsk, core.PermissionFullAccess:
 		f.mode = mode
 		return nil
 	default:
@@ -608,20 +608,26 @@ func runCLIWithOptions(t *testing.T, client cliCore, input string, watchKeys key
 	return stdout.String(), stderr.String()
 }
 
-func TestCLIPermissionsCommandSupportsAskMode(t *testing.T) {
+func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	client := &fakeCLICore{}
 	var stdout, stderr bytes.Buffer
-	handleCoreCLIPermissions(client, false, "/permissions ask", &stdout, &stderr)
-	if client.PermissionMode() != core.PermissionAsk {
-		t.Fatalf("permission mode = %q, want ask", client.PermissionMode())
+	handleCoreCLIPermissions(client, false, "/permissions auto", &stdout, &stderr)
+	if client.PermissionMode() != core.PermissionAuto {
+		t.Fatalf("permission mode = %q, want auto", client.PermissionMode())
 	}
-	if !strings.Contains(stdout.String(), "ask") || stderr.Len() != 0 {
-		t.Fatalf("stdout=%q stderr=%q, want Ask mode confirmation", stdout.String(), stderr.String())
+	if !strings.Contains(stdout.String(), "auto") || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q, want Auto mode confirmation", stdout.String(), stderr.String())
+	}
+
+	// Also supports ask alias
+	handleCoreCLIPermissions(client, false, "/permissions ask", &stdout, &stderr)
+	if client.PermissionMode() != core.PermissionAuto {
+		t.Fatalf("permission mode = %q, want auto via ask alias", client.PermissionMode())
 	}
 
 	stdout.Reset()
 	handleCoreCLIPermissions(client, false, "/permissions", &stdout, &stderr)
-	for _, mode := range []string{"read-only", "workspace", "ask", "full-access"} {
+	for _, mode := range []string{"read-only", "workspace", "auto", "full-access"} {
 		if !strings.Contains(stdout.String(), mode) {
 			t.Errorf("permission list %q does not contain %q", stdout.String(), mode)
 		}
@@ -659,7 +665,7 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 		"/permissions [mode]",
 		"/resume [id|prefix]",
 		"/continue",
-		"read-only, workspace, ask, full-access",
+		"read-only, workspace, auto, full-access",
 	} {
 		if !strings.Contains(stdout, expected) {
 			t.Errorf("help output %q is missing %q", stdout, expected)
@@ -1138,15 +1144,15 @@ func TestCLIPlanMode(t *testing.T) {
 }
 
 func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
-	client := &fakeCLICore{mode: core.PermissionAsk, permissionErr: errors.New("permission store unavailable")}
+	client := &fakeCLICore{mode: core.PermissionAuto, permissionErr: errors.New("permission store unavailable")}
 	stdout, stderr := runCLI(t, client, "/plan\n/status\n/exit\n", nil)
-	if client.PermissionMode() != core.PermissionAsk {
+	if client.PermissionMode() != core.PermissionAuto {
 		t.Fatalf("permission mode changed after rejected Plan transition: %s", client.PermissionMode())
 	}
 	if !strings.Contains(stderr, "error: enter Plan mode: permission store unavailable") {
 		t.Fatalf("stderr = %q, want permission failure", stderr)
 	}
-	if !strings.Contains(stdout, "Permissions: ask (Plan mode: false)") {
+	if !strings.Contains(stdout, "Permissions: auto (Plan mode: false)") {
 		t.Fatalf("stdout = %q, want original mode and Plan state", stdout)
 	}
 }
@@ -1786,7 +1792,7 @@ func TestCoreCLILogsSanitizeProcessOutput(t *testing.T) {
 func TestCLIPlanModeReachesSubmittedTurn(t *testing.T) {
 	for _, startup := range []bool{false, true} {
 		t.Run(fmt.Sprint(startup), func(t *testing.T) {
-			client := &fakeCLICore{mode: core.PermissionAsk}
+			client := &fakeCLICore{mode: core.PermissionAuto}
 			input := "/plan\nplan this task\n/plan\nimplement this task\n/exit\n"
 			if startup {
 				input = "plan this task\n/plan\nimplement this task\n/exit\n"
@@ -1799,7 +1805,7 @@ func TestCLIPlanModeReachesSubmittedTurn(t *testing.T) {
 			if len(client.inputs) != 2 || !client.inputs[0].PlanMode || client.inputs[1].PlanMode {
 				t.Fatalf("requests=%+v", client.inputs)
 			}
-			if client.PermissionMode() != core.PermissionAsk {
+			if client.PermissionMode() != core.PermissionAuto {
 				t.Fatalf("restored permissions=%s", client.PermissionMode())
 			}
 		})

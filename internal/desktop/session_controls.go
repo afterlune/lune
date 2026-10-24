@@ -154,8 +154,12 @@ func (s *DesktopService) SetPermissionMode(sessionID, mode string) (SessionContr
 	if err := idleSession(c); err != nil {
 		return SessionControlsView{}, err
 	}
-	switch core.PermissionMode(mode) {
-	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAsk, core.PermissionFullAccess:
+	permMode := core.PermissionMode(mode)
+	if permMode == "ask" {
+		permMode = core.PermissionAuto
+	}
+	switch permMode {
+	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
 	default:
 		return SessionControlsView{}, errors.New("未知的权限档位")
 	}
@@ -164,7 +168,7 @@ func (s *DesktopService) SetPermissionMode(sessionID, mode string) (SessionContr
 	if c.planMode {
 		return SessionControlsView{}, errors.New("方案模式期间权限固定为只读")
 	}
-	c.permissionMode = core.PermissionMode(mode)
+	c.permissionMode = permMode
 	return sessionControls(c), nil
 }
 

@@ -27,7 +27,7 @@ type ActivePermissionPicker struct {
 var permissionModes = []core.PermissionMode{
 	core.PermissionReadOnly,
 	core.PermissionWorkspace,
-	core.PermissionAsk,
+	core.PermissionAuto,
 	core.PermissionFullAccess,
 }
 

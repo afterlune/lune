@@ -15,11 +15,11 @@ func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout
 	fields := strings.Fields(line)
 	if len(fields) == 1 {
 		mode := client.PermissionMode()
-		fmt.Fprintf(stdout, "Permission mode: %s\nAvailable modes: read-only, workspace, ask, full-access\n", mode)
+		fmt.Fprintf(stdout, "Permission mode: %s\nAvailable modes: read-only, workspace, auto, full-access\n", mode)
 		return
 	}
 	if len(fields) != 2 {
-		fmt.Fprintln(stderr, "usage: /permissions [read-only|workspace|ask|full-access]")
+		fmt.Fprintln(stderr, "usage: /permissions [read-only|workspace|auto|full-access]")
 		return
 	}
 	if planMode {
@@ -27,6 +27,9 @@ func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout
 		return
 	}
 	mode := core.PermissionMode(fields[1])
+	if mode == "ask" {
+		mode = core.PermissionAuto
+	}
 	if err := client.SetPermissionMode(mode); err != nil {
 		fmt.Fprintln(stderr, err)
 		return
