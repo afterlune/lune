@@ -84,6 +84,16 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to settings database: %w", err)
 	}
+	// The desktop app and the TUI/CLI can keep this database open at the same
+	// time. These pragmas match the desktop activity store so a concurrent writer
+	// waits instead of failing with "database is locked".
+	const pragmas = `
+PRAGMA busy_timeout = 5000;
+PRAGMA journal_mode = WAL;`
+	if _, err := db.ExecContext(context.Background(), pragmas); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure settings database: %w", err)
+	}
 	const schema = `
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,

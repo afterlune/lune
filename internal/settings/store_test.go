@@ -10,6 +10,58 @@ import (
 	publicmodel "github.com/afterlune/luneCore/model"
 )
 
+func TestOpenConfiguresConcurrentAccessPragmas(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var busyTimeout int
+	if err := store.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", busyTimeout)
+	}
+
+	var journalMode string
+	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+}
+
+// TestTwoStoresWriteTheSameDatabase keeps the TUI and the desktop from failing
+// when both processes hold settings.db open.
+func TestTwoStoresWriteTheSameDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	for index := 0; index < 20; index++ {
+		if err := first.saveSetting("shared.key", "first"); err != nil {
+			t.Fatalf("first writer: %v", err)
+		}
+		if err := second.saveSetting("shared.key", "second"); err != nil {
+			t.Fatalf("second writer: %v", err)
+		}
+	}
+	if value, ok, err := first.setting("shared.key"); err != nil || !ok || value != "second" {
+		t.Fatalf("setting() = %q, %v, %v", value, ok, err)
+	}
+}
+
 func TestStorePersistsThemeAndRecentWorkspace(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
