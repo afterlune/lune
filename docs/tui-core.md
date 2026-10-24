@@ -28,10 +28,10 @@ The interactive TUI owns the terminal's alternate screen so its transcript, comp
 
 Rules that follow from this split:
 
-- Usage numbers are written only through `sessionUsage` methods (`applyTotals`, `applyLeadRequest`, `addEventUsage`, `beginCompaction`, `finishCompaction`); `loadSessionSnapshot` and `refreshSessionUsageSnapshot` share them so a restored session renders a final footer in one pass.
+- Usage numbers are written only through `sessionUsage` methods (`applyTotals`, `applyLeadRequest`, `addEventUsage`, `setContextWindow`, `setSpeed`, `beginCompaction`, `finishCompaction`, `resetCompaction`, `applyCompactResult`); `loadSessionSnapshot` and `refreshSessionUsageSnapshot` share them so a restored session renders a final footer in one pass.
 - At most one overlay is open. Opening an overlay calls `modalState.open()`, which closes the previous one, so key routing (`handleKeyPress`) and layout (`overlaySection`) can never disagree.
 - `overlaySection` is the single ordered list of overlays and task cards; it returns both the rendered text and the reserved height, so the layout can no longer measure one panel and draw another.
-- The effort picker and a running MCP authentication are rendered inside the same order but are not overlays: they never take the keyboard away from a pending question or approval.
+- The effort picker is owned by `tuiModel` rather than `modalState`, and a running MCP authentication is a status panel: both are rendered inside the same order but never take the keyboard away from a pending question or approval.
 - Slash command metadata (name, help text, target frontend, session requirement, availability during a task) lives in `internal/slashcmd`; both frontends render their tables from it and keep only dispatch and subcommand rules locally.
 
 ## Questions, Approvals, and Execution Records
@@ -53,7 +53,7 @@ Rules that follow from this split:
 ## Permissions, Modes, and Themes
 
 - Four permission modes: `read-only`, `workspace` (default), `auto`, `full-access`. Open the selector with `/permissions` or set one directly with `/permissions <mode>`; `Shift+Tab` toggles Plan mode instead of cycling permissions.
-- `read-only` permits workspace reads and can approve external-directory reads; `ask` prompts for every operation except workspace reads; `workspace` permits workspace reads/writes and asks for external paths, commands, and web; `full-access` permits registered tools except the permanent extreme-danger command denylist. External file grants are per-session, cover a directory subtree with read or read/write access, survive reopening that session, and do not apply to shell commands.
+- `read-only` permits workspace reads and can approve external-directory reads; `workspace` permits workspace reads/writes and asks for external paths, commands, and web; `auto` builds on `workspace` and adds model auto-review, so safe operations run without a prompt while risky operations or a failed review require approval (each auto-review authorizes one invocation only); `full-access` permits registered tools except the permanent extreme-danger command denylist. External file grants are per-session, cover a directory subtree with read or read/write access, survive reopening that session, and do not apply to shell commands.
 - Plan mode (`/plan` or `Shift+Tab`): Locks permissions to `read-only` while planning. Restores the previous permission mode when Plan mode ends or implementation is chosen.
 - Theme Adaptability (`/theme`): Native background color negotiation via Bubble Tea v2 `tea.RequestBackgroundColor` and `tea.BackgroundColorMsg`, with manual override (`dark`, `light`, `auto`).
 
