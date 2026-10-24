@@ -38,6 +38,12 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	switch msg := msg.(type) {
 	case goalActionMsg:
 		return m.finishGoalAction(msg)
+	case fileMentionResultsMsg:
+		return m.applyFileMentionResults(msg)
+	case diffLoadedMsg:
+		return m.handleDiffLoaded(msg)
+	case reviewMaterialsMsg:
+		return m.handleReviewMaterials(msg)
 	case tea.BackgroundColorMsg:
 		UpdateTerminalBackground(msg.IsDark())
 		m.applyThemeStyles()

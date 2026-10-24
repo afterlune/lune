@@ -3,14 +3,28 @@ package workspacereview
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
+)
+
+const (
+	// gitTimeout bounds every git call so a hung repository cannot block a
+	// workspace review forever.
+	gitTimeout = 5 * time.Second
+	// maxUntrackedFileBytes caps one untracked file copied into the materials.
+	maxUntrackedFileBytes int64 = 1 << 20
+	// maxMaterialsBytes caps the whole collection so a review cannot flood the
+	// model context.
+	maxMaterialsBytes = 8 << 20
 )
 
 // CollectMaterials returns staged and unstaged diffs and the contents of
@@ -37,13 +51,7 @@ func CollectMaterials(workspace, requestedPath string) (string, bool, error) {
 	}
 
 	git := func(args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(context.Background(), "git", args...)
-		cmd.Dir = absWorkspace
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-		}
-		return out, nil
+		return runGit(context.Background(), absWorkspace, args...)
 	}
 	pathArgs := func() []string {
 		if gitPath == "" {
@@ -63,6 +71,8 @@ func CollectMaterials(workspace, requestedPath string) (string, bool, error) {
 
 	var sections []string
 	textFiles := 0
+	totalBytes := 0
+	omitted := 0
 	for _, diff := range []struct {
 		name string
 		args []string
@@ -77,11 +87,18 @@ func CollectMaterials(workspace, requestedPath string) (string, bool, error) {
 		if strings.TrimSpace(string(raw)) == "" {
 			continue
 		}
+		// Every file is admitted whole; once the collection is full the rest is
+		// reported instead of silently dropped.
 		var fileDiffs []string
 		for _, fileDiff := range splitDiffFiles(string(raw)) {
 			if strings.Contains(fileDiff, "GIT binary patch") || strings.Contains(fileDiff, "Binary files ") {
 				continue
 			}
+			if totalBytes+len(fileDiff) > maxMaterialsBytes {
+				omitted++
+				continue
+			}
+			totalBytes += len(fileDiff)
 			fileDiffs = append(fileDiffs, fileDiff)
 		}
 		if len(fileDiffs) > 0 {
@@ -108,7 +125,7 @@ func CollectMaterials(workspace, requestedPath string) (string, bool, error) {
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		data, err := os.ReadFile(fullPath)
+		data, truncated, err := readUntrackedFile(fullPath, maxUntrackedFileBytes)
 		if err != nil {
 			return "", false, fmt.Errorf("read untracked file %q: %w", string(rawPath), err)
 		}
@@ -116,13 +133,74 @@ func CollectMaterials(workspace, requestedPath string) (string, bool, error) {
 			continue
 		}
 		fence := codeFence(data)
-		sections = append(sections, fmt.Sprintf("### Untracked text file: %s\n%s\n%s\n%s", string(rawPath), fence, string(data), fence))
+		header := "### Untracked text file: " + string(rawPath)
+		if truncated {
+			header += fmt.Sprintf("\n[truncated: first %d KiB shown]", maxUntrackedFileBytes>>10)
+		}
+		section := header + "\n" + fence + "\n" + string(data) + "\n" + fence
+		if totalBytes+len(section) > maxMaterialsBytes {
+			omitted++
+			continue
+		}
+		totalBytes += len(section)
+		sections = append(sections, section)
 		textFiles++
+	}
+	if omitted > 0 {
+		sections = append(sections, fmt.Sprintf("[truncated: %d file(s) omitted at the %d MiB workspace review limit]", omitted, maxMaterialsBytes>>20))
 	}
 	if textFiles == 0 {
 		return "", false, nil
 	}
 	return strings.Join(sections, "\n\n"), true, nil
+}
+
+// readUntrackedFile reads at most limit bytes and reports whether the file was
+// longer than the limit.
+func readUntrackedFile(path string, limit int64) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) <= limit {
+		return data, false, nil
+	}
+	return trimPartialRune(data[:limit]), true, nil
+}
+
+// trimPartialRune drops a trailing incomplete UTF-8 sequence so a truncated
+// text file is still recognised as text.
+func trimPartialRune(data []byte) []byte {
+	if utf8.Valid(data) {
+		return data
+	}
+	for trim := 1; trim <= utf8.UTFMax && trim <= len(data); trim++ {
+		if utf8.RuneStart(data[len(data)-trim]) {
+			return data[:len(data)-trim]
+		}
+	}
+	return data
+}
+
+// runGit runs one git command bounded by gitTimeout.
+func runGit(ctx context.Context, directory string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = directory
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("git %s timed out after %s", strings.Join(args, " "), gitTimeout)
+		}
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
 }
 
 func splitDiffFiles(raw string) []string {

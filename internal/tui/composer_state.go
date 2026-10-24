@@ -26,6 +26,10 @@ type composerState struct {
 
 	scanner *filemention.Scanner
 
+	// mentionRequest orders asynchronous @-mention searches so a slow scan cannot
+	// overwrite the popup of a newer query.
+	mentionRequest uint64
+
 	history      []string
 	historyIndex int
 	historyDraft string

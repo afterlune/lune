@@ -76,6 +76,27 @@ func (s *Scanner) Files() []File {
 	return s.files
 }
 
+// CachedFiles returns the files from the last scan without starting a new one.
+// It returns nil until the first scan completes.
+func (s *Scanner) CachedFiles() []File {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.files
+}
+
+// Expired reports whether the cached file list is missing or past its TTL.
+func (s *Scanner) Expired() bool {
+	if s == nil || s.workspace == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.files == nil || time.Since(s.cachedAt) >= s.ttl
+}
+
 // Search returns up to limit files matching the query, ranked by relevance.
 func (s *Scanner) Search(query string, limit int) []File {
 	files := s.Files()

@@ -607,27 +607,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.input.autocompleteOpen = false
 		}
 	} else if query, start, end, ok := filemention.DetectAtQuery(val, m.cursorOffset()); ok {
-		matches := m.getFileScanner().Search(query, 50)
-		if len(matches) > 0 {
-			m.input.autocompleteOpen = true
-			m.input.autocompleteMode = AutocompleteModeFile
-			m.input.autocompleteStart = start
-			m.input.autocompleteEnd = end
-			m.input.autocompleteIndex = 0
-			var items []AutocompleteItem
-			for _, match := range matches {
-				desc := filemention.FormatFileSize(match.Size)
-				if match.IsModified {
-					desc += " · modified"
-				}
-				items = append(items, AutocompleteItem{
-					Command:     "@" + match.Path,
-					Description: desc,
-				})
-			}
-			m.input.autocompleteItems = items
-		} else {
-			m.input.autocompleteOpen = false
+		// Cached matches render immediately; a missing or stale cache refreshes in
+		// the background so the key handler never walks the workspace.
+		if mentionCmd := m.refreshFileMentions(query, start, end); mentionCmd != nil {
+			cmd = tea.Batch(cmd, mentionCmd)
 		}
 	} else {
 		m.input.autocompleteOpen = false

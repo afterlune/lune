@@ -155,7 +155,9 @@ func TestReviewCommand(t *testing.T) {
 	m.workspace = initReviewGitRepo(t)
 
 	// An empty worktree reports that there is nothing to review without requiring a runtime.
-	m.handleSlashCommand("/review")
+	mod, cmd := m.handleSlashCommand("/review")
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isReviewMaterials)
 	lastSys := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys, "No text changes to review") {
 		t.Errorf("expected no-changes message, got: %s", lastSys)
@@ -165,7 +167,9 @@ func TestReviewCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(m.workspace, "tracked.txt"), []byte("working tree change\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	m.handleSlashCommand("/review")
+	mod, cmd = m.handleSlashCommand("/review")
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isReviewMaterials)
 	lastSys = m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys, "active session runtime") {
 		t.Errorf("expected runtime requirement message, got: %s", lastSys)
@@ -538,8 +542,9 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	// 1. Trigger @
 	m.input.composer.SetValue("@")
 	m.input.composer.CursorEnd()
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "t"}))
+	mod, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "t"}))
 	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isMentionResults)
 	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for @t")
 	}
@@ -569,15 +574,17 @@ func TestFileMentionAutocomplete(t *testing.T) {
 	// 4. Esc closes autocomplete
 	m.input.composer.SetValue("review @c")
 	m.input.composer.CursorEnd()
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm', Text: "m"}))
+	mod, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: 'm', Text: "m"}))
 	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isMentionResults)
 	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for @cm")
 	}
 	// 5. Trigger @ alone in empty composer
 	m.input.composer.SetValue("")
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: '@', Text: "@"}))
+	mod, cmd = m.Update(tea.KeyPressMsg(tea.Key{Code: '@', Text: "@"}))
 	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isMentionResults)
 	if !m.input.autocompleteOpen {
 		t.Fatalf("expected autocomplete to open for single '@'")
 	}

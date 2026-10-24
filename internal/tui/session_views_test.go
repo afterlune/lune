@@ -813,7 +813,9 @@ index 3333333..4444444 100644
 	}
 
 	// 7. Test /diff command with non-existent path
-	m.handleSlashCommand("/diff non-existent-path-abc.txt")
+	mod, cmd := m.handleSlashCommand("/diff non-existent-path-abc.txt")
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isDiffLoaded)
 	lastSys := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastSys, "No changes found for: non-existent-path-abc.txt") {
 		t.Errorf("expected no changes notice, got: %s", lastSys)
