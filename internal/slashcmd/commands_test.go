@@ -150,3 +150,19 @@ func equal(got, want []string) bool {
 	}
 	return true
 }
+
+// TestAllReturnsAnIsolatedCopy keeps callers from rewriting the registry.
+func TestAllReturnsAnIsolatedCopy(t *testing.T) {
+	commands := All()
+	if len(commands) == 0 {
+		t.Fatal("the registry must not be empty")
+	}
+	original := commands[0].Name
+	commands[0].Name = "/mutated"
+	if got := All()[0].Name; got != original {
+		t.Fatalf("All() leaked a caller mutation: %q", got)
+	}
+	if _, ok := Find(original); !ok {
+		t.Fatalf("the registry lost %q", original)
+	}
+}

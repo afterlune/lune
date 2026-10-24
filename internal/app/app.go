@@ -224,7 +224,9 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 
 	userStore, storeErr := settings.OpenUser()
 	if storeErr == nil {
-		_ = userStore.TouchWorkspace(workspace)
+		if err := userStore.TouchWorkspace(workspace); err != nil {
+			slog.Warn("record recent workspace", "workspace", workspace, "error", err)
+		}
 		defer userStore.Close()
 	}
 

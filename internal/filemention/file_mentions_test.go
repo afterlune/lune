@@ -1,9 +1,11 @@
 package filemention
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -394,4 +396,53 @@ func TestGitModifiedFilesBoost(t *testing.T) {
 	if len(rankedSearch) == 0 || !rankedSearch[0].IsModified {
 		t.Errorf("expected top search result to be modified file, got: %+v", rankedSearch[0])
 	}
+}
+
+// TestFilesReturnsAnIsolatedCopy keeps callers from mutating the cached scan.
+func TestFilesReturnsAnIsolatedCopy(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "a.go"), []byte("package a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(workspace)
+	files := scanner.Files()
+	if len(files) != 1 || files[0].Path != "a.go" {
+		t.Fatalf("unexpected files: %#v", files)
+	}
+	files[0].Path = "mutated.go"
+	if got := scanner.Files()[0].Path; got != "a.go" {
+		t.Fatalf("the cached scan leaked a caller mutation: %q", got)
+	}
+	if got := scanner.CachedFiles()[0].Path; got != "a.go" {
+		t.Fatalf("CachedFiles leaked a caller mutation: %q", got)
+	}
+}
+
+// TestConcurrentScansSettleOnOneCache exercises the scan-outside-the-lock path
+// under -race: readers must never see a half-built cache.
+func TestConcurrentScansSettleOnOneCache(t *testing.T) {
+	workspace := t.TempDir()
+	for index := 0; index < 24; index++ {
+		name := filepath.Join(workspace, fmt.Sprintf("file-%02d.go", index))
+		if err := os.WriteFile(name, []byte("package p"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scanner := NewScanner(workspace)
+
+	var wait sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			for round := 0; round < 4; round++ {
+				if got := len(scanner.Search("file", 50)); got != 24 {
+					t.Errorf("worker %d saw %d files", worker, got)
+					return
+				}
+				_ = scanner.Expired()
+			}
+		}(worker)
+	}
+	wait.Wait()
 }

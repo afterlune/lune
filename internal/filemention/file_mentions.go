@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,42 +50,46 @@ func NewScanner(workspace string) *Scanner {
 	}
 }
 
-// Files returns the cached list of workspace files, refreshing if expired.
+// Files returns a snapshot of the workspace files, refreshing it when the cache
+// is missing or stale. The scan runs outside the lock so concurrent callers are
+// never blocked behind one walk.
 func (s *Scanner) Files() []File {
 	if s == nil || s.workspace == "" {
 		return nil
 	}
-
-	s.mu.RLock()
-	if time.Since(s.cachedAt) < s.ttl && s.files != nil {
-		cached := s.files
-		s.mu.RUnlock()
-		return cached
+	if files, ok := s.freshFiles(); ok {
+		return files
 	}
-	s.mu.RUnlock()
+
+	files := s.scanWorkspace()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Double check after acquiring write lock
-	if time.Since(s.cachedAt) < s.ttl && s.files != nil {
-		return s.files
-	}
-
-	s.files = s.scanWorkspace()
+	s.files = files
 	s.cachedAt = time.Now()
-	return s.files
+	s.mu.Unlock()
+
+	return slices.Clone(files)
 }
 
-// CachedFiles returns the files from the last scan without starting a new one.
-// It returns nil until the first scan completes.
+// freshFiles returns a copy of the cached list while it is still fresh.
+func (s *Scanner) freshFiles() ([]File, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.files == nil || time.Since(s.cachedAt) >= s.ttl {
+		return nil, false
+	}
+	return slices.Clone(s.files), true
+}
+
+// CachedFiles returns a copy of the files from the last scan without starting a
+// new one. It returns nil until the first scan completes.
 func (s *Scanner) CachedFiles() []File {
 	if s == nil {
 		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.files
+	return slices.Clone(s.files)
 }
 
 // Expired reports whether the cached file list is missing or past its TTL.

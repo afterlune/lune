@@ -3,7 +3,10 @@
 // handling and subcommand rules stay in each frontend.
 package slashcmd
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Target marks the frontends that list a command in autocomplete and help output.
 type Target uint8
@@ -87,9 +90,10 @@ var registry = []Command{
 	{Name: "/exit", Summary: "exit the chat session", Usage: "/exit", Description: "Exit the chat.", Targets: TargetTUI | TargetCLI},
 }
 
-// All returns every registered command in registry order.
+// All returns every registered command in registry order. The slice is a copy so
+// callers cannot mutate the registry.
 func All() []Command {
-	return registry
+	return slices.Clone(registry)
 }
 
 // For returns the commands listed for one frontend, in registry order.
