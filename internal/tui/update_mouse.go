@@ -25,3 +25,18 @@ func (m *tuiModel) composerMousePosition(x, y int) (int, int) {
 	offsetX, offsetY := m.composerMouseOffset()
 	return x - offsetX, y - offsetY
 }
+
+func (m *tuiModel) clearTranscriptSelection() {
+	m.input.selecting = false
+	m.input.selectedText = ""
+	m.input.selectStartX = 0
+	m.input.selectEndX = 0
+	m.input.selectStartY = 0
+	m.input.selectEndY = 0
+	m.input.selectStartDocRow = 0
+	m.input.selectEndDocRow = 0
+}
+
+func clamp(v, low, high int) int {
+	return min(high, max(low, v))
+}

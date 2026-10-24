@@ -176,12 +176,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.run.currentStreamText = ""
 		m.viewport.SetContent("")
 		m.scrolledUp = false
-		m.input.selecting = false
-		m.input.selectedText = ""
-		m.input.selectStartX = 0
-		m.input.selectEndX = 0
-		m.input.selectStartY = 0
-		m.input.selectEndY = 0
+		m.clearTranscriptSelection()
 		m.view.invalidateBlocks()
 		m.updateLayout()
 		return m, nil

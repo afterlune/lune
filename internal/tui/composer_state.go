@@ -36,6 +36,8 @@ type composerState struct {
 	selectStartY          int
 	selectEndX            int
 	selectEndY            int
+	selectStartDocRow     int
+	selectEndDocRow       int
 	selectedText          string
 	copyFeedback          string
 	copyFeedbackError     bool
@@ -62,4 +64,5 @@ func (c *composerState) clearSelection() {
 	c.selectedText = ""
 	c.selectStartX, c.selectEndX = 0, 0
 	c.selectStartY, c.selectEndY = 0, 0
+	c.selectStartDocRow, c.selectEndDocRow = 0, 0
 }

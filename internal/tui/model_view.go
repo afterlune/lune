@@ -358,7 +358,24 @@ func transcriptNeedsSoftWrap(blocks []string, width int) bool {
 }
 
 func (m *tuiModel) hasSelection() bool {
-	return m.input.selectStartX != m.input.selectEndX || m.input.selectStartY != m.input.selectEndY
+	return m.input.selectStartX != m.input.selectEndX || m.input.selectStartDocRow != m.input.selectEndDocRow || (m.input.selectStartY != m.input.selectEndY && m.input.selectStartDocRow == 0 && m.input.selectEndDocRow == 0)
+}
+
+func (m *tuiModel) normalizedDocSelection() (r1, c1, r2, c2 int) {
+	r1 = m.input.selectStartDocRow
+	c1 = m.input.selectStartX
+	r2 = m.input.selectEndDocRow
+	c2 = m.input.selectEndX
+	if r1 == 0 && r2 == 0 && m.input.selectStartY != m.input.selectEndY {
+		headerHeight := 3
+		r1 = m.viewport.YOffset() + max(0, m.input.selectStartY-headerHeight)
+		r2 = m.viewport.YOffset() + max(0, m.input.selectEndY-headerHeight)
+	}
+	if r1 > r2 || (r1 == r2 && c1 > c2) {
+		r1, r2 = r2, r1
+		c1, c2 = c2, c1
+	}
+	return r1, c1, r2, c2
 }
 
 func (m *tuiModel) normalizedSelection() (r1, c1, r2, c2 int) {
@@ -374,12 +391,27 @@ func (m *tuiModel) normalizedSelection() (r1, c1, r2, c2 int) {
 	return r1, c1, r2, c2
 }
 
+func (m *tuiModel) viewportAllLines() []string {
+	totalLines := m.viewport.TotalLineCount()
+	if totalLines <= 0 {
+		return nil
+	}
+	vpCopy := m.viewport
+	vpCopy.SetHeight(totalLines)
+	vpCopy.SetYOffset(0)
+	return strings.Split(vpCopy.View(), "\n")
+}
+
 func (m *tuiModel) extractSelectedText() string {
 	if !m.hasSelection() {
 		return ""
 	}
-	r1, c1, r2, c2 := m.normalizedSelection()
-	lines := strings.Split(m.viewport.View(), "\n")
+	r1, c1, r2, c2 := m.normalizedDocSelection()
+	lines := m.viewportAllLines()
+	if len(lines) == 0 {
+		lines = strings.Split(m.viewport.View(), "\n")
+		r1, c1, r2, c2 = m.normalizedSelection()
+	}
 	var selectedLines []string
 
 	for r := r1; r <= r2 && r < len(lines); r++ {
@@ -410,6 +442,8 @@ func (m *tuiModel) extractSelectedText() string {
 		if startCol < endCol {
 			selPiece := ansi.Strip(ansi.Cut(rawLine, startCol, endCol))
 			selectedLines = append(selectedLines, strings.TrimRight(selPiece, " "))
+		} else if r > r1 && r < r2 {
+			selectedLines = append(selectedLines, "")
 		}
 	}
 	return strings.Join(selectedLines, "\n")
@@ -421,14 +455,17 @@ func (m *tuiModel) renderViewportWithSelection() string {
 		return viewStr
 	}
 
-	r1, c1, r2, c2 := m.normalizedSelection()
+	docR1, c1, docR2, c2 := m.normalizedDocSelection()
 	lines := strings.Split(viewStr, "\n")
 	styleSel := lipgloss.NewStyle().
 		Background(lipgloss.Color(activeTheme().SelectBg)).
 		Foreground(lipgloss.Color(activeTheme().SelectFg))
 
-	for r := r1; r <= r2 && r < len(lines); r++ {
-		if r < 0 {
+	yOffset := m.viewport.YOffset()
+
+	for r := 0; r < len(lines); r++ {
+		docR := yOffset + r
+		if docR < docR1 || docR > docR2 {
 			continue
 		}
 		rawLine := lines[r]
@@ -440,12 +477,12 @@ func (m *tuiModel) renderViewportWithSelection() string {
 		startCol := 0
 		endCol := lineWidth
 
-		if r == r1 && r == r2 {
+		if docR == docR1 && docR == docR2 {
 			startCol = max(0, min(c1, lineWidth))
 			endCol = max(0, min(c2, lineWidth))
-		} else if r == r1 {
+		} else if docR == docR1 {
 			startCol = max(0, min(c1, lineWidth))
-		} else if r == r2 {
+		} else if docR == docR2 {
 			endCol = max(0, min(c2, lineWidth))
 		}
 

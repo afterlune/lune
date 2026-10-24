@@ -307,6 +307,15 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		m.scrolledUp = !m.viewport.AtBottom()
+		if m.input.selecting {
+			headerHeight := 3
+			totalLines := m.viewport.TotalLineCount()
+			m.input.selectEndDocRow = clamp(m.viewport.YOffset()+(m.input.selectEndY-headerHeight), 0, max(0, totalLines-1))
+			if m.viewport.AtBottom() && msg.Button == tea.MouseWheelDown && totalLines > 0 {
+				m.input.selectEndDocRow = totalLines - 1
+				m.input.selectEndX = m.viewport.Width()
+			}
+		}
 		return m, vpCmd
 
 	case tea.MouseClickMsg:
@@ -316,8 +325,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft && m.isComposerMousePoint(msg.X, msg.Y) {
-			m.input.selecting = false
-			m.input.selectedText = ""
+			m.clearTranscriptSelection()
 			m.input.composerSelecting = true
 			m.input.composer.Focus()
 			x, y := m.composerMousePosition(msg.X, msg.Y)
@@ -335,26 +343,18 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				m.input.selectStartY = msg.Y
 				m.input.selectEndX = msg.X
 				m.input.selectEndY = msg.Y
+				m.input.selectStartDocRow = m.viewport.YOffset() + (msg.Y - headerHeight)
+				m.input.selectEndDocRow = m.input.selectStartDocRow
 				m.input.selectedText = ""
 				return m, nil
 			}
 			if m.scrolledUp {
 				m.viewport.GotoBottom()
 				m.scrolledUp = false
-				m.input.selecting = false
-				m.input.selectedText = ""
-				m.input.selectStartX = 0
-				m.input.selectEndX = 0
-				m.input.selectStartY = 0
-				m.input.selectEndY = 0
+				m.clearTranscriptSelection()
 				return m, nil
 			}
-			m.input.selecting = false
-			m.input.selectedText = ""
-			m.input.selectStartX = 0
-			m.input.selectEndX = 0
-			m.input.selectStartY = 0
-			m.input.selectEndY = 0
+			m.clearTranscriptSelection()
 		}
 
 	case tea.MouseMotionMsg:
@@ -364,8 +364,19 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.input.selecting {
+			headerHeight := 3
+			vpEnd := headerHeight + m.viewport.Height()
 			m.input.selectEndX = msg.X
 			m.input.selectEndY = msg.Y
+			if msg.Y >= vpEnd {
+				m.viewport.ScrollDown(2)
+				m.scrolledUp = !m.viewport.AtBottom()
+			} else if msg.Y < headerHeight {
+				m.viewport.ScrollUp(2)
+				m.scrolledUp = !m.viewport.AtBottom()
+			}
+			totalLines := m.viewport.TotalLineCount()
+			m.input.selectEndDocRow = clamp(m.viewport.YOffset()+(m.input.selectEndY-headerHeight), 0, max(0, totalLines-1))
 			return m, nil
 		}
 
@@ -376,15 +387,18 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.input.selecting {
+			headerHeight := 3
+			totalLines := m.viewport.TotalLineCount()
 			m.input.selectEndX = msg.X
 			m.input.selectEndY = msg.Y
+			m.input.selectEndDocRow = clamp(m.viewport.YOffset()+(msg.Y-headerHeight), 0, max(0, totalLines-1))
 			text := m.extractSelectedText()
 			m.input.selecting = false
 			if strings.TrimSpace(text) != "" {
 				m.input.selectedText = text
 				return m, m.copyTextToClipboard(text)
 			}
-			if msg.X == m.input.selectStartX && msg.Y == m.input.selectStartY {
+			if msg.X == m.input.selectStartX && m.input.selectStartDocRow == m.input.selectEndDocRow {
 				headerHeight := 3
 				vpRow := msg.Y - headerHeight
 				absLine := m.viewport.YOffset() + vpRow
@@ -430,11 +444,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 					m.refreshViewportContent()
 				}
 			}
-			m.input.selectedText = ""
-			m.input.selectStartX = 0
-			m.input.selectEndX = 0
-			m.input.selectStartY = 0
-			m.input.selectEndY = 0
+			m.clearTranscriptSelection()
 			return m, nil
 		}
 	}

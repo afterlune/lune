@@ -763,6 +763,117 @@ func TestMouseDragSelectionAndCopy(t *testing.T) {
 	}
 }
 
+func TestMouseScrollSelectionAcrossPagesAndCopy(t *testing.T) {
+	m := &tuiModel{
+		viewport: newTUIModel(nil, nil, "test-sess").viewport,
+	}
+	var copiedText string
+	m.input.clipboardWriter = func(s string) error {
+		copiedText = s
+		return nil
+	}
+	m.width = 80
+	m.height = 24
+	m.viewport.SetWidth(80)
+	m.viewport.SetHeight(10)
+
+	var sb strings.Builder
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&sb, "Row %02d: content of the row\n", i)
+	}
+	m.viewport.SetContent(strings.TrimRight(sb.String(), "\n"))
+	m.viewport.SetYOffset(0)
+
+	// 1. Mouse left down at row 2 of viewport (Y=5, X=0) -> "Row 02"
+	mod, _ := m.Update(tea.MouseClickMsg{
+		X:      0,
+		Y:      5,
+		Button: tea.MouseLeft,
+	})
+	m = mod.(*tuiModel)
+	if !m.input.selecting {
+		t.Fatal("expected selecting to be true")
+	}
+	if m.input.selectStartDocRow != 2 {
+		t.Fatalf("expected selectStartDocRow to be 2, got %d", m.input.selectStartDocRow)
+	}
+
+	// 2. Mouse wheel down multiple times to scroll across pages
+	for i := 0; i < 10; i++ {
+		mod, _ = m.Update(tea.MouseWheelMsg{
+			X:      20,
+			Y:      5,
+			Button: tea.MouseWheelDown,
+		})
+		m = mod.(*tuiModel)
+	}
+
+	// Viewport should have scrolled down
+	if m.viewport.YOffset() <= 10 {
+		t.Fatalf("expected viewport to have scrolled down significantly, yoffset=%d", m.viewport.YOffset())
+	}
+	// EndDocRow should have extended with the scroll
+	if m.input.selectEndDocRow <= 10 {
+		t.Fatalf("expected selectEndDocRow to follow scroll, got %d", m.input.selectEndDocRow)
+	}
+
+	// 3. Mouse release at Y=5, X=26
+	mod, _ = m.Update(tea.MouseReleaseMsg{
+		X:      26,
+		Y:      5,
+		Button: tea.MouseLeft,
+	})
+	m = mod.(*tuiModel)
+	if m.input.selecting {
+		t.Fatal("expected selecting to be false after release")
+	}
+
+	// Verify text was copied across the scrolled pages
+	if !strings.Contains(copiedText, "Row 02") {
+		t.Fatalf("expected copied text to start with Row 02, got:\n%s", copiedText)
+	}
+	// Should contain lines from the middle pages that were scrolled past
+	if !strings.Contains(copiedText, "Row 15") {
+		t.Fatalf("expected copied text to contain scrolled-past Row 15, got:\n%s", copiedText)
+	}
+	if !strings.Contains(copiedText, fmt.Sprintf("Row %02d", m.input.selectEndDocRow)) {
+		t.Fatalf("expected copied text to contain end row %d, got:\n%s", m.input.selectEndDocRow, copiedText)
+	}
+}
+
+func TestMouseDragToEdgeAutoScroll(t *testing.T) {
+	m := &tuiModel{
+		viewport: newTUIModel(nil, nil, "test-sess").viewport,
+	}
+	m.input.clipboardWriter = func(string) error { return nil }
+	m.width = 80
+	m.height = 24
+	m.viewport.SetWidth(80)
+	m.viewport.SetHeight(10)
+
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&sb, "Line %02d: text\n", i)
+	}
+	m.viewport.SetContent(strings.TrimRight(sb.String(), "\n"))
+	m.viewport.SetYOffset(0)
+
+	// Click at viewport top
+	mod, _ := m.Update(tea.MouseClickMsg{X: 0, Y: 3, Button: tea.MouseLeft})
+	m = mod.(*tuiModel)
+
+	// Drag below viewport bottom (vpEnd = 3 + 10 = 13, drag to Y=15)
+	mod, _ = m.Update(tea.MouseMotionMsg{X: 10, Y: 15})
+	m = mod.(*tuiModel)
+
+	if m.viewport.YOffset() == 0 {
+		t.Fatal("expected auto-scroll down when dragged below viewport")
+	}
+	if m.input.selectEndDocRow <= 0 {
+		t.Fatalf("expected selectEndDocRow to advance beyond 0, got %d", m.input.selectEndDocRow)
+	}
+}
+
 func TestComposerMouseDragSelectionAndCopy(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.input.clipboardWriter = func(string) error { return nil }
