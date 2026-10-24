@@ -54,6 +54,15 @@ npm run test:screenshots
 
 Playwright 截图基线在 Windows runner 上验证。发布版本以 `cmd/desktop/build/config.yml` 为源；修改版本或 Wails 构建信息后，运行 `wails3 task common:update:build-assets` 并检查生成资产，再用 `scripts/package-desktop.ps1` 构建 Windows 安装包。CI 不发布安装包，也不调用真实模型 API。
 
+## 用户配置与凭证
+
+`%APPDATA%\luneAgent\config.json` 是 TUI/CLI 的唯一配置来源。读取时会收紧该文件权限（0600），并按平台保护 provider 的 `apiKey`：
+
+- Windows：明文 `apiKey` 会被 DPAPI 加密为 `apiKeyEncrypted` 后写回，启动时在内存中解密再交给 Core，文件本身不再保存明文密钥。
+- 非 Windows：没有可用的系统凭证加密接口，`apiKey` 保持明文；启动时会在 stderr 提示风险，该平台需要自行限制配置文件权限。
+
+桌面端不使用该文件，它的 provider 密钥以加密形式保存在 `settings.db`。
+
 ## 生成文件和仓库卫生
 
 提交桌面前端实际使用的 Wails bindings 与构建资产；构建后若这些已跟踪文件变化，应检查并提交对应生成结果。根目录 `frontend/`、`.desktop-pre-extract.svelte`、`agent.log` 和 `sessions.db` 是本地生成或运行数据，应留在工作区并由 `.gitignore` 排除。

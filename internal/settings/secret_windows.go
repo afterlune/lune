@@ -10,6 +10,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// secretsProtected reports whether protectSecret can encrypt at rest.
+const secretsProtected = true
+
 func protectSecret(secret string) ([]byte, error) {
 	if secret == "" {
 		return nil, errors.New("secret is empty")

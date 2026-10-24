@@ -245,8 +245,12 @@ func loadUserProjectConfig() (core.ProjectConfig, string, error) {
 	if err != nil {
 		return core.ProjectConfig{}, configPath, fmt.Errorf("read user config %s: %w; copy config.example.json there and edit it", configPath, err)
 	}
+	document, err := prepareUserConfig(configPath, data)
+	if err != nil {
+		return core.ProjectConfig{}, configPath, fmt.Errorf("secure user config %s: %w", configPath, err)
+	}
 	var projectConfig core.ProjectConfig
-	if err := json.Unmarshal(data, &projectConfig); err != nil {
+	if err := json.Unmarshal(document, &projectConfig); err != nil {
 		return core.ProjectConfig{}, configPath, fmt.Errorf("parse user config %s: %w", configPath, err)
 	}
 	return projectConfig, configPath, nil
