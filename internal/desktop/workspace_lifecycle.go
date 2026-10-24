@@ -525,11 +525,12 @@ func cancelWorkspaceSession(ctx context.Context, sessionContext *desktopSessionC
 	return nil
 }
 
+// closeCoreWithRetry waits for luneCore to finish a task before closing it.
 func closeCoreWithRetry(agent *core.Core) error {
 	var err error
 	for attempt := 0; attempt < 100; attempt++ {
 		err = agent.Close()
-		if err == nil || !strings.Contains(err.Error(), "cannot close core while a task is running") {
+		if err == nil || !isCoreBusyError(err) {
 			return err
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -537,6 +538,13 @@ func closeCoreWithRetry(agent *core.Core) error {
 	return err
 }
 
-func samePath(left, right string) bool {
-	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+// coreBusyMarker is the message luneCore returns when Close is refused because a
+// task is still running. luneCore exports no sentinel error for this state yet,
+// so the retry loop cannot use errors.Is; the text match is confined to this
+// predicate until Core exposes one (for example core.ErrCoreBusy).
+const coreBusyMarker = "cannot close core while a task is running"
+
+// isCoreBusyError reports whether err is luneCore's "task still running" refusal.
+func isCoreBusyError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), coreBusyMarker)
 }
