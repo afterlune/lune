@@ -162,7 +162,7 @@ type ActiveEffortPicker struct {
 // ActiveApproval holds the state of a pending tool execution approval.
 type ActiveApproval struct {
 	Request  core.ApprovalRequest
-	Selected int // 0: allow, 1: deny
+	Selected int // 0: allow_once, 1: allow_session, 2: deny
 }
 
 // ActiveRecovery holds the state of a pending model recovery request.

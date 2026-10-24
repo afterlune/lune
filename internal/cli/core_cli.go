@@ -63,6 +63,8 @@ type cliCore interface {
 	AddMemory(context.Context, memory.Input) (memory.Item, error)
 	DeleteMemory(context.Context, string) error
 	ClearMemories(context.Context) error
+	CommandToolchainPaths() []string
+	SetCommandToolchainPaths([]string) error
 }
 
 func applyCLISessionModelProfile(ctx context.Context, client cliCore, sessionID, profile string) error {
@@ -439,6 +441,8 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 		case line == "/permissions" || strings.HasPrefix(line, "/permissions "):
 			handleCoreCLIPermissions(client, planMode, line, stdout, stderr)
+		case line == "/toolchains" || strings.HasPrefix(line, "/toolchains "):
+			handleCoreCLIToolchains(client, line, stdout, stderr)
 		case line == "/discard":
 			discarded, err := runtime.DiscardPaused(ctx)
 			if err != nil {

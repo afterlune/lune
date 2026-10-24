@@ -49,6 +49,7 @@ type fakeCLICore struct {
 	pendingRequests   []core.PendingRequest
 	questionAnswers   []core.UserQuestionAnswer
 	toolDecisions     []core.ToolRecoveryDecision
+	toolchainPaths    []string
 }
 
 func TestWriteCLICompactionStatus(t *testing.T) {
@@ -309,6 +310,15 @@ func (f *fakeCLICore) DeleteMemory(_ context.Context, id string) error {
 
 func (f *fakeCLICore) ClearMemories(_ context.Context) error {
 	f.memories = nil
+	return nil
+}
+
+func (f *fakeCLICore) CommandToolchainPaths() []string {
+	return append([]string(nil), f.toolchainPaths...)
+}
+
+func (f *fakeCLICore) SetCommandToolchainPaths(paths []string) error {
+	f.toolchainPaths = append([]string(nil), paths...)
 	return nil
 }
 
@@ -649,6 +659,34 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	handleCoreCLIPermissions(client, true, "/permissions full-access", &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "Cannot change permissions while Plan mode is active") {
 		t.Fatalf("stderr=%q, want Plan mode lock error", stderr.String())
+	}
+}
+
+func TestCLIToolchainsCommand(t *testing.T) {
+	client := &fakeCLICore{workspace: t.TempDir()}
+	var stdout, stderr bytes.Buffer
+
+	handleCoreCLIToolchains(client, "/toolchains", &stdout, &stderr)
+	if !strings.Contains(stdout.String(), "No command toolchains configured") {
+		t.Fatalf("unexpected output for /toolchains: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	handleCoreCLIToolchains(client, "/toolchains detect", &stdout, &stderr)
+	if !strings.Contains(stdout.String(), "Detected") && !strings.Contains(stdout.String(), "No host toolchains") {
+		t.Fatalf("unexpected output for /toolchains detect: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	handleCoreCLIToolchains(client, "/toolchains refresh", &stdout, &stderr)
+	if !strings.Contains(stdout.String(), "Refreshed toolchains") {
+		t.Fatalf("unexpected output for /toolchains refresh: %s", stdout.String())
+	}
+
+	stderr.Reset()
+	handleCoreCLIToolchains(client, "/toolchains invalid", &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "usage: /toolchains") {
+		t.Fatalf("unexpected error for invalid subcommand: %s", stderr.String())
 	}
 }
 

@@ -235,6 +235,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m.handlePlanCommand(parts)
 	case "/permissions":
 		return m.handlePermissionsCommand(parts)
+	case "/toolchains":
+		return m.handleToolchainsCommand(parts)
 	case "/model":
 		return m.handleModelCommand(parts)
 	case "/export":

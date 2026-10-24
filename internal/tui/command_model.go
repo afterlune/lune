@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/slashcmd"
+	"github.com/afterlune/lune/internal/toolchains"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -95,6 +97,73 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	return m.openPermissionPicker()
+}
+
+// handleToolchainsCommand handles the /toolchains command.
+func (m *tuiModel) handleToolchainsCommand(parts []string) (tea.Model, tea.Cmd) {
+	if m.client == nil {
+		m.addSystemEntry("Toolchain management is unavailable.")
+		return m, nil
+	}
+	subcmd := ""
+	if len(parts) > 1 {
+		subcmd = strings.ToLower(strings.TrimSpace(parts[1]))
+	}
+	switch subcmd {
+	case "", "list":
+		current := m.client.CommandToolchainPaths()
+		if len(current) == 0 {
+			m.addSystemEntry("No command toolchains configured for this workspace. Use `/toolchains detect` or `/toolchains refresh`.")
+			return m, nil
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("**Configured Toolchains (%d):**", len(current)))
+		for _, p := range current {
+			lines = append(lines, fmt.Sprintf("- `%s`", p))
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	case "detect":
+		candidates := toolchains.Detect()
+		if len(candidates) == 0 {
+			m.addSystemEntry("No host toolchains detected on PATH.")
+			return m, nil
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("**Detected Host Toolchains (%d):**", len(candidates)))
+		for _, c := range candidates {
+			rootInfo := c.Root
+			if rootInfo == "" {
+				rootInfo = "(skipped: " + c.Note + ")"
+			}
+			lines = append(lines, fmt.Sprintf("- **%s**: `%s` (root: `%s`)", c.Name, c.Executable, rootInfo))
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	case "refresh":
+		roots := toolchains.AutoDetectRoots()
+		if err := m.client.SetCommandToolchainPaths(roots); err != nil {
+			m.addSystemEntry("Failed to update toolchains in Core: " + err.Error())
+			return m, nil
+		}
+		if userStore, err := settings.OpenUser(); err == nil {
+			_ = userStore.SaveWorkspaceCommandToolchainPaths(m.client.Workspace(), roots)
+			_ = userStore.Close()
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("**Refreshed Toolchains (%d):**", len(roots)))
+		for _, p := range roots {
+			lines = append(lines, fmt.Sprintf("- `%s`", p))
+		}
+		m.addSystemEntry(strings.Join(lines, "\n"))
+		return m, nil
+
+	default:
+		m.addSystemEntry("Unknown toolchains subcommand. Usage: `/toolchains [list|detect|refresh]`.")
+		return m, nil
+	}
 }
 
 // validateTuiModelProfile fails fast for a `-m` profile that does not exist, even

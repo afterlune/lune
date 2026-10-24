@@ -36,6 +36,31 @@ func (s *Store) LoadWorkspaceCommandToolchainPaths(workspace string) ([]string, 
 	return paths, true, nil
 }
 
+// SaveWorkspaceCommandToolchainPaths stores the authorized host toolchain roots for a workspace.
+func (s *Store) SaveWorkspaceCommandToolchainPaths(workspace string, paths []string) error {
+	if s == nil || s.db == nil {
+		return errors.New("settings store is closed")
+	}
+	key, err := workspaceConfigKey(workspace)
+	if err != nil {
+		return err
+	}
+	encodedPaths, err := json.Marshal(paths)
+	if err != nil {
+		return fmt.Errorf("encode command toolchain paths: %w", err)
+	}
+	updatedAt := time.Now().UTC().UnixNano()
+	_, err = s.db.Exec(`
+		INSERT INTO desktop_command_toolchains(workspace_key, paths_json, updated_at)
+		VALUES(?, ?, ?)
+		ON CONFLICT(workspace_key) DO UPDATE SET paths_json=excluded.paths_json, updated_at=excluded.updated_at
+	`, key, string(encodedPaths), updatedAt)
+	if err != nil {
+		return fmt.Errorf("save command toolchain paths: %w", err)
+	}
+	return nil
+}
+
 // SaveWorkspaceSettings atomically stores the Desktop-only runtime settings
 // and their explicit host toolchain grants.
 func (s *Store) SaveWorkspaceSettings(workspace string, config core.ProjectConfig, paths []string) error {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/afterlune/lune/internal/cli"
 	"github.com/afterlune/lune/internal/settings"
+	"github.com/afterlune/lune/internal/toolchains"
 	"github.com/afterlune/lune/internal/tui"
 	core "github.com/afterlune/luneCore"
 )
@@ -214,20 +215,32 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 	if len(noSandbox) > 0 && noSandbox[0] {
 		allowLocalCommand = true
 	}
-	baseCfg := core.Config{
-		Workspace:         workspace,
-		Logger:            slog.Default(),
-		SandboxHelperPath: helperPath,
-		AllowLocalCommand: allowLocalCommand,
-		ProjectConfig:     &projectConfig,
-	}
-
+	var toolchainRoots []string
 	userStore, storeErr := settings.OpenUser()
 	if storeErr == nil {
 		if err := userStore.TouchWorkspace(workspace); err != nil {
 			slog.Warn("record recent workspace", "workspace", workspace, "error", err)
 		}
+		if stored, found, err := userStore.LoadWorkspaceCommandToolchainPaths(workspace); err == nil && found {
+			toolchainRoots = toolchains.AvailablePaths(stored)
+		} else {
+			toolchainRoots = toolchains.AutoDetectRoots()
+			if len(toolchainRoots) > 0 {
+				_ = userStore.SaveWorkspaceCommandToolchainPaths(workspace, toolchainRoots)
+			}
+		}
 		defer userStore.Close()
+	} else {
+		toolchainRoots = toolchains.AutoDetectRoots()
+	}
+
+	baseCfg := core.Config{
+		Workspace:             workspace,
+		Logger:                slog.Default(),
+		SandboxHelperPath:     helperPath,
+		AllowLocalCommand:     allowLocalCommand,
+		ProjectConfig:         &projectConfig,
+		CommandToolchainPaths: toolchainRoots,
 	}
 
 	client, err := core.New(baseCfg)

@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/slashcmd"
+	"github.com/afterlune/lune/internal/toolchains"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
 )
@@ -38,6 +40,56 @@ func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout
 		return
 	}
 	fmt.Fprintf(stdout, "Permission mode set to %s.\n", mode)
+}
+
+func handleCoreCLIToolchains(client cliCore, line string, stdout, stderr io.Writer) {
+	fields := strings.Fields(line)
+	subcmd := ""
+	if len(fields) > 1 {
+		subcmd = strings.ToLower(fields[1])
+	}
+	switch subcmd {
+	case "", "list":
+		current := client.CommandToolchainPaths()
+		if len(current) == 0 {
+			fmt.Fprintln(stdout, "No command toolchains configured. Use '/toolchains detect' or '/toolchains refresh'.")
+			return
+		}
+		fmt.Fprintf(stdout, "Configured toolchains (%d):\n", len(current))
+		for _, p := range current {
+			fmt.Fprintf(stdout, "  - %s\n", p)
+		}
+	case "detect":
+		candidates := toolchains.Detect()
+		if len(candidates) == 0 {
+			fmt.Fprintln(stdout, "No host toolchains detected on PATH.")
+			return
+		}
+		fmt.Fprintf(stdout, "Detected host toolchains (%d):\n", len(candidates))
+		for _, c := range candidates {
+			rootInfo := c.Root
+			if rootInfo == "" {
+				rootInfo = "(skipped: " + c.Note + ")"
+			}
+			fmt.Fprintf(stdout, "  - %s: %s (root: %s)\n", c.Name, c.Executable, rootInfo)
+		}
+	case "refresh":
+		roots := toolchains.AutoDetectRoots()
+		if err := client.SetCommandToolchainPaths(roots); err != nil {
+			fmt.Fprintf(stderr, "error: update toolchains: %v\n", err)
+			return
+		}
+		if userStore, err := settings.OpenUser(); err == nil {
+			_ = userStore.SaveWorkspaceCommandToolchainPaths(client.Workspace(), roots)
+			_ = userStore.Close()
+		}
+		fmt.Fprintf(stdout, "Refreshed toolchains (%d):\n", len(roots))
+		for _, p := range roots {
+			fmt.Fprintf(stdout, "  - %s\n", p)
+		}
+	default:
+		fmt.Fprintln(stderr, "usage: /toolchains [list|detect|refresh]")
+	}
 }
 
 func handleCoreCLIStatus(client cliCore, sessionID, sessionTitle string, planMode bool, stdout io.Writer) {

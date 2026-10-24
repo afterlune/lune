@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
@@ -125,7 +126,19 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	if appr == nil {
 		return m, nil
 	}
-	allowed := appr.Selected == 0
+	var approvalDecision publictool.ApprovalDecision
+	var decisionText string
+	switch appr.Selected {
+	case 0:
+		approvalDecision = publictool.ApprovalAllowOnce
+		decisionText = "Allowed once"
+	case 1:
+		approvalDecision = publictool.ApprovalAllowSession
+		decisionText = "Allowed for session"
+	default:
+		approvalDecision = publictool.ApprovalDeny
+		decisionText = "Denied"
+	}
 	apprID := appr.Request.ID
 	toolName := appr.Request.Tool
 	m.activeApproval = nil
@@ -137,11 +150,7 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	m.viewport.GotoBottom()
 	m.updateLayout()
 
-	decision := "Denied"
-	if allowed {
-		decision = "Allowed"
-	}
-	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decision, toolName))
+	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decisionText, toolName))
 
 	runtime := m.runtime
 	executionID := m.run.runningExecution
@@ -149,7 +158,7 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 		tickClock(),
 		m.waitForExecution(executionID),
 		func() tea.Msg {
-			_ = runtime.ResolveApproval(apprID, allowed)
+			_ = runtime.ResolveApprovalDecision(apprID, approvalDecision)
 			return nil
 		},
 	)

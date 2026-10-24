@@ -563,6 +563,12 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		Render("Tool Approval Required")
 	lines = append(lines, title)
 
+	if approval.Request.AutoReviewReason != "" {
+		reviewLine := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).
+			Render(fmt.Sprintf("Model Review: %s", terminaltext.Sanitize(approval.Request.AutoReviewReason)))
+		lines = append(lines, reviewLine)
+	}
+
 	toolLine := fmt.Sprintf("Tool: %s", styleTextPrimary().Bold(true).Render(terminaltext.Sanitize(approval.Request.Tool)))
 	lines = append(lines, toolLine)
 
@@ -592,11 +598,11 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 
 	lines = append(lines, "")
 
-	allowLabel := "1. Allow execution"
+	sessionLabel := "2. Allow for this session"
 	if pathGrant != nil {
-		allowLabel = "1. Grant for this session"
+		sessionLabel = "2. Grant for this session"
 	}
-	options := []string{allowLabel, "2. Deny"}
+	options := []string{"1. Allow execution", sessionLabel, "3. Deny"}
 	for i, opt := range options {
 		marker := "  "
 		if i == approval.Selected {
@@ -609,10 +615,7 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 		}
 	}
 
-	hintText := "\n1/y/enter allow · 2/n/esc deny"
-	if pathGrant != nil {
-		hintText = "\nGrant covers this directory subtree for this session"
-	}
+	hintText := "\n1/y allow once · 2/s allow for session · 3/n/esc deny"
 	hint := styleTextMuted().Render(hintText)
 	lines = append(lines, hint)
 

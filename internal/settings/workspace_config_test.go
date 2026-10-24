@@ -135,4 +135,30 @@ func TestWorkspaceConfigStoreRejectsNilStore(t *testing.T) {
 	if err := (*Store)(nil).SaveWorkspaceSettings(t.TempDir(), core.DefaultProjectConfig(), nil); err == nil {
 		t.Fatal("SaveWorkspaceSettings succeeded on a nil store")
 	}
+	if err := (*Store)(nil).SaveWorkspaceCommandToolchainPaths(t.TempDir(), nil); err == nil {
+		t.Fatal("SaveWorkspaceCommandToolchainPaths succeeded on a nil store")
+	}
+}
+
+func TestSaveAndLoadWorkspaceCommandToolchainPaths(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	workspace := t.TempDir()
+	paths := []string{t.TempDir(), t.TempDir()}
+
+	if err := store.SaveWorkspaceCommandToolchainPaths(workspace, paths); err != nil {
+		t.Fatalf("SaveWorkspaceCommandToolchainPaths failed: %v", err)
+	}
+
+	loaded, found, err := store.LoadWorkspaceCommandToolchainPaths(workspace)
+	if err != nil || !found {
+		t.Fatalf("LoadWorkspaceCommandToolchainPaths failed: found=%v, err=%v", found, err)
+	}
+	if len(loaded) != len(paths) || loaded[0] != paths[0] || loaded[1] != paths[1] {
+		t.Fatalf("loaded paths = %v, want %v", loaded, paths)
+	}
 }

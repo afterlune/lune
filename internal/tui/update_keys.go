@@ -119,7 +119,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.discardPausedTask(discardSourceQuestion)
 		}
 		if m.activeApproval != nil {
-			m.activeApproval.Selected = 1
+			m.activeApproval.Selected = 2
 			return m.resolveActiveApproval()
 		}
 		if m.modals.effort != nil {
@@ -302,7 +302,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "down", "j":
-			if m.activeApproval.Selected < 1 {
+			if m.activeApproval.Selected < 2 {
 				m.activeApproval.Selected++
 				m.updateLayout()
 			}
@@ -310,8 +310,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "1", "y", "Y":
 			m.activeApproval.Selected = 0
 			return m.resolveActiveApproval()
-		case "2", "n", "N":
+		case "2", "s", "S":
 			m.activeApproval.Selected = 1
+			return m.resolveActiveApproval()
+		case "3", "n", "N":
+			m.activeApproval.Selected = 2
 			return m.resolveActiveApproval()
 		case "enter":
 			return m.resolveActiveApproval()

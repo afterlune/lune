@@ -48,6 +48,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
 		"/logs process", "/sessions", "/detail", "/title In progress", "/context", "/diff",
 		"/mcp", "/mcp list", "/cancel-queue", "/status", "/shortcuts", "/thought", "/help",
+		"/toolchains", "/toolchains list", "/toolchains detect", "/toolchains refresh",
 	}
 	for _, command := range allowed {
 		if reason := m.slashCommandUnavailable(command); reason != "" {
@@ -928,5 +929,38 @@ func TestKnownSlashCommandStillDispatches(t *testing.T) {
 		if entry.Kind == KindUser {
 			t.Fatalf("command input must not be submitted as a message: %q", entry.Text)
 		}
+	}
+}
+
+func TestToolchainsCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	m := newTUIModel(client, nil, "toolchains-sess")
+
+	m.handleSlashCommand("/toolchains")
+	last := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(last, "toolchains") {
+		t.Errorf("expected toolchains output, got: %s", last)
+	}
+
+	m.handleSlashCommand("/toolchains detect")
+	last = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(last, "Detected") && !strings.Contains(last, "No host toolchains") {
+		t.Errorf("expected detect output, got: %s", last)
+	}
+
+	m.handleSlashCommand("/toolchains refresh")
+	last = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(last, "Refreshed") {
+		t.Errorf("expected refresh output, got: %s", last)
 	}
 }
