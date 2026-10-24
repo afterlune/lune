@@ -23,7 +23,7 @@
 #### 命令行参数 (Flags)
 - `-C, --workspace <dir>`：指定工作区目录（默认为当前工作目录，自动解析绝对路径）。
 - `-m, --model <profile>`：设置会话初始绑定的模型 profile。
-- `-p, --permission <mode>`：设置初始权限档位（`read-only`、`workspace`、`ask`、`full-access`）。
+- `-p, --permission <mode>`：设置初始权限档位（`read-only`、`workspace`、`auto`、`full-access`）。
 - `-s, --session <id|prefix>`：指定附加或恢复已有的历史会话（支持唯一前缀模糊匹配，如前 6~8 位 ID）。
 - `--plan`：直接以只读 Plan 模式启动。
 - `--tui`：强制进入全屏交互式 TUI 模式。
@@ -99,7 +99,7 @@
 | **`/detail [index]`** | **超长工具输出检视翻页浮层 (Tool Output Pager Modal)**：展示指定工具执行的全量原始输出（无参数默认最新，支持 1-based 序号）；浮层内 `↑`/`↓`（`k`/`j`）平滑滚动、`PgUp`/`PgDn` 翻页、`Home`/`End`（`g`/`G`）跳端、`[`/`]`（`p`/`n`）切换历史工具执行、`c`/`Ctrl+C` 一键完整复制至剪贴板、`Esc`/`q` 退出；CLI 模式下直接向终端输出指定工具的全量原始结果 |
 | **`/plan`** | 切换进入/退出 Plan 规划模式（等价于 `Shift+Tab`；进入时锁定为 `read-only`，退出时恢复之前档位） |
 | **`/goal [subcmd]`** | 查看或管理跨回合持续目标：无参数显示当前目标、状态与用量预算；`/goal [--tokens N] <目标>` 创建并立即执行；`/goal edit [目标]` 编辑暂停的目标；`/goal budget <N|off>` 设置 Token 预算或取消限制；`/goal pause` 暂停；`/goal resume` 恢复执行；`/goal clear` 清除目标 |
-| **`/permissions [mode]`** | 无参数时打开权限模式选择器；带参数时直接设置（`read-only`、`workspace`、`ask`、`full-access`）。Plan 模式下不能提升权限 |
+| **`/permissions [mode]`** | 无参数时打开权限模式选择器；带参数时直接设置（`read-only`、`workspace`、`auto`、`full-access`）。旧的 `ask` 档位已移除并统一为 `auto`。Plan 模式下不能提升权限 |
 | **`/model [name]`** | 无参数时打开模型 profile 选择器；带参数时直接切换会话绑定的 profile |
 | **`/effort [level]`** | **交互式选择思考等级**：无参数时唤起选择器，`↑`/`↓`（或 `j`/`k`、`1`-`8`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |
 | **`/theme [dark\|light\|auto]`** | 无参数时打开交互式主题选择器；带参数时直接切换。选择保存在跨工作区的用户级 TUI 设置中 |

@@ -41,7 +41,7 @@ go vet -unsafeptr=false ./...
 go test -trimpath ./...
 ```
 
-Linux CI 只跑 CLI/TUI 相关包（`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
+Linux CI 只跑 CLI/TUI 相关包（`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
 
 ## 文档
 
