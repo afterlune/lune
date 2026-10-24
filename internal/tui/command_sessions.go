@@ -61,7 +61,6 @@ type discardSource uint8
 const (
 	discardSourceCommand discardSource = iota
 	discardSourceRecovery
-	discardSourceQuestion
 )
 
 type queuedTurnCancelledMsg struct {

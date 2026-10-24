@@ -359,9 +359,31 @@ func resumePausedTaskCLI(runtime cliRuntime, reader *bufio.Reader, workspace str
 				return core.TurnResult{ExecutionID: executionID, Status: core.TaskPaused}, core.ErrTaskPaused, false
 			}
 			if delay := time.Until(failure.RetryNotBefore); delay > 0 {
-				fmt.Fprintf(stdout, "Waiting %s for the model retry window...\n", delay.Round(time.Second))
+				fmt.Fprintf(stdout, "Waiting %s for the model retry window (Esc cancels)...\n", delay.Round(time.Second))
+				// Watch the keyboard during the wait so Esc can abandon the retry
+				// instead of blocking until the window opens.
+				startWatching()
 				timer := time.NewTimer(delay)
-				<-timer.C
+				waiting := true
+				for waiting {
+					select {
+					case <-timer.C:
+						waiting = false
+					case key, ok := <-keyEvents:
+						if !ok || key.err != nil {
+							keyEvents = nil
+							continue
+						}
+						if key.escape {
+							timer.Stop()
+							stopWatching()
+							stopStream()
+							fmt.Fprintln(stdout, "Retry cancelled; the task stays paused.")
+							return core.TurnResult{ExecutionID: executionID, Status: core.TaskPaused}, core.ErrTaskPaused, false
+						}
+						// Nothing else is actionable while the retry window is closed.
+					}
+				}
 			}
 			runtime.SetUserInteractionAvailable(false)
 			startWatching()

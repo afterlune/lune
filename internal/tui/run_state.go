@@ -22,12 +22,23 @@ type runState struct {
 
 	// runtimeCancel cancels the local event subscription when a session is left.
 	runtimeCancel context.CancelFunc
+	// subscriptionGeneration identifies the live event subscription so a closed
+	// stream from a replaced subscription cannot trigger a reconnect.
+	subscriptionGeneration uint64
+	// lastEventCursor is the highest Core event cursor processed for this
+	// session; a reconnect resumes after it instead of replaying from scratch.
+	lastEventCursor int64
+	// streamReconnects counts the failed reconnects of the current stream.
+	streamReconnects int
 
 	awaitingTurns       map[string]uint64
 	waitGeneration      uint64
 	taskSnapshot        core.TaskState
 	questionSubmissions map[questionWaitKey]questionSubmissionState
 	terminalEvents      map[string]core.Event
+	// autoApprovalFailures keeps approval IDs whose silent full-access
+	// auto-approval failed, so the card is shown instead of retrying forever.
+	autoApprovalFailures map[string]struct{}
 
 	queuedTurns              []QueuedItem
 	cancelingQueuedExecution string
@@ -56,6 +67,7 @@ func newRunState() runState {
 	return runState{
 		awaitingTurns:          map[string]uint64{},
 		terminalEvents:         map[string]core.Event{},
+		autoApprovalFailures:   map[string]struct{}{},
 		reasoningLiveCollapsed: true,
 	}
 }

@@ -83,7 +83,7 @@ func TestModalOpenClosesEveryOtherOverlay(t *testing.T) {
 func TestQuestionCardOutranksEffortPicker(t *testing.T) {
 	m := newTUIModel(nil, nil, "modal-session")
 	m.width, m.height = 120, 40
-	m.modals.effort = &ActiveEffortPicker{Selected: 1}
+	m.effortPicker = &ActiveEffortPicker{Selected: 1}
 	m.activeQuestion = &ActiveQuestion{
 		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
 			Question: "Which file should I edit?",

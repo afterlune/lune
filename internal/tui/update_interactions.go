@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -158,10 +159,58 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 		tickClock(),
 		m.waitForExecution(executionID),
 		func() tea.Msg {
-			_ = runtime.ResolveApprovalDecision(apprID, approvalDecision)
-			return nil
+			return approvalResolvedMsg{approvalID: apprID, err: runtime.ResolveApprovalDecision(apprID, approvalDecision)}
 		},
 	)
+}
+
+// approvalResolvedMsg reports the outcome of an approval decision sent to Core.
+type approvalResolvedMsg struct {
+	approvalID string
+	err        error
+}
+
+// finishApprovalResolution surfaces a failed decision instead of swallowing it:
+// the card comes back and the run state stops claiming a task Core never resumed.
+func (m *tuiModel) finishApprovalResolution(msg approvalResolvedMsg) tea.Cmd {
+	if msg.err == nil {
+		return nil
+	}
+	m.run.running = false
+	m.run.thinking = false
+	m.addSystemEntry(fmt.Sprintf("Failed to resolve the tool approval %s: %v. Choose again below.", msg.approvalID, msg.err))
+	m.checkPendingState(context.Background())
+	m.updateLayout()
+	return nil
+}
+
+// approveWithoutCard resolves an approval without a card when the active
+// permission mode already grants every tool. It reports whether Core accepted the
+// decision; a rejection must show the card, otherwise the task would stay paused
+// with nothing on screen.
+func (m *tuiModel) approveWithoutCard(request core.ApprovalRequest) bool {
+	if m.permissionMode != core.PermissionFullAccess || m.runtime == nil || request.ID == "" {
+		return false
+	}
+	if _, failed := m.run.autoApprovalFailures[request.ID]; failed {
+		return false
+	}
+	if err := m.runtime.ResolveApproval(request.ID, true); err != nil {
+		slog.Warn("auto-approve tool call in full-access mode", "tool", request.Tool, "error", err)
+		m.noteAutoApprovalFailure(request.ID)
+		return false
+	}
+	return true
+}
+
+// noteAutoApprovalFailure reports a failed silent approval once and stops
+// retrying that request so the card stays visible.
+func (m *tuiModel) noteAutoApprovalFailure(approvalID string) {
+	if m.run.autoApprovalFailures == nil {
+		m.run.autoApprovalFailures = map[string]struct{}{}
+	}
+	m.run.autoApprovalFailures[approvalID] = struct{}{}
+	m.addSystemEntry("Full-access auto-approval failed; resolve the tool approval below.")
 }
 
 func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {

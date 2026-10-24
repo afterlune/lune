@@ -286,6 +286,13 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			fmt.Fprintln(stderr, "No session yet. Send a message first.")
 			continue
 		}
+		// The shared registry is the single source of truth for which frontend
+		// owns a command; anything it lists only for the TUI is refused here
+		// instead of being sent to the model as a prompt.
+		if spec, ok := slashcmd.Lookup(line); ok && !spec.In(slashcmd.TargetCLI) {
+			fmt.Fprintf(stderr, "`%s` is only available in the full-screen TUI (run `lune --tui`).\n", spec.Name)
+			continue
+		}
 		switch {
 		case goalcmd.IsCommand(line):
 			command, err := goalcmd.Parse(line)
@@ -482,14 +489,6 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				fmt.Fprintf(stdout, "Compacted %d older user turn(s), %s → %s tokens.\n",
 					result.Turns, compactCLITokens(result.Before), compactCLITokens(result.After))
 			}
-		case line == "/theme" || strings.HasPrefix(line, "/theme "):
-			fmt.Fprintln(stderr, "The /theme command is specific to full-screen interactive TUI mode (run 'lune --tui').")
-		case line == "/shortcuts" || strings.HasPrefix(line, "/shortcuts "):
-			fmt.Fprintln(stderr, "The /shortcuts command is specific to full-screen interactive TUI mode (run 'lune --tui').")
-		case line == "/thought" || strings.HasPrefix(line, "/thought "):
-			fmt.Fprintln(stderr, "The /thought command is specific to full-screen interactive TUI mode (run 'lune --tui').")
-		case line == "/cancel-queue" || strings.HasPrefix(line, "/cancel-queue "):
-			fmt.Fprintln(stderr, "The /cancel-queue command is specific to full-screen interactive TUI mode (run 'lune --tui').")
 		case line == "":
 		default:
 			// Anything that is not a registered command, including text that merely

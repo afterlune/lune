@@ -63,7 +63,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.activeQuestion != nil {
-			return m.discardPausedTask(discardSourceQuestion)
+			return m.noteQuestionPending()
 		}
 		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
 			return m.interruptRunningTask()
@@ -116,14 +116,14 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.resolveActiveToolRecovery()
 		}
 		if m.activeQuestion != nil {
-			return m.discardPausedTask(discardSourceQuestion)
+			return m.noteQuestionPending()
 		}
 		if m.activeApproval != nil {
 			m.activeApproval.Selected = 2
 			return m.resolveActiveApproval()
 		}
-		if m.modals.effort != nil {
-			m.modals.effort = nil
+		if m.effortPicker != nil {
+			m.effortPicker = nil
 			m.updateLayout()
 			return m, nil
 		}
@@ -412,36 +412,36 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.modals.effort != nil {
+	if m.effortPicker != nil {
 		options := reasoningEffortOptions()
 		switch keyStr {
 		case "esc", "ctrl+c", "q":
-			m.modals.effort = nil
+			m.effortPicker = nil
 			m.updateLayout()
 			return m, nil
 		case "up", "k", "ctrl+p":
-			if m.modals.effort.Selected > 0 {
-				m.modals.effort.Selected--
+			if m.effortPicker.Selected > 0 {
+				m.effortPicker.Selected--
 			} else {
-				m.modals.effort.Selected = len(options) - 1
+				m.effortPicker.Selected = len(options) - 1
 			}
 			m.updateLayout()
 			return m, nil
 		case "down", "j", "ctrl+n":
-			if m.modals.effort.Selected < len(options)-1 {
-				m.modals.effort.Selected++
+			if m.effortPicker.Selected < len(options)-1 {
+				m.effortPicker.Selected++
 			} else {
-				m.modals.effort.Selected = 0
+				m.effortPicker.Selected = 0
 			}
 			m.updateLayout()
 			return m, nil
 		case "enter":
-			if m.modals.effort.Selected >= 0 && m.modals.effort.Selected < len(options) {
-				value := options[m.modals.effort.Selected].Value
-				m.modals.effort = nil
+			if m.effortPicker.Selected >= 0 && m.effortPicker.Selected < len(options) {
+				value := options[m.effortPicker.Selected].Value
+				m.effortPicker = nil
 				return m.applyReasoningEffort(value)
 			}
-			m.modals.effort = nil
+			m.effortPicker = nil
 			m.updateLayout()
 			return m, nil
 		default:
@@ -449,7 +449,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				idx := int(keyStr[0] - '1')
 				if idx < len(options) {
 					value := options[idx].Value
-					m.modals.effort = nil
+					m.effortPicker = nil
 					return m.applyReasoningEffort(value)
 				}
 			}

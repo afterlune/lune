@@ -46,8 +46,10 @@ func (m *tuiModel) openEffortPicker() {
 			break
 		}
 	}
-	m.modals.open()
-	m.modals.effort = &ActiveEffortPicker{Selected: selected}
+	// The effort picker is not a modal overlay, but opening it still closes any
+	// overlay so two panels never share the screen.
+	m.modals.close()
+	m.effortPicker = &ActiveEffortPicker{Selected: selected}
 	m.updateLayout()
 }
 

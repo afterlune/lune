@@ -100,23 +100,8 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 	if spec != nil && spec.AvailableDuringTask {
 		return ""
 	}
-	switch name {
-	case "/rewind":
-		return "Cannot rewind while a task is running."
-	case "/resume":
-		return "Cannot switch sessions while a task is running. Cancel or wait for it to finish."
-	case "/drop":
-		return "Cannot delete sessions while a task is running."
-	case "/new":
-		return "Cannot start a new session while a task is running."
-	case "/fork":
-		return "Cannot fork a session while a task is running."
-	case "/continue":
-		return "A task is already running."
-	case "/discard":
-		return "Cannot discard a paused task while another task is running."
-	case "/exit":
-		return "Interrupt the active task before exiting."
+	if spec != nil && spec.BlockedDuringTask != "" {
+		return spec.BlockedDuringTask
 	}
 	return fmt.Sprintf("`%s` is unavailable while a task is running. Interrupt the task or wait for it to finish.", name)
 }
@@ -361,6 +346,14 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 		err := runtime.CancelQueuedTurn(context.Background(), executionID)
 		return queuedTurnCancelledMsg{executionID: executionID, err: err}
 	}
+}
+
+// noteQuestionPending explains that a paused task is waiting for an answer and
+// that discarding it stays an explicit action.
+func (m *tuiModel) noteQuestionPending() (tea.Model, tea.Cmd) {
+	m.addSystemEntry("This task is waiting for your answer. Answer it, or run `/discard` to abandon the paused task.")
+	m.updateLayout()
+	return m, nil
 }
 
 func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) {

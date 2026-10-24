@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -76,6 +75,10 @@ type tuiModel struct {
 	// Overlays (shortcuts, pickers, sessions, pager, diff) with exclusive focus.
 	modals modalState
 
+	// The effort picker is rendered after the task cards, so it never takes the
+	// keyboard away from a pending question or approval.
+	effortPicker *ActiveEffortPicker
+
 	settingsStore *settings.Store
 }
 
@@ -141,17 +144,16 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 	}
 	m.reasoningEffort = saved.Settings.ReasoningEffort
 	m.usage.applyTotals(saved.SessionUsage)
-	m.usage.compacting = false
-	m.usage.compactionStartedAt = time.Time{}
+	m.usage.resetCompaction()
 	m.usage.clearLastRequest()
-	m.usage.contextWindow = 0
+	m.usage.setContextWindow(0)
 	contextWindowConfigured := false
 	if saved.Settings.ContextWindow != nil {
-		m.usage.contextWindow = *saved.Settings.ContextWindow
+		m.usage.setContextWindow(*saved.Settings.ContextWindow)
 		contextWindowConfigured = true
 	} else if m.client != nil {
 		if projectContext := m.client.ProjectContextDefaults().ContextWindow; projectContext > 0 {
-			m.usage.contextWindow = projectContext
+			m.usage.setContextWindow(projectContext)
 			contextWindowConfigured = true
 		}
 	}
@@ -164,7 +166,7 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 			last.EstimatedInputTokens, window, last.RequestID, last.RequestAttempt, last.RequestChanges)
 	}
 	if m.usage.contextWindow <= 0 {
-		m.usage.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+		m.usage.setContextWindow(m.modelProfileContextWindow(m.currentModelProfile))
 	}
 	m.entries = transcriptFromHistory(saved.History)
 	if m.entries == nil {
@@ -184,17 +186,17 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 }
 
 func (m *tuiModel) refreshMainContextWindow() {
-	m.usage.contextWindow = 0
+	m.usage.setContextWindow(0)
 	if m.client != nil {
 		if saved, err := m.client.GetSession(context.Background(), m.sessionID); err == nil && saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0 {
-			m.usage.contextWindow = *saved.Settings.ContextWindow
+			m.usage.setContextWindow(*saved.Settings.ContextWindow)
 		}
 		if m.usage.contextWindow <= 0 {
-			m.usage.contextWindow = m.client.ProjectContextDefaults().ContextWindow
+			m.usage.setContextWindow(m.client.ProjectContextDefaults().ContextWindow)
 		}
 	}
 	if m.usage.contextWindow <= 0 {
-		m.usage.contextWindow = m.modelProfileContextWindow(m.currentModelProfile)
+		m.usage.setContextWindow(m.modelProfileContextWindow(m.currentModelProfile))
 	}
 	if main := m.ensureAgentMetrics("lead"); main != nil {
 		main.ContextWindow = m.usage.contextWindow
@@ -219,14 +221,14 @@ func (m *tuiModel) resetSessionState() {
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
-	m.modals.effort = nil
+	m.effortPicker = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	m.pausedCheckpoint = nil
 	m.attentionDecisionShown = false
 	m.attentionExecutions = nil
 	m.unseenCompletion = ""
-	m.usage.lastTokensPerSec = 0
+	m.usage.setSpeed(0)
 	m.agentMetrics = map[string]*agentRuntimeMetrics{}
 	m.ensureAgentMetrics("lead")
 	m.scrolledUp = false

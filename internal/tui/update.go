@@ -107,25 +107,40 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
+		if !m.matchesSubscription(msg.generation) {
+			return m, nil
+		}
 		if msg.err != nil {
 			if m.run.restoringSession {
 				m.finishSessionRestore()
 			}
 			m.addSystemEntry("Failed to connect to runtime event stream: " + msg.err.Error())
+			return m, m.reconnectRuntimeEventStream()
+		}
+		m.run.streamReconnects = 0
+		cmds := []tea.Cmd{nextRuntimeEvent(m.sessionID, msg.generation, msg.events)}
+		return m, tea.Batch(cmds...)
+
+	case runtimeReconnectMsg:
+		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		cmds := []tea.Cmd{nextRuntimeEvent(m.sessionID, msg.events)}
-		return m, tea.Batch(cmds...)
+		return m, m.startRuntimeEventSubscription(true)
 
 	case runtimeEventMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+			return m, nil
+		}
+		if !m.matchesSubscription(msg.generation) {
+			// A replaced subscription closed its channel; only the live one may
+			// trigger a reconnect.
 			return m, nil
 		}
 		if msg.event.Kind == "" && msg.events == nil {
 			if m.run.restoringSession {
 				m.finishSessionRestore()
 			}
-			return m, nil
+			return m, m.reconnectRuntimeEventStream()
 		}
 		var mod tea.Model
 		var cmd tea.Cmd
@@ -134,17 +149,19 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		m.advanceEventCursor(msg.event)
 		for _, batchEv := range msg.batch {
 			mod, cmd = m.processRuntimeEventNoRefresh(batchEv)
 			m = mod.(*tuiModel)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			m.advanceEventCursor(batchEv)
 		}
 		if !m.run.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty) {
 			m.refreshViewportContent()
 		}
-		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.events))
+		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.generation, msg.events))
 		return m, tea.Batch(cmds...)
 
 	case runtimeRestoreSettledMsg:
@@ -196,18 +213,19 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	case questionSubmittedMsg:
 		return m, m.finishQuestionSubmission(msg)
 
+	case approvalResolvedMsg:
+		return m, m.finishApprovalResolution(msg)
+
 	case compactDoneMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
 			return m, nil
 		}
-		m.usage.compacting = false
+		m.usage.resetCompaction()
 		switch {
 		case msg.err != nil:
 			m.addSystemEntry("Compaction failed: " + msg.err.Error())
 		case msg.result.Compacted && msg.result.Turns > 0:
-			m.usage.lastInputTokens = 0
-			m.usage.lastCachedTokens = 0
-			m.usage.estimatedInputTokens = msg.result.After
+			m.usage.applyCompactResult(msg.result.After)
 			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns, %s → %s tokens.",
 				msg.result.Turns, formatCompactTokens(msg.result.Before), formatCompactTokens(msg.result.After)))
 		default:
@@ -287,20 +305,11 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.activeQuestion = nil
 		m.run.running = false
 		if !msg.discarded {
-			if msg.source == discardSourceQuestion {
-				m.addSystemEntry("The question was already resolved; no paused task remained to discard.")
-			} else {
-				m.addSystemEntry("No interrupted task to discard.")
-			}
+			m.addSystemEntry("No interrupted task to discard.")
+		} else if msg.source == discardSourceRecovery {
+			m.addSystemEntry("Model recovery discarded.")
 		} else {
-			switch msg.source {
-			case discardSourceRecovery:
-				m.addSystemEntry("Model recovery discarded.")
-			case discardSourceQuestion:
-				m.addSystemEntry("Question cancelled.")
-			default:
-				m.addSystemEntry("Discarded paused task.")
-			}
+			m.addSystemEntry("Discarded paused task.")
 		}
 		m.updateLayout()
 		return m, nil
@@ -603,7 +612,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 	m.run.taskSnapshot.Status = event.Status
 	m.run.thinking = false
 	m.run.taskActivity = ""
-	m.usage.compacting = false
+	m.usage.resetCompaction()
 	// Keep the live transcript until WaitTurn supplies the authoritative response
 	// and ProposedPlan; finalizing here would briefly erase a completed plan.
 	if event.Status == core.TaskPaused {

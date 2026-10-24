@@ -352,7 +352,7 @@ func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
 	}
 }
 
-func TestEscCancelsActiveQuestion(t *testing.T) {
+func TestEscKeepsActiveQuestionUntilDiscard(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.activeQuestion = &ActiveQuestion{
 		Request: core.UserQuestionRequest{
@@ -363,18 +363,21 @@ func TestEscCancelsActiveQuestion(t *testing.T) {
 		},
 	}
 
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	mod, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 
+	if cmd != nil {
+		t.Fatal("Esc must not start a discard for a pending question")
+	}
 	if m.activeQuestion == nil {
-		t.Fatal("question should remain visible until Core confirms the discard")
+		t.Fatal("question should remain visible until the task is discarded explicitly")
 	}
-	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Paused-task management is unavailable") {
-		t.Fatalf("missing unavailable-runtime feedback: %+v", m.entries)
+	if !strings.Contains(m.entries[len(m.entries)-1].Text, "waiting for your answer") {
+		t.Fatalf("missing pending-question hint: %+v", m.entries)
 	}
-	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceQuestion, discarded: true})
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceCommand, discarded: true})
 	m = mod.(*tuiModel)
-	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Question cancelled") {
+	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Discarded paused task") {
 		t.Fatalf("confirmed discard did not cancel question: active=%+v entries=%+v", m.activeQuestion, m.entries)
 	}
 }

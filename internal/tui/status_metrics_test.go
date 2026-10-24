@@ -134,7 +134,7 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 func TestEffortPickerRendering(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.reasoningEffort = "high"
-	m.modals.effort = &ActiveEffortPicker{Selected: 5}
+	m.effortPicker = &ActiveEffortPicker{Selected: 5}
 	rendered := ansi.Strip(renderEffortPicker(m, 80))
 	for _, want := range []string{"Reasoning effort", "6. high", "✓ current", "enter apply"} {
 		if !strings.Contains(rendered, want) {
@@ -171,11 +171,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 
 	// 2. /effort without arguments opens the interactive picker instead of printing usage.
 	m.handleSlashCommand("/effort")
-	if m.modals.effort == nil {
+	if m.effortPicker == nil {
 		t.Fatalf("expected /effort to open the interactive effort picker")
 	}
-	if m.modals.effort.Selected != 0 {
-		t.Fatalf("expected picker to start at current level (default), got %d", m.modals.effort.Selected)
+	if m.effortPicker.Selected != 0 {
+		t.Fatalf("expected picker to start at current level (default), got %d", m.effortPicker.Selected)
 	}
 	if len(m.entries) != 0 {
 		t.Fatalf("expected no system entry when opening the picker, got: %+v", m.entries)
@@ -185,11 +185,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if m.modals.effort == nil || m.modals.effort.Selected != 5 {
-		t.Fatalf("expected picker selection at high, got %+v", m.modals.effort)
+	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+		t.Fatalf("expected picker selection at high, got %+v", m.effortPicker)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.modals.effort != nil {
+	if m.effortPicker != nil {
 		t.Fatalf("expected picker to close after applying")
 	}
 	if m.reasoningEffort != "high" {
@@ -202,11 +202,11 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 
 	// 4. Reopening the picker selects the active level.
 	m.handleSlashCommand("/effort")
-	if m.modals.effort == nil || m.modals.effort.Selected != 5 {
-		t.Fatalf("expected picker to remember active level high, got %+v", m.modals.effort)
+	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+		t.Fatalf("expected picker to remember active level high, got %+v", m.effortPicker)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
-	if m.modals.effort != nil {
+	if m.effortPicker != nil {
 		t.Fatalf("expected Esc to close the picker")
 	}
 

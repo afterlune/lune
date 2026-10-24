@@ -93,6 +93,30 @@ func (u *sessionUsage) finishCompaction(afterTokens int64) {
 	}
 }
 
+// setContextWindow records the context window the next request runs against.
+func (u *sessionUsage) setContextWindow(window int64) {
+	u.contextWindow = window
+}
+
+// setSpeed records the observed generation speed of the latest stream.
+func (u *sessionUsage) setSpeed(tokensPerSecond float64) {
+	u.lastTokensPerSec = tokensPerSecond
+}
+
+// resetCompaction clears the compaction markers without touching the counters.
+func (u *sessionUsage) resetCompaction() {
+	u.compacting = false
+	u.compactionStartedAt = time.Time{}
+}
+
+// applyCompactResult installs the compacted estimate and forgets the measured
+// input of the request that the compaction replaced.
+func (u *sessionUsage) applyCompactResult(afterTokens int64) {
+	u.compacting = false
+	u.lastInputTokens, u.lastCachedTokens = 0, 0
+	u.estimatedInputTokens = afterTokens
+}
+
 // cachePercent is the weighted cache rate of every request in this session.
 func (u *sessionUsage) cachePercent() float64 {
 	if u.totalInputTokens <= 0 {

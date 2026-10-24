@@ -126,7 +126,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		if event.ContextWindow > 0 {
 			main.ContextWindow = event.ContextWindow
-			m.usage.contextWindow = event.ContextWindow
+			m.usage.setContextWindow(event.ContextWindow)
 		}
 		if event.ModelProfile != "" {
 			main.ModelProfile = event.ModelProfile
@@ -173,7 +173,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.run.streamGenerationTokens += toks
 				elapsed := time.Since(m.run.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.usage.lastTokensPerSec = float64(m.run.streamGenerationTokens) / elapsed
+					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
 			}
 			m.view.invalidateContent()
@@ -193,7 +193,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.run.streamGenerationTokens += toks
 				elapsed := time.Since(m.run.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
-					m.usage.lastTokensPerSec = float64(m.run.streamGenerationTokens) / elapsed
+					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
 				m.view.invalidateContent()
 			}
@@ -476,13 +476,14 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 
 	case core.EventApprovalRequired:
 		m.run.thinking = false
-		if event.Approval != nil && m.permissionMode == core.PermissionFullAccess {
-			_ = m.runtime.ResolveApproval(event.Approval.ID, true)
-		} else {
-			m.checkPendingState(context.Background())
+		if event.Approval != nil && m.approveWithoutCard(*event.Approval) {
 			m.view.invalidateContent()
 			m.updateLayout()
+			return m, nil
 		}
+		m.checkPendingState(context.Background())
+		m.view.invalidateContent()
+		m.updateLayout()
 
 	case core.EventApprovalCancelled:
 		if m.activeApproval != nil && m.activeApproval.Request.ID == event.ApprovalID {
@@ -504,7 +505,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					elapsed = time.Since(m.run.turnStreamStartTime).Seconds()
 				}
 				if elapsed >= 0.05 {
-					m.usage.lastTokensPerSec = float64(event.Usage.OutputTokens) / elapsed
+					m.usage.setSpeed(float64(event.Usage.OutputTokens) / elapsed)
 				}
 				m.run.streamFirstTokenTime = time.Time{}
 			}
@@ -540,6 +541,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		m.view.invalidateContent()
 		m.updateLayout()
+		return m, m.reconnectRuntimeEventStream()
 
 	case core.EventModelRecoveryResumed:
 		m.activeRecovery = nil

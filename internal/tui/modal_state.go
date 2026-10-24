@@ -44,7 +44,6 @@ type modalState struct {
 	theme      *ActiveThemePicker
 	model      *ActiveModelPicker
 	permission *ActivePermissionPicker
-	effort     *ActiveEffortPicker
 }
 
 type sessionsModalState struct {
@@ -157,5 +156,4 @@ func (s *modalState) close() {
 	s.theme = nil
 	s.model = nil
 	s.permission = nil
-	s.effort = nil
 }

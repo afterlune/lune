@@ -147,7 +147,7 @@ func TestFirstLazySessionTurnSubscribesBeforeLiveOutput(t *testing.T) {
 	events := ready.events
 	for !strings.Contains(m.run.currentStreamText, "first live token") {
 		msgCh := make(chan tea.Msg, 1)
-		go func() { msgCh <- nextRuntimeEvent(m.sessionID, events)() }()
+		go func() { msgCh <- nextRuntimeEvent(m.sessionID, m.run.subscriptionGeneration, events)() }()
 		select {
 		case got := <-msgCh:
 			eventMsg, ok := got.(runtimeEventMsg)

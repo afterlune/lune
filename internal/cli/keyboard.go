@@ -8,15 +8,36 @@ import (
 	"github.com/eiannone/keyboard"
 )
 
+// The keyboard library keeps process-wide state and needs a real terminal, so the
+// watcher reaches the outside world through these seams. Tests replace them
+// instead of driving stdin or the shared keyboard state.
+var (
+	stdinIsCharacterDevice = func() (bool, error) {
+		info, err := os.Stdin.Stat()
+		if err != nil {
+			return false, err
+		}
+		return info.Mode()&os.ModeCharDevice != 0, nil
+	}
+	openCLIKeys = func(buffer int) (<-chan keyboard.KeyEvent, error) {
+		keys, err := keyboard.GetKeys(buffer)
+		if err != nil {
+			return nil, err
+		}
+		return keys, nil
+	}
+	closeCLIKeys = keyboard.Close
+)
+
 func startKeyboardInputWatcher() (<-chan cliInputEvent, func(), error) {
-	info, err := os.Stdin.Stat()
+	interactive, err := stdinIsCharacterDevice()
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("inspect stdin: %w", err)
 	}
-	if info.Mode()&os.ModeCharDevice == 0 {
+	if !interactive {
 		return nil, func() {}, nil
 	}
-	keys, err := keyboard.GetKeys(10)
+	keys, err := openCLIKeys(10)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -48,7 +69,7 @@ func startKeyboardInputWatcher() (<-chan cliInputEvent, func(), error) {
 	stop := func() {
 		once.Do(func() {
 			close(stopRequested)
-			_ = keyboard.Close()
+			_ = closeCLIKeys()
 			<-watcherDone
 		})
 	}

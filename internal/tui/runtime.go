@@ -12,16 +12,24 @@ import (
 )
 
 type runtimeStreamReadyMsg struct {
-	sessionID string
-	events    <-chan core.Event
-	err       error
+	sessionID  string
+	generation uint64
+	events     <-chan core.Event
+	err        error
 }
 
 type runtimeEventMsg struct {
+	sessionID  string
+	generation uint64
+	event      core.Event
+	batch      []core.Event
+	events     <-chan core.Event
+}
+
+// runtimeReconnectMsg re-opens the event stream after Core reported a failure or
+// the subscription channel closed early.
+type runtimeReconnectMsg struct {
 	sessionID string
-	event     core.Event
-	batch     []core.Event
-	events    <-chan core.Event
 }
 
 // runtimeRestoreSettledMsg is retained for explicit restore-settlement messages.
@@ -45,6 +53,25 @@ type turnFinishedMsg struct {
 
 type tickMsg time.Time
 
+const (
+	// maxRuntimeStreamReconnects bounds the automatic reconnects of one stream so
+	// a dead subscription cannot spin.
+	maxRuntimeStreamReconnects = 3
+	// runtimeStreamReconnectDelay is the first backoff step; it doubles per attempt.
+	runtimeStreamReconnectDelay = 250 * time.Millisecond
+)
+
+// openRuntimeEventStream subscribes to Core's runtime events. The first
+// subscription also asks for the replay-complete marker so a session restore can
+// settle, while a reconnect resumes after the last processed cursor instead of
+// replaying the whole journal. Tests replace it to simulate a failing stream.
+var openRuntimeEventStream = func(ctx context.Context, runtime *core.SessionRuntime, cursor int64) (<-chan core.Event, error) {
+	if cursor > 0 {
+		return runtime.SubscribeEvents(ctx, cursor)
+	}
+	return runtime.SubscribeEventsWithReplayComplete(ctx, cursor)
+}
+
 func (m *tuiModel) subscribeRuntimeEvents() tea.Cmd {
 	streamCmd := m.startRuntimeEventSubscription(false)
 	return tea.Batch(streamCmd, m.waitForExecution(m.run.runningExecution))
@@ -59,13 +86,16 @@ func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.run.runtimeCancel = cancel
+	m.run.subscriptionGeneration++
+	generation := m.run.subscriptionGeneration
 	runtime := m.runtime
 	sessionID := m.sessionID
+	cursor := m.run.lastEventCursor
 	streamCmd := func() tea.Msg {
-		rawEvents, err := runtime.SubscribeEventsWithReplayComplete(ctx, 0)
+		rawEvents, err := openRuntimeEventStream(ctx, runtime, cursor)
 		if err != nil {
 			cancel()
-			return runtimeStreamReadyMsg{sessionID: sessionID, err: err}
+			return runtimeStreamReadyMsg{sessionID: sessionID, generation: generation, err: err}
 		}
 		// Relay events through a large 2048-buffer channel so luneCore's 64-element
 		// non-blocking live channel never overflows while Bubble Tea renders a frame.
@@ -88,7 +118,7 @@ func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 				}
 			}
 		}()
-		return runtimeStreamReadyMsg{sessionID: sessionID, events: buffered}
+		return runtimeStreamReadyMsg{sessionID: sessionID, generation: generation, events: buffered}
 	}
 	if !subscribeNow {
 		return streamCmd
@@ -101,6 +131,41 @@ func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 		m.run.runtimeCancel = nil
 	}
 	return func() tea.Msg { return ready }
+}
+
+// reconnectRuntimeEventStream re-opens the event stream after Core reported a
+// failure or the subscription channel closed early. Reconnects are bounded and
+// back off, so a permanently dead stream surfaces one actionable message instead
+// of retrying forever.
+func (m *tuiModel) reconnectRuntimeEventStream() tea.Cmd {
+	if m.runtime == nil {
+		return nil
+	}
+	if m.run.streamReconnects >= maxRuntimeStreamReconnects {
+		m.addSystemEntry("The runtime event stream is lost; run `/resume <id>` to reattach to this session.")
+		return nil
+	}
+	delay := runtimeStreamReconnectDelay << m.run.streamReconnects
+	m.run.streamReconnects++
+	sessionID := m.sessionID
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return runtimeReconnectMsg{sessionID: sessionID}
+	})
+}
+
+// matchesSubscription reports whether a stream message belongs to the live
+// subscription. A zero generation marks a message built without a subscription
+// (tests that inject events directly) and is accepted.
+func (m *tuiModel) matchesSubscription(generation uint64) bool {
+	return generation == 0 || generation == m.run.subscriptionGeneration
+}
+
+// advanceEventCursor remembers the last processed Core event so a reconnect can
+// resume after it instead of replaying the whole journal into the transcript.
+func (m *tuiModel) advanceEventCursor(event core.Event) {
+	if event.Cursor > m.run.lastEventCursor {
+		m.run.lastEventCursor = event.Cursor
+	}
 }
 
 func (m *tuiModel) waitForExecution(executionID string) tea.Cmd {
@@ -122,14 +187,16 @@ func (m *tuiModel) awaitExecutionResult(executionID string) tea.Cmd {
 	return waitForTurn(m.runtime, m.sessionID, executionID, m.run.waitGeneration)
 }
 
-func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
+// nextRuntimeEvent delivers the next Core runtime event with the subscription
+// identity so a message from a replaced subscription can be ignored.
+func nextRuntimeEvent(sessionID string, generation uint64, events <-chan core.Event) tea.Cmd {
 	if events == nil {
 		return nil
 	}
 	return func() tea.Msg {
 		event, ok := <-events
 		if !ok {
-			return runtimeEventMsg{sessionID: sessionID, events: nil}
+			return runtimeEventMsg{sessionID: sessionID, generation: generation, events: nil}
 		}
 		// Coalesce queued stream events so Bubble Tea renders once per batch
 		// instead of re-rendering the full Markdown transcript on every token.
@@ -139,18 +206,18 @@ func nextRuntimeEvent(sessionID string, events <-chan core.Event) tea.Cmd {
 				select {
 				case nextEv, ok := <-events:
 					if !ok {
-						return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+						return runtimeEventMsg{sessionID: sessionID, generation: generation, event: event, batch: batch, events: events}
 					}
 					batch = append(batch, nextEv)
 					if nextEv.Kind != core.EventModelStream {
-						return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+						return runtimeEventMsg{sessionID: sessionID, generation: generation, event: event, batch: batch, events: events}
 					}
 				default:
-					return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+					return runtimeEventMsg{sessionID: sessionID, generation: generation, event: event, batch: batch, events: events}
 				}
 			}
 		}
-		return runtimeEventMsg{sessionID: sessionID, event: event, batch: batch, events: events}
+		return runtimeEventMsg{sessionID: sessionID, generation: generation, event: event, batch: batch, events: events}
 	}
 }
 
@@ -288,7 +355,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.activeQuestion = nil
 	m.activeApproval = nil
 	m.activePlanReview = nil
-	m.modals.effort = nil
+	m.effortPicker = nil
 	m.activeRecovery = nil
 	m.activeToolRecovery = nil
 	main := m.ensureAgentMetrics("lead")

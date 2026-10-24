@@ -37,6 +37,10 @@ type Command struct {
 	// running. Subcommand-level limits are enforced by the frontend.
 	AvailableDuringTask bool
 
+	// BlockedDuringTask explains why a command stays unavailable while a task is
+	// running. An empty value falls back to the frontend's generic message.
+	BlockedDuringTask string
+
 	// NeedsSession marks commands the CLI refuses until the first message creates
 	// a session.
 	NeedsSession bool
@@ -54,7 +58,7 @@ func (c Command) In(target Target) bool {
 // registry keeps the TUI order: it is the order users see while typing, so it
 // groups related commands instead of sorting them alphabetically.
 var registry = []Command{
-	{Name: "/new", Summary: "start a new chat during a conversation", Usage: "/new", Description: "Start a fresh draft session (saved with your first message).", Targets: TargetTUI | TargetCLI},
+	{Name: "/new", Summary: "start a new chat during a conversation", Usage: "/new", Description: "Start a fresh draft session (saved with your first message).", Targets: TargetTUI | TargetCLI, BlockedDuringTask: "Cannot start a new session while a task is running."},
 	{Name: "/clear", Summary: "clear transcript history from the current view", Usage: "/clear", Description: "Clear terminal screen.", Targets: TargetTUI | TargetCLI},
 	{Name: "/plan", Summary: "toggle Plan mode (read-only exploration)", Usage: "/plan", Description: "Toggle Plan mode (read-only exploration).", Targets: TargetTUI | TargetCLI},
 	{Name: "/goal", Summary: "view or manage a persistent goal: objective, edit, budget, pause, resume, clear", Usage: "/goal [objective|subcommand]", Description: "Manage a persistent goal; optional --tokens N counts uncached input plus output, not money.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
@@ -69,8 +73,8 @@ var registry = []Command{
 	{Name: "/stop", Summary: "choose a running process to stop, or use /stop <id|all>", Usage: "/stop [id|all]", Description: "Stop running background processes.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true, NeedsSession: true},
 	{Name: "/logs", Summary: "choose a process to inspect, or use /logs <id>", Usage: "/logs [id|prefix] [--tail N]", Description: "View logs of a background process.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true, NeedsSession: true},
 	{Name: "/sessions", Summary: "list or search recent sessions in this workspace", Usage: "/sessions [query]", Description: "List or search recent sessions in this workspace.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
-	{Name: "/resume", Summary: "switch to a saved session or open the session switcher", Usage: "/resume [id|prefix]", Description: "Switch to a saved session; list recent sessions when no ID is given.", Targets: TargetTUI | TargetCLI},
-	{Name: "/drop", Summary: "choose a saved session to delete with confirmation", Usage: "/drop [id|prefix]", Description: "Delete a saved session.", Targets: TargetTUI | TargetCLI},
+	{Name: "/resume", Summary: "switch to a saved session or open the session switcher", Usage: "/resume [id|prefix]", Description: "Switch to a saved session; list recent sessions when no ID is given.", Targets: TargetTUI | TargetCLI, BlockedDuringTask: "Cannot switch sessions while a task is running. Cancel or wait for it to finish."},
+	{Name: "/drop", Summary: "choose a saved session to delete with confirmation", Usage: "/drop [id|prefix]", Description: "Delete a saved session.", Targets: TargetTUI | TargetCLI, BlockedDuringTask: "Cannot delete sessions while a task is running."},
 	{Name: "/detail", Summary: "open tool output pager modal: /detail [index]", Usage: "/detail [index]", Description: "View full output of a tool call.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true, NeedsSession: true, DraftOK: true},
 	{Name: "/title", Summary: "view or set custom title for this session", Usage: "/title [name]", Description: "View or set custom title for this session.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true, NeedsSession: true, DraftOK: true},
 	{Name: "/export", Summary: "export session transcript: /export [md|html|jsonl] [file]", Usage: "/export [md|html|jsonl] [path]", Description: "Export session conversation transcript to a file.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
@@ -80,15 +84,15 @@ var registry = []Command{
 	{Name: "/mcp", Summary: "list and interactively manage external MCP servers", Usage: "/mcp [list|enable|disable|auth]", Description: "Manage external MCP servers.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
 	{Name: "/cancel-queue", Summary: "cancel the most recently queued task", Targets: TargetTUI, AvailableDuringTask: true},
 	{Name: "/compact", Summary: "compact older conversation history", Usage: "/compact", Description: "Compact older conversation history.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
-	{Name: "/fork", Summary: "fork the current chat", Usage: "/fork", Description: "Fork the current session.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
-	{Name: "/rewind", Summary: "rewind session history: /rewind [N] or /rewind preview [N]", Usage: "/rewind [N|preview [N]]", Description: "Rewind conversation or preview turns to be removed.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
+	{Name: "/fork", Summary: "fork the current chat", Usage: "/fork", Description: "Fork the current session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot fork a session while a task is running."},
+	{Name: "/rewind", Summary: "rewind session history: /rewind [N] or /rewind preview [N]", Usage: "/rewind [N|preview [N]]", Description: "Rewind conversation or preview turns to be removed.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot rewind while a task is running."},
 	{Name: "/status", Summary: "show session, model and token status", Usage: "/status", Description: "Show session, model, and token status.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
-	{Name: "/continue", Summary: "continue the paused task in this session", Usage: "/continue", Description: "Continue the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
-	{Name: "/discard", Summary: "discard the paused task in this session", Usage: "/discard", Description: "Discard the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true},
+	{Name: "/continue", Summary: "continue the paused task in this session", Usage: "/continue", Description: "Continue the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "A task is already running."},
+	{Name: "/discard", Summary: "discard the paused task in this session", Usage: "/discard", Description: "Discard the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot discard a paused task while another task is running."},
 	{Name: "/shortcuts", Summary: "display keyboard shortcuts help", Targets: TargetTUI, AvailableDuringTask: true},
 	{Name: "/thought", Summary: "toggle visibility of latest thinking/reasoning block", Targets: TargetTUI, AvailableDuringTask: true},
 	{Name: "/help", Summary: "list all available slash commands", Usage: "/help", Description: "Show available commands.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
-	{Name: "/exit", Summary: "exit the chat session", Usage: "/exit", Description: "Exit the chat.", Targets: TargetTUI | TargetCLI},
+	{Name: "/exit", Summary: "exit the chat session", Usage: "/exit", Description: "Exit the chat.", Targets: TargetTUI | TargetCLI, BlockedDuringTask: "Interrupt the active task before exiting."},
 }
 
 // All returns every registered command in registry order. The slice is a copy so

@@ -1784,20 +1784,20 @@ func TestCLIRewindPreview(t *testing.T) {
 	}
 }
 
+// TestCLITUISpecificCommandsFriendlyGuide keeps the frontend split honest: every
+// command the registry lists only for the TUI is refused with the same wording,
+// so a new TUI-only command cannot fall through and become a prompt.
 func TestCLITUISpecificCommandsFriendlyGuide(t *testing.T) {
 	client := &fakeCLICore{}
 	_, stderr := runCLI(t, client, "/theme dark\n/shortcuts\n/thought\n/cancel-queue\n/exit\n", nil)
-	if !strings.Contains(stderr, "The /theme command is specific to full-screen interactive TUI mode") {
-		t.Fatalf("stderr = %q, want theme notice", stderr)
+	for _, name := range []string{"/theme", "/shortcuts", "/thought", "/cancel-queue"} {
+		want := "`" + name + "` is only available in the full-screen TUI"
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want the registry notice for %s", stderr, name)
+		}
 	}
-	if !strings.Contains(stderr, "The /shortcuts command is specific to full-screen interactive TUI mode") {
-		t.Fatalf("stderr = %q, want shortcuts notice", stderr)
-	}
-	if !strings.Contains(stderr, "The /thought command is specific to full-screen interactive TUI mode") {
-		t.Fatalf("stderr = %q, want thought notice", stderr)
-	}
-	if !strings.Contains(stderr, "The /cancel-queue command is specific to full-screen interactive TUI mode") {
-		t.Fatalf("stderr = %q, want cancel-queue notice", stderr)
+	if len(client.inputs) != 0 {
+		t.Fatalf("inputs = %#v, want no prompt submitted for TUI-only commands", client.inputs)
 	}
 }
 

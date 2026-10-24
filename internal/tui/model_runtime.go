@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -40,10 +41,13 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 
 	if m.runtime != nil {
-		if err := m.runtime.Close(); err != nil {
-			return err
-		}
+		// Stop interactive prompts on the outgoing runtime before closing it. A
+		// failed close must not abort the switch: the model would otherwise stay
+		// bound to a closed runtime with no way back.
 		m.runtime.SetUserInteractionAvailable(false)
+		if err := m.runtime.Close(); err != nil {
+			slog.Warn("close previous session runtime", "error", err)
+		}
 	}
 	if m.run.runtimeCancel != nil {
 		m.run.runtimeCancel()
@@ -198,11 +202,11 @@ func (m *tuiModel) restoreRuntimeSnapshot(state core.RuntimeState) {
 	switch state.Task.Status {
 	case core.TaskRunning, core.TaskQueued:
 		if contextWindowKnown {
-			m.usage.contextWindow = state.Task.ContextWindow
+			m.usage.setContextWindow(state.Task.ContextWindow)
 		}
 	case core.TaskPaused:
 		if contextWindowKnown {
-			m.usage.contextWindow = state.Task.ContextWindow
+			m.usage.setContextWindow(state.Task.ContextWindow)
 		}
 		m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: state.Task.ExecutionID}
 	}
@@ -220,6 +224,7 @@ func (m *tuiModel) checkPendingState(ctx context.Context) {
 	}
 	reqs, err := m.runtime.PendingRequests(ctx)
 	if err != nil {
+		slog.Warn("inspect pending task decisions", "error", err)
 		return
 	}
 	m.applyPendingRequests(reqs)
@@ -265,9 +270,7 @@ func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 	}
 
 	if foundApproval != nil {
-		if m.permissionMode == core.PermissionFullAccess {
-			_ = m.runtime.ResolveApproval(foundApproval.ID, true)
-		} else {
+		if !m.approveWithoutCard(*foundApproval) {
 			if m.activeApproval == nil || m.activeApproval.Request.ID != foundApproval.ID {
 				m.activeApproval = &ActiveApproval{
 					Request:  *foundApproval,

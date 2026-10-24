@@ -104,7 +104,7 @@ func (m *tuiModel) overlaySection(contentWidth int) (string, int) {
 		view = renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)
 	case m.activeQuestion != nil:
 		view = renderQuestionPanel(m.activeQuestion, contentWidth)
-	case m.modals.effort != nil:
+	case m.effortPicker != nil:
 		view = renderEffortPicker(m, contentWidth)
 	case m.activeApproval != nil:
 		view = renderApprovalPanel(m.activeApproval, contentWidth)
