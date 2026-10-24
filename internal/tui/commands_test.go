@@ -362,7 +362,9 @@ func TestExportCommand(t *testing.T) {
 	}
 
 	exportPath := filepath.Join(tmpDir, "exported_transcript.md")
-	m.handleSlashCommand("/export " + exportPath)
+	mod, cmd := m.handleSlashCommand("/export " + exportPath)
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isExportResult)
 
 	lastEntry := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastEntry, "Exported session transcript to") {

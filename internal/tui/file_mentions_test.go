@@ -70,6 +70,44 @@ func isDiffLoaded(msg tea.Msg) bool {
 	return ok
 }
 
+func isExportResult(msg tea.Msg) bool {
+	_, ok := msg.(exportResultMsg)
+	return ok
+}
+
+func isPlanArchived(msg tea.Msg) bool {
+	_, ok := msg.(planArchivedMsg)
+	return ok
+}
+
+// settlePlanArchive runs the plan archive command out of a plan batch without
+// waiting for the runtime turn that the same batch starts.
+func settlePlanArchive(t *testing.T, m *tuiModel, cmd tea.Cmd) *tuiModel {
+	t.Helper()
+	if cmd == nil {
+		return m
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected the plan implementation batch, got %T", cmd())
+	}
+	for _, inner := range batch {
+		done := make(chan tea.Msg, 1)
+		go func(run tea.Cmd) { done <- run() }(inner)
+		select {
+		case msg := <-done:
+			if !isPlanArchived(msg) {
+				continue
+			}
+			next, _ := m.Update(msg)
+			m = next.(*tuiModel)
+		case <-time.After(500 * time.Millisecond):
+			// A command that waits for the runtime turn never settles here.
+		}
+	}
+	return m
+}
+
 // TestFileMentionSearchRunsOffTheUpdateGoroutine is the regression guard for the
 // synchronous workspace walk that used to block every keystroke behind "@".
 func TestFileMentionSearchRunsOffTheUpdateGoroutine(t *testing.T) {

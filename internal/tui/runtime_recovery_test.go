@@ -222,7 +222,9 @@ func TestExportMultiFormat(t *testing.T) {
 
 	// 1. Export HTML
 	htmlFile := filepath.Join(tmpDir, "report.html")
-	m.handleSlashCommand("/export " + htmlFile)
+	mod, cmd := m.handleSlashCommand("/export " + htmlFile)
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isExportResult)
 	lastEntry := m.entries[len(m.entries)-1].Text
 	if !strings.Contains(lastEntry, "Exported session transcript") {
 		t.Fatalf("expected export success message, got: %s", lastEntry)
@@ -242,7 +244,9 @@ func TestExportMultiFormat(t *testing.T) {
 	// 2. Export JSONL
 	m.entries = m.entries[:3]
 	jsonlFile := filepath.Join(tmpDir, "data.jsonl")
-	m.handleSlashCommand("/export " + jsonlFile)
+	mod, cmd = m.handleSlashCommand("/export " + jsonlFile)
+	m = mod.(*tuiModel)
+	m = settleCommands(t, m, cmd, isExportResult)
 	jsonlBytes, err := os.ReadFile(jsonlFile)
 	if err != nil {
 		t.Fatalf("failed to read jsonl export: %v", err)
@@ -604,7 +608,9 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	if cmd == nil || m.activePlanReview != nil || m.planMode || m.permissionMode != core.PermissionAuto {
 		t.Fatal("plan implementation must dismiss review and restore the previous permission mode")
 	}
-	m.Update(planImplementedMsg{impl: core.PlanImplementation{Submission: core.TurnSubmission{ExecutionID: "implementation"}}, planText: "1. Read code\n2. Run tests"})
+	mod, planCmd := m.Update(planImplementedMsg{impl: core.PlanImplementation{Submission: core.TurnSubmission{ExecutionID: "implementation"}}, planText: "1. Read code\n2. Run tests"})
+	m = mod.(*tuiModel)
+	m = settlePlanArchive(t, m, planCmd)
 	if !m.run.running || m.run.runningExecution != "implementation" {
 		t.Fatal("implementation must use the submitted runtime execution")
 	}

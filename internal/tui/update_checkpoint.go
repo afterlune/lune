@@ -107,19 +107,43 @@ func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string
 	return strings.Join(lines, "\n")
 }
 
-// archivePlan persists the raw markdown content of an approved plan to .luneagent/plans/.
-func (m *tuiModel) archivePlan(planText string) string {
-	if m.workspace == "" || planText == "" {
-		return ""
+// archivePlan persists the raw markdown content of an approved plan to
+// .luneagent/plans/ and returns the archived path.
+func archivePlan(workspace, planText string) (string, error) {
+	if workspace == "" || planText == "" {
+		return "", nil
 	}
-	plansDir := filepath.Join(m.workspace, ".luneagent", "plans")
+	plansDir := filepath.Join(workspace, ".luneagent", "plans")
 	if err := os.MkdirAll(plansDir, 0755); err != nil {
-		return ""
+		return "", err
 	}
 	filename := fmt.Sprintf("plan-%s.md", time.Now().Format("20060102-150405"))
 	targetPath := filepath.Join(plansDir, filename)
 	if err := os.WriteFile(targetPath, []byte(planText), 0644); err != nil {
-		return ""
+		return "", err
 	}
-	return targetPath
+	return targetPath, nil
+}
+
+// planArchiveCmd archives the approved plan in the background so the write never
+// blocks the update goroutine.
+func planArchiveCmd(workspace, planText string) tea.Cmd {
+	if workspace == "" || planText == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		path, err := archivePlan(workspace, planText)
+		return planArchivedMsg{path: path, err: err}
+	}
+}
+
+// handlePlanArchived reports an accepted plan archive.
+func (m *tuiModel) handlePlanArchived(msg planArchivedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.addSystemEntry("Could not archive the plan: " + msg.err.Error())
+	} else if msg.path != "" {
+		m.addSystemEntry(fmt.Sprintf("Archived plan: `%s`.", msg.path))
+	}
+	m.updateLayout()
+	return m, nil
 }

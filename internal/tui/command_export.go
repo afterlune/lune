@@ -16,6 +16,16 @@ import (
 // ExportFormat defines the output file format for session transcript export.
 type ExportFormat int
 
+// exportResultMsg carries the outcome of an export written by a command.
+type exportResultMsg struct {
+	text string
+	err  error
+}
+
+// exportDirectory is where an export without an explicit path lands. Keeping it
+// under .luneagent/ keeps the repository clean and out of @ mentions and reviews.
+const exportDirectory = ".luneagent/exports"
+
 func determineExportFormatAndPath(raw string, sessionID string, workspace string) (ExportFormat, string) {
 	raw = strings.TrimSpace(raw)
 	shortID := sessionID
@@ -26,13 +36,16 @@ func determineExportFormatAndPath(raw string, sessionID string, workspace string
 		shortID = "current"
 	}
 	timestamp := time.Now().Format("20060102-150405")
+	defaultPath := func(extension string) string {
+		return filepath.Join(exportDirectory, fmt.Sprintf("export-%s-%s%s", shortID, timestamp, extension))
+	}
 
 	format := ExportFormatMarkdown
 	path := ""
 
 	parts := strings.Fields(raw)
 	if len(parts) == 0 {
-		return ExportFormatMarkdown, filepath.Join(workspace, fmt.Sprintf("export-%s-%s.md", shortID, timestamp))
+		return ExportFormatMarkdown, filepath.Join(workspace, defaultPath(".md"))
 	}
 
 	first := strings.ToLower(parts[0])
@@ -42,21 +55,21 @@ func determineExportFormatAndPath(raw string, sessionID string, workspace string
 		if len(parts) > 1 {
 			path = strings.Join(parts[1:], " ")
 		} else {
-			path = fmt.Sprintf("export-%s-%s.html", shortID, timestamp)
+			path = defaultPath(".html")
 		}
 	case "jsonl", "json":
 		format = ExportFormatJSONL
 		if len(parts) > 1 {
 			path = strings.Join(parts[1:], " ")
 		} else {
-			path = fmt.Sprintf("export-%s-%s.jsonl", shortID, timestamp)
+			path = defaultPath(".jsonl")
 		}
 	case "md", "markdown":
 		format = ExportFormatMarkdown
 		if len(parts) > 1 {
 			path = strings.Join(parts[1:], " ")
 		} else {
-			path = fmt.Sprintf("export-%s-%s.md", shortID, timestamp)
+			path = defaultPath(".md")
 		}
 	default:
 		path = raw
@@ -77,11 +90,20 @@ func determineExportFormatAndPath(raw string, sessionID string, workspace string
 	return format, path
 }
 
-func (m *tuiModel) exportTranscript(targetPath string) (string, error) {
-	title := m.sessionTitle
-	if title == "" {
-		title = "<untitled session>"
-	}
+// exportSnapshot is the immutable slice of session state the exporters read. It
+// is built on the update goroutine so rendering and the file write can run in a
+// command.
+type exportSnapshot struct {
+	sessionID string
+	workspace string
+	title     string
+	modelName string
+	entries   []TranscriptEntry
+	usage     sessionUsage
+}
+
+// snapshotForExport copies the state /export renders.
+func (m *tuiModel) snapshotForExport() *exportSnapshot {
 	modelName := m.currentModel
 	if modelName == "" && m.client != nil {
 		modelName = m.client.ModelForSession(context.Background(), m.sessionID)
@@ -89,7 +111,23 @@ func (m *tuiModel) exportTranscript(targetPath string) (string, error) {
 	if modelName == "" {
 		modelName = "<default>"
 	}
+	title := m.sessionTitle
+	if title == "" {
+		title = "<untitled session>"
+	}
+	return &exportSnapshot{
+		sessionID: m.sessionID,
+		workspace: m.workspace,
+		title:     title,
+		modelName: modelName,
+		entries:   append([]TranscriptEntry(nil), m.entries...),
+		usage:     m.usage,
+	}
+}
 
+func (m *exportSnapshot) exportTranscript(targetPath string) (string, error) {
+	title := m.title
+	modelName := m.modelName
 	userTurns := 0
 	assistantCount := 0
 	toolCount := 0
@@ -116,7 +154,7 @@ func (m *tuiModel) exportTranscript(targetPath string) (string, error) {
 	}
 }
 
-func (m *tuiModel) exportMarkdown(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
+func (m *exportSnapshot) exportMarkdown(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Session Transcript: %s\n\n", title))
 	sb.WriteString(fmt.Sprintf("- **Session ID:** `%s`\n", m.sessionID))
@@ -180,7 +218,7 @@ func (m *tuiModel) exportMarkdown(targetPath, title, modelName string, userTurns
 	return fmt.Sprintf("Exported session transcript to `%s` (%s bytes, %d turns, %d tools).", targetPath, formatTokens(int64(len(content))), userTurns, toolCount), nil
 }
 
-func (m *tuiModel) exportJSONL(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
+func (m *exportSnapshot) exportJSONL(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
 	var lines []string
 
 	meta := map[string]interface{}{
@@ -265,7 +303,7 @@ func (m *tuiModel) exportJSONL(targetPath, title, modelName string, userTurns, a
 	return fmt.Sprintf("Exported session transcript to `%s` (%s bytes, %d records).", targetPath, formatTokens(int64(len(content))), len(lines)), nil
 }
 
-func (m *tuiModel) exportHTML(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
+func (m *exportSnapshot) exportHTML(targetPath, title, modelName string, userTurns, assistantCount, toolCount int) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")
 	sb.WriteString("<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
@@ -476,7 +514,8 @@ pre {
 		targetPath, formatTokens(int64(len(content))), userTurns, toolCount), nil
 }
 
-// handleExportCommand handles the /export command.
+// handleExportCommand starts the transcript export. Rendering and the file write
+// run in a command so a large transcript cannot stall the interface.
 func (m *tuiModel) handleExportCommand(parts []string) (tea.Model, tea.Cmd) {
 	if m.taskBusy() {
 		m.addSystemEntry("Transcript export is unavailable while a task is running or queued.")
@@ -486,11 +525,20 @@ func (m *tuiModel) handleExportCommand(parts []string) (tea.Model, tea.Cmd) {
 	if len(parts) > 1 {
 		targetPath = strings.TrimSpace(strings.Join(parts[1:], " "))
 	}
-	resultText, err := m.exportTranscript(targetPath)
-	if err != nil {
-		m.addSystemEntry("Export failed: " + err.Error())
-	} else {
-		m.addSystemEntry(resultText)
+	snapshot := m.snapshotForExport()
+	return m, func() tea.Msg {
+		text, err := snapshot.exportTranscript(targetPath)
+		return exportResultMsg{text: text, err: err}
 	}
+}
+
+// handleExportResult reports the export outcome written by the export command.
+func (m *tuiModel) handleExportResult(msg exportResultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.addSystemEntry("Export failed: " + msg.err.Error())
+	} else {
+		m.addSystemEntry(msg.text)
+	}
+	m.updateLayout()
 	return m, nil
 }

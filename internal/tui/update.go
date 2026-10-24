@@ -17,6 +17,12 @@ type planImplementedMsg struct {
 	err      error
 }
 
+// planArchivedMsg reports the archived plan path produced by planArchiveCmd.
+type planArchivedMsg struct {
+	path string
+	err  error
+}
+
 type clearCopyFeedbackMsg struct {
 	at time.Time
 }
@@ -38,6 +44,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	switch msg := msg.(type) {
 	case goalActionMsg:
 		return m.finishGoalAction(msg)
+	case exportResultMsg:
+		return m.handleExportResult(msg)
+	case planArchivedMsg:
+		return m.handlePlanArchived(msg)
 	case fileMentionResultsMsg:
 		return m.applyFileMentionResults(msg)
 	case diffLoadedMsg:
@@ -251,10 +261,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			planCmds = append(planCmds, m.subscribeRuntimeEvents())
 		}
 		message := "Starting plan implementation."
-		if archivedPath := m.archivePlan(msg.planText); archivedPath != "" {
-			message += fmt.Sprintf(" Archived plan: `%s`.", archivedPath)
-		}
 		m.addSystemEntry(message)
+		if archive := planArchiveCmd(m.workspace, msg.planText); archive != nil {
+			planCmds = append(planCmds, archive)
+		}
 		m.run.running = true
 		m.run.taskStartedAt = time.Now()
 		m.run.runningExecution = msg.impl.Submission.ExecutionID
