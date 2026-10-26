@@ -436,7 +436,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 							break
 						}
 						switch m.entries[rng.EntryIndex].Kind {
-						case KindTool, KindQuestionAnswered:
+						case KindTool:
 							m.entries[rng.EntryIndex].ToolExpanded = !m.entries[rng.EntryIndex].ToolExpanded
 							toggled = true
 						case KindReasoning:

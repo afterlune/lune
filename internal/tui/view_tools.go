@@ -136,32 +136,10 @@ func isCoreRoundKind(kind EntryKind) bool {
 	return kind == KindTool || kind == KindReasoning
 }
 
-// isRoundCandidateKind returns true for kinds that can belong to a tool round.
-func isRoundCandidateKind(kind EntryKind) bool {
-	return isCoreRoundKind(kind) || kind == KindQuestionAnswered
-}
-
 // isRoundMember checks whether entries[idx] belongs to a contiguous tool round.
-// KindQuestionAnswered joins a round when adjacent to at least one Tool/Reasoning/Subagent step,
-// while standalone KindQuestionAnswered entries render as standalone cards.
+// Question-answer entries stay as standalone transcript items between rounds.
 func isRoundMember(entries []TranscriptEntry, idx int) bool {
-	if idx < 0 || idx >= len(entries) || !isRoundCandidateKind(entries[idx].Kind) {
-		return false
-	}
-	if isCoreRoundKind(entries[idx].Kind) {
-		return true
-	}
-	for i := idx - 1; i >= 0 && isRoundCandidateKind(entries[i].Kind); i-- {
-		if isCoreRoundKind(entries[i].Kind) {
-			return true
-		}
-	}
-	for i := idx + 1; i < len(entries) && isRoundCandidateKind(entries[i].Kind); i++ {
-		if isCoreRoundKind(entries[i].Kind) {
-			return true
-		}
-	}
-	return false
+	return idx >= 0 && idx < len(entries) && isCoreRoundKind(entries[idx].Kind)
 }
 
 // formatThoughtDuration formats reasoning durations with sub-10s tenths (e.g. "1.6s") like Grok Build.
@@ -210,12 +188,6 @@ func summarizeToolRound(entries []TranscriptEntry) string {
 			totalThoughtDur += e.ReasoningDuration
 		case KindSubagent:
 			subagents++
-		case KindQuestionAnswered:
-			if len(e.AnsweredQuestions) > 0 {
-				questions += len(e.AnsweredQuestions)
-			} else {
-				questions++
-			}
 		case KindTool:
 			hasNonZeroExit := e.ToolExitCode != nil && *e.ToolExitCode != 0
 			if e.ToolFailed || hasNonZeroExit {
@@ -446,32 +418,6 @@ func renderRoundChildEntry(entry TranscriptEntry, width int) string {
 			out = append(out, "  "+thoughtStyle.Render(l))
 		}
 		return strings.Join(out, "\n")
-
-	case KindQuestionAnswered:
-		qSummary := ""
-		if len(entry.AnsweredQuestions) > 0 {
-			qSummary = strings.TrimSpace(entry.AnsweredQuestions[0].Question)
-			if len(entry.AnsweredQuestions) > 1 {
-				qSummary = fmt.Sprintf("%s (+%d more)", qSummary, len(entry.AnsweredQuestions)-1)
-			}
-		}
-		qSummary = sanitizeAndTruncateLine(qSummary, max(20, width-10))
-		prefix := mutedChevron
-		if entry.ToolExpanded {
-			prefix = openChevron
-		}
-		action := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("Ask ")
-		header := prefix + action + styleTextPrimary().Render(qSummary)
-		if !entry.ToolExpanded {
-			return header
-		}
-		var rows []string
-		rows = append(rows, header)
-		for _, qa := range entry.AnsweredQuestions {
-			rows = append(rows, "  • "+styleTextPrimary().Render(terminaltext.Sanitize(qa.Question)))
-			rows = append(rows, "    "+styleTextMuted().Render("answer: ")+lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(terminaltext.Sanitize(qa.Answer)))
-		}
-		return strings.Join(rows, "\n")
 
 	case KindSubagent:
 		name := entry.AgentName

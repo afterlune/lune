@@ -1424,19 +1424,21 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	m.refreshViewportContent()
 	liveView := ansi.Strip(m.viewport.View())
 
-	// While live, the round should be expanded with ⠋ header and │ › child steps
-	if !strings.Contains(liveView, "Explored 1 directory, 1 file, ran 1 command") {
-		t.Fatalf("expected live round summary header, got:\n%s", liveView)
+	// The completed pre-question round is independent from the standalone Q&A;
+	// only the currently running post-question round expands live.
+	if !strings.Contains(liveView, "› Explored 1 directory") ||
+		!strings.Contains(liveView, "⠋ Explored 1 file, ran 1 command") {
+		t.Fatalf("expected separate pre-question and live round summaries, got:\n%s", liveView)
 	}
-	if !strings.Contains(liveView, "│ › Thought for 1.6s") ||
-		!strings.Contains(liveView, "│ › Listed D:\\Git\\luneAgent") ||
-		!strings.Contains(liveView, "│ › Ask 这次分析希望回答什么问题？") ||
+	if !strings.Contains(liveView, "Questions 1/1 answered") ||
+		!strings.Contains(liveView, "这次分析希望回答什么问题？") ||
+		!strings.Contains(liveView, "整体代码审查 (推荐)") ||
+		strings.Contains(liveView, "│ › Ask 这次分析希望回答什么问题？") ||
 		!strings.Contains(liveView, "│ › Read go.mod") ||
 		!strings.Contains(liveView, "│ › Ran git status --short") {
-		t.Fatalf("expected live round child tree lines, got:\n%s", liveView)
+		t.Fatalf("expected standalone Q&A and post-question round children, got:\n%s", liveView)
 	}
-	if !strings.Contains(liveView, "└ cmd/") ||
-		!strings.Contains(liveView, "└ module github.com/afterlune/lune") ||
+	if !strings.Contains(liveView, "└ module github.com/afterlune/lune") ||
 		!strings.Contains(liveView, "M internal/tui/view.go") {
 		t.Fatalf("expected live round tool output previews, got:\n%s", liveView)
 	}
@@ -1448,11 +1450,17 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	m.refreshViewportContent()
 
 	collapsedView := ansi.Strip(m.viewport.View())
-	if !strings.Contains(collapsedView, "› Explored 1 directory, 1 file, ran 1 command") {
-		t.Fatalf("expected collapsed Grok summary bar, got:\n%s", collapsedView)
+	if !strings.Contains(collapsedView, "› Explored 1 directory") ||
+		!strings.Contains(collapsedView, "› Explored 1 file, ran 1 command") {
+		t.Fatalf("expected separate collapsed execution summaries, got:\n%s", collapsedView)
 	}
 	if strings.Contains(collapsedView, "│ › Read go.mod") {
 		t.Fatalf("expected child steps to be hidden when round is auto-collapsed, got:\n%s", collapsedView)
+	}
+	if !strings.Contains(collapsedView, "Questions 1/1 answered") ||
+		!strings.Contains(collapsedView, "整体代码审查 (推荐)") ||
+		strings.Contains(collapsedView, "Ask 这次分析希望回答什么问题？") {
+		t.Fatalf("expected the answered question to remain a standalone card, got:\n%s", collapsedView)
 	}
 	if !strings.Contains(collapsedView, "Worked for 46s") {
 		t.Fatalf("expected 'Worked for 46s' on completed assistant turn, got:\n%s", collapsedView)
@@ -1461,13 +1469,13 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 	// 3. Level 1 Click: Click on the collapsed round header bar -> expands the round tree (⌄ Explored ...)
 	var roundHeaderLine int = -1
 	for _, rng := range m.view.entryLineRanges {
-		if rng.IsRoundHeader && rng.EntryIndex == 1 {
+		if rng.IsRoundHeader && rng.EntryIndex == 4 {
 			roundHeaderLine = rng.StartLine
 			break
 		}
 	}
 	if roundHeaderLine < 0 {
-		t.Fatalf("expected round header range for EntryIndex 1, got %+v", m.view.entryLineRanges)
+		t.Fatalf("expected post-question round header range for EntryIndex 4, got %+v", m.view.entryLineRanges)
 	}
 
 	clickLine := func(absLine int) {
@@ -1478,14 +1486,33 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		m = mod.(*tuiModel)
 	}
 
+	questionLine := -1
+	for _, rng := range m.view.entryLineRanges {
+		if rng.EntryIndex == 3 && !rng.IsRoundHeader {
+			questionLine = rng.StartLine
+			break
+		}
+	}
+	if questionLine < 0 {
+		t.Fatalf("expected standalone question range for EntryIndex 3, got %+v", m.view.entryLineRanges)
+	}
+	clickLine(questionLine)
+	if m.entries[3].ToolExpanded || m.entries[1].RoundExpanded || m.entries[4].RoundExpanded {
+		t.Fatal("clicking the standalone question must not expand an execution round")
+	}
+
 	clickLine(roundHeaderLine)
-	if !m.entries[1].RoundExpanded {
-		t.Fatalf("expected entries[1].RoundExpanded to be true after clicking round header")
+	if !m.entries[4].RoundExpanded {
+		t.Fatalf("expected entries[4].RoundExpanded to be true after clicking round header")
 	}
 	expandedRoundView := ansi.Strip(m.viewport.View())
-	if !strings.Contains(expandedRoundView, "⌄ Explored 1 directory, 1 file, ran 1 command") ||
+	if !strings.Contains(expandedRoundView, "⌄ Explored 1 file, ran 1 command") ||
 		!strings.Contains(expandedRoundView, "│ › Ran git status --short") {
 		t.Fatalf("expected expanded round tree with ⌄ header and │ › children, got:\n%s", expandedRoundView)
+	}
+	if !strings.Contains(expandedRoundView, "Questions 1/1 answered") ||
+		strings.Contains(expandedRoundView, "│ › Ask 这次分析希望回答什么问题？") {
+		t.Fatalf("expanded execution round must leave the Q&A card outside its tree, got:\n%s", expandedRoundView)
 	}
 	if !strings.Contains(expandedRoundView, "M internal/tui/view.go") ||
 		!strings.Contains(expandedRoundView, "+ 3 lines (click to expand · /detail for full output)") {
@@ -1523,8 +1550,8 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 
 	// 5. Click the round header (⌄ Explored ...) again -> collapses the entire round back to 1 line
 	clickLine(roundHeaderLine)
-	if m.entries[1].RoundExpanded {
-		t.Fatalf("expected entries[1].RoundExpanded to be false after clicking ⌄ header")
+	if m.entries[4].RoundExpanded {
+		t.Fatalf("expected entries[4].RoundExpanded to be false after clicking ⌄ header")
 	}
 	if !m.entries[5].ToolExpanded {
 		t.Fatalf("expected the expanded child step to survive a header collapse")
