@@ -134,9 +134,9 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 func TestEffortPickerRendering(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.reasoningEffort = "high"
-	m.effortPicker = &ActiveEffortPicker{Selected: 5}
+	m.effortPicker = &ActiveEffortPicker{Selected: 4}
 	rendered := ansi.Strip(renderEffortPicker(m, 80))
-	for _, want := range []string{"Reasoning effort", "6. high", "✓ current", "enter apply"} {
+	for _, want := range []string{"Reasoning effort", "5. high", "✓ current", "enter apply"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected effort picker to contain %q, got:\n%s", want, rendered)
 		}
@@ -156,17 +156,17 @@ func TestFooterShowsReasoningEffortBesideModel(t *testing.T) {
 
 	m.reasoningEffort = ""
 	footer = ansi.Strip(renderFooter(m, 140))
-	if !strings.Contains(footer, "deepseek-flash . default") {
-		t.Fatalf("expected default effort label, got:\n%s", footer)
+	if !strings.Contains(footer, "deepseek-flash . max") {
+		t.Fatalf("expected max effort label, got:\n%s", footer)
 	}
 }
 
 func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 
-	// 1. Initial effort is default
-	if got := m.currentReasoningEffort(); got != "" {
-		t.Fatalf("expected empty effort initially, got: %q", got)
+	// 1. Initial effort is max.
+	if got := m.currentReasoningEffort(); got != "max" {
+		t.Fatalf("expected max effort initially, got: %q", got)
 	}
 
 	// 2. /effort without arguments opens the interactive picker instead of printing usage.
@@ -174,18 +174,18 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 	if m.effortPicker == nil {
 		t.Fatalf("expected /effort to open the interactive effort picker")
 	}
-	if m.effortPicker.Selected != 0 {
-		t.Fatalf("expected picker to start at current level (default), got %d", m.effortPicker.Selected)
+	if m.effortPicker.Selected != 6 {
+		t.Fatalf("expected picker to start at current level (max), got %d", m.effortPicker.Selected)
 	}
 	if len(m.entries) != 0 {
 		t.Fatalf("expected no system entry when opening the picker, got: %+v", m.entries)
 	}
 
-	// 3. Navigate down to "high" (index 5) and apply with Enter.
-	for i := 0; i < 5; i++ {
+	// 3. Navigate down to "high" (index 4) and apply with Enter.
+	for i := 0; i < 4; i++ {
 		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+	if m.effortPicker == nil || m.effortPicker.Selected != 4 {
 		t.Fatalf("expected picker selection at high, got %+v", m.effortPicker)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -202,7 +202,7 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 
 	// 4. Reopening the picker selects the active level.
 	m.handleSlashCommand("/effort")
-	if m.effortPicker == nil || m.effortPicker.Selected != 5 {
+	if m.effortPicker == nil || m.effortPicker.Selected != 4 {
 		t.Fatalf("expected picker to remember active level high, got %+v", m.effortPicker)
 	}
 	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -210,14 +210,14 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 		t.Fatalf("expected Esc to close the picker")
 	}
 
-	// 5. Direct level argument still works for quick, scriptable changes.
+	// 5. "default" is no longer an available reasoning effort.
 	m.handleSlashCommand("/effort default")
-	if m.reasoningEffort != "" {
-		t.Fatalf("expected reasoningEffort empty, got: %q", m.reasoningEffort)
+	if m.reasoningEffort != "high" {
+		t.Fatalf("invalid effort changed the current value: %q", m.reasoningEffort)
 	}
 	last = m.entries[len(m.entries)-1]
-	if !strings.Contains(last.Text, "Reasoning effort set to `default`") {
-		t.Fatalf("expected reset confirmation, got: %q", last.Text)
+	if !strings.Contains(last.Text, "Invalid reasoning effort `default`") {
+		t.Fatalf("expected default effort to be rejected, got: %q", last.Text)
 	}
 
 	// 6. Invalid effort level

@@ -105,7 +105,7 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	vp.SoftWrap = true
 
 	workspace := ""
-	permMode := core.PermissionWorkspace
+	permMode := core.PermissionFullAccess
 	currentModel := ""
 	if client != nil {
 		workspace = client.Workspace()
@@ -115,7 +115,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	m := &tuiModel{
 		client: client, runtime: runtime, workspace: workspace, sessionID: sessionID,
 		currentModel: currentModel, currentModelProfile: currentModel,
-		permissionMode: permMode, savedMode: permMode,
+		reasoningEffort: settings.DefaultReasoningEffort,
+		permissionMode:  permMode, savedMode: permMode,
 		input:    composerState{composer: comp, scanner: filemention.NewScanner(workspace)},
 		viewport: vp, entries: []TranscriptEntry{},
 		view:         viewCache{transcriptDirty: true},
@@ -167,6 +168,9 @@ func (m *tuiModel) loadSessionSnapshot(saved core.Session) {
 		m.currentModelProfile = m.currentModel
 	}
 	m.reasoningEffort = saved.Settings.ReasoningEffort
+	if m.reasoningEffort == "" {
+		m.reasoningEffort = settings.DefaultReasoningEffort
+	}
 	m.usage.applyTotals(saved.SessionUsage)
 	m.usage.resetCompaction()
 	m.usage.clearLastRequest()
@@ -320,10 +324,12 @@ func (m *tuiModel) currentReasoningEffort() string {
 	}
 	if m.client != nil && m.sessionID != "" {
 		if saved, err := m.client.GetSession(context.Background(), m.sessionID); err == nil {
-			return saved.Settings.ReasoningEffort
+			if saved.Settings.ReasoningEffort != "" {
+				return saved.Settings.ReasoningEffort
+			}
 		}
 	}
-	return ""
+	return settings.DefaultReasoningEffort
 }
 
 // maxParallelAgents returns the maximum configured parallel subagent count.
@@ -417,11 +423,7 @@ func modelProfileLabel(p core.ModelOption) string {
 
 // currentReasoningEffortLabel returns the effort level shown next to the model name.
 func (m *tuiModel) currentReasoningEffortLabel() string {
-	level := strings.TrimSpace(m.reasoningEffort)
-	if level == "" {
-		return "default"
-	}
-	return level
+	return strings.TrimSpace(m.currentReasoningEffort())
 }
 
 // desiredTerminalTitle computes the expected window/tab title as

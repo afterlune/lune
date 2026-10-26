@@ -11,6 +11,7 @@ import (
 
 	"github.com/afterlune/lune/internal/assistanttext"
 	"github.com/afterlune/lune/internal/filemention"
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
@@ -30,11 +31,18 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 			return fmt.Errorf("set model profile: %w", err)
 		}
 	}
+	if err := settings.ApplyTerminalDefaults(ctx, client, sessionID); err != nil {
+		return fmt.Errorf("set default reasoning effort: %w", err)
+	}
 
 	// Apply permission mode if provided
 	if flags.PermissionMode != "" {
 		if err := client.SetPermissionMode(flags.PermissionMode); err != nil {
 			return fmt.Errorf("set permission mode: %w", err)
+		}
+	} else {
+		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
+			return fmt.Errorf("set default terminal permission mode: %w", err)
 		}
 	}
 

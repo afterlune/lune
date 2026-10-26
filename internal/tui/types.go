@@ -157,7 +157,7 @@ type ActivePlanReview struct {
 
 // ReasoningEffortOption describes one selectable reasoning effort level.
 type ReasoningEffortOption struct {
-	Value       string // empty means provider default (omit effort)
+	Value       string
 	Label       string
 	Description string
 }

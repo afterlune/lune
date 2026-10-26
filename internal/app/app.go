@@ -119,6 +119,11 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		fmt.Fprintf(stderr, "Lune A2A 1.0 server listening on %s\n", flags.A2AListen)
 		return http.ListenAndServe(flags.A2AListen, srv)
 	}
+	if flags.PermissionMode == "" {
+		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
+			return fmt.Errorf("set default terminal permission mode: %w", err)
+		}
+	}
 
 	if isOneShot {
 		return runOneShot(client, effectivePrompt, flags, stdout, stderr)

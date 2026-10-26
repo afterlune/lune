@@ -590,7 +590,7 @@ func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDeta
 }
 
 func formatCLIManualCompactionResult(result core.CompactionResult) string {
-	if result.Backend == "server" {
+	if result.Mode == "compact" {
 		if result.Before > 0 {
 			return fmt.Sprintf("Compacted %d older user turn(s) with provider compaction (previous input %s tokens).",
 				result.Turns, compactCLITokens(result.Before))

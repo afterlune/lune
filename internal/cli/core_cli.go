@@ -12,6 +12,7 @@ import (
 
 	"github.com/afterlune/lune/internal/filemention"
 	"github.com/afterlune/lune/internal/goalcmd"
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
@@ -184,6 +185,11 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			return fmt.Errorf("set model profile: %w", err)
 		}
 	}
+	if sessionID != "" {
+		if err := settings.ApplyTerminalDefaults(ctx, client, sessionID); err != nil {
+			return fmt.Errorf("set default reasoning effort: %w", err)
+		}
+	}
 
 	// Apply permission mode if provided
 	savedPermissionMode := client.PermissionMode()
@@ -192,6 +198,11 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			return fmt.Errorf("set permission mode: %w", err)
 		}
 		savedPermissionMode = opts.PermissionMode
+	} else {
+		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
+			return fmt.Errorf("set default terminal permission mode: %w", err)
+		}
+		savedPermissionMode = core.PermissionFullAccess
 	}
 
 	planMode := opts.PlanMode
@@ -221,6 +232,12 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 		}
 		created, err := client.CreateSession(ctx, json.RawMessage("null"))
 		if err != nil {
+			return err
+		}
+		if err := settings.ApplyTerminalDefaults(ctx, client, created.ID); err != nil {
+			if cleanupErr := client.DeleteSession(ctx, created.ID); cleanupErr != nil {
+				return fmt.Errorf("%w (cleanup failed: %v)", err, cleanupErr)
+			}
 			return err
 		}
 		opened, err := client.OpenSessionRuntime(ctx, created.ID)

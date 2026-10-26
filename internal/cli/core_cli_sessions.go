@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
@@ -475,6 +476,10 @@ func handleCoreCLIResume(client cliCore, currentSessionID, line string, stdout, 
 	}
 	if targetID == currentSessionID {
 		fmt.Fprintf(stdout, "Already in session %s.\n", targetID)
+		return currentSessionID, nil, nil
+	}
+	if err := settings.ApplyTerminalDefaults(ctx, client, targetID); err != nil {
+		fmt.Fprintf(stderr, "error: set default reasoning effort: %v\n", err)
 		return currentSessionID, nil, nil
 	}
 	rt, err := client.OpenSessionRuntime(ctx, targetID)

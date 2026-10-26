@@ -12,7 +12,6 @@ import (
 // reasoningEffortOptions returns the selectable reasoning-effort levels in display order.
 func reasoningEffortOptions() []ReasoningEffortOption {
 	return []ReasoningEffortOption{
-		{Value: "", Label: "default", Description: "Provider default (omit effort)"},
 		{Value: "none", Label: "none", Description: "Disable reasoning"},
 		{Value: "minimal", Label: "minimal", Description: "Minimal reasoning tokens"},
 		{Value: "low", Label: "low", Description: "Faster, lighter reasoning"},
@@ -23,12 +22,9 @@ func reasoningEffortOptions() []ReasoningEffortOption {
 	}
 }
 
-// normalizeReasoningEffort maps a user-provided level to its canonical value.
-// The empty string means "provider default" (effort is omitted from the request).
+// normalizeReasoningEffort accepts only explicit reasoning levels.
 func normalizeReasoningEffort(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "default", "unset", "clear", "reset", "off", "inherit":
-		return "", true
 	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(raw)), true
 	}
@@ -83,11 +79,7 @@ func (m *tuiModel) applyReasoningEffort(value string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.reasoningEffort = value
-	display := value
-	if display == "" {
-		display = "default"
-	}
-	m.addSystemEntry(fmt.Sprintf("Reasoning effort set to `%s`.", display))
+	m.addSystemEntry(fmt.Sprintf("Reasoning effort set to `%s`.", value))
 	m.updateLayout()
 	return m, nil
 }
@@ -101,7 +93,7 @@ func (m *tuiModel) handleEffortCommand(parts []string) (tea.Model, tea.Cmd) {
 	}
 	value, ok := normalizeReasoningEffort(parts[1])
 	if !ok {
-		m.addSystemEntry(fmt.Sprintf("Invalid reasoning effort `%s`. Valid levels: `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.", parts[1]))
+		m.addSystemEntry(fmt.Sprintf("Invalid reasoning effort `%s`. Valid levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.", parts[1]))
 		return m, nil
 	}
 	return m.applyReasoningEffort(value)

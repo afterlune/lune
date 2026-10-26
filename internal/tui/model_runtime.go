@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -16,6 +17,9 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	}
 	if m.client == nil {
 		return fmt.Errorf("core client is unavailable")
+	}
+	if err := settings.ApplyTerminalDefaults(ctx, m.client, sessionID); err != nil {
+		return fmt.Errorf("set default reasoning effort: %w", err)
 	}
 	if err := m.flushQuestionDraft(ctx); err != nil {
 		return fmt.Errorf("save question draft before switching sessions: %w", err)

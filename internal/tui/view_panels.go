@@ -304,7 +304,7 @@ func renderEffortPicker(m *tuiModel, width int) string {
 		}
 	}
 
-	footer := styleTextMuted().Render("↑/↓ or 1-8 select · enter apply · esc cancel")
+	footer := styleTextMuted().Render("↑/↓ or 1-7 select · enter apply · esc cancel")
 	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
 
 	cardStyle := panelCardStyle(width)

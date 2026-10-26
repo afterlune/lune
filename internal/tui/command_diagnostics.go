@@ -29,9 +29,6 @@ func (m *tuiModel) renderStatusTable() string {
 	}
 
 	effort := m.currentReasoningEffort()
-	if effort == "" {
-		effort = "default"
-	}
 
 	sessionLabel := m.sessionID
 	if sessionLabel == "" {

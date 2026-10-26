@@ -126,24 +126,18 @@ func TestFormatCLIManualCompactionResult(t *testing.T) {
 	}{
 		{
 			name:   "local",
-			result: core.CompactionResult{Backend: "local", Turns: 2, Before: 2400, After: 320, Compacted: true},
+			result: core.CompactionResult{Mode: "summary", Turns: 2, Before: 2400, After: 320, Compacted: true},
 			want:   "Compacted 2 older user turn(s) locally: 2.4k → 320 tokens.",
 		},
 		{
-			name:   "server",
-			result: core.CompactionResult{Backend: "server", Turns: 2, Before: 2400, After: 320, Compacted: true},
-			want:   "Compacted 2 older user turn(s) with provider compaction (previous input 2.4k tokens).",
-			avoid:  "320 tokens",
-		},
-		{
 			name:   "fallback",
-			result: core.CompactionResult{Backend: "local", Turns: 1, Before: 2400, After: 900, Fallback: true, Compacted: true},
+			result: core.CompactionResult{Mode: "summary", Turns: 1, Before: 2400, After: 900, Fallback: true, Compacted: true},
 			want:   "Fallback was applied.",
 		},
 		{
 			name: "fallback reasons",
 			result: core.CompactionResult{
-				Backend: "local", Turns: 1, Before: 104000, After: 73249, Fallback: true, Compacted: true,
+				Mode: "summary", Turns: 1, Before: 104000, After: 73249, Fallback: true, Compacted: true,
 				FallbackReason: "provider compaction is unsupported; context remains above target",
 			},
 			want: "Fallback: provider compaction is unsupported; context remains above target.",

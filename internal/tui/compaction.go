@@ -80,7 +80,7 @@ func formatCompactionCompleted(details core.ContextCompactionDetails, mode strin
 }
 
 func formatManualCompactionResult(result core.CompactionResult) string {
-	if result.Backend == "server" {
+	if result.Mode == "compact" {
 		if result.Before > 0 {
 			return fmt.Sprintf("Compacted %d older turns with provider compaction (previous input %s tokens).",
 				result.Turns, formatCompactTokens(result.Before))

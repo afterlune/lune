@@ -92,6 +92,11 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 			return fmt.Errorf("set model profile: %w", err)
 		}
 	}
+	if sessionID != "" {
+		if err := settings.ApplyTerminalDefaults(ctx, client, sessionID); err != nil {
+			return fmt.Errorf("set default reasoning effort: %w", err)
+		}
+	}
 
 	// Apply permission mode if provided
 	savedMode := client.PermissionMode()
@@ -100,6 +105,11 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 			return fmt.Errorf("set permission mode: %w", err)
 		}
 		savedMode = opts.PermissionMode
+	} else {
+		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
+			return fmt.Errorf("set default terminal permission mode: %w", err)
+		}
+		savedMode = core.PermissionFullAccess
 	}
 
 	// Apply plan mode if provided

@@ -547,12 +547,10 @@ func handleCoreCLIMemory(client cliCore, line string, stdout, stderr io.Writer) 
 	}
 }
 
-var validCLIEffortLevels = []string{"default", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+var validCLIEffortLevels = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func normalizeCLIEffort(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "default", "unset", "clear", "reset", "off", "inherit":
-		return "", true
 	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(raw)), true
 	}
@@ -569,7 +567,7 @@ func handleCoreCLIEffort(client cliCore, sessionID, line string, stdout, stderr 
 	}
 	current := saved.Settings.ReasoningEffort
 	if current == "" {
-		current = "default"
+		current = settings.DefaultReasoningEffort
 	}
 	if len(fields) == 1 {
 		fmt.Fprintf(stdout, "Current reasoning effort: %s\nAvailable levels: %s\n", current, strings.Join(validCLIEffortLevels, ", "))
@@ -586,11 +584,7 @@ func handleCoreCLIEffort(client cliCore, sessionID, line string, stdout, stderr 
 		fmt.Fprintf(stderr, "error: set reasoning effort: %v\n", err)
 		return
 	}
-	display := target
-	if display == "" {
-		display = "default"
-	}
-	fmt.Fprintf(stdout, "Reasoning effort set to %s.\n", display)
+	fmt.Fprintf(stdout, "Reasoning effort set to %s.\n", target)
 }
 
 func handleCoreCLIAgents(client cliCore, runtime cliRuntime, sessionID, line string, stdout, stderr io.Writer) {

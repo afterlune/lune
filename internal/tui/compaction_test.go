@@ -23,7 +23,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		m.usage.lastInputTokens = 700_000
 		m.usage.lastCachedTokens = 500_000
 		m.usage.compacting = true
-		m.Update(compactDoneMsg{result: core.CompactionResult{Backend: "local", Turns: 3, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
+		m.Update(compactDoneMsg{result: core.CompactionResult{Mode: "summary", Turns: 3, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
 
 		if m.usage.compacting {
 			t.Fatalf("compaction result must clear the in-progress state")
@@ -37,19 +37,19 @@ func TestCompactDoneMessages(t *testing.T) {
 		}
 	})
 
-	t.Run("server compaction does not show an after-token count", func(t *testing.T) {
+	t.Run("manual result reports local compaction token counts", func(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-compact")
-		m.Update(compactDoneMsg{result: core.CompactionResult{Backend: "server", Turns: 2, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
+		m.Update(compactDoneMsg{result: core.CompactionResult{Mode: "prune", Turns: 2, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
 		got := lastEntryText(m)
-		if !strings.Contains(got, "provider compaction") || !strings.Contains(got, "621k") || strings.Contains(got, "92k") {
-			t.Fatalf("server compacted message = %q", got)
+		if !strings.Contains(got, "621k") || !strings.Contains(got, "92k") {
+			t.Fatalf("pruned local compaction message = %q", got)
 		}
 	})
 
 	t.Run("fallback result identifies the fallback", func(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-compact")
 		m.Update(compactDoneMsg{result: core.CompactionResult{
-			Backend: "local", Turns: 1, Before: 2400, After: 900, Fallback: true,
+			Mode: "summary", Turns: 1, Before: 2400, After: 900, Fallback: true,
 			FallbackReason: "standalone endpoint unsupported", Compacted: true,
 		}, sessionID: "session-compact"})
 		if got := lastEntryText(m); !strings.Contains(got, "Fallback: standalone endpoint unsupported") {
@@ -60,7 +60,7 @@ func TestCompactDoneMessages(t *testing.T) {
 	t.Run("fallback result keeps the server and local reasons", func(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-compact")
 		m.Update(compactDoneMsg{result: core.CompactionResult{
-			Backend: "local", Turns: 1, Before: 104000, After: 73249, Fallback: true,
+			Mode: "summary", Turns: 1, Before: 104000, After: 73249, Fallback: true,
 			FallbackReason: "provider compaction is unsupported; context remains above the 51875-token target after 2 summary passes (73249 tokens)",
 			Compacted:      true,
 		}, sessionID: "session-compact"})

@@ -101,7 +101,7 @@
 | **`/goal [subcmd]`** | 查看或管理跨回合持续目标：无参数显示当前目标、状态与用量预算；`/goal [--tokens N] <目标>` 创建并立即执行；`/goal edit [目标]` 编辑暂停的目标；`/goal budget <N|off>` 设置 Token 预算或取消限制；`/goal pause` 暂停；`/goal resume` 恢复执行；`/goal clear` 清除目标 |
 | **`/permissions [mode]`** | 无参数时打开权限模式选择器；带参数时直接设置（`read-only`、`workspace`、`auto`、`full-access`）。旧的 `ask` 档位已移除并统一为 `auto`。Plan 模式下不能提升权限 |
 | **`/model [name]`** | 无参数时打开模型 profile 选择器；带参数时直接切换会话绑定的 profile |
-| **`/effort [level]`** | **交互式选择思考等级**：无参数时唤起选择器，`↑`/`↓`（或 `j`/`k`、`1`-`8`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |
+| **`/effort [level]`** | **交互式选择思考等级**：无参数时唤起选择器并默认选中 `max`，`↑`/`↓`（或 `j`/`k`、`1`-`7`）移动、`Enter` 应用、`Esc` 取消；带参数时直接设置 |
 | **`/theme [dark\|light\|auto]`** | 无参数时打开交互式主题选择器；带参数时直接切换。选择保存在跨工作区的用户级 TUI 设置中 |
 | **`/sessions [query]`** | 查看或关键词模糊检索当前工作区的所有历史会话列表（显示短 ID、标题、更新时间，当前会话标有 `›`） |
 | **`/resume [id\|prefix]`** | 恢复历史会话：无参数时打开交互式会话切换浮层，带 ID/唯一前缀时直接切换并载入历史，不会自动提交新任务（任务运行中受安全互锁保护禁止切换） |
@@ -156,7 +156,7 @@
 - 明确展示执行工具、完整参数及潜在影响。
 - 方向键选择 `Allow` / `Deny`，`Enter` 裁决。普通工具授权只作用于本次调用；工作区外目录授权会保存到当前 session，然后恢复后续图节点执行。
 - 文件工具访问工作区外路径时，卡片会显示目录和 `read` / `read_write` 范围；同意后授权覆盖该目录及其子目录，并保存在当前 session，重新打开该 session 后仍有效。拒绝不会被记住，可再次请求。新 session 和分叉 session 不继承授权；删除 session 时授权随之删除。当前不提供单独的授权管理或撤销入口，这类授权不作用于 Shell 命令。
-- `read-only` 默认允许工作区读取，可单独授权工作区外读取，写入和命令仍被阻止；`workspace` 默认允许工作区读写，工作区外文件访问、命令和网络均需授权；`auto` 基于 `workspace` 并增加模型自动审查，安全操作免弹窗、有风险或审查失败时弹出授权，自动审查只单次放行、不形成会话授权；`full-access` 允许所有已注册工具，极度危险命令始终被阻止。
+- CLI/TUI 默认以 `full-access` 启动，可用 `--permission` 覆盖；未单独设置的会话默认使用 `max` 思考强度。`read-only` 默认允许工作区读取，可单独授权工作区外读取，写入和命令仍被阻止；`workspace` 默认允许工作区读写，工作区外文件访问、命令和网络均需授权；`auto` 基于 `workspace` 并增加模型自动审查，安全操作免弹窗、有风险或审查失败时弹出授权，自动审查只单次放行、不形成会话授权；`full-access` 允许所有已注册工具，极度危险命令始终被阻止。
 - Core 的内置 `read_image` 工具可把 PNG、JPEG 或 WebP 文件作为图像内容交给模型分析，并遵守项目的单文件与总附件大小上限。
 
 ### 4.3 规划审查卡片 (`PlanReview`)
@@ -216,9 +216,9 @@
 
 ### 4.11 交互式思考等级选择器 (`EffortPicker`)
 - 输入 `/effort` 且不带参数时，在输入带上方弹出选择器；不再要求用户记忆 `/effort <level>` 语法。
-- 选项固定为 `default`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，当前生效项以 `✓ current` 标注。
-- 键盘流转：`↑`/`↓`（或 `j`/`k`、`Ctrl+P`/`Ctrl+N`）循环移动，`1`-`8` 直接选择并应用，`Enter` 应用，`Esc` 关闭。
-- 应用后只更新会话设置中的 `reasoning_effort`，保留当前模型 profile 与其它会话设置不变；Footer 中模型名后以 `[effort: high]` 形式显示当前等级（未设置时显示 `[effort: default]`）。
+- 选项固定为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；无会话自定义值时默认选中 `max`，当前生效项以 `✓ current` 标注。
+- 键盘流转：`↑`/`↓`（或 `j`/`k`、`Ctrl+P`/`Ctrl+N`）循环移动，`1`-`7` 直接选择并应用，`Enter` 应用，`Esc` 关闭。
+- 应用后只更新会话设置中的 `reasoning_effort`，保留当前模型 profile 与其它会话设置不变；Footer 中模型名后以 `[effort: high]` 形式显示当前等级。
 - 带参数的 `/effort high` 仍保留为快速直设路径；无参数时才进入交互选择器。
 - Footer 的子智能体徽标显示 `agents 已用数 active · 并行上限 parallel`（如 `agents 2 active · 8 parallel`）；`0 active` 明确表示本会话尚未派生任何子智能体。
 

@@ -52,7 +52,7 @@ Rules that follow from this split:
 
 ## Permissions, Modes, and Themes
 
-- Four permission modes: `read-only`, `workspace` (default), `auto`, `full-access`. Open the selector with `/permissions` or set one directly with `/permissions <mode>`; `Shift+Tab` toggles Plan mode instead of cycling permissions.
+- Four permission modes: `read-only`, `workspace`, `auto`, `full-access`. CLI/TUI launches default to `full-access`; Desktop explicitly uses `workspace`. Open the selector with `/permissions` or set one directly with `/permissions <mode>`; `Shift+Tab` toggles Plan mode instead of cycling permissions.
 - `read-only` permits workspace reads and can approve external-directory reads; `workspace` permits workspace reads/writes and asks for external paths, commands, and web; `auto` builds on `workspace` and adds model auto-review, so safe operations run without a prompt while risky operations or a failed review require approval (each auto-review authorizes one invocation only); `full-access` permits registered tools except the permanent extreme-danger command denylist. External file grants are per-session, cover a directory subtree with read or read/write access, survive reopening that session, and do not apply to shell commands.
 - Plan mode (`/plan` or `Shift+Tab`): Locks permissions to `read-only` while planning. Restores the previous permission mode when Plan mode ends or implementation is chosen.
 - Theme Adaptability (`/theme`): Native background color negotiation via Bubble Tea v2 `tea.RequestBackgroundColor` and `tea.BackgroundColorMsg`, with manual override (`dark`, `light`, `auto`).
