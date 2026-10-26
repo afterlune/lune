@@ -33,7 +33,14 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 	case "fallback":
 		m.usage.finishCompaction(0)
 		if !manual {
-			m.addSystemEntry("Provider compaction unavailable; fell back to a local summary.")
+			message := "Provider compaction unavailable; using a local summary"
+			if mode == "local" {
+				message = "Local compaction did not reach its target; keeping the best summary"
+			}
+			if reason := sanitizeAndTruncateLine(strings.TrimSpace(details.Err), 160); reason != "" {
+				message += ": " + strings.TrimSuffix(reason, ".")
+			}
+			m.addSystemEntry(message + ".")
 		}
 	case "skipped":
 		m.usage.finishCompaction(0)

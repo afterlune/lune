@@ -4,7 +4,8 @@
       "deepseek": {
         "protocol": "responses",
         "baseURL": "https://api.deepseek.com",
-        "apiKey": ""
+        "apiKey": "",
+        "serverCompaction": true
       },
       "openai-responses": {
         "protocol": "responses",

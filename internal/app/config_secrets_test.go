@@ -125,9 +125,9 @@ func TestPrepareUserConfigProtectsKeysOnWindows(t *testing.T) {
 	}
 }
 
-// TestPrepareUserConfigSkipsProtectionWithoutDPAPI keeps other platforms on the
-// documented plaintext path instead of failing to start.
-func TestPrepareUserConfigSkipsProtectionWithoutDPAPI(t *testing.T) {
+// TestPrepareUserConfigKeepsPlaintextWithoutDPAPI keeps other platforms on the
+// documented plaintext path while applying config defaults.
+func TestPrepareUserConfigKeepsPlaintextWithoutDPAPI(t *testing.T) {
 	if settings.SecretsProtected() || runtime.GOOS == "linux" {
 		t.Skip("Windows uses DPAPI and Linux may use Secret Service")
 	}
@@ -144,7 +144,51 @@ func TestPrepareUserConfigSkipsProtectionWithoutDPAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(stored) != string(document) {
-		t.Fatal("an unsupported platform must keep the config untouched")
+		t.Fatal("the in-memory and stored config should match")
+	}
+	if !strings.Contains(string(stored), `"serverCompaction":true`) {
+		t.Fatalf("Responses provider was not migrated to server compaction by default: %s", stored)
+	}
+	if !strings.Contains(string(stored), "plain-secret") || strings.Contains(string(stored), configAPIKeyEncryptedField) {
+		t.Fatalf("unsupported platform should retain the plaintext key: %s", stored)
+	}
+}
+
+func TestPrepareUserConfigDefaultsServerCompactionForResponsesProviders(t *testing.T) {
+	document := []byte(`{"models":{"providers":{"deepseek":{"protocol":"responses"},"disabled":{"protocol":"responses","serverCompaction":false},"anthropic":{"protocol":"anthropic-messages"}}}}`)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareUserConfigWithKeyring(path, document, &testProviderKeyring{})
+	if err != nil {
+		t.Fatalf("prepare user config: %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prepared) != string(stored) {
+		t.Fatalf("prepared config differs from persisted migration:\nprepared: %s\nstored: %s", prepared, stored)
+	}
+
+	var root struct {
+		Models struct {
+			Providers map[string]map[string]json.RawMessage `json:"providers"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(stored, &root); err != nil {
+		t.Fatal(err)
+	}
+	var enabled bool
+	if err := json.Unmarshal(root.Models.Providers["deepseek"]["serverCompaction"], &enabled); err != nil || !enabled {
+		t.Fatalf("missing Responses setting = %v (error %v), want true", enabled, err)
+	}
+	if err := json.Unmarshal(root.Models.Providers["disabled"]["serverCompaction"], &enabled); err != nil || enabled {
+		t.Fatalf("explicit false setting = %v (error %v), want false", enabled, err)
+	}
+	if _, exists := root.Models.Providers["anthropic"]["serverCompaction"]; exists {
+		t.Fatal("non-Responses provider received a server compaction default")
 	}
 }
 
@@ -243,8 +287,21 @@ func TestPrepareUserConfigFallsBackWhenLinuxSecretServiceCannotStore(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(stored) != plaintextConfigDocument {
-				t.Fatalf("fallback rewrote config: %s", stored)
+			var root struct {
+				Models struct {
+					Providers map[string]map[string]json.RawMessage `json:"providers"`
+				} `json:"models"`
+			}
+			if err := json.Unmarshal(stored, &root); err != nil {
+				t.Fatal(err)
+			}
+			var key string
+			if err := json.Unmarshal(root.Models.Providers["host"][configAPIKeyField], &key); err != nil || key != "plain-secret" {
+				t.Fatalf("fallback API key = %q (error %v), want plaintext key", key, err)
+			}
+			var enabled bool
+			if err := json.Unmarshal(root.Models.Providers["host"]["serverCompaction"], &enabled); err != nil || !enabled {
+				t.Fatalf("Responses default = %v (error %v), want true", enabled, err)
 			}
 			info, err := os.Stat(path)
 			if err != nil {

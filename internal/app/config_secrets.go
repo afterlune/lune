@@ -64,17 +64,25 @@ func prepareUserConfig(path string, document []byte) ([]byte, error) {
 }
 
 func prepareUserConfigWithKeyring(path string, document []byte, store providerKeyring) ([]byte, error) {
-	stored := document
-	protection, err := protectConfigSecrets(document, store)
+	defaulted, defaultsChanged, err := defaultResponsesServerCompaction(document)
 	if err != nil {
 		return nil, err
 	}
+	stored := defaulted
+	protection, err := protectConfigSecrets(defaulted, store)
+	if err != nil {
+		return nil, err
+	}
+	writeConfig := defaultsChanged
 	if protection.changed {
-		if err := writeUserConfig(path, protection.document); err != nil {
+		stored = protection.document
+		writeConfig = true
+	}
+	if writeConfig {
+		if err := writeUserConfig(path, stored); err != nil {
 			deleteConfigKeyringRefs(store, protection.createdRefs)
 			return nil, fmt.Errorf("write protected config: %w", err)
 		}
-		stored = protection.document
 		deleteConfigKeyringRefs(store, protection.replacedRefs)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
@@ -92,7 +100,45 @@ func prepareUserConfigWithKeyring(path string, document []byte, store providerKe
 	if revealedChanged {
 		return revealed, nil
 	}
-	return document, nil
+	return stored, nil
+}
+
+// defaultResponsesServerCompaction enables provider compaction for existing
+// Responses configs that predate the option. Explicit true and false values are
+// both preserved so users can still disable an incompatible endpoint.
+func defaultResponsesServerCompaction(document []byte) ([]byte, bool, error) {
+	defaulted, changed, err := mapConfigProviders(document, func(fields map[string]json.RawMessage) (bool, error) {
+		rawProtocol, ok := fields["protocol"]
+		if !ok {
+			return false, nil
+		}
+		var protocol string
+		if err := json.Unmarshal(rawProtocol, &protocol); err != nil {
+			return false, fmt.Errorf("read protocol: %w", err)
+		}
+		if protocol != "responses" {
+			return false, nil
+		}
+		if raw, exists := fields["serverCompaction"]; exists {
+			var configured *bool
+			if err := json.Unmarshal(raw, &configured); err != nil {
+				return false, fmt.Errorf("read serverCompaction: %w", err)
+			}
+			if configured != nil {
+				return false, nil
+			}
+		}
+		encoded, err := json.Marshal(true)
+		if err != nil {
+			return false, err
+		}
+		fields["serverCompaction"] = encoded
+		return true, nil
+	})
+	if err != nil || !changed {
+		return document, false, err
+	}
+	return defaulted, true, nil
 }
 
 // configProtectionHint explains what protects the keys on this platform.

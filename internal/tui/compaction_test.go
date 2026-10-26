@@ -57,6 +57,19 @@ func TestCompactDoneMessages(t *testing.T) {
 		}
 	})
 
+	t.Run("fallback result keeps the server and local reasons", func(t *testing.T) {
+		m := newTUIModel(nil, nil, "session-compact")
+		m.Update(compactDoneMsg{result: core.CompactionResult{
+			Backend: "local", Turns: 1, Before: 104000, After: 73249, Fallback: true,
+			FallbackReason: "provider compaction is unsupported; context remains above the 51875-token target after 2 summary passes (73249 tokens)",
+			Compacted:      true,
+		}, sessionID: "session-compact"})
+		got := lastEntryText(m)
+		if !strings.Contains(got, "provider compaction is unsupported") || !strings.Contains(got, "above the 51875-token target") {
+			t.Fatalf("fallback message lost its causes: %q", got)
+		}
+	})
+
 	t.Run("nothing to compact", func(t *testing.T) {
 		m := newTUIModel(nil, nil, "session-compact")
 		m.usage.estimatedInputTokens = 621_000
@@ -229,8 +242,19 @@ func TestCompactionAutoNotices(t *testing.T) {
 		if m.usage.compacting {
 			t.Fatalf("fallback must clear the compacting state")
 		}
-		if got := lastEntryText(m); got != "Provider compaction unavailable; fell back to a local summary." {
+		if got := lastEntryText(m); got != "Provider compaction unavailable; using a local summary." {
 			t.Fatalf("fallback message = %q", got)
+		}
+	})
+
+	t.Run("local fallback explains the target miss", func(t *testing.T) {
+		m := newTUIModel(nil, nil, "session-auto")
+		m.handleCompactionEvent(core.ContextCompactionDetails{
+			Stage: "fallback", Mode: "local", Err: "local compaction reached 73k tokens, above the 51k-token target",
+		})
+		got := lastEntryText(m)
+		if !strings.Contains(got, "Local compaction did not reach its target") || !strings.Contains(got, "above the 51k-token target") {
+			t.Fatalf("local fallback message = %q", got)
 		}
 	})
 

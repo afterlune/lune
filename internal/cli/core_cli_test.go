@@ -57,9 +57,15 @@ func TestWriteCLICompactionStatus(t *testing.T) {
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "started", Mode: "local"})
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "completed", Mode: "local", BeforeTokens: 2400, AfterTokens: 320})
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "completed", Mode: "server", BeforeTokens: 2400, AfterTokens: 320})
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "fallback", Mode: "server", Err: "provider rejected context_management"})
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "fallback", Mode: "local", Err: "local summary remained above target"})
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "failed", Err: "summary provider unavailable"})
 	got := stderr.String()
-	for _, want := range []string{"Compacting context", "2.4k to 320 tokens", "summary provider unavailable"} {
+	for _, want := range []string{
+		"Compacting context", "2.4k to 320 tokens", "Server compaction unavailable; using local compaction: provider rejected context_management",
+		"Local compaction did not reach its target; keeping the best summary: local summary remained above target",
+		"summary provider unavailable",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CLI status %q is missing %q", got, want)
 		}
@@ -91,6 +97,14 @@ func TestFormatCLIManualCompactionResult(t *testing.T) {
 			name:   "fallback",
 			result: core.CompactionResult{Backend: "local", Turns: 1, Before: 2400, After: 900, Fallback: true, Compacted: true},
 			want:   "Fallback was applied.",
+		},
+		{
+			name: "fallback reasons",
+			result: core.CompactionResult{
+				Backend: "local", Turns: 1, Before: 104000, After: 73249, Fallback: true, Compacted: true,
+				FallbackReason: "provider compaction is unsupported; context remains above target",
+			},
+			want: "Fallback: provider compaction is unsupported; context remains above target.",
 		},
 	}
 	for _, test := range tests {

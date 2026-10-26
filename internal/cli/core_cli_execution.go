@@ -538,7 +538,14 @@ func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDeta
 			_, _ = fmt.Fprintln(stderr, "Context compacted locally.")
 		}
 	case "fallback":
-		_, _ = fmt.Fprintf(stderr, "Server compaction unavailable; using local compaction: %s\n", event.Err)
+		message := "Server compaction unavailable; using local compaction"
+		if event.Mode == "local" {
+			message = "Local compaction did not reach its target; keeping the best summary"
+		}
+		if reason := compactFallbackReason(event.Err); reason != "" {
+			message += ": " + reason
+		}
+		_, _ = fmt.Fprintln(stderr, message+".")
 	case "skipped":
 		if event.Err != "" {
 			_, _ = fmt.Fprintf(stderr, "Automatic compaction skipped: %s\n", event.Err)
@@ -563,9 +570,22 @@ func formatCLIManualCompactionResult(result core.CompactionResult) string {
 		message += "."
 	}
 	if result.Fallback {
-		message += " Fallback was applied."
+		if reason := compactFallbackReason(result.FallbackReason); reason != "" {
+			message += " Fallback: " + reason + "."
+		} else {
+			message += " Fallback was applied."
+		}
 	}
 	return message
+}
+
+func compactFallbackReason(reason string) string {
+	reason = strings.Join(strings.Fields(terminaltext.Sanitize(reason)), " ")
+	runes := []rune(reason)
+	if len(runes) > 160 {
+		return string(runes[:157]) + "..."
+	}
+	return strings.TrimSuffix(reason, ".")
 }
 
 func compactCLITokens(tokens int64) string {
