@@ -4,7 +4,11 @@ set -euo pipefail
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 workspace_root="$(cd -- "${script_directory}/.." && pwd -P)"
 output_directory="${workspace_root}/bin"
-export GOWORK="${GOWORK:-off}"
+if [[ -z "${GOWORK:-}" && -f "${workspace_root}/go.work" ]]; then
+	export GOWORK="${workspace_root}/go.work"
+else
+	export GOWORK="${GOWORK:-off}"
+fi
 go_binary="${GO:-${GOROOT:+${GOROOT}/bin/go}}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then

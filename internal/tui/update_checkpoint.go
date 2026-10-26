@@ -13,7 +13,7 @@ import (
 // interruptRunningTask halts an ongoing execution, preserves the execution checkpoint,
 // and presents a rich checkpoint status card in the transcript.
 func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
-	if !m.run.running || m.runtime == nil || m.run.runningExecution == "" {
+	if !m.run.running || m.run.runningExecution == "" {
 		return m, nil
 	}
 
@@ -43,33 +43,30 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 
 	execID := m.run.runningExecution
 	toolCount := 0
-	lastToolName := ""
-	lastToolCmd := ""
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindUser {
 			break
 		}
 		if m.entries[i].Kind == KindTool {
 			toolCount++
-			if lastToolName == "" {
-				lastToolName = m.entries[i].ToolName
-				lastToolCmd = m.entries[i].ToolCommand
-			}
 		}
 	}
 
-	m.pausedCheckpoint = &PausedCheckpoint{
-		ExecutionID:  execID,
-		ToolCount:    toolCount,
-		LastToolName: lastToolName,
+	if m.runtime != nil {
+		m.runtime.Interrupt(execID)
 	}
-
-	m.runtime.Interrupt(execID)
 	m.run.running = false
 	m.run.thinking = false
+	m.run.compactInFlight = false
+	m.run.compactionQuitRequested = false
+	m.usage.resetCompaction()
+	m.pausedCheckpoint = nil
 
-	card := m.formatCheckpointCard(m.pausedCheckpoint, lastToolCmd)
-	m.addSystemEntry(card)
+	notice := "• Task interrupted."
+	if toolCount > 0 {
+		notice = fmt.Sprintf("• Task interrupted (%d tool step(s) completed).", toolCount)
+	}
+	m.addSystemEntry(notice)
 	m.refreshViewportContent()
 	m.updateLayout()
 	return m, nil

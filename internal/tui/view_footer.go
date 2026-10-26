@@ -27,13 +27,13 @@ func scrollPillText(m *tuiModel) string {
 			return "Working · " + back
 		}
 		return "Working " + formatDuration(time.Since(m.run.taskStartedAt)) + " · " + back
+	case m.pausedCheckpoint != nil:
+		return "Paused · " + back
 	case m.usage.compacting:
 		if m.usage.compactionStartedAt.IsZero() {
 			return "Compacting · " + back
 		}
 		return "Compacting " + formatDuration(time.Since(m.usage.compactionStartedAt)) + " · " + back
-	case m.hasPausedTask():
-		return "Paused · /continue or /discard · " + back
 	}
 	return back
 }
@@ -115,7 +115,7 @@ func formatContextAndTokenSummary(m *tuiModel, maxWidth int) string {
 
 	var ctxStr string
 	switch {
-	case m.usage.compacting:
+	case m.usage.compacting && (m.run.compactInFlight || !m.run.running):
 		ctxStr = fmt.Sprintf("Context: compacting…/%s", formatCompactTokens(totalCtx))
 	default:
 		usedCtx := m.usage.usedContext()
@@ -259,11 +259,6 @@ func renderFooter(m *tuiModel, width int) string {
 		if m.totalSubagentsCount() > 0 {
 			line2RightText += " · /agents"
 		}
-		if n := len(m.run.queuedTurns); n > 0 {
-			line2RightText += fmt.Sprintf(" · %d queued", n)
-		}
-	} else if m.hasPausedTask() {
-		line2RightText = "task paused · /continue or /discard"
 		if n := len(m.run.queuedTurns); n > 0 {
 			line2RightText += fmt.Sprintf(" · %d queued", n)
 		}

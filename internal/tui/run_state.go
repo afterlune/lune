@@ -47,6 +47,8 @@ type runState struct {
 	queuedTurns              []QueuedItem
 	cancelingQueuedExecution string
 	discardInFlight          bool
+	compactInFlight          bool
+	compactionQuitRequested  bool
 
 	// restoringSession freezes footer metrics and transcript rebuilds while Core
 	// replays durable events for a freshly loaded session.

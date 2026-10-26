@@ -49,6 +49,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if keyStr != "ctrl+c" {
+		m.run.compactionQuitRequested = false
+	}
+
 	// 1. Interrupt / Quit / Esc
 	switch keyStr {
 	case "ctrl+c":
@@ -57,10 +61,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.input.selectedText != "" {
 			return m, m.copyTextToClipboard(m.input.selectedText)
-		}
-		if m.usage.compacting {
-			m.addSystemEntry("Compaction is in progress; wait for it to finish.")
-			return m, nil
 		}
 		if m.activeQuestion != nil {
 			if m.input.composer.Value() != "" {
@@ -75,8 +75,20 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.noteQuestionPending()
 		}
-		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
+		if m.run.running && m.run.runningExecution != "" {
 			return m.interruptRunningTask()
+		}
+		if m.usage.compacting || m.run.compactInFlight {
+			if m.run.compactionQuitRequested {
+				m.usage.resetCompaction()
+				m.run.compactInFlight = false
+				m.run.compactionQuitRequested = false
+				m.cancelMCPAuthentication(false)
+				return m, tea.Quit
+			}
+			m.run.compactionQuitRequested = true
+			m.addSystemEntry("Compaction is in progress; press Ctrl+C again to quit.")
+			return m, nil
 		}
 		m.cancelMCPAuthentication(false)
 		return m, tea.Quit
@@ -87,9 +99,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
-		if m.usage.compacting {
-			return m, nil
-		}
 		if m.modals.memory.pendingAdd {
 			m.modals.memory.pendingAdd = false
 			m.modals.memory.pendingCategory = ""
@@ -168,8 +177,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
-		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
+		if m.run.running && m.run.runningExecution != "" {
 			return m.interruptRunningTask()
+		}
+		if m.usage.compacting || m.run.compactInFlight {
+			return m, nil
 		}
 		// If composer is empty and not running, Esc steps back to edit the last message
 		if !m.run.running && m.input.composer.Value() == "" && len(m.input.history) > 0 {

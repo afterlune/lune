@@ -320,3 +320,115 @@ func TestResetSessionStateClearsCompaction(t *testing.T) {
 		t.Fatalf("session reset kept compaction state")
 	}
 }
+
+func TestInterruptDuringCompactingRunningTaskWithCtrlC(t *testing.T) {
+	m := newTUIModel(nil, nil, "session-interrupt")
+	m.run.running = true
+	m.run.runningExecution = "exec-test-1"
+	m.run.thinking = true
+	m.usage.compacting = true
+	m.usage.compactionStartedAt = time.Now()
+
+	mod, cmd := m.handleKeyPress(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+
+	if m.run.running {
+		t.Fatalf("Ctrl+C must interrupt running task even when compacting was true")
+	}
+	if m.run.thinking {
+		t.Fatalf("thinking must be false after interrupt")
+	}
+	if m.usage.compacting {
+		t.Fatalf("interrupting running task must reset compacting state")
+	}
+	if m.pausedCheckpoint != nil {
+		t.Fatalf("paused checkpoint must be nil after interrupt: %#v", m.pausedCheckpoint)
+	}
+	if len(m.entries) == 0 || !strings.Contains(m.entries[len(m.entries)-1].Text, "Task interrupted") {
+		t.Fatalf("expected task interrupted notice, got: %#v", m.entries)
+	}
+	if cmd != nil {
+		t.Fatalf("expected nil cmd from interrupt, got %v", cmd)
+	}
+}
+
+func TestInterruptDuringCompactingRunningTaskWithEsc(t *testing.T) {
+	m := newTUIModel(nil, nil, "session-interrupt")
+	m.run.running = true
+	m.run.runningExecution = "exec-test-2"
+	m.run.thinking = true
+	m.usage.compacting = true
+	m.usage.compactionStartedAt = time.Now()
+
+	mod, cmd := m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = mod.(*tuiModel)
+
+	if m.run.running {
+		t.Fatalf("Esc must interrupt running task even when compacting was true")
+	}
+	if m.usage.compacting {
+		t.Fatalf("interrupting running task with Esc must reset compacting state")
+	}
+	if m.pausedCheckpoint != nil {
+		t.Fatalf("paused checkpoint must be nil after interrupt: %#v", m.pausedCheckpoint)
+	}
+	if len(m.entries) == 0 || !strings.Contains(m.entries[len(m.entries)-1].Text, "Task interrupted") {
+		t.Fatalf("expected task interrupted notice, got: %#v", m.entries)
+	}
+	if cmd != nil {
+		t.Fatalf("expected nil cmd from interrupt, got %v", cmd)
+	}
+}
+
+func TestDiscardResetsCompactingState(t *testing.T) {
+	m := newTUIModel(nil, nil, "session-discard")
+	m.usage.compacting = true
+	m.usage.compactionStartedAt = time.Now()
+	m.run.compactInFlight = true
+	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "exec-test-3"}
+
+	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceCommand, discarded: true})
+	m = mod.(*tuiModel)
+
+	if m.usage.compacting {
+		t.Fatalf("discarding task must reset compacting")
+	}
+	if m.run.compactInFlight {
+		t.Fatalf("discarding task must clear compactInFlight")
+	}
+	if m.pausedCheckpoint != nil {
+		t.Fatalf("paused checkpoint must be cleared")
+	}
+}
+
+func TestCompactingQuitKeyDoubleCtrlC(t *testing.T) {
+	m := newTUIModel(nil, nil, "session-quit")
+	m.usage.compacting = true
+	m.run.compactInFlight = true
+
+	// First Ctrl+C: warns and requests confirmation
+	mod, cmd := m.handleKeyPress(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+	if cmd != nil {
+		t.Fatalf("first Ctrl+C should not quit immediately, got cmd: %v", cmd)
+	}
+	if !m.run.compactionQuitRequested {
+		t.Fatalf("compactionQuitRequested should be set after first Ctrl+C")
+	}
+	if got := lastEntryText(m); !strings.Contains(got, "Compaction is in progress; press Ctrl+C again to quit.") {
+		t.Fatalf("expected double Ctrl+C notice, got: %q", got)
+	}
+
+	// Second Ctrl+C: quits cleanly
+	mod, cmd = m.handleKeyPress(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = mod.(*tuiModel)
+	if cmd == nil {
+		t.Fatalf("second Ctrl+C must quit application")
+	}
+	if m.usage.compacting {
+		t.Fatalf("quit must reset compacting")
+	}
+	if m.run.compactInFlight {
+		t.Fatalf("quit must reset compactInFlight")
+	}
+}

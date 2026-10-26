@@ -404,61 +404,42 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	if m.run.running {
 		t.Fatalf("expected m.run.running to be false after Esc interrupt")
 	}
-	if m.pausedCheckpoint == nil {
-		t.Fatalf("expected m.pausedCheckpoint to be non-nil after interrupt")
+	if m.pausedCheckpoint != nil {
+		t.Fatalf("expected m.pausedCheckpoint to be nil after clean interrupt, got: %#v", m.pausedCheckpoint)
 	}
-	if m.pausedCheckpoint.ExecutionID != "exec-test-int-001" {
-		t.Errorf("expected ExecutionID 'exec-test-int-001', got %q", m.pausedCheckpoint.ExecutionID)
-	}
-	if m.pausedCheckpoint.ToolCount != 2 {
-		t.Errorf("expected ToolCount 2, got %d", m.pausedCheckpoint.ToolCount)
-	}
-	if m.pausedCheckpoint.LastToolName != "run_command" {
-		t.Errorf("expected LastToolName 'run_command', got %q", m.pausedCheckpoint.LastToolName)
-	}
-	if !m.hasPausedTask() {
-		t.Fatalf("expected hasPausedTask() to be true")
+	if m.hasPausedTask() {
+		t.Fatalf("expected hasPausedTask() to be false after clean interrupt")
 	}
 
-	// Verify checkpoint card in transcript
+	// Verify clean interruption notice in transcript
 	lastEntry := m.entries[len(m.entries)-1]
 	if lastEntry.Kind != KindSystem {
-		t.Fatalf("expected last entry to be KindSystem checkpoint card, got %v", lastEntry.Kind)
+		t.Fatalf("expected last entry to be KindSystem interrupt notice, got %v", lastEntry.Kind)
 	}
-	cardText := lastEntry.Text
-	if !strings.Contains(cardText, "Task Execution Paused (Checkpoint Saved)") {
-		t.Errorf("expected checkpoint title in card, got: %s", cardText)
-	}
-	if !strings.Contains(cardText, "exec-test-int-001") {
-		t.Errorf("expected execution ID in card, got: %s", cardText)
-	}
-	if !strings.Contains(cardText, "2 tool step(s) completed") || !strings.Contains(cardText, "run_command") {
-		t.Errorf("expected completed tools summary in card, got: %s", cardText)
-	}
-	if !strings.Contains(cardText, "/continue") || !strings.Contains(cardText, "/discard") {
-		t.Errorf("expected /continue and /discard hints in card, got: %s", cardText)
+	noticeText := lastEntry.Text
+	if !strings.Contains(noticeText, "Task interrupted (2 tool step(s) completed)") {
+		t.Errorf("expected clean interrupt notice, got: %s", noticeText)
 	}
 
-	// Verify View contains the paused task banner in composer gap
+	// Verify View does not render the modal lock banner
 	viewOutput := ansi.Strip(m.View().Content)
-	if !strings.Contains(viewOutput, "Task Paused (Checkpoint saved)") {
-		t.Errorf("expected View() to render paused task banner, got:\n%s", viewOutput)
+	if strings.Contains(viewOutput, "Task Paused (Checkpoint saved)") {
+		t.Errorf("expected View() not to render paused task banner, got:\n%s", viewOutput)
 	}
 
-	// Verify footer shows paused task indicator
+	// Verify footer does not show paused task modal hint
 	footerText := ansi.Strip(renderFooter(m, 100))
-	if !strings.Contains(footerText, "task paused · /continue or /discard") {
-		t.Errorf("expected footer to show paused task hint, got: %s", footerText)
+	if strings.Contains(footerText, "task paused · /continue or /discard") {
+		t.Errorf("expected footer not to show paused task hint, got: %s", footerText)
 	}
 
 	// Discard paused task
 	mod, cmd := m.handleSlashCommand("/discard")
 	m = mod.(*tuiModel)
-	if cmd == nil {
-		t.Fatal("expected /discard to request a Core result")
+	if cmd != nil {
+		mod, _ = m.Update(cmd())
+		m = mod.(*tuiModel)
 	}
-	mod, _ = m.Update(cmd())
-	m = mod.(*tuiModel)
 	if m.pausedCheckpoint != nil {
 		t.Fatalf("expected pausedCheckpoint to be nil after /discard")
 	}

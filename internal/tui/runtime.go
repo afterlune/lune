@@ -286,7 +286,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	if text == "" {
 		return m, nil
 	}
-	if m.usage.compacting {
+	if m.run.compactInFlight || (m.usage.compacting && !m.run.running) {
 		m.addSystemEntry("Compaction is in progress; wait for it to finish.")
 		return m, nil
 	}

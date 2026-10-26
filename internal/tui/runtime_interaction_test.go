@@ -688,7 +688,7 @@ func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T)
 	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "queued-exec", Text: "waiting"}}
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.run.running || m.pausedCheckpoint == nil || len(m.run.queuedTurns) != 1 || m.run.cancelingQueuedExecution != "" {
+	if m.run.running || len(m.run.queuedTurns) != 1 || m.run.cancelingQueuedExecution != "" {
 		t.Fatalf("Esc did not interrupt active work independently of queued work: running=%t checkpoint=%+v queue=%+v canceling=%q", m.run.running, m.pausedCheckpoint, m.run.queuedTurns, m.run.cancelingQueuedExecution)
 	}
 }

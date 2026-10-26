@@ -259,6 +259,8 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
 			return m, nil
 		}
+		m.run.compactInFlight = false
+		m.run.compactionQuitRequested = false
 		m.usage.resetCompaction()
 		switch {
 		case msg.err != nil:
@@ -353,6 +355,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.activeToolRecovery = nil
 		m.activeQuestion = nil
 		m.run.running = false
+		m.run.compactInFlight = false
+		m.run.compactionQuitRequested = false
+		m.usage.resetCompaction()
 		if !msg.discarded {
 			m.addSystemEntry("No interrupted task to discard.")
 		} else if msg.source == discardSourceRecovery {

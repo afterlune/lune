@@ -257,11 +257,13 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/compact":
-		if m.usage.compacting {
+		if m.usage.compacting || m.run.compactInFlight {
 			m.addSystemEntry("Compaction is already in progress.")
 			return m, nil
 		}
 		client, sessionID, bindingGeneration := m.client, m.sessionID, m.bindingGeneration
+		m.run.compactInFlight = true
+		m.run.compactionQuitRequested = false
 		m.usage.beginCompaction()
 		m.addSystemEntry("Compacting older conversation history…")
 		m.updateLayout()

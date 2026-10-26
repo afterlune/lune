@@ -44,12 +44,8 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 		}
 	case "skipped":
 		m.usage.finishCompaction(0)
-		if !manual {
-			if details.Err != "" {
-				m.addSystemEntry("Automatic compaction skipped: " + details.Err)
-			} else {
-				m.addSystemEntry("Automatic compaction skipped.")
-			}
+		if !manual && details.Err != "" {
+			m.addSystemEntry("Automatic compaction skipped: " + details.Err)
 		}
 	case "failed":
 		m.usage.finishCompaction(0)
