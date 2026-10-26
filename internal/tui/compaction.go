@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -15,6 +16,7 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 	if mode == "" {
 		mode = "local"
 	}
+	manual := details.Reason == "manual"
 	switch details.Stage {
 	case "started":
 		m.usage.beginCompaction()
@@ -25,23 +27,31 @@ func (m *tuiModel) handleCompactionEvent(details core.ContextCompactionDetails) 
 		if m.run.running {
 			m.ensureAgentMetrics("lead").Activity = "Thinking"
 		}
-		m.addSystemEntry(formatCompactionCompleted(details, mode))
+		if !manual {
+			m.addSystemEntry(formatCompactionCompleted(details, mode))
+		}
 	case "fallback":
 		m.usage.finishCompaction(0)
-		m.addSystemEntry("Provider compaction unavailable; fell back to a local summary.")
+		if !manual {
+			m.addSystemEntry("Provider compaction unavailable; fell back to a local summary.")
+		}
 	case "skipped":
 		m.usage.finishCompaction(0)
-		if details.Err != "" {
-			m.addSystemEntry("Automatic compaction skipped: " + details.Err)
-		} else {
-			m.addSystemEntry("Automatic compaction skipped.")
+		if !manual {
+			if details.Err != "" {
+				m.addSystemEntry("Automatic compaction skipped: " + details.Err)
+			} else {
+				m.addSystemEntry("Automatic compaction skipped.")
+			}
 		}
 	case "failed":
 		m.usage.finishCompaction(0)
-		if details.Err != "" {
-			m.addSystemEntry("Context compaction failed: " + details.Err)
-		} else {
-			m.addSystemEntry("Context compaction failed.")
+		if !manual {
+			if details.Err != "" {
+				m.addSystemEntry("Context compaction failed: " + details.Err)
+			} else {
+				m.addSystemEntry("Context compaction failed.")
+			}
 		}
 	default:
 		return
@@ -64,6 +74,32 @@ func formatCompactionCompleted(details core.ContextCompactionDetails, mode strin
 	default:
 		return "Context compacted (local summary)."
 	}
+}
+
+func formatManualCompactionResult(result core.CompactionResult) string {
+	if result.Backend == "server" {
+		if result.Before > 0 {
+			return fmt.Sprintf("Compacted %d older turns with provider compaction (previous input %s tokens).",
+				result.Turns, formatCompactTokens(result.Before))
+		}
+		return fmt.Sprintf("Compacted %d older turns with provider compaction.", result.Turns)
+	}
+	message := fmt.Sprintf("Compacted %d older turns locally", result.Turns)
+	if result.Before > 0 && result.After > 0 {
+		message += fmt.Sprintf(": %s → %s tokens (local summary).",
+			formatCompactTokens(result.Before), formatCompactTokens(result.After))
+	} else {
+		message += " (local summary)."
+	}
+	if result.Fallback {
+		reason := sanitizeAndTruncateLine(strings.TrimSpace(result.FallbackReason), 160)
+		if reason == "" {
+			message += " Fallback was applied."
+		} else {
+			message += " Fallback: " + reason
+		}
+	}
+	return message
 }
 
 // compactionSettingsLabel describes the project's auto-compaction policy in the

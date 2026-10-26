@@ -526,10 +526,16 @@ func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDeta
 	case "started":
 		_, _ = fmt.Fprintln(stderr, "Compacting context...")
 	case "completed":
-		if event.AfterTokens > 0 {
+		if event.Mode == "server" {
+			if event.BeforeTokens > 0 {
+				_, _ = fmt.Fprintf(stderr, "Provider compacted the context (previous input %s tokens).\n", compactCLITokens(event.BeforeTokens))
+			} else {
+				_, _ = fmt.Fprintln(stderr, "Provider compacted the context.")
+			}
+		} else if event.AfterTokens > 0 {
 			_, _ = fmt.Fprintf(stderr, "Context compacted (estimated input %s to %s tokens).\n", compactCLITokens(event.BeforeTokens), compactCLITokens(event.AfterTokens))
 		} else {
-			_, _ = fmt.Fprintln(stderr, "Provider compacted the context.")
+			_, _ = fmt.Fprintln(stderr, "Context compacted locally.")
 		}
 	case "fallback":
 		_, _ = fmt.Fprintf(stderr, "Server compaction unavailable; using local compaction: %s\n", event.Err)
@@ -540,6 +546,26 @@ func writeCLICompactionStatus(stderr io.Writer, event core.ContextCompactionDeta
 	case "failed":
 		_, _ = fmt.Fprintf(stderr, "Context compaction failed: %s\n", event.Err)
 	}
+}
+
+func formatCLIManualCompactionResult(result core.CompactionResult) string {
+	if result.Backend == "server" {
+		if result.Before > 0 {
+			return fmt.Sprintf("Compacted %d older user turn(s) with provider compaction (previous input %s tokens).",
+				result.Turns, compactCLITokens(result.Before))
+		}
+		return fmt.Sprintf("Compacted %d older user turn(s) with provider compaction.", result.Turns)
+	}
+	message := fmt.Sprintf("Compacted %d older user turn(s) locally", result.Turns)
+	if result.Before > 0 && result.After > 0 {
+		message += fmt.Sprintf(": %s → %s tokens.", compactCLITokens(result.Before), compactCLITokens(result.After))
+	} else {
+		message += "."
+	}
+	if result.Fallback {
+		message += " Fallback was applied."
+	}
+	return message
 }
 
 func compactCLITokens(tokens int64) string {

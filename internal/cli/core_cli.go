@@ -486,8 +486,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			} else if !result.Compacted || result.Turns == 0 {
 				fmt.Fprintln(stdout, "No older conversation to compact.")
 			} else {
-				fmt.Fprintf(stdout, "Compacted %d older user turn(s), %s → %s tokens.\n",
-					result.Turns, compactCLITokens(result.Before), compactCLITokens(result.After))
+				fmt.Fprintln(stdout, formatCLIManualCompactionResult(result))
 			}
 		case line == "":
 		default:

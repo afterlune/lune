@@ -226,8 +226,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			m.addSystemEntry("Compaction failed: " + msg.err.Error())
 		case msg.result.Compacted && msg.result.Turns > 0:
 			m.usage.applyCompactResult(msg.result.After)
-			m.addSystemEntry(fmt.Sprintf("Compacted %d older turns, %s → %s tokens.",
-				msg.result.Turns, formatCompactTokens(msg.result.Before), formatCompactTokens(msg.result.After)))
+			m.addSystemEntry(formatManualCompactionResult(msg.result))
 		default:
 			m.addSystemEntry("No older conversation to compact.")
 		}

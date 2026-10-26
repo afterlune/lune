@@ -56,12 +56,53 @@ func TestWriteCLICompactionStatus(t *testing.T) {
 	var stderr bytes.Buffer
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "started", Mode: "local"})
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "completed", Mode: "local", BeforeTokens: 2400, AfterTokens: 320})
+	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "completed", Mode: "server", BeforeTokens: 2400, AfterTokens: 320})
 	writeCLICompactionStatus(&stderr, core.ContextCompactionDetails{Stage: "failed", Err: "summary provider unavailable"})
 	got := stderr.String()
 	for _, want := range []string{"Compacting context", "2.4k to 320 tokens", "summary provider unavailable"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("CLI status %q is missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "Provider compacted the context (estimated input") || !strings.Contains(got, "Provider compacted the context (previous input 2.4k tokens)") {
+		t.Fatalf("server compaction status reported an unsupported after-token count: %q", got)
+	}
+}
+
+func TestFormatCLIManualCompactionResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result core.CompactionResult
+		want   string
+		avoid  string
+	}{
+		{
+			name:   "local",
+			result: core.CompactionResult{Backend: "local", Turns: 2, Before: 2400, After: 320, Compacted: true},
+			want:   "Compacted 2 older user turn(s) locally: 2.4k → 320 tokens.",
+		},
+		{
+			name:   "server",
+			result: core.CompactionResult{Backend: "server", Turns: 2, Before: 2400, After: 320, Compacted: true},
+			want:   "Compacted 2 older user turn(s) with provider compaction (previous input 2.4k tokens).",
+			avoid:  "320 tokens",
+		},
+		{
+			name:   "fallback",
+			result: core.CompactionResult{Backend: "local", Turns: 1, Before: 2400, After: 900, Fallback: true, Compacted: true},
+			want:   "Fallback was applied.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := formatCLIManualCompactionResult(test.result)
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("formatted result = %q, want %q", got, test.want)
+			}
+			if test.avoid != "" && strings.Contains(got, test.avoid) {
+				t.Fatalf("formatted result = %q, must omit %q", got, test.avoid)
+			}
+		})
 	}
 }
 

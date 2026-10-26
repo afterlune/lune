@@ -23,7 +23,7 @@ func TestCompactDoneMessages(t *testing.T) {
 		m.usage.lastInputTokens = 700_000
 		m.usage.lastCachedTokens = 500_000
 		m.usage.compacting = true
-		m.Update(compactDoneMsg{result: core.CompactionResult{Turns: 3, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
+		m.Update(compactDoneMsg{result: core.CompactionResult{Backend: "local", Turns: 3, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
 
 		if m.usage.compacting {
 			t.Fatalf("compaction result must clear the in-progress state")
@@ -32,8 +32,28 @@ func TestCompactDoneMessages(t *testing.T) {
 			t.Fatalf("stale context metrics survived compaction: last=%d cached=%d estimated=%d",
 				m.usage.lastInputTokens, m.usage.lastCachedTokens, m.usage.estimatedInputTokens)
 		}
-		if got := lastEntryText(m); got != "Compacted 3 older turns, 621k → 92k tokens." {
+		if got := lastEntryText(m); got != "Compacted 3 older turns locally: 621k → 92k tokens (local summary)." {
 			t.Fatalf("compacted message = %q", got)
+		}
+	})
+
+	t.Run("server compaction does not show an after-token count", func(t *testing.T) {
+		m := newTUIModel(nil, nil, "session-compact")
+		m.Update(compactDoneMsg{result: core.CompactionResult{Backend: "server", Turns: 2, Before: 621_000, After: 92_000, Compacted: true}, sessionID: "session-compact"})
+		got := lastEntryText(m)
+		if !strings.Contains(got, "provider compaction") || !strings.Contains(got, "621k") || strings.Contains(got, "92k") {
+			t.Fatalf("server compacted message = %q", got)
+		}
+	})
+
+	t.Run("fallback result identifies the fallback", func(t *testing.T) {
+		m := newTUIModel(nil, nil, "session-compact")
+		m.Update(compactDoneMsg{result: core.CompactionResult{
+			Backend: "local", Turns: 1, Before: 2400, After: 900, Fallback: true,
+			FallbackReason: "standalone endpoint unsupported", Compacted: true,
+		}, sessionID: "session-compact"})
+		if got := lastEntryText(m); !strings.Contains(got, "Fallback: standalone endpoint unsupported") {
+			t.Fatalf("fallback message = %q", got)
 		}
 	})
 
@@ -185,6 +205,20 @@ func TestCompactionAutoNotices(t *testing.T) {
 		m.handleCompactionEvent(core.ContextCompactionDetails{Stage: "completed", Mode: "server", BeforeTokens: 621_000})
 		if got := lastEntryText(m); got != "Context compacted by the provider: was 621k tokens." {
 			t.Fatalf("server message = %q", got)
+		}
+	})
+
+	t.Run("manual event updates state without duplicate notice", func(t *testing.T) {
+		m := newTUIModel(nil, nil, "session-auto")
+		m.usage.compacting = true
+		m.handleCompactionEvent(core.ContextCompactionDetails{
+			Stage: "completed", Mode: "server", Reason: "manual", BeforeTokens: 621_000, AfterTokens: 92_000,
+		})
+		if m.usage.compacting {
+			t.Fatal("manual completion event left compaction active")
+		}
+		if len(m.entries) != 0 {
+			t.Fatalf("manual event duplicated the command result notice: %#v", m.entries)
 		}
 	})
 
