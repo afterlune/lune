@@ -599,10 +599,23 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("normal mode preserves current permissions", func(t *testing.T) {
+		m := newTUIModel(client, runtime, session.ID)
+		m.savedMode = core.PermissionReadOnly // Stale value from an earlier Plan mode.
+		m.activePlanReview = &ActivePlanReview{ExecutionID: "normal-plan", Text: "Inspect the project"}
+		_, cmd := m.resolveActivePlanReview()
+		if cmd == nil || m.planMode || m.activePlanReview != nil || m.permissionMode != core.PermissionAuto || client.PermissionMode() != core.PermissionAuto {
+			t.Fatal("normal-mode implementation must use the active permissions instead of saved Plan-mode permissions")
+		}
+	})
 	m := newTUIModel(client, runtime, session.ID)
 	m.workspace = workspace
 	m.planMode = true
 	m.savedMode = core.PermissionAuto
+	if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	m.permissionMode = core.PermissionReadOnly
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "1. Read code\n2. Run tests", Selected: 0}
 	_, cmd := m.resolveActivePlanReview()
 	if cmd == nil || m.activePlanReview != nil || m.planMode || m.permissionMode != core.PermissionAuto {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
@@ -29,6 +30,62 @@ func recommendedQuestionOptionIndex(options []core.UserQuestionOption) int {
 	return 0
 }
 
+func newActiveQuestion(request core.UserQuestionRequest) *ActiveQuestion {
+	q := &ActiveQuestion{Request: request}
+	q.ensureDrafts()
+	return q
+}
+
+func (q *ActiveQuestion) ensureDrafts() {
+	for len(q.Drafts) < len(q.Request.Questions) {
+		item := q.Request.Questions[len(q.Drafts)]
+		q.Drafts = append(q.Drafts, questionDraft{Selected: recommendedQuestionOptionIndex(item.Options)})
+	}
+}
+
+func (q *ActiveQuestion) currentDraft() *questionDraft {
+	if len(q.Request.Questions) == 0 {
+		return nil
+	}
+	q.ensureDrafts()
+	q.CurrentIndex = max(0, min(q.CurrentIndex, len(q.Request.Questions)-1))
+	return &q.Drafts[q.CurrentIndex]
+}
+
+func (d questionDraft) answerText(item core.UserQuestionItem) string {
+	answer := "None of the above"
+	if d.Selected >= 0 && d.Selected < len(item.Options) {
+		answer = item.Options[d.Selected].Label
+	} else if custom := strings.TrimSpace(d.Custom); custom != "" {
+		answer = custom
+	}
+	if note := strings.TrimSpace(d.NoteText); note != "" {
+		if answer == "None of the above" {
+			answer = note
+		} else {
+			answer += " (" + note + ")"
+		}
+	}
+	return answer
+}
+
+func (q *ActiveQuestion) confirmedAnswers() []core.UserQuestionResponse {
+	q.ensureDrafts()
+	var answers []core.UserQuestionResponse
+	for i, item := range q.Request.Questions {
+		if q.Drafts[i].Confirmed {
+			answers = append(answers, core.UserQuestionResponse{QuestionID: item.ID, Answer: q.Drafts[i].answerText(item)})
+		}
+	}
+	return answers
+}
+
+func (m *tuiModel) questionDraftChanged(q *ActiveQuestion) {
+	q.currentDraft().Confirmed = false
+	q.Error = ""
+	m.recordQuestionAnswers(q)
+}
+
 type questionSubmittedMsg struct {
 	key questionWaitKey
 	err error
@@ -51,7 +108,14 @@ func (m *tuiModel) questionInFlight(executionID string) bool {
 	return false
 }
 
-func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer AnsweredQuestionItem) {
+func (m *tuiModel) recordQuestionAnswers(q *ActiveQuestion) {
+	q.ensureDrafts()
+	var answers []AnsweredQuestionItem
+	for i, item := range q.Request.Questions {
+		if q.Drafts[i].Confirmed {
+			answers = append(answers, AnsweredQuestionItem{Question: item.Question, Answer: q.Drafts[i].answerText(item)})
+		}
+	}
 	encoded, _ := json.Marshal(m.questionKey(q.Request))
 	batchID := string(encoded)
 	for i := range m.entries {
@@ -59,25 +123,30 @@ func (m *tuiModel) recordQuestionAnswer(q *ActiveQuestion, index int, answer Ans
 		if entry.Kind != KindQuestionAnswered || entry.QuestionBatchID != batchID {
 			continue
 		}
-		if entry.ExecutionID == "" {
-			entry.ExecutionID = q.Request.ExecutionID
-		}
-		if index < len(entry.AnsweredQuestions) {
-			entry.AnsweredQuestions[index] = answer
+		if len(answers) == 0 {
+			m.entries = append(m.entries[:i], m.entries[i+1:]...)
 		} else {
-			entry.AnsweredQuestions = append(entry.AnsweredQuestions, answer)
+			entry.ExecutionID = q.Request.ExecutionID
+			entry.AnsweredQuestions = answers
 		}
 		m.view.invalidateBlocks()
 		return
 	}
+	if len(answers) == 0 {
+		return
+	}
 	m.entries = append(m.entries, TranscriptEntry{
 		Kind: KindQuestionAnswered, ExecutionID: q.Request.ExecutionID, QuestionBatchID: batchID,
-		QuestionsTotal: len(q.Request.Questions), AnsweredQuestions: []AnsweredQuestionItem{answer},
+		QuestionsTotal: len(q.Request.Questions), AnsweredQuestions: answers,
 	})
 	m.view.invalidateBlocks()
 }
 
 func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
+	answers := q.confirmedAnswers()
+	if q.Submitting || len(answers) == 0 || len(answers) != len(q.Request.Questions) {
+		return nil
+	}
 	key := m.questionKey(q.Request)
 	if m.run.questionSubmissions == nil {
 		m.run.questionSubmissions = make(map[questionWaitKey]questionSubmissionState)
@@ -91,7 +160,7 @@ func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 	answer := core.UserQuestionAnswer{
 		ExecutionID: q.Request.ExecutionID, RunID: q.Request.RunID,
 		InvocationID: q.Request.InvocationID, CallID: q.Request.CallID,
-		Answers: append([]core.UserQuestionResponse(nil), q.Answers...),
+		Answers: answers,
 	}
 	runtime := m.runtime
 	return func() tea.Msg {

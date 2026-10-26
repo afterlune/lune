@@ -86,12 +86,21 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		return strings.Join(rows, "\n")
 
 	case KindPlan:
+		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
+		if !tuiMarkdown.HasPlanContent(cleanPlan) {
+			return ""
+		}
 		th := activeTheme()
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("• ")
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
-		cleanPlan := tuiMarkdown.CleanProposedPlanTags(entry.Text)
-		rendered := renderPlanMarkdown(cleanPlan, max(12, width-4))
-		return bullet + title + "\n" + renderPlanRail(rendered, width)
+		rendered := renderPlanMarkdown(cleanPlan, max(1, width-2))
+		rows := []string{bullet + title, ""}
+		for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+			for _, wrapped := range strings.Split(ansi.Hardwrap(line, max(1, width-2), true), "\n") {
+				rows = append(rows, "  "+wrapped)
+			}
+		}
+		return strings.Join(rows, "\n")
 
 	case KindSystem:
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextMuted)).Render("• ")
@@ -114,28 +123,8 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	return ""
 }
 
-// renderPlanRail marks the plan body with a muted vertical rail that starts
-// directly under the purple "Proposed Plan" marker and ends at the last body
-// line. The rail replaces the former filled card surface, so a plan reads as an
-// annotated block instead of a separate panel.
-func renderPlanRail(rendered string, width int) string {
-	rail := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().Border)).Render("  │")
-	innerWidth := max(8, width-4)
-	rows := []string{rail}
-	for _, source := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
-		for _, line := range strings.Split(ansi.Hardwrap(source, innerWidth, true), "\n") {
-			if strings.TrimSpace(ansi.Strip(line)) == "" {
-				rows = append(rows, rail)
-				continue
-			}
-			rows = append(rows, rail+" "+line)
-		}
-	}
-	return strings.Join(rows, "\n")
-}
-
 // renderTranscriptRule renders the full-width solid separator that divides task
-// turns and delimits the proposed plan body.
+// turns.
 func renderTranscriptRule(width int) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().Border)).
 		Render(strings.Repeat("─", max(1, width)))

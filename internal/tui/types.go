@@ -132,12 +132,17 @@ type ActiveQuestion struct {
 	Submitting   bool
 	Request      core.UserQuestionRequest
 	CurrentIndex int
-	Selected     int
-	Custom       string
-	NotesOpen    bool
-	NoteText     string
-	Answers      []core.UserQuestionResponse
+	Drafts       []questionDraft
 	Error        string
+}
+
+// questionDraft is the only source of answer state for an individual question.
+type questionDraft struct {
+	Selected  int
+	Custom    string
+	NotesOpen bool
+	NoteText  string
+	Confirmed bool
 }
 
 // ActivePlanReview holds the state of a pending plan review.

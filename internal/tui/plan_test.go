@@ -178,11 +178,11 @@ func TestResumedAnswerIsAppendedAfterQuestionAnswer(t *testing.T) {
 		},
 		{Kind: KindPlan, Text: "Initial plan"},
 	}
-	m.recordQuestionAnswer(&ActiveQuestion{Request: core.UserQuestionRequest{
+	m.recordQuestionAnswers(&ActiveQuestion{Request: core.UserQuestionRequest{
 		ID:          "question-batch",
 		ExecutionID: executionID,
 		Questions:   []core.UserQuestionItem{{Question: "Which scope?"}},
-	}}, 0, AnsweredQuestionItem{Question: "Which scope?", Answer: "TUI"})
+	}, Drafts: []questionDraft{{Custom: "TUI", Confirmed: true}}})
 
 	m.run.currentStreamText = "Resumed answer"
 	m.finalizeTurnOutput("", nil, executionID)

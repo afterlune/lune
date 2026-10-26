@@ -125,7 +125,6 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 				},
 			},
 		},
-		Selected: 0,
 	}
 
 	// 1. Initial view: Question 1/3 (3 unanswered)
@@ -140,8 +139,8 @@ func TestBatchedQuestionNavigationAndResolution(t *testing.T) {
 	// Down arrow to select Choice 1B
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = mod.(*tuiModel)
-	if m.activeQuestion.Selected != 1 {
-		t.Fatalf("expected Selected=1 for Choice 1B, got %d", m.activeQuestion.Selected)
+	if m.activeQuestion.currentDraft().Selected != 1 {
+		t.Fatalf("expected Selected=1 for Choice 1B, got %d", m.activeQuestion.currentDraft().Selected)
 	}
 
 	// Press Enter to submit answer for question 1

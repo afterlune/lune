@@ -266,18 +266,10 @@ func (m *tuiModel) refreshViewportContent() {
 		if m.entries[i].Kind == KindUser && len(blocks) > 0 {
 			pendingRule = true
 		}
-		// The plan body is delimited by a rule above and, when more content
-		// follows, by the same rule below.
-		if m.entries[i].Kind == KindPlan {
-			pendingRule = true
-		}
 		appendRendered(block, []entryLineRange{{
 			EntryIndex: i,
 			EndLine:    strings.Count(block, "\n"),
 		}})
-		if m.entries[i].Kind == KindPlan {
-			pendingRule = true
-		}
 		i++
 	}
 
@@ -305,9 +297,7 @@ func (m *tuiModel) refreshViewportContent() {
 				appendAssistant(stream.Before)
 				// Render the live plan as a plan entry so the purple Proposed Plan
 				// marker remains visible before Core has returned the final result.
-				pendingRule = true
 				appendRendered(renderEntry(TranscriptEntry{Kind: KindPlan, Text: stream.Plan}, contentWidth), nil)
-				pendingRule = true
 				appendAssistant(stream.After)
 			} else {
 				appendAssistant(stream.Before)

@@ -85,56 +85,55 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 	if len(q.Request.Questions) == 0 {
 		return ""
 	}
+	draft := q.currentDraft()
 	currIdx := q.CurrentIndex
-	if currIdx >= len(q.Request.Questions) {
-		currIdx = len(q.Request.Questions) - 1
-	}
 	total := len(q.Request.Questions)
-	unanswered := total - len(q.Answers)
-	if unanswered < 1 {
-		unanswered = 1
-	}
+	confirmed := len(q.confirmedAnswers())
+	unanswered := total - confirmed
 	qItem := q.Request.Questions[currIdx]
 	meta := styleTextMuted().Render(fmt.Sprintf("Question %d/%d (%d unanswered)", currIdx+1, total, unanswered))
 	if q.Submitting {
-		meta = styleTextMuted().Render(fmt.Sprintf("Submitting answers (%d)…", len(q.Answers)))
+		meta = styleTextMuted().Render(fmt.Sprintf("Submitting answers (%d)…", confirmed))
 	}
 	title := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().AccentSoft)).Bold(true).Render(terminaltext.Sanitize(qItem.Question))
 
-	optionsRows := renderQuestionOptionRows(qItem.Options, q.Selected, max(1, max(20, width)-4))
+	optionsRows := renderQuestionOptionRows(qItem.Options, draft.Selected, max(1, max(20, width)-4))
 
 	noneIdx := len(qItem.Options)
 	noneMarker := "  "
-	if q.Selected == noneIdx {
+	if draft.Selected == noneIdx {
 		noneMarker = "› "
 	}
 	noneRaw := fmt.Sprintf("%s%d. None of the above     Type custom answer or press tab for notes", noneMarker, noneIdx+1)
-	if q.Selected == noneIdx {
+	if draft.Selected == noneIdx {
 		pad := max(0, width-lipgloss.Width(noneRaw)-4)
 		optionsRows = append(optionsRows, styleSelectedRow().Render(noneRaw+strings.Repeat(" ", pad)))
-		customPrompt := "    Custom answer: " + terminaltext.Sanitize(q.Custom) + "█"
+		customPrompt := "    Custom answer: " + terminaltext.Sanitize(draft.Custom) + "█"
 		optionsRows = append(optionsRows, styleTextPrimary().Render(customPrompt))
 	} else {
 		optionsRows = append(optionsRows, styleTextMuted().Render(noneRaw))
 	}
 
-	if q.NotesOpen || q.NoteText != "" {
+	if draft.NotesOpen || draft.NoteText != "" {
 		cursor := ""
-		if q.NotesOpen {
+		if draft.NotesOpen {
 			cursor = "█"
 		}
-		notesLine := "  Notes: " + terminaltext.Sanitize(q.NoteText) + cursor
+		notesLine := "  Notes: " + terminaltext.Sanitize(draft.NoteText) + cursor
 		optionsRows = append(optionsRows, "")
 		optionsRows = append(optionsRows, styleTextPrimary().Render(notesLine))
 	}
 
-	hintText := "tab to add notes | enter to submit answer | /discard to drop"
-	if q.NotesOpen {
-		hintText = "tab or enter to finish notes | esc to cancel notes"
-	} else if len(qItem.Options) > 0 && q.Selected == len(qItem.Options) {
-		hintText = "enter to submit custom answer | esc to cancel | /discard to drop"
+	hintText := "↑/↓ select | tab to add notes | enter to confirm answer | /discard to drop"
+	if draft.NotesOpen {
+		hintText = "tab to finish notes | enter to confirm answer | esc to close notes"
+	} else if len(qItem.Options) > 0 && draft.Selected == len(qItem.Options) {
+		hintText = "enter to confirm custom answer | esc to clear | /discard to drop"
 	}
-	hint := styleTextMuted().Render(hintText)
+	if total > 1 {
+		hintText = "←/→ switch question | " + hintText
+	}
+	hint := styleTextMuted().Render(ansi.Wrap(hintText, max(1, width-4), " "))
 	if q.Submitting {
 		hint = styleTextMuted().Render("Waiting for Core to accept answers…")
 	}
@@ -316,33 +315,13 @@ func renderEffortPicker(m *tuiModel, width int) string {
 func renderPlanReviewPanel(review *ActivePlanReview, width int) string {
 	title := styleTextPrimary().Bold(true).Render("Implement this plan?")
 
-	choices := []struct {
-		Label string
-		Desc  string
-	}{
-		{"1. Yes, implement this plan", "Switch to Default and start coding"},
-		{"2. Yes, clear context and implement", "Start a fresh thread"},
-		{"3. No, stay in Plan mode", "Continue planning with the model"},
+	choices := []core.UserQuestionOption{
+		{Label: "Yes, implement this plan", Description: "Continue in this conversation"},
+		{Label: "Implement in a fresh thread", Description: "Start with only the plan"},
+		{Label: "Keep discussing", Description: "Close review without implementing"},
 	}
-
-	var rows []string
-	for i, c := range choices {
-		marker := "  "
-		if i == review.Selected {
-			marker = "› "
-		}
-		raw := fmt.Sprintf("%s%-36s %s", marker, c.Label, c.Desc)
-		if i == review.Selected {
-			pad := max(0, width-lipgloss.Width(raw)-4)
-			rows = append(rows, styleSelectedRow().Render(raw+strings.Repeat(" ", pad)))
-		} else {
-			lblStyled := styleTextPrimary().Render(marker + fmt.Sprintf("%-36s ", c.Label))
-			descStyled := styleTextMuted().Render(c.Desc)
-			rows = append(rows, lblStyled+descStyled)
-		}
-	}
-
-	footer := styleTextMuted().Render("1-3 / enter select · esc stay in Plan mode")
+	rows := renderQuestionOptionRows(choices, review.Selected, max(1, width-4))
+	footer := styleTextMuted().Render(ansi.Wrap("1-3 / enter select · esc close review", max(1, width-4), " "))
 	content := title + "\n\n" + strings.Join(rows, "\n") + "\n\n" + footer
 
 	cardStyle := panelCardStyle(width)

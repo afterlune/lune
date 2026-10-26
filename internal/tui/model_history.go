@@ -45,21 +45,25 @@ func transcriptFromHistory(history json.RawMessage) []TranscriptEntry {
 			}
 			if kind == KindAssistant && strings.Contains(text, "<proposed_plan>") {
 				planText, surrounding := tuiMarkdown.ExtractProposedPlan(text)
-				if surrounding != "" {
-					entries = append(entries, TranscriptEntry{
-						ID:        fmt.Sprintf("hist-%d", i),
-						Kind:      KindAssistant,
-						Text:      surrounding,
-						Timestamp: time.Now(),
-					})
+				appendSegment := func(suffix string, kind EntryKind, body string) {
+					if strings.TrimSpace(body) != "" {
+						entries = append(entries, TranscriptEntry{
+							ID: fmt.Sprintf("hist-%d-%s", i, suffix), Kind: kind,
+							Text: body, Timestamp: time.Now(),
+						})
+					}
 				}
-				if planText != "" {
-					entries = append(entries, TranscriptEntry{
-						ID:        fmt.Sprintf("hist-plan-%d", i),
-						Kind:      KindPlan,
-						Text:      planText,
-						Timestamp: time.Now(),
-					})
+				if tuiMarkdown.HasPlanContent(planText) {
+					stream := tuiMarkdown.SplitProposedPlanStream(text)
+					appendSegment("before-plan", KindAssistant, stream.Before)
+					appendSegment("plan", KindPlan, planText)
+					appendSegment("after-plan", KindAssistant, stream.After)
+				} else {
+					stream := tuiMarkdown.SplitProposedPlanStream(text)
+					if stream.Found && stream.Complete && strings.TrimSpace(surrounding) == "" {
+						surrounding = unusablePlanMessage
+					}
+					appendSegment("assistant", KindAssistant, surrounding)
 				}
 				continue
 			}

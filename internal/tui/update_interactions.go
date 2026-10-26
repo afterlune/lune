@@ -18,56 +18,18 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	currIdx := q.CurrentIndex
-	if currIdx >= len(q.Request.Questions) {
-		currIdx = len(q.Request.Questions) - 1
-	}
-	qItem := q.Request.Questions[currIdx]
-	optCount := len(qItem.Options)
-	var answerText string
-	if q.Selected < optCount {
-		opt := qItem.Options[q.Selected]
-		answerText = opt.Label
-	} else {
-		answerText = "None of the above"
-		if strings.TrimSpace(q.Custom) != "" {
-			answerText = strings.TrimSpace(q.Custom)
+	q.currentDraft().Confirmed = true
+	q.Error = ""
+	m.recordQuestionAnswers(q)
+
+	// Browse in request order, wrapping to skipped questions before submission.
+	for offset := 1; offset < len(q.Request.Questions); offset++ {
+		next := (q.CurrentIndex + offset) % len(q.Request.Questions)
+		if !q.Drafts[next].Confirmed {
+			q.CurrentIndex = next
+			m.updateLayout()
+			return m, nil
 		}
-	}
-	if note := strings.TrimSpace(q.NoteText); note != "" {
-		if answerText == "None of the above" {
-			answerText = note
-		} else {
-			answerText += " (" + note + ")"
-		}
-	}
-
-	qaItem := AnsweredQuestionItem{
-		Question: qItem.Question,
-		Answer:   answerText,
-	}
-	m.recordQuestionAnswer(q, currIdx, qaItem)
-
-	answer := core.UserQuestionResponse{
-		QuestionID: qItem.ID,
-		Answer:     answerText,
-	}
-	if currIdx < len(q.Answers) {
-		q.Answers[currIdx] = answer
-	} else {
-		q.Answers = append(q.Answers, answer)
-	}
-
-	// If there are more questions in this batch, advance to the next question
-	if currIdx+1 < len(q.Request.Questions) {
-		q.CurrentIndex = currIdx + 1
-		q.Selected = recommendedQuestionOptionIndex(q.Request.Questions[q.CurrentIndex].Options)
-		q.Custom = ""
-		q.NoteText = ""
-		q.NotesOpen = false
-		m.refreshViewportContent()
-		m.updateLayout()
-		return m, nil
 	}
 
 	// Retain the answered batch until Core acknowledges the exact wait identity.
@@ -94,15 +56,18 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 		return m.cancelActivePlanReview()
 	}
 
-	permissionMode := m.savedMode
-	if err := m.client.SetPermissionMode(permissionMode); err != nil {
-		m.addSystemEntry("Failed to restore permissions; plan implementation was not started: " + err.Error())
-		m.updateLayout()
-		return m, nil
+	permissionMode := m.permissionMode
+	if m.planMode {
+		permissionMode = m.savedMode
+		if err := m.client.SetPermissionMode(permissionMode); err != nil {
+			m.addSystemEntry("Failed to restore permissions; plan implementation was not started: " + err.Error())
+			m.updateLayout()
+			return m, nil
+		}
 	}
 	m.activePlanReview = nil
 	m.planMode = false
-	m.permissionMode = m.savedMode
+	m.permissionMode = permissionMode
 	m.updateLayout()
 
 	runtime := m.runtime
@@ -117,7 +82,7 @@ func (m *tuiModel) cancelActivePlanReview() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.activePlanReview = nil
-	m.addSystemEntry("Plan review closed. The plan remains in the conversation, and Plan mode is still active. Continue discussing or revising it here.")
+	m.addSystemEntry("Plan review closed. The plan remains in the conversation. Continue discussing or revising it here.")
 	m.updateLayout()
 	return m, nil
 }

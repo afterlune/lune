@@ -29,8 +29,8 @@ func TestQuestionSubmissionRetainsAnswersAndRetriesWithoutDuplicates(t *testing.
 	m := newTUIModel(nil, nil, "session")
 	request := questionFixture()
 	m.applyPendingRequests([]core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &request}})
-	m.activeQuestion.Selected = 1
-	m.activeQuestion.NoteText = "keep this note"
+	m.activeQuestion.currentDraft().Selected = 1
+	m.activeQuestion.currentDraft().NoteText = "keep this note"
 	_, cmd := m.resolveActiveQuestion()
 	if cmd == nil || !m.activeQuestion.Submitting {
 		t.Fatal("answer submission was not started")
@@ -40,21 +40,21 @@ func TestQuestionSubmissionRetainsAnswersAndRetriesWithoutDuplicates(t *testing.
 		t.Fatal("repeated enter started a second submission")
 	}
 	m.applyPendingRequests([]core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &request}})
-	if m.activeQuestion.Selected != 1 || m.activeQuestion.NoteText != "keep this note" || len(m.activeQuestion.Answers) != 1 {
+	if m.activeQuestion.currentDraft().Selected != 1 || m.activeQuestion.currentDraft().NoteText != "keep this note" || len(m.activeQuestion.confirmedAnswers()) != 1 {
 		t.Fatalf("refresh reset the submitting batch: %#v", m.activeQuestion)
 	}
 	if !strings.Contains(ansi.Strip(renderQuestionPanel(m.activeQuestion, 100)), "Submitting answers (1)") {
 		t.Fatal("submitting state is not visible")
 	}
 	m.Update(cmd()) // A missing runtime produces a real typed failure.
-	if m.activeQuestion.Submitting || m.activeQuestion.Error == "" || len(m.activeQuestion.Answers) != 1 {
+	if m.activeQuestion.Submitting || m.activeQuestion.Error == "" || len(m.activeQuestion.confirmedAnswers()) != 1 {
 		t.Fatalf("submission failure lost answers or error: %#v", m.activeQuestion)
 	}
 	if !strings.Contains(ansi.Strip(renderQuestionPanel(m.activeQuestion, 100)), "Failed to submit answers") {
 		t.Fatal("submission error is not visible")
 	}
 	_, retry := m.resolveActiveQuestion()
-	if retry == nil || len(m.entries) != 1 || len(m.entries[0].AnsweredQuestions) != 1 || len(m.activeQuestion.Answers) != 1 {
+	if retry == nil || len(m.entries) != 1 || len(m.entries[0].AnsweredQuestions) != 1 || len(m.activeQuestion.confirmedAnswers()) != 1 {
 		t.Fatalf("retry duplicated the question or answer: %#v", m.entries)
 	}
 	key := m.questionKey(request)
@@ -69,7 +69,7 @@ func TestPendingQuestionDefaultsToRecommendedOption(t *testing.T) {
 	request := questionFixture()
 	request.Questions[0].Options[1].Recommended = true
 	m.applyPendingRequests([]core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: &request}})
-	if m.activeQuestion == nil || m.activeQuestion.Selected != 1 {
+	if m.activeQuestion == nil || m.activeQuestion.currentDraft().Selected != 1 {
 		t.Fatalf("recommended option was not selected: %#v", m.activeQuestion)
 	}
 	_, cmd := m.resolveActiveQuestion()
@@ -187,11 +187,18 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 	oldTaskID := m.run.taskSnapshot.TaskID
 	m.run.awaitingTurns[submission.ExecutionID] = 1
 	m.run.waitGeneration = 1
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyRight})
 	m.resolveActiveQuestion()
+	// Confirm the second question first, then revise and confirm the first.
+	m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	_, cmd := m.resolveActiveQuestion()
+	answers := m.activeQuestion.confirmedAnswers()
+	if cmd == nil || len(answers) != 2 || answers[0].QuestionID != "scope" || answers[0].Answer != "Core" || answers[1].QuestionID != "tests" {
+		t.Fatalf("navigation did not produce a complete batch in request order: %#v", answers)
+	}
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskFinished, TaskID: oldTaskID, ExecutionID: submission.ExecutionID, Status: core.TaskPaused})
 	m.checkPendingState(ctx)
-	if m.activeQuestion == nil || !m.activeQuestion.Submitting || len(m.activeQuestion.Answers) != 2 {
+	if m.activeQuestion == nil || !m.activeQuestion.Submitting || len(m.activeQuestion.confirmedAnswers()) != 2 {
 		t.Fatal("delayed pause reset the submitted answers")
 	}
 	ack := cmd()
@@ -312,6 +319,9 @@ func TestDelegationFooterUsesEffectiveLimits(t *testing.T) {
 func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
 	m := newTUIModel(nil, nil, "q-sess")
 	m.activeQuestion = &ActiveQuestion{
+		Drafts: []questionDraft{{
+			Selected: 1, // "None of the above"
+		}},
 		Request: core.UserQuestionRequest{
 			ID: "q-req-1",
 			Questions: []core.UserQuestionItem{
@@ -324,27 +334,26 @@ func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
 				},
 			},
 		},
-		Selected: 1, // "None of the above"
 	}
 
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
 	m = mod.(*tuiModel)
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'i', Text: "i"}))
 	m = mod.(*tuiModel)
-	if m.activeQuestion.Custom != "hi" {
-		t.Fatalf("expected Custom answer 'hi', got %q", m.activeQuestion.Custom)
+	if m.activeQuestion.currentDraft().Custom != "hi" {
+		t.Fatalf("expected Custom answer 'hi', got %q", m.activeQuestion.currentDraft().Custom)
 	}
 
 	// Toggle notes with Tab and type into NoteText
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	m = mod.(*tuiModel)
-	if !m.activeQuestion.NotesOpen {
+	if !m.activeQuestion.currentDraft().NotesOpen {
 		t.Fatalf("expected NotesOpen to be true after Tab")
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
 	m = mod.(*tuiModel)
-	if m.activeQuestion.NoteText != "n" {
-		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.NoteText)
+	if m.activeQuestion.currentDraft().NoteText != "n" {
+		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.currentDraft().NoteText)
 	}
 }
 
@@ -363,7 +372,6 @@ func TestActiveQuestionAllowsComposerAndDiscard(t *testing.T) {
 				},
 			},
 		},
-		Selected: 0,
 	}
 
 	// Typing "/" should pass through to composer and trigger autocomplete
@@ -403,6 +411,12 @@ func TestActiveQuestionAllowsComposerAndDiscard(t *testing.T) {
 func TestActiveQuestionEscHierarchy(t *testing.T) {
 	m := newTUIModel(nil, nil, "q-sess")
 	m.activeQuestion = &ActiveQuestion{
+		Drafts: []questionDraft{{
+			Selected:  1, // "None of the above"
+			Custom:    "some answer",
+			NotesOpen: true,
+			NoteText:  "some note",
+		}},
 		Request: core.UserQuestionRequest{
 			ID: "q-req-1",
 			Questions: []core.UserQuestionItem{
@@ -415,16 +429,12 @@ func TestActiveQuestionEscHierarchy(t *testing.T) {
 				},
 			},
 		},
-		Selected:  1, // "None of the above"
-		Custom:    "some answer",
-		NotesOpen: true,
-		NoteText:  "some note",
 	}
 
 	// 1. Esc when Notes is open closes Notes
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.activeQuestion.NotesOpen {
+	if m.activeQuestion.currentDraft().NotesOpen {
 		t.Fatalf("expected Esc to close NotesOpen")
 	}
 	if len(m.entries) > 0 {
@@ -434,8 +444,8 @@ func TestActiveQuestionEscHierarchy(t *testing.T) {
 	// 2. Esc when Custom has text clears Custom
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.activeQuestion.Custom != "" {
-		t.Fatalf("expected Esc to clear Custom answer, got %q", m.activeQuestion.Custom)
+	if m.activeQuestion.currentDraft().Custom != "" {
+		t.Fatalf("expected Esc to clear Custom answer, got %q", m.activeQuestion.currentDraft().Custom)
 	}
 	if len(m.entries) > 0 {
 		t.Fatalf("clearing Custom should not add system notices: %+v", m.entries)

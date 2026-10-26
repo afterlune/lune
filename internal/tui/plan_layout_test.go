@@ -9,16 +9,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// TestPlanRailReplacesCardSurface pins the plan body to a muted vertical rail
-// that starts directly under the purple marker and runs to the last body line,
-// instead of a filled card surface.
-func TestPlanRailReplacesCardSurface(t *testing.T) {
+// Plans remain readable in the response flow in both themes and narrow terminals.
+func TestInlinePlanMarkdownFitsTerminal(t *testing.T) {
 	previous := CurrentThemeMode()
 	t.Cleanup(func() { SetThemeMode(previous) })
 	const text = "## 目标\n\n短行。\n\n- 检查中文 mixed internal/tui/model_view.go 的边界；" +
-		"重复说明以触发折行，并且确保竖线右侧没有缺口。\n  - 嵌套列表\n\n```go\n\tprintln(\"hello\") // 注释\n```\n\n" +
+		"重复说明以触发折行，并且确保完整正文仍然可读。\n  - 嵌套列表\n\n```go\n\tprintln(\"hello\") // 注释\n```\n\n" +
 		"**粗体与 `inline code`** 最后一段。"
-	const railOnly = "  │"
 	for _, mode := range []ThemeMode{ThemeModeLight, ThemeModeDark} {
 		SetThemeMode(mode)
 		cardR, cardG, cardB, ok := parseHexRGB(activeTheme().CardBg)
@@ -35,20 +32,18 @@ func TestPlanRailReplacesCardSurface(t *testing.T) {
 			if !strings.Contains(ansi.Strip(lines[0]), "Proposed Plan") {
 				t.Fatalf("%s plan title missing: %q", mode, ansi.Strip(lines[0]))
 			}
-			if got := strings.TrimRight(ansi.Strip(lines[1]), " "); got != railOnly {
-				t.Fatalf("%s rail must start under the title, got %q", mode, got)
+			if strings.Contains(ansi.Strip(rendered), "│") {
+				t.Fatalf("%s plan body still has a separate rail: %s", mode, ansi.Strip(rendered))
 			}
-			for i, line := range lines[1:] {
-				stripped := strings.TrimRight(ansi.Strip(line), " ")
-				if stripped != railOnly && !strings.HasPrefix(stripped, railOnly+" ") {
-					t.Fatalf("%s plan row %d lost the rail: %q", mode, i+1, stripped)
-				}
-				if got := ansi.StringWidth(stripped); got > width {
-					t.Fatalf("%s plan row %d width = %d, want <= %d: %q", mode, i+1, got, width, stripped)
+			for _, marker := range []string{"目标", "短行", "嵌套列表", "println", "最后一段"} {
+				if !strings.Contains(ansi.Strip(rendered), marker) {
+					t.Fatalf("%s plan lost %q: %s", mode, marker, ansi.Strip(rendered))
 				}
 			}
-			if last := strings.TrimRight(ansi.Strip(lines[len(lines)-1]), " "); !strings.HasPrefix(last, railOnly) {
-				t.Fatalf("%s rail must reach the last body line, got %q", mode, last)
+			for i, line := range lines {
+				if got := ansi.StringWidth(line); got > width {
+					t.Fatalf("%s plan row %d width = %d, want <= %d: %q", mode, i, got, width, line)
+				}
 			}
 		}
 	}
@@ -97,72 +92,29 @@ func TestTaskRuleSeparatesTurns(t *testing.T) {
 	}
 }
 
-// TestPlanBodyIsDelimitedByRules verifies the plan body is closed by a rule on
-// both sides without leaving a dangling rule at the end of the transcript.
-func TestPlanBodyIsDelimitedByRules(t *testing.T) {
-	previous := CurrentThemeMode()
-	t.Cleanup(func() { SetThemeMode(previous) })
-	SetThemeMode(ThemeModeDark)
-
-	rule := strings.Repeat("─", max(20, 100-4))
-	rowsFor := func(entries []TranscriptEntry) ([]string, []int, int) {
-		m := newTUIModel(nil, nil, "plan-rules")
-		m.width, m.height = 100, 40
-		m.entries = entries
-		m.updateLayout()
-		lines := strings.Split(ansi.Strip(m.viewport.View()), "\n")
-		var rules []int
-		title := -1
-		for i, line := range lines {
-			if strings.HasPrefix(line, rule) {
-				rules = append(rules, i)
-			}
-			if title < 0 && strings.Contains(line, "Proposed Plan") {
-				title = i
-			}
-		}
-		return lines, rules, title
-	}
-
-	lines, rules, title := rowsFor([]TranscriptEntry{
+// Plan sections must not introduce a new task boundary inside a response.
+func TestPlanRemainsBetweenSurroundingText(t *testing.T) {
+	m := newTUIModel(nil, nil, "inline-plan")
+	m.width, m.height = 100, 60
+	m.entries = []TranscriptEntry{
 		{Kind: KindUser, Text: "plan this"},
-		{Kind: KindAssistant, Text: "here it is"},
+		{Kind: KindAssistant, Text: "before-marker"},
 		{Kind: KindPlan, Text: "## Steps\n1. Do it"},
-		{Kind: KindAssistant, Text: "after the plan"},
-		{Kind: KindUser, Text: "next task"},
-	})
-	if title < 0 {
-		t.Fatalf("expected the plan title, got:\n%s", strings.Join(lines, "\n"))
+		{Kind: KindAssistant, Text: "after-marker"},
+		{Kind: KindUser, Text: "next-task-marker"},
 	}
-	if len(rules) != 3 {
-		t.Fatalf("expected rules above/below the plan and before the next task, got rows %v", rules)
+	m.updateLayout()
+	view := ansi.Strip(m.viewport.View())
+	before := strings.Index(view, "before-marker")
+	plan := strings.Index(view, "Proposed Plan")
+	after := strings.Index(view, "after-marker")
+	rule := strings.Index(view, strings.Repeat("─", m.width-4))
+	next := strings.Index(view, "next-task-marker")
+	if before < 0 || !(before < plan && plan < after && after < rule && rule < next) {
+		t.Fatalf("plan must stay in the response before the next task boundary:\n%s", view)
 	}
-	if rules[0] > title || rules[1] < title || rules[2] < title {
-		t.Fatalf("unexpected rule rows %v around the plan title %d", rules, title)
-	}
-	after := -1
-	for i, line := range lines {
-		if strings.Contains(line, "after the plan") {
-			after = i
-		}
-	}
-	if after < 0 || rules[1] > after {
-		t.Fatalf("the plan must be closed by a rule before the following text, got rows %v, text %d", rules, after)
-	}
-
-	lines, rules, title = rowsFor([]TranscriptEntry{
-		{Kind: KindAssistant, Text: "intro"},
-		{Kind: KindPlan, Text: "## Steps\n1. Do it"},
-	})
-	if title < 0 || len(rules) != 1 || rules[0] > title {
-		t.Fatalf("expected a single rule above the trailing plan, got rows %v, title %d", rules, title)
-	}
-	last := len(lines) - 1
-	for last >= 0 && strings.TrimSpace(lines[last]) == "" {
-		last--
-	}
-	if last >= 0 && strings.HasPrefix(lines[last], rule) {
-		t.Fatalf("the transcript must not end with a dangling rule: %q", lines[last])
+	if strings.Count(view, strings.Repeat("─", m.width-4)) != 1 {
+		t.Fatalf("plan introduced extra task separators:\n%s", view)
 	}
 }
 

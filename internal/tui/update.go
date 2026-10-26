@@ -73,16 +73,24 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		if m.activeQuestion != nil && m.activeQuestion.Submitting {
 			return m, nil
 		}
-		if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 {
+		if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 && m.input.composer.Value() == "" {
+			draft := m.activeQuestion.currentDraft()
 			currIdx := min(m.activeQuestion.CurrentIndex, len(m.activeQuestion.Request.Questions)-1)
 			currQ := m.activeQuestion.Request.Questions[currIdx]
-			if m.activeQuestion.NotesOpen {
-				m.activeQuestion.NoteText += cleanToolInline(msg.Content)
+			text := cleanToolInline(msg.Content)
+			if draft.NotesOpen {
+				if text != "" {
+					draft.NoteText += text
+					m.questionDraftChanged(m.activeQuestion)
+				}
 				m.updateLayout()
 				return m, nil
 			}
-			if m.activeQuestion.Selected >= len(currQ.Options) {
-				m.activeQuestion.Custom += cleanToolInline(msg.Content)
+			if draft.Selected >= len(currQ.Options) {
+				if text != "" {
+					draft.Custom += text
+					m.questionDraftChanged(m.activeQuestion)
+				}
 				m.updateLayout()
 				return m, nil
 			}

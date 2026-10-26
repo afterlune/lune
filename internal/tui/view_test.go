@@ -131,7 +131,6 @@ func TestQuestionPanelRendering(t *testing.T) {
 				},
 			},
 		},
-		Selected: 0,
 	}
 
 	rendered := renderQuestionPanel(q, 80)
@@ -144,7 +143,7 @@ func TestQuestionPanelRendering(t *testing.T) {
 	if !strings.Contains(rendered, "整体代码审查  [Recommended]") {
 		t.Errorf("expected options list, got: %s", rendered)
 	}
-	if !strings.Contains(rendered, "tab to add notes | enter to submit answer | /discard to drop") {
+	if !strings.Contains(rendered, "tab to add notes | enter to confirm answer | /discard to drop") {
 		t.Errorf("expected question footer controls, got: %s", rendered)
 	}
 }
@@ -155,13 +154,15 @@ func TestQuestionPanelUsesSoftAccentAndPrimaryInputs(t *testing.T) {
 	defer SetThemeMode(previous)
 
 	q := &ActiveQuestion{
+		Drafts: []questionDraft{{
+			Selected: 1,
+			Custom:   "custom answer",
+			NoteText: "a note",
+		}},
 		Request: core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
 			Question: "Which scope?",
 			Options:  []core.UserQuestionOption{{Label: "One"}},
 		}}},
-		Selected: 1,
-		Custom:   "custom answer",
-		NoteText: "a note",
 	}
 	rendered := renderQuestionPanel(q, 100)
 	r, g, b, ok := parseHexRGB(DarkTheme.AccentSoft)
@@ -203,7 +204,7 @@ func TestQuestionPanelAlignsDescriptionsByTerminalCellWidth(t *testing.T) {
 
 	var expectedShort, expectedLong int
 	for selected := range q.Request.Questions[0].Options {
-		q.Selected = selected
+		q.currentDraft().Selected = selected
 		view := ansi.Strip(renderQuestionPanel(q, 100))
 		columns := map[string]int{}
 		for _, line := range strings.Split(view, "\n") {
@@ -243,7 +244,6 @@ func TestQuestionPanelWrapsDescriptionsBelowLabelsWhenNarrow(t *testing.T) {
 				Description: "NARROW_DESCRIPTION wraps below the label and remains visible on the narrow panel",
 			}},
 		}}},
-		Selected: 0,
 	}
 
 	view := ansi.Strip(renderQuestionPanel(q, width))
@@ -1782,7 +1782,7 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 		}
 	}
 
-	// KindPlan renders as a railed block with source-preserving heading levels and clean code blocks.
+	// KindPlan preserves heading levels and code blocks in the response flow.
 	planEntry := TranscriptEntry{
 		Kind: KindPlan,
 		Text: "# 验证\n\n1. **运行测试**\n\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
@@ -1799,8 +1799,8 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 	if !strings.Contains(renderedPlan, "# 验证") {
 		t.Fatalf("expected visible plan heading marker, got:\n%s", renderedPlan)
 	}
-	if !strings.Contains(renderedPlan, "  │ # 验证") {
-		t.Fatalf("plan body should be marked by the rail, got:\n%s", renderedPlan)
+	if !strings.Contains(renderedPlan, "  # 验证") {
+		t.Fatalf("plan body should align with assistant prose, got:\n%s", renderedPlan)
 	}
 	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
 		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)

@@ -256,14 +256,7 @@ func (m *tuiModel) applyPendingRequests(reqs []core.PendingRequest) {
 		// Keep selections visible until the submission command reports its result.
 	} else if foundQuestion != nil {
 		if m.activeQuestion == nil || m.questionKey(m.activeQuestion.Request) != m.questionKey(*foundQuestion) {
-			selected := 0
-			if len(foundQuestion.Questions) > 0 {
-				selected = recommendedQuestionOptionIndex(foundQuestion.Questions[0].Options)
-			}
-			m.activeQuestion = &ActiveQuestion{
-				Request:  *foundQuestion,
-				Selected: selected,
-			}
+			m.activeQuestion = newActiveQuestion(*foundQuestion)
 		}
 	} else {
 		m.activeQuestion = nil

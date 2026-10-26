@@ -616,6 +616,11 @@ type ProposedPlanStream struct {
 	Complete bool
 }
 
+// HasPlanContent excludes empty and ellipsis-only placeholders from plan UI.
+func HasPlanContent(text string) bool {
+	return strings.Trim(text, " \t\r\n.．…⋯") != ""
+}
+
 // CleanProposedPlanTags strips any raw proposed-plan tags from text,
 // but preserves inline code mentions like `<proposed_plan>`.
 func CleanProposedPlanTags(s string) string {

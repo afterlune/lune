@@ -9,6 +9,8 @@ import (
 	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 )
 
+const unusablePlanMessage = "The model did not return a concrete plan. Ask it to provide the implementation steps."
+
 func (m *tuiModel) flushReasoningEntry() {
 	if m.run.currentReasoningText == "" {
 		return
@@ -90,7 +92,12 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	// <proposed_plan>...</proposed_plan> block. Never infer a plan from a dangling
 	// or literal tag in the assistant text: that used to turn ordinary replies
 	// (including greetings that merely mention the tag) into empty plan reviews.
+	hadProposedPlan := proposedPlan != ""
 	proposedPlan = tuiMarkdown.CleanProposedPlanTags(proposedPlan)
+	unusablePlan := hadProposedPlan && !tuiMarkdown.HasPlanContent(proposedPlan)
+	if unusablePlan {
+		proposedPlan = ""
+	}
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindUser {
 			break
@@ -113,6 +120,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	}
 
 	stream := tuiMarkdown.SplitProposedPlanStream(text)
+	unusablePlan = unusablePlan || stream.Found && stream.Complete && !tuiMarkdown.HasPlanContent(stream.Plan)
 	orderedPlan := strings.TrimSpace(proposedPlan) != "" && stream.Found && stream.Complete
 	if orderedPlan {
 		// Keep the response order visible: text before the marker, the formal plan
@@ -128,6 +136,9 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		m.upsertAssistantSegment(executionID, postPlanID, stream.After, turnDur)
 	} else {
 		visibleText := tuiMarkdown.StripProposedPlan(text)
+		if strings.TrimSpace(visibleText) == "" && unusablePlan {
+			visibleText = unusablePlanMessage
+		}
 		if strings.TrimSpace(visibleText) != "" {
 			id := ""
 			if executionID != "" {
