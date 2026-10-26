@@ -158,8 +158,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 
 	case "/clear":
 		m.entries = nil
-		m.run.currentStreamText = ""
-		m.run.currentReasoningText = ""
+		m.run.resetStream()
+		m.run.resetReasoning()
 		m.view.invalidateLive()
 		m.viewport.SetContent("")
 		m.scrolledUp = false

@@ -220,7 +220,8 @@ func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
 		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Fin",
 		"Intro.\n## Section <proposed_plan>\n## Steps\n1. Finish\n<proposed_plan_end/>\nAfter.",
 	} {
-		m.run.currentStreamText = stream
+		m.run.resetStream()
+		m.run.appendStreamDelta(stream)
 		m.view.invalidateContent()
 		m.refreshViewportContent()
 		view := ansi.Strip(m.view.liveContent)

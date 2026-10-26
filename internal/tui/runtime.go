@@ -38,6 +38,10 @@ type runtimeRestoreSettledMsg struct {
 	generation uint64
 }
 
+type streamRenderMsg struct {
+	generation uint64
+}
+
 type turnSubmittedMsg struct {
 	sessionID         string
 	bindingGeneration uint64
@@ -57,12 +61,35 @@ type turnFinishedMsg struct {
 type tickMsg time.Time
 
 const (
+	streamRenderInterval = 33 * time.Millisecond
 	// maxRuntimeStreamReconnects bounds the automatic reconnects of one stream so
 	// a dead subscription cannot spin.
 	maxRuntimeStreamReconnects = 3
 	// runtimeStreamReconnectDelay is the first backoff step; it doubles per attempt.
 	runtimeStreamReconnectDelay = 250 * time.Millisecond
 )
+
+func (m *tuiModel) markStreamDirty() tea.Cmd {
+	now := time.Now()
+	last := m.run.lastStreamRenderAt
+	if last.IsZero() || now.Sub(last) >= streamRenderInterval {
+		m.run.streamRenderGeneration++
+		m.run.streamRenderPending = false
+		m.run.lastStreamRenderAt = now
+		m.view.invalidateLive()
+		return nil
+	}
+	if m.run.streamRenderPending {
+		return nil
+	}
+	m.run.streamRenderPending = true
+	m.run.streamRenderGeneration++
+	generation := m.run.streamRenderGeneration
+	delay := streamRenderInterval - now.Sub(last)
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return streamRenderMsg{generation: generation}
+	})
+}
 
 // openRuntimeEventStream subscribes to Core's runtime events. The first
 // subscription also asks for the replay-complete marker so a session restore can
@@ -364,8 +391,8 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.run.turnStreamStartTime = time.Now()
 	m.run.streamFirstTokenTime = time.Time{}
 	m.run.streamGenerationTokens = 0
-	m.run.currentStreamText = ""
-	m.run.currentReasoningText = ""
+	m.run.resetStream()
+	m.run.resetReasoning()
 	m.view.invalidateLive()
 	m.run.reasoningStartTime = time.Time{}
 	m.scrolledUp = false

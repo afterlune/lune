@@ -111,6 +111,16 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 
+	case streamRenderMsg:
+		if msg.generation != m.run.streamRenderGeneration || !m.run.streamRenderPending {
+			return m, nil
+		}
+		m.run.streamRenderPending = false
+		m.run.lastStreamRenderAt = time.Now()
+		m.view.invalidateLive()
+		m.updateLayout()
+		return m, nil
+
 	case tickMsg:
 		if m.run.running || (m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero()) {
 			m.view.invalidateLive()

@@ -51,6 +51,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	if m.run.restoringSession && !replaySafeDuringRestore(event.Kind) {
 		return m, nil
 	}
+	var streamRenderCmd tea.Cmd
 	switch event.Kind {
 	case core.EventGoalUpdated, core.EventGoalCleared:
 		m.refreshGoal()
@@ -75,8 +76,8 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					break
 				}
 			}
-			m.run.currentStreamText = ""
-			m.run.currentReasoningText = ""
+			m.run.resetStream()
+			m.run.resetReasoning()
 			m.view.invalidateLive()
 		}
 		if !queued && !goalTurn && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
@@ -168,7 +169,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				m.run.streamGenerationTokens = 0
 			}
 			m.run.thinking = true
-			m.run.currentReasoningText += event.Stream.Delta
+			m.run.appendReasoningDelta(event.Stream.Delta)
 			if event.Stream.Delta != "" {
 				toks := estimateDeltaTokens(event.Stream.Delta)
 				m.run.streamGenerationTokens += toks
@@ -177,7 +178,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
 			}
-			m.view.invalidateLive()
+			streamRenderCmd = m.markStreamDirty()
 
 		case "text_delta", "":
 			if m.run.currentReasoningText != "" {
@@ -189,14 +190,14 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			if event.Stream.Delta != "" {
 				m.run.thinking = false
-				m.run.currentStreamText += event.Stream.Delta
+				m.run.appendStreamDelta(event.Stream.Delta)
 				toks := estimateDeltaTokens(event.Stream.Delta)
 				m.run.streamGenerationTokens += toks
 				elapsed := time.Since(m.run.streamFirstTokenTime).Seconds()
 				if elapsed >= 0.05 {
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
-				m.view.invalidateLive()
+				streamRenderCmd = m.markStreamDirty()
 			}
 		}
 
@@ -568,13 +569,13 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.pausedCheckpoint = nil
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
-		m.run.currentStreamText = ""
-		m.run.currentReasoningText = ""
+		m.run.resetStream()
+		m.run.resetReasoning()
 		m.view.invalidateLive()
 		m.markRunningSubagentsAndToolsDone()
 		m.view.invalidateLive()
 		m.updateLayout()
 	}
 
-	return m, nil
+	return m, streamRenderCmd
 }

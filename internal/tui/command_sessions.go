@@ -170,7 +170,7 @@ func (m *tuiModel) handleRewindExecute(turns int) (tea.Model, tea.Cmd) {
 	}
 	m.input.historyIndex = len(m.input.history)
 	m.input.historyDraft = ""
-	m.run.currentStreamText = ""
+	m.run.resetStream()
 	m.scrolledUp = false
 	m.view.invalidateBlocks()
 	m.refreshViewportContent()

@@ -26,7 +26,7 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 			ReasoningExpanded: false,
 			Timestamp:         time.Now(),
 		})
-		m.run.currentReasoningText = ""
+		m.run.resetReasoning()
 		m.run.reasoningStartTime = time.Time{}
 		m.view.invalidateBlocks()
 	}
@@ -37,7 +37,7 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 			Text:      m.run.currentStreamText,
 			Timestamp: time.Now(),
 		})
-		m.run.currentStreamText = ""
+		m.run.resetStream()
 		m.view.invalidateBlocks()
 	}
 

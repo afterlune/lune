@@ -103,15 +103,6 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 		res, err := runtime.WaitTurn(waitCtx, executionID)
 		done <- waitResult{res, err}
 	}()
-	abort := func(err error) error {
-		// Release blocked stream producers before joining the interrupted turn.
-		stopStream()
-		runtime.Interrupt(executionID)
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, cleanupErr := runtime.WaitTurn(cleanupCtx, executionID)
-		return errors.Join(err, cleanupErr)
-	}
 	writeText := func(text string) error {
 		n, err := io.WriteString(stdout, text)
 		if err == nil && n != len(text) {
@@ -119,12 +110,72 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 		}
 		return err
 	}
+	const streamFlushInterval = 33 * time.Millisecond
+	const streamFlushBytes = 4 * 1024
+	var pendingText strings.Builder
+	var flushTimer *time.Timer
+	var flushTimerC <-chan time.Time
+	stopFlushTimer := func() {
+		if flushTimer == nil {
+			flushTimerC = nil
+			return
+		}
+		if !flushTimer.Stop() {
+			select {
+			case <-flushTimer.C:
+			default:
+			}
+		}
+		flushTimerC = nil
+	}
+	flushPending := func() error {
+		stopFlushTimer()
+		if pendingText.Len() == 0 {
+			return nil
+		}
+		text := pendingText.String()
+		pendingText.Reset()
+		return writeText(text)
+	}
+	queueStreamText := func(text string, first bool) error {
+		if first {
+			return writeText(text)
+		}
+		pendingText.WriteString(text)
+		if pendingText.Len() >= streamFlushBytes {
+			return flushPending()
+		}
+		if flushTimerC == nil {
+			if flushTimer == nil {
+				flushTimer = time.NewTimer(streamFlushInterval)
+			} else {
+				flushTimer.Reset(streamFlushInterval)
+			}
+			flushTimerC = flushTimer.C
+		}
+		return nil
+	}
+	abort := func(err error) error {
+		flushErr := flushPending()
+		// Release blocked stream producers before joining the interrupted turn.
+		stopStream()
+		runtime.Interrupt(executionID)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, cleanupErr := runtime.WaitTurn(cleanupCtx, executionID)
+		return errors.Join(err, flushErr, cleanupErr)
+	}
 	var result core.TurnResult
 	var streamedText strings.Builder
 	var streamRequestID string
 	haveResult, finished, streamed, endsWithNewline := false, false, false, false
 	for !haveResult || !finished {
 		select {
+		case <-flushTimerC:
+			flushTimerC = nil
+			if err := flushPending(); err != nil {
+				return abort(fmt.Errorf("write task output: %w", err))
+			}
 		case res := <-done:
 			if res.err != nil {
 				return abort(res.err)
@@ -140,6 +191,11 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 			}
 			if event.ExecutionID != "" && event.ExecutionID != executionID {
 				continue
+			}
+			if event.Kind != core.EventModelStream {
+				if err := flushPending(); err != nil {
+					return abort(fmt.Errorf("write task output: %w", err))
+				}
 			}
 			var writeErr error
 			switch event.Kind {
@@ -159,7 +215,7 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 				}
 				delta := terminaltext.Sanitize(event.Stream.Delta)
 				if delta != "" {
-					writeErr = writeText(delta)
+					writeErr = queueStreamText(delta, !streamed)
 					streamedText.WriteString(delta)
 					streamed, endsWithNewline = true, strings.HasSuffix(delta, "\n")
 				}
@@ -186,6 +242,9 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 		case <-ctx.Done():
 			return abort(ctx.Err())
 		}
+	}
+	if err := flushPending(); err != nil {
+		return fmt.Errorf("write task output: %w", err)
 	}
 	if result.Status == core.TaskPaused {
 		return oneShotPausedTaskError(sessionID)

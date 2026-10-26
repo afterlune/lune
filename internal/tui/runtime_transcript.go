@@ -17,7 +17,7 @@ func (m *tuiModel) flushReasoningEntry() {
 	}
 	trimmed := strings.TrimSpace(m.run.currentReasoningText)
 	dur := time.Since(m.run.reasoningStartTime)
-	m.run.currentReasoningText = ""
+	m.run.resetReasoning()
 	m.run.reasoningStartTime = time.Time{}
 	if trimmed == "" {
 		return
@@ -50,7 +50,7 @@ func (m *tuiModel) flushStreamTextEntry() {
 		return
 	}
 	text := tuiMarkdown.StripProposedPlan(m.run.currentStreamText)
-	m.run.currentStreamText = ""
+	m.run.resetStream()
 	if strings.TrimSpace(text) == "" {
 		return
 	}
@@ -69,7 +69,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	m.markRunningSubagentsAndToolsDone()
 
 	text := m.run.currentStreamText
-	m.run.currentStreamText = ""
+	m.run.resetStream()
 
 	if len(fallbackResponse) > 0 {
 		if responseText := extractResponseText(fallbackResponse); strings.TrimSpace(responseText) != "" {

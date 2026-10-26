@@ -395,6 +395,7 @@ func (m *tuiModel) refreshLiveContent(width int) {
 	if !m.view.liveDirty && m.view.liveContent != "" && width == m.view.cachedWidth {
 		return
 	}
+	m.run.ensureLiveTails()
 	if m.scrolledUp {
 		m.view.liveContent = ""
 		m.view.liveDirty = false
@@ -403,24 +404,26 @@ func (m *tuiModel) refreshLiveContent(width int) {
 	var blocks []string
 	if m.run.currentReasoningText != "" {
 		blocks = append(blocks, renderEntry(TranscriptEntry{
-			Kind: KindReasoning, Text: m.run.currentReasoningText,
+			Kind: KindReasoning, Text: m.run.reasoningTail.RenderInput(),
 			ReasoningDuration: time.Since(m.run.reasoningStartTime),
 			ReasoningExpanded: !m.run.reasoningLiveCollapsed, ReasoningLive: true,
 		}, width))
 	}
 	if m.run.currentStreamText != "" {
-		stream := tuiMarkdown.SplitProposedPlanStream(m.run.currentStreamText)
 		appendAssistant := func(text string) {
 			if strings.TrimSpace(text) != "" {
 				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, width))
 			}
 		}
-		if stream.Found {
-			appendAssistant(stream.Before)
-			blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindPlan, Text: stream.Plan}, width))
-			appendAssistant(stream.After)
+		if m.run.planFound {
+			appendAssistant(m.run.planBeforeTail.RenderInput())
+			plan := m.run.planTail.RenderInput()
+			if tuiMarkdown.HasPlanContent(tuiMarkdown.CleanProposedPlanTags(plan)) {
+				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindPlan, Text: plan}, width))
+			}
+			appendAssistant(m.run.planAfterTail.RenderInput())
 		} else {
-			appendAssistant(stream.Before)
+			appendAssistant(m.run.assistantTail.RenderInput())
 		}
 	}
 	if m.run.running {

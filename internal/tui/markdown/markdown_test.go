@@ -231,6 +231,42 @@ func TestSplitProposedPlanStreamStylesPartialAndCompatCompleteBlocks(t *testing.
 	}
 }
 
+func TestProposedPlanTagRangesIgnoreMarkdownCode(t *testing.T) {
+	text := "`<proposed_plan>`\n```md\n<proposed_plan>hidden</proposed_plan>\n```\n<proposed_plan>visible</proposed_plan>"
+	tags := ProposedPlanTagRanges(text)
+	if len(tags) != 2 || !tags[0].Open || tags[1].Open {
+		t.Fatalf("plan ranges = %#v, want one visible opening and closing tag", tags)
+	}
+	if got := text[tags[0].Start:tags[0].End]; got != proposedPlanOpenTag {
+		t.Fatalf("opening range = %q", got)
+	}
+	if got := text[tags[1].Start:tags[1].End]; got != proposedPlanCloseTag {
+		t.Fatalf("closing range = %q", got)
+	}
+}
+
+func TestLiveTailBoundsTextAndPreservesCodeFenceState(t *testing.T) {
+	tail := NewLiveTail(2)
+	tail.Append("before\n```go\nfirst\nsecond\nthird")
+	input := tail.RenderInput()
+	if strings.Contains(input, "before") || strings.Contains(input, "first") {
+		t.Fatalf("tail retained old lines: %q", input)
+	}
+	if !strings.HasPrefix(input, "```\n") || !strings.Contains(input, "second\nthird") {
+		t.Fatalf("tail lost the open code-block context: %q", input)
+	}
+	rendered := ansi.Strip(tail.Render(24, testPalette()))
+	if !strings.Contains(rendered, "second") || !strings.Contains(rendered, "third") {
+		t.Fatalf("rendered tail = %q", rendered)
+	}
+
+	long := NewLiveTail(8)
+	long.Append(strings.Repeat("界", 100_000))
+	if got := len(long.RenderInput()); got > 64*1024+4 {
+		t.Fatalf("live tail retained %d bytes, want at most 64 KiB plus fence", got)
+	}
+}
+
 func TestProposedPlanParsingProtectsCodeSpans(t *testing.T) {
 	text := "Use ``<proposed_plan>`` and a fence:\n```go\n// <proposed_plan>not a plan</proposed_plan>\n```\n" +
 		"<proposed_plan>## Real plan</proposed_plan>"

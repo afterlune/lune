@@ -169,7 +169,10 @@ func (s *Scanner) scanWorkspace() []File {
 		return nil
 	}
 
-	modifiedMap := s.gitModifiedFiles()
+	modifiedFiles := make(chan map[string]bool, 1)
+	go func() {
+		modifiedFiles <- s.gitModifiedFiles()
+	}()
 	var results []File
 	root := s.workspace
 
@@ -203,13 +206,12 @@ func (s *Scanner) scanWorkspace() []File {
 
 		slashPath := filepath.ToSlash(relPath)
 		results = append(results, File{
-			Path:       slashPath,
-			pathLower:  strings.ToLower(slashPath),
-			Name:       d.Name(),
-			nameLower:  strings.ToLower(d.Name()),
-			Size:       info.Size(),
-			ModTime:    info.ModTime(),
-			IsModified: modifiedMap[slashPath],
+			Path:      slashPath,
+			pathLower: strings.ToLower(slashPath),
+			Name:      d.Name(),
+			nameLower: strings.ToLower(d.Name()),
+			Size:      info.Size(),
+			ModTime:   info.ModTime(),
 		})
 
 		if s.maxFiles > 0 && len(results) >= s.maxFiles {
@@ -217,6 +219,10 @@ func (s *Scanner) scanWorkspace() []File {
 		}
 		return nil
 	})
+	modifiedMap := <-modifiedFiles
+	for index := range results {
+		results[index].IsModified = modifiedMap[results[index].Path]
+	}
 
 	return results
 }

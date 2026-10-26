@@ -58,6 +58,35 @@ func (w *notifyingWriter) Write(p []byte) (int, error) {
 }
 func (w *notifyingWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
 
+type countingOneShotWriter struct {
+	bytes.Buffer
+	writes int
+}
+
+func (w *countingOneShotWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.Buffer.Write(p)
+}
+
+func (w *countingOneShotWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
+type observingOneShotWriter struct {
+	bytes.Buffer
+	writes chan string
+}
+
+func (w *observingOneShotWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	w.writes <- string(p)
+	return n, err
+}
+
+func (w *observingOneShotWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
 func TestOneShotOutputBeforeCompletionAndNoLostTail(t *testing.T) {
 	for _, resultFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "result_first", false: "events_first"}[resultFirst], func(t *testing.T) {
@@ -98,6 +127,70 @@ func TestOneShotOutputBeforeCompletionAndNoLostTail(t *testing.T) {
 				t.Fatalf("stdout=%q", got)
 			}
 		})
+	}
+}
+
+func TestOneShotCoalescesDeltasAndFlushesBeforeToolStatus(t *testing.T) {
+	const answer = "one two three four"
+	r := &oneShotTestRuntime{
+		result:      core.TurnResult{Status: core.TaskCompleted, Response: oneShotText(answer)},
+		ready:       make(chan struct{}),
+		interrupted: make(chan struct{}),
+	}
+	close(r.ready)
+	events := make(chan core.Event, 8)
+	for _, delta := range []string{"one ", "two ", "three ", "four"} {
+		events <- deltaEvent(delta)
+	}
+	events <- core.Event{Kind: core.EventToolStarted, ExecutionID: "exec", Tool: core.ToolCall{Name: "read_file"}}
+	events <- finishedEvent()
+	var stdout, stderr countingOneShotWriter
+	if err := awaitOneShotTurn(context.Background(), r, "session", "exec", events, func() {}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != answer+"\n" {
+		t.Fatalf("stdout=%q", got)
+	}
+	if stdout.writes >= 4 {
+		t.Fatalf("stream deltas caused %d stdout writes; expected coalescing", stdout.writes)
+	}
+	if !strings.Contains(stderr.String(), "Running read_file") {
+		t.Fatalf("tool status was not written: %q", stderr.String())
+	}
+}
+
+func TestOneShotFlushesPendingDeltaWithinFrameInterval(t *testing.T) {
+	r := &oneShotTestRuntime{
+		result:      core.TurnResult{Status: core.TaskCompleted, Response: oneShotText("first second")},
+		ready:       make(chan struct{}),
+		interrupted: make(chan struct{}),
+	}
+	close(r.ready)
+	events := make(chan core.Event)
+	stdout := &observingOneShotWriter{writes: make(chan string, 4)}
+	done := make(chan error, 1)
+	go func() {
+		done <- awaitOneShotTurn(context.Background(), r, "session", "exec", events, func() {}, stdout, io.Discard)
+	}()
+	events <- deltaEvent("first ")
+	if got := <-stdout.writes; got != "first " {
+		t.Fatalf("first delta write=%q", got)
+	}
+	events <- deltaEvent("second")
+	select {
+	case got := <-stdout.writes:
+		if got != "second" {
+			t.Fatalf("buffered delta write=%q", got)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("buffered delta was not flushed within the frame interval")
+	}
+	events <- finishedEvent()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "first second\n" {
+		t.Fatalf("stdout=%q", got)
 	}
 }
 

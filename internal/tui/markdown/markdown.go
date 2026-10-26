@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -142,6 +143,10 @@ func RenderPlan(text string, width int, palette Palette) string {
 }
 
 func render(text string, width int, palette Palette, planStyle bool) string {
+	return renderWithCodeState(text, width, palette, planStyle, false)
+}
+
+func renderWithCodeState(text string, width int, palette Palette, planStyle, inCodeBlock bool) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -150,8 +155,6 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 
 	lines := strings.Split(text, "\n")
 	result := make([]string, 0, len(lines))
-	inCodeBlock := false
-
 	th := palette
 	h1Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue))
 	h2Style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.TextPrimary))
@@ -368,6 +371,164 @@ func render(text string, width int, palette Palette, planStyle bool) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+type liveTailLine struct {
+	text        string
+	inCodeBlock bool
+}
+
+// LiveTail keeps only recent source lines while retaining Markdown code-fence
+// state, so a long stream can be rendered without rescanning its full history.
+type LiveTail struct {
+	maxLines        int
+	maxBytes        int
+	bytes           int
+	lines           []liveTailLine
+	pending         []byte
+	inCodeBlock     bool
+	trailingNewline bool
+}
+
+func NewLiveTail(maxLines int) *LiveTail {
+	return &LiveTail{maxLines: max(1, maxLines), maxBytes: 64 * 1024}
+}
+
+func (t *LiveTail) Reset() {
+	if t == nil {
+		return
+	}
+	t.lines = nil
+	t.bytes = 0
+	t.pending = t.pending[:0]
+	t.inCodeBlock = false
+	t.trailingNewline = false
+}
+
+func (t *LiveTail) Append(text string) {
+	if t == nil || text == "" {
+		return
+	}
+	t.trailingNewline = false
+	for len(text) > 0 {
+		newline := strings.IndexByte(text, '\n')
+		if newline < 0 {
+			t.appendPending(text)
+			return
+		}
+		t.appendPending(text[:newline])
+		t.addLine(string(t.pending))
+		t.pending = t.pending[:0]
+		t.trailingNewline = true
+		text = text[newline+1:]
+	}
+}
+
+func (t *LiveTail) addLine(line string) {
+	state := t.inCodeBlock
+	fence := strings.HasPrefix(strings.TrimSpace(line), "```")
+	if fence {
+		t.inCodeBlock = !t.inCodeBlock
+	}
+	line = truncateLiveLine(line, t.maxBytes, fence)
+	t.lines = append(t.lines, liveTailLine{text: line, inCodeBlock: state})
+	t.bytes += len(line)
+	for len(t.lines) > 1 && (len(t.lines) > t.maxLines || t.bytes > t.maxBytes) {
+		t.dropFirstLine()
+	}
+}
+
+func (t *LiveTail) appendPending(text string) {
+	if text == "" {
+		return
+	}
+	if len(text) >= t.maxBytes {
+		t.pending = t.pending[:0]
+		t.pending = append(t.pending, validUTF8Suffix(text, t.maxBytes)...)
+		for len(t.lines) > 0 {
+			t.dropFirstLine()
+		}
+		return
+	}
+	if len(t.pending)+len(text) > t.maxBytes {
+		keep := t.maxBytes - len(text)
+		previous := string(t.pending)
+		if keep < len(previous) {
+			previous = validUTF8Suffix(previous, keep)
+		}
+		t.pending = append(t.pending[:0], previous...)
+	}
+	t.pending = append(t.pending, text...)
+	for len(t.lines) > 0 && (len(t.lines)+1 > t.maxLines || t.bytes+len(t.pending) > t.maxBytes) {
+		t.dropFirstLine()
+	}
+}
+
+func (t *LiveTail) dropFirstLine() {
+	t.bytes -= len(t.lines[0].text)
+	copy(t.lines, t.lines[1:])
+	t.lines = t.lines[:len(t.lines)-1]
+}
+
+func truncateLiveLine(line string, maximum int, fence bool) string {
+	if len(line) <= maximum {
+		return line
+	}
+	suffix := validUTF8Suffix(line, maximum-4)
+	if fence && !strings.HasPrefix(strings.TrimSpace(suffix), "```") {
+		suffix = "```…" + validUTF8Suffix(line, maximum-7)
+	} else {
+		suffix = "…" + suffix
+	}
+	return strings.Clone(suffix)
+}
+
+func validUTF8Suffix(text string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	start := max(0, len(text)-maximum)
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
+}
+
+// RenderInput returns the bounded raw Markdown tail. A synthetic fence keeps
+// code styling correct when the real opening fence has scrolled out of the tail.
+func (t *LiveTail) RenderInput() string {
+	if t == nil {
+		return ""
+	}
+	var b strings.Builder
+	start := 0
+	if len(t.lines) > 0 && t.lines[0].inCodeBlock {
+		b.WriteString("```\n")
+	}
+	for index, line := range t.lines {
+		if index > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line.text)
+		start = index + 1
+	}
+	if len(t.pending) > 0 || (!t.trailingNewline && start == 0 && b.Len() == 0) {
+		if start > 0 || b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.Write(t.pending)
+	} else if t.trailingNewline && start > 0 {
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (t *LiveTail) Render(width int, palette Palette) string {
+	return Render(t.RenderInput(), width, palette)
+}
+
+func (t *LiveTail) RenderPlan(width int, palette Palette) string {
+	return RenderPlan(t.RenderInput(), width, palette)
 }
 
 func formatInline(line string, th Palette) string {
@@ -619,6 +780,73 @@ type ProposedPlanStream struct {
 	After    string
 	Found    bool
 	Complete bool
+}
+
+// PlanTagRange describes a proposed-plan tag in the original response text.
+type PlanTagRange struct {
+	Start int
+	End   int
+	Open  bool
+}
+
+// HasProposedPlanTag checks for a complete plan marker in a small streaming
+// window. Markdown code protection is applied by ProposedPlanTagRanges.
+func HasProposedPlanTag(text string) bool {
+	_, length, _ := findNextProposedPlanTag(text, 0)
+	return length > 0
+}
+
+// HasProposedPlanTagAfter reports whether a complete marker ends after offset.
+// The offset allows a streaming caller to retain only a short overlap window.
+func HasProposedPlanTagAfter(text string, offset int) bool {
+	for search := 0; search < len(text); {
+		start, length, _ := findNextProposedPlanTag(text, search)
+		if length == 0 {
+			return false
+		}
+		if start+length > offset {
+			return true
+		}
+		search = start + 1
+	}
+	return false
+}
+
+// ProposedPlanTagRanges returns plan markers outside inline and fenced code,
+// retaining offsets into the original text for incremental live rendering.
+func ProposedPlanTagRanges(text string) []PlanTagRange {
+	var tags []PlanTagRange
+	for index := 0; index < len(text); {
+		if text[index] == '`' && !isEscapedMarkdownDelimiter(text, index) {
+			run := backtickRun(text, index)
+			lineStart := strings.LastIndexByte(text[:index], '\n') + 1
+			end := -1
+			if run >= 3 && strings.Trim(text[lineStart:index], " \t") == "" {
+				end = fencedCodeEnd(text, index, run)
+			} else {
+				end = inlineCodeEnd(text, index+run, run)
+			}
+			if end < 0 {
+				return tags
+			}
+			index = end
+			continue
+		}
+		matched := false
+		for _, candidate := range planTagPatterns {
+			end := index + len(candidate.value)
+			if end <= len(text) && strings.EqualFold(text[index:end], candidate.value) {
+				tags = append(tags, PlanTagRange{Start: index, End: end, Open: candidate.open})
+				index = end
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			index++
+		}
+	}
+	return tags
 }
 
 // HasPlanContent excludes empty and ellipsis-only placeholders from plan UI.
