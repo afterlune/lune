@@ -273,7 +273,8 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 			m.run.taskStartedAt = time.Now().Add(-time.Second)
 			m.entries = append(m.entries,
 				TranscriptEntry{ID: "user-current", Kind: KindUser, Text: "answer"},
-				TranscriptEntry{ID: "assistant-partial", ExecutionID: "exec-complete", Kind: KindAssistant, Text: "Old partial"},
+				TranscriptEntry{ID: "asst-123", ExecutionID: "exec-complete", Kind: KindAssistant, Text: "Tool preface"},
+				TranscriptEntry{ID: "tool-1", ExecutionID: "exec-complete", Kind: KindTool, ToolCallID: "call-1", ToolName: "read_file"},
 			)
 			m.run.currentStreamText = "Latest draft"
 
@@ -293,8 +294,8 @@ func TestTurnCompletionEventAndWaiterDeduplicate(t *testing.T) {
 					assistant = append(assistant, entry)
 				}
 			}
-			if len(assistant) != 1 || assistant[0].Text != "Canonical response" {
-				t.Fatalf("expected one canonical assistant response, got %+v", assistant)
+			if len(assistant) != 2 || assistant[0].Text != "Tool preface" || assistant[1].Text != "Canonical response" {
+				t.Fatalf("expected tool preface and one canonical assistant response, got %+v", assistant)
 			}
 			if m.run.running || m.run.currentStreamText != "" {
 				t.Fatalf("expected completion to clear live turn state, running=%v stream=%q", m.run.running, m.run.currentStreamText)

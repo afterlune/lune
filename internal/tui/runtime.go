@@ -29,7 +29,8 @@ type runtimeEventMsg struct {
 // runtimeReconnectMsg re-opens the event stream after Core reported a failure or
 // the subscription channel closed early.
 type runtimeReconnectMsg struct {
-	sessionID string
+	sessionID  string
+	generation uint64
 }
 
 // runtimeRestoreSettledMsg is retained for explicit restore-settlement messages.
@@ -38,17 +39,19 @@ type runtimeRestoreSettledMsg struct {
 }
 
 type turnSubmittedMsg struct {
-	sessionID  string
-	submission core.TurnSubmission
-	err        error
+	sessionID         string
+	bindingGeneration uint64
+	submission        core.TurnSubmission
+	err               error
 }
 
 type turnFinishedMsg struct {
-	sessionID   string
-	executionID string
-	generation  uint64
-	result      core.TurnResult
-	err         error
+	sessionID         string
+	bindingGeneration uint64
+	executionID       string
+	generation        uint64
+	result            core.TurnResult
+	err               error
 }
 
 type tickMsg time.Time
@@ -84,7 +87,11 @@ func (m *tuiModel) startRuntimeEventSubscription(subscribeNow bool) tea.Cmd {
 	if m.run.runtimeCancel != nil {
 		m.run.runtimeCancel()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	parent := m.boundContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	m.run.runtimeCancel = cancel
 	m.run.subscriptionGeneration++
 	generation := m.run.subscriptionGeneration
@@ -148,8 +155,9 @@ func (m *tuiModel) reconnectRuntimeEventStream() tea.Cmd {
 	delay := runtimeStreamReconnectDelay << m.run.streamReconnects
 	m.run.streamReconnects++
 	sessionID := m.sessionID
+	generation := m.run.subscriptionGeneration
 	return tea.Tick(delay, func(time.Time) tea.Msg {
-		return runtimeReconnectMsg{sessionID: sessionID}
+		return runtimeReconnectMsg{sessionID: sessionID, generation: generation}
 	})
 }
 
@@ -184,7 +192,11 @@ func (m *tuiModel) awaitExecutionResult(executionID string) tea.Cmd {
 	}
 	m.run.waitGeneration++
 	m.run.awaitingTurns[executionID] = m.run.waitGeneration
-	return waitForTurn(m.runtime, m.sessionID, executionID, m.run.waitGeneration)
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return waitForTurn(ctx, m.runtime, m.sessionID, m.bindingGeneration, executionID, m.run.waitGeneration)
 }
 
 // nextRuntimeEvent delivers the next Core runtime event with the subscription
@@ -221,13 +233,13 @@ func nextRuntimeEvent(sessionID string, generation uint64, events <-chan core.Ev
 	}
 }
 
-func waitForTurn(runtime *core.SessionRuntime, sessionID, executionID string, generation uint64) tea.Cmd {
+func waitForTurn(ctx context.Context, runtime *core.SessionRuntime, sessionID string, bindingGeneration uint64, executionID string, generation uint64) tea.Cmd {
 	if runtime == nil || executionID == "" {
 		return nil
 	}
 	return func() tea.Msg {
-		res, err := runtime.WaitTurn(context.Background(), executionID)
-		return turnFinishedMsg{sessionID: sessionID, executionID: executionID, generation: generation, result: res, err: err}
+		res, err := runtime.WaitTurn(ctx, executionID)
+		return turnFinishedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, executionID: executionID, generation: generation, result: res, err: err}
 	}
 }
 
@@ -311,6 +323,11 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 
 	runtime := m.runtime
 	sessionID := m.sessionID
+	bindingGeneration := m.bindingGeneration
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	if m.run.running {
 		// Queue follow-up turn while active task runs
@@ -326,9 +343,8 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		m.viewport.GotoBottom()
 
 		submitCmd := func() tea.Msg {
-			ctx := context.Background()
 			sub, err := runtime.SubmitTurn(ctx, req, core.QueueInput)
-			return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+			return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 		}
 		return m, tea.Batch(runtimeEventsCmd, submitCmd)
 	}
@@ -350,6 +366,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.run.streamGenerationTokens = 0
 	m.run.currentStreamText = ""
 	m.run.currentReasoningText = ""
+	m.view.invalidateLive()
 	m.run.reasoningStartTime = time.Time{}
 	m.scrolledUp = false
 	m.activeQuestion = nil
@@ -377,13 +394,12 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		runtimeEventsCmd,
 		tickClock(),
 		func() tea.Msg {
-			ctx := context.Background()
 			sub, err := runtime.SubmitTurn(ctx, req, core.StartIfIdle)
 			if err != nil && strings.Contains(err.Error(), "session task is paused") {
 				_, _ = runtime.DiscardPaused(ctx)
 				sub, err = runtime.SubmitTurn(ctx, req, core.StartIfIdle)
 			}
-			return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+			return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 		},
 	)
 }

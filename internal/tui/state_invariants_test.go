@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -100,5 +101,63 @@ func TestTranscriptCacheClearsMarkersAfterRender(t *testing.T) {
 	}
 	if !m.view.transcriptDirty {
 		t.Fatal("invalidateContent must mark the composed text stale")
+	}
+}
+
+func TestRunStateResetKeepsAsyncGenerationsMonotonic(t *testing.T) {
+	run := newRunState()
+	run.subscriptionGeneration = 8
+	run.waitGeneration = 12
+	run.restoreGeneration = 4
+	run.reset()
+	if run.subscriptionGeneration != 8 || run.waitGeneration != 12 || run.restoreGeneration != 4 {
+		t.Fatalf("session reset reused async identities: subscription=%d wait=%d restore=%d",
+			run.subscriptionGeneration, run.waitGeneration, run.restoreGeneration)
+	}
+	run.beginRestore()
+	if run.restoreGeneration != 5 {
+		t.Fatalf("restore generation did not advance across reset: %d", run.restoreGeneration)
+	}
+}
+
+func TestDelayedSessionResultsAreIgnoredAfterReturningToSameSession(t *testing.T) {
+	m := newTUIModel(nil, nil, "session-a")
+	oldGeneration := m.bindingGeneration
+	oldContext := m.boundContext
+	m.replaceSessionBinding() // Switch away.
+	m.replaceSessionBinding() // Return to the same session ID.
+	select {
+	case <-oldContext.Done():
+	default:
+		t.Fatal("replacing a session binding did not cancel its context")
+	}
+	if m.bindingGeneration == oldGeneration {
+		t.Fatal("binding generation was reused after returning to the same session")
+	}
+	m.Update(sessionForkedMsg{sessionID: "session-a", bindingGeneration: oldGeneration, err: errors.New("stale fork")})
+	m.Update(planImplementedMsg{sessionID: "session-a", bindingGeneration: oldGeneration, err: errors.New("stale implementation")})
+	if len(m.entries) != 0 {
+		t.Fatalf("a delayed result from an earlier binding changed the returned session: %+v", m.entries)
+	}
+	m.Update(turnSubmittedMsg{
+		sessionID: "session-a", bindingGeneration: oldGeneration,
+		submission: core.TurnSubmission{ExecutionID: "stale", Status: core.SubmissionAccepted},
+	})
+	m.run.running = true
+	m.run.runningExecution = "same-execution"
+	m.run.awaitingTurns["same-execution"] = 1
+	m.Update(turnFinishedMsg{
+		sessionID: "session-a", bindingGeneration: oldGeneration, executionID: "same-execution",
+		generation: 1, result: core.TurnResult{Status: core.TaskFailed},
+	})
+	m.run.discardInFlight = true
+	m.Update(taskDiscardedMsg{bindingGeneration: oldGeneration, source: discardSourceCommand, discarded: true})
+	m.Update(compactDoneMsg{sessionID: "session-a", bindingGeneration: oldGeneration, err: errors.New("stale compact")})
+	m.Update(approvalResolvedMsg{bindingGeneration: oldGeneration, approvalID: "stale", err: errors.New("stale approval")})
+	m.Update(goalActionMsg{sessionID: "session-a", bindingGeneration: oldGeneration, action: "pause", err: errors.New("stale goal")})
+	m.Update(reviewMaterialsMsg{bindingGeneration: oldGeneration, err: errors.New("stale review")})
+	if !m.run.running || !m.run.discardInFlight || m.run.runningExecution != "same-execution" || len(m.entries) != 0 {
+		t.Fatalf("a stale session result changed the current task: running=%v discard=%v execution=%q entries=%+v",
+			m.run.running, m.run.discardInFlight, m.run.runningExecution, m.entries)
 	}
 }

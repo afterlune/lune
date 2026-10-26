@@ -223,7 +223,7 @@ func TestLiveProposedPlanStaysVisibleWhenClosingTagArrives(t *testing.T) {
 		m.run.currentStreamText = stream
 		m.view.invalidateContent()
 		m.refreshViewportContent()
-		view := ansi.Strip(m.viewport.View())
+		view := ansi.Strip(m.view.liveContent)
 		if !strings.Contains(view, "Proposed Plan") || !strings.Contains(view, "Steps") || !strings.Contains(view, "1. Fin") || strings.Contains(view, "proposed_plan_end") {
 			t.Fatalf("live plan disappeared while the stream reached a complete block:\n%s", view)
 		}

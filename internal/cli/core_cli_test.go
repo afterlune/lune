@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -73,6 +74,46 @@ func TestWriteCLICompactionStatus(t *testing.T) {
 	if strings.Contains(got, "Provider compacted the context (estimated input") || !strings.Contains(got, "Provider compacted the context (previous input 2.4k tokens)") {
 		t.Fatalf("server compaction status reported an unsupported after-token count: %q", got)
 	}
+}
+
+type failingCLIWriter struct{}
+
+func (failingCLIWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func TestAwaitCoreExecutionStopsOnStreamAndProgressFailures(t *testing.T) {
+	newRuntime := func() *fakeCLIRuntime {
+		return &fakeCLIRuntime{turns: map[string]fakeCLITurn{"execution": {done: make(chan struct{})}}}
+	}
+	t.Run("runtime stream failure", func(t *testing.T) {
+		events := make(chan core.Event, 1)
+		events <- core.Event{Kind: core.EventRuntimeStreamFailed, Err: "journal unavailable"}
+		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "journal unavailable") || interrupted {
+			t.Fatalf("stream failure result = %v, interrupted=%v", err, interrupted)
+		}
+	})
+	t.Run("closed runtime stream", func(t *testing.T) {
+		events := make(chan core.Event)
+		close(events)
+		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "event stream closed") || interrupted {
+			t.Fatalf("closed stream result = %v, interrupted=%v", err, interrupted)
+		}
+	})
+	t.Run("progress write failure", func(t *testing.T) {
+		events := make(chan core.Event, 1)
+		events <- core.Event{Kind: core.EventModelRetry, Err: "temporary failure"}
+		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, failingCLIWriter{})
+		if err == nil || !strings.Contains(err.Error(), "broken pipe") || interrupted {
+			t.Fatalf("write failure result = %v, interrupted=%v", err, interrupted)
+		}
+	})
+	t.Run("initial progress write failure is not an interruption", func(t *testing.T) {
+		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", nil, make(chan cliInputEvent), failingCLIWriter{})
+		if err == nil || !strings.Contains(err.Error(), "broken pipe") || interrupted {
+			t.Fatalf("initial write failure result = %v, interrupted=%v", err, interrupted)
+		}
+	})
 }
 
 func TestFormatCLIManualCompactionResult(t *testing.T) {

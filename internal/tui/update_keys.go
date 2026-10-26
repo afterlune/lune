@@ -142,9 +142,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				maxOpt := len(m.activeQuestion.Request.Questions[currIdx].Options)
 				if draft.Selected == maxOpt && draft.Custom != "" {
 					draft.Custom = ""
-					m.questionDraftChanged(m.activeQuestion)
+					cmd := m.questionDraftChanged(m.activeQuestion)
 					m.updateLayout()
-					return m, nil
+					return m, cmd
 				}
 			}
 			return m.noteQuestionPending()
@@ -164,6 +164,8 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.scrolledUp {
 			m.scrolledUp = false
 			m.viewport.GotoBottom()
+			m.view.invalidateLive()
+			m.updateLayout()
 			return m, nil
 		}
 		if m.run.running && m.runtime != nil && m.run.runningExecution != "" {
@@ -271,10 +273,14 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.run.running = true
 			m.run.taskStartedAt = time.Now()
 			m.updateLayout()
-			sessionID := m.sessionID
+			runtime, sessionID, bindingGeneration := m.runtime, m.sessionID, m.bindingGeneration
+			ctx := m.boundContext
+			if ctx == nil {
+				ctx = context.Background()
+			}
 			return m, func() tea.Msg {
-				sub, err := m.runtime.Recover(context.Background())
-				return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+				sub, err := runtime.Recover(ctx)
+				return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 			}
 		case "2", "d":
 			m.activeRecovery.Selected = 1
@@ -286,10 +292,14 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.run.running = true
 				m.run.taskStartedAt = time.Now()
 				m.updateLayout()
-				sessionID := m.sessionID
+				runtime, sessionID, bindingGeneration := m.runtime, m.sessionID, m.bindingGeneration
+				ctx := m.boundContext
+				if ctx == nil {
+					ctx = context.Background()
+				}
 				return m, func() tea.Msg {
-					sub, err := m.runtime.Recover(context.Background())
-					return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+					sub, err := runtime.Recover(ctx)
+					return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 				}
 			} else {
 				return m.discardPausedTask(discardSourceRecovery)
@@ -474,14 +484,20 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "pgup":
 		m.viewport.HalfPageUp()
 		m.scrolledUp = !m.viewport.AtBottom()
+		m.view.invalidateLive()
+		m.updateLayout()
 		return m, nil
 	case "pgdown":
 		m.viewport.HalfPageDown()
 		m.scrolledUp = !m.viewport.AtBottom()
+		m.view.invalidateLive()
+		m.updateLayout()
 		return m, nil
 	case "alt+end":
 		m.viewport.GotoBottom()
 		m.scrolledUp = false
+		m.view.invalidateLive()
+		m.updateLayout()
 		return m, nil
 	}
 

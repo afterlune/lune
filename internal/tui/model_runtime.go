@@ -17,6 +17,9 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	if m.client == nil {
 		return fmt.Errorf("core client is unavailable")
 	}
+	if err := m.flushQuestionDraft(ctx); err != nil {
+		return fmt.Errorf("save question draft before switching sessions: %w", err)
+	}
 	rt, err := m.client.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {
 		return err
@@ -39,7 +42,11 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	if err != nil {
 		return err
 	}
-
+	if m.run.runtimeCancel != nil {
+		m.run.runtimeCancel()
+		m.run.runtimeCancel = nil
+	}
+	m.replaceSessionBinding()
 	if m.runtime != nil {
 		// Stop interactive prompts on the outgoing runtime before closing it. A
 		// failed close must not abort the switch: the model would otherwise stay
@@ -48,10 +55,6 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 		if err := m.runtime.Close(); err != nil {
 			slog.Warn("close previous session runtime", "error", err)
 		}
-	}
-	if m.run.runtimeCancel != nil {
-		m.run.runtimeCancel()
-		m.run.runtimeCancel = nil
 	}
 	m.resetSessionState()
 	m.runtime = rt

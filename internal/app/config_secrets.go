@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 
 	"github.com/afterlune/lune/internal/settings"
+	core "github.com/afterlune/luneCore"
 	"github.com/go-keyring/keyring"
 )
 
@@ -60,24 +62,80 @@ type configSecretProtection struct {
 // platform has a secure credential store, then returns the document Core must
 // read with the keys restored in memory.
 func prepareUserConfig(path string, document []byte) ([]byte, error) {
-	return prepareUserConfigWithKeyring(path, document, systemProviderKeyring{})
+	return prepareUserConfigWithDiagnostics(path, document, os.Stderr)
+}
+
+func prepareUserConfigWithDiagnostics(path string, document []byte, diagnostics io.Writer) ([]byte, error) {
+	return prepareUserConfigWithKeyringAndDiagnostics(path, document, systemProviderKeyring{}, diagnostics)
 }
 
 func prepareUserConfigWithKeyring(path string, document []byte, store providerKeyring) ([]byte, error) {
-	environmentKeys, err := readConfigEnvironmentKeys(document)
+	return prepareUserConfigWithKeyringAndDiagnostics(path, document, store, os.Stderr)
+}
+
+func prepareUserConfigWithKeyringAndDiagnostics(path string, document []byte, store providerKeyring, diagnostics io.Writer) ([]byte, error) {
+	preflight, err := preflightUserConfig(document, store)
 	if err != nil {
 		return nil, err
+	}
+	return persistPreparedUserConfig(path, preflight, store, diagnostics)
+}
+
+func prepareValidatedUserConfig(path string, document []byte, diagnostics io.Writer) ([]byte, error) {
+	return prepareValidatedUserConfigWithKeyring(path, document, systemProviderKeyring{}, diagnostics)
+}
+
+func prepareValidatedUserConfigWithKeyring(path string, document []byte, store providerKeyring, diagnostics io.Writer) ([]byte, error) {
+	preflight, err := preflightUserConfig(document, store)
+	if err != nil {
+		return nil, err
+	}
+	var projectConfig core.ProjectConfig
+	if err := json.Unmarshal(preflight.candidate, &projectConfig); err != nil {
+		return nil, fmt.Errorf("parse project config: %w", err)
+	}
+	if err := projectConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("validate project config: %w", err)
+	}
+	return persistPreparedUserConfig(path, preflight, store, diagnostics)
+}
+
+type userConfigPreflight struct {
+	environmentKeys map[string]string
+	defaulted       []byte
+	candidate       []byte
+	defaultsChanged bool
+}
+
+func preflightUserConfig(document []byte, store providerKeyring) (userConfigPreflight, error) {
+	environmentKeys, err := readConfigEnvironmentKeys(document)
+	if err != nil {
+		return userConfigPreflight{}, err
 	}
 	defaulted, defaultsChanged, err := defaultResponsesServerCompaction(document)
 	if err != nil {
-		return nil, err
+		return userConfigPreflight{}, err
 	}
-	stored := defaulted
-	protection, err := protectConfigSecrets(defaulted, store)
+	candidate, changed, err := revealConfigSecrets(defaulted, store, environmentKeys)
+	if err != nil {
+		return userConfigPreflight{}, err
+	}
+	if !changed {
+		candidate = defaulted
+	}
+	return userConfigPreflight{
+		environmentKeys: environmentKeys, defaulted: defaulted,
+		candidate: candidate, defaultsChanged: defaultsChanged,
+	}, nil
+}
+
+func persistPreparedUserConfig(path string, preflight userConfigPreflight, store providerKeyring, diagnostics io.Writer) ([]byte, error) {
+	stored := preflight.defaulted
+	protection, err := protectConfigSecrets(preflight.defaulted, store)
 	if err != nil {
 		return nil, err
 	}
-	writeConfig := defaultsChanged
+	writeConfig := preflight.defaultsChanged
 	if protection.changed {
 		stored = protection.document
 		writeConfig = true
@@ -93,11 +151,13 @@ func prepareUserConfigWithKeyring(path string, document []byte, store providerKe
 		return nil, fmt.Errorf("restrict config permissions: %w", err)
 	}
 	if hasPlaintextConfigSecrets(stored) {
-		fmt.Fprintf(os.Stderr, "warning: %s stores provider API keys in plain text; %s\n",
-			path, configProtectionHint())
+		if diagnostics != nil {
+			_, _ = fmt.Fprintf(diagnostics, "warning: %s stores provider API keys in plain text; %s\n",
+				path, configProtectionHint())
+		}
 	}
 
-	revealed, revealedChanged, err := revealConfigSecrets(stored, store, environmentKeys)
+	revealed, revealedChanged, err := revealConfigSecrets(stored, store, preflight.environmentKeys)
 	if err != nil {
 		return nil, err
 	}

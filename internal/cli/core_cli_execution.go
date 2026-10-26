@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/assistanttext"
 	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
 )
@@ -71,10 +72,11 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 }
 
 func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, events <-chan core.Event, keyEvents <-chan cliInputEvent, stderr io.Writer) (core.TurnResult, error, bool) {
+	progress := &cliProgressWriter{writer: stderr, errors: make(chan error, 1)}
+	stderr = progress
 	if keyEvents != nil {
 		if _, err := fmt.Fprintln(stderr, "Working... Press Esc to interrupt."); err != nil {
-			runtime.Interrupt(executionID)
-			return core.TurnResult{}, err, true
+			return core.TurnResult{}, err, false
 		}
 	}
 	type waitResult struct {
@@ -82,8 +84,10 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 		err    error
 	}
 	done := make(chan waitResult, 1)
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	defer cancelWait()
 	go func() {
-		result, waitErr := runtime.WaitTurn(context.Background(), executionID)
+		result, waitErr := runtime.WaitTurn(waitCtx, executionID)
 		done <- waitResult{result: result, err: waitErr}
 	}()
 	interrupted := false
@@ -124,6 +128,12 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 				pendingKey = nil
 			}
 			switch event.Kind {
+			case core.EventRuntimeStreamFailed:
+				reason := cleanCLIInlineText(event.Err)
+				if reason == "" {
+					reason = "unknown stream error"
+				}
+				return core.TurnResult{}, fmt.Errorf("runtime event stream failed: %s", reason), interrupted
 			case core.EventContextCompaction:
 				if event.Compaction != nil {
 					writeCLICompactionStatus(stderr, *event.Compaction)
@@ -219,8 +229,32 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 			// letting one side of the select wait forever.
 			buffered := key
 			pendingKey = &buffered
+		case writeErr := <-progress.errors:
+			return core.TurnResult{}, fmt.Errorf("write CLI progress: %w", writeErr), interrupted
 		}
 	}
+}
+
+type cliProgressWriter struct {
+	writer io.Writer
+	errors chan error
+}
+
+func (w *cliProgressWriter) Write(data []byte) (int, error) {
+	if w.writer == nil {
+		w.writer = io.Discard
+	}
+	n, err := w.writer.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		select {
+		case w.errors <- err:
+		default:
+		}
+	}
+	return n, err
 }
 
 func subscribeAfterPausedExecution(runtime cliRuntime, executionID string) (<-chan core.Event, context.CancelFunc, error) {
@@ -624,50 +658,9 @@ func printCoreTaskResult(stdout, stderr io.Writer, response json.RawMessage, cal
 }
 
 func coreResponseText(response json.RawMessage) (string, error) {
-	var envelope struct {
-		Output []json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal(response, &envelope); err != nil {
+	text, err := assistanttext.Extract(response)
+	if err != nil {
 		return "", fmt.Errorf("decode response output: %w", err)
 	}
-	var lines []string
-	for _, item := range envelope.Output {
-		var value struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
-		}
-		if err := json.Unmarshal(item, &value); err != nil {
-			return "", err
-		}
-		if value.Type == "reasoning" || value.Type == "function_call" || value.Type == "custom_tool_call" {
-			continue
-		}
-		if value.Type != "message" {
-			lines = append(lines, string(item))
-			continue
-		}
-		var parts []json.RawMessage
-		if json.Unmarshal(value.Content, &parts) != nil {
-			var text string
-			if json.Unmarshal(value.Content, &text) == nil {
-				lines = append(lines, text)
-			}
-			continue
-		}
-		var text strings.Builder
-		for _, raw := range parts {
-			var part struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(raw, &part)
-			if part.Type == "output_text" {
-				text.WriteString(part.Text)
-			}
-		}
-		if text.Len() > 0 {
-			lines = append(lines, text.String())
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+	return text, nil
 }

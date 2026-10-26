@@ -12,9 +12,11 @@ import (
 )
 
 type planImplementedMsg struct {
-	impl     core.PlanImplementation
-	planText string
-	err      error
+	impl              core.PlanImplementation
+	planText          string
+	sessionID         string
+	bindingGeneration uint64
+	err               error
 }
 
 // planArchivedMsg reports the archived plan path produced by planArchiveCmd.
@@ -81,7 +83,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			if draft.NotesOpen {
 				if text != "" {
 					draft.NoteText += text
-					m.questionDraftChanged(m.activeQuestion)
+					saveCmd := m.questionDraftChanged(m.activeQuestion)
+					m.updateLayout()
+					return m, saveCmd
 				}
 				m.updateLayout()
 				return m, nil
@@ -89,7 +93,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			if draft.Selected >= len(currQ.Options) {
 				if text != "" {
 					draft.Custom += text
-					m.questionDraftChanged(m.activeQuestion)
+					saveCmd := m.questionDraftChanged(m.activeQuestion)
+					m.updateLayout()
+					return m, saveCmd
 				}
 				m.updateLayout()
 				return m, nil
@@ -107,7 +113,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 
 	case tickMsg:
 		if m.run.running || (m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero()) {
-			m.refreshViewportContent()
+			m.view.invalidateLive()
+			if m.input.composer.Placeholder != "" {
+				m.updateLayout()
+			}
 			return m, tickClock()
 		}
 
@@ -131,6 +140,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 
 	case runtimeReconnectMsg:
 		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+			return m, nil
+		}
+		if msg.generation != 0 && !m.matchesSubscription(msg.generation) {
 			return m, nil
 		}
 		return m, m.startRuntimeEventSubscription(true)
@@ -166,8 +178,8 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			}
 			m.advanceEventCursor(batchEv)
 		}
-		if !m.run.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty) {
-			m.refreshViewportContent()
+		if !m.run.restoringSession && (m.view.transcriptDirty || m.view.cachedDirty || m.view.liveDirty) {
+			m.updateLayout()
 		}
 		cmds = append(cmds, nextRuntimeEvent(m.sessionID, msg.generation, msg.events))
 		return m, tea.Batch(cmds...)
@@ -179,7 +191,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case turnSubmittedMsg:
-		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+		if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
 			return m, nil
 		}
 		m.pausedCheckpoint = nil
@@ -213,19 +225,28 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case turnFinishedMsg:
-		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+		if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
 			return m, nil
 		}
 		return m, m.finishTurn(msg)
 
 	case questionSubmittedMsg:
+		if !m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
 		return m, m.finishQuestionSubmission(msg)
+
+	case questionDraftSaveDueMsg:
+		return m, m.handleQuestionDraftSaveDue(msg)
+
+	case questionDraftSavedMsg:
+		return m, m.finishQuestionDraftSave(msg)
 
 	case approvalResolvedMsg:
 		return m, m.finishApprovalResolution(msg)
 
 	case compactDoneMsg:
-		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+		if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
 			return m, nil
 		}
 		m.usage.resetCompaction()
@@ -259,6 +280,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case sessionForkedMsg:
+		if (msg.sessionID != "" && msg.sessionID != m.sessionID) ||
+			!m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.addSystemEntry("Fork failed: " + msg.err.Error())
 			return m, nil
@@ -271,6 +296,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, m.subscribeRuntimeEvents()
 
 	case planImplementedMsg:
+		if (msg.sessionID != "" && msg.sessionID != m.sessionID) ||
+			!m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
 		if msg.err != nil {
 
 			m.addSystemEntry("Plan implementation failed: " + msg.err.Error())
@@ -297,6 +326,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(planCmds...)
 
 	case taskDiscardedMsg:
+		if !m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
 		m.run.discardInFlight = false
 		if msg.err != nil {
 			m.addSystemEntry("Discard failed: " + msg.err.Error())
@@ -322,6 +354,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case queuedTurnCancelledMsg:
+		if !m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
 		m.settleQueuedTurnCancellation(msg)
 		return m, nil
 
@@ -339,6 +374,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		m.scrolledUp = !m.viewport.AtBottom()
+		m.view.invalidateLive()
 		if m.input.selecting {
 			headerHeight := 3
 			totalLines := m.viewport.TotalLineCount()
@@ -347,6 +383,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 				m.input.selectEndDocRow = totalLines - 1
 				m.input.selectEndX = m.viewport.Width()
 			}
+		}
+		if m.layoutReady {
+			m.updateLayout()
 		}
 		return m, vpCmd
 
@@ -406,6 +445,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			} else if msg.Y < headerHeight {
 				m.viewport.ScrollUp(2)
 				m.scrolledUp = !m.viewport.AtBottom()
+			}
+			m.view.invalidateLive()
+			if m.layoutReady {
+				m.updateLayout()
 			}
 			totalLines := m.viewport.TotalLineCount()
 			m.input.selectEndDocRow = clamp(m.viewport.YOffset()+(m.input.selectEndY-headerHeight), 0, max(0, totalLines-1))
@@ -632,7 +675,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 		m.activeRecovery = nil
 		m.activeToolRecovery = nil
 	}
-	m.view.invalidateContent()
+	m.view.invalidateLive()
 	m.updateLayout()
 }
 

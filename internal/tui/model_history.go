@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/assistanttext"
 	tuiMarkdown "github.com/afterlune/lune/internal/tui/markdown"
 	core "github.com/afterlune/luneCore"
 )
@@ -183,32 +184,8 @@ func sessionDisplayTitle(s core.Session) string {
 }
 
 func extractResponseText(response json.RawMessage) string {
-	if len(response) == 0 || string(response) == "null" {
-		return ""
-	}
-	var envelope struct {
-		Output []json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal(response, &envelope); err != nil {
-		return ""
-	}
-	var parts []string
-	for _, item := range envelope.Output {
-		var value struct {
-			Type    string          `json:"type"`
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		}
-		if err := json.Unmarshal(item, &value); err != nil {
-			continue
-		}
-		if value.Type == "message" && (value.Role == "" || value.Role == "assistant") {
-			if text := strings.TrimSpace(messageContentText(value.Content)); text != "" {
-				parts = append(parts, text)
-			}
-		}
-	}
-	return strings.Join(parts, "\n\n")
+	text, _ := assistanttext.Extract(response)
+	return text
 }
 
 func extractToolOutputString(raw json.RawMessage) string {
@@ -245,26 +222,5 @@ func extractToolOutputString(raw json.RawMessage) string {
 }
 
 func messageContentText(content json.RawMessage) string {
-	if len(content) == 0 {
-		return ""
-	}
-	var text string
-	if json.Unmarshal(content, &text) == nil {
-		return text
-	}
-	var parts []json.RawMessage
-	if json.Unmarshal(content, &parts) != nil {
-		return ""
-	}
-	var out strings.Builder
-	for _, raw := range parts {
-		var part struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(raw, &part) == nil && (part.Type == "input_text" || part.Type == "output_text") {
-			out.WriteString(part.Text)
-		}
-	}
-	return out.String()
+	return assistanttext.ContentText(content, true)
 }

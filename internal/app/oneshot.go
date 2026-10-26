@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/assistanttext"
 	"github.com/afterlune/lune/internal/filemention"
 	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
@@ -286,50 +287,9 @@ func resolveSessionID(ctx context.Context, client *core.Core, requestedID string
 }
 
 func coreExtractText(response json.RawMessage) (string, error) {
-	var envelope struct {
-		Output []json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal(response, &envelope); err != nil {
+	text, err := assistanttext.Extract(response)
+	if err != nil {
 		return "", fmt.Errorf("decode response output: %w", err)
 	}
-	var lines []string
-	for _, item := range envelope.Output {
-		var value struct {
-			Type    string          `json:"type"`
-			Content json.RawMessage `json:"content"`
-		}
-		if err := json.Unmarshal(item, &value); err != nil {
-			continue
-		}
-		if value.Type == "reasoning" || value.Type == "function_call" || value.Type == "custom_tool_call" {
-			continue
-		}
-		if value.Type != "message" {
-			lines = append(lines, string(item))
-			continue
-		}
-		var parts []json.RawMessage
-		if json.Unmarshal(value.Content, &parts) != nil {
-			var text string
-			if json.Unmarshal(value.Content, &text) == nil {
-				lines = append(lines, text)
-			}
-			continue
-		}
-		var text strings.Builder
-		for _, raw := range parts {
-			var part struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(raw, &part)
-			if part.Type == "output_text" {
-				text.WriteString(part.Text)
-			}
-		}
-		if text.Len() > 0 {
-			lines = append(lines, text.String())
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+	return text, nil
 }

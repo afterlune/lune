@@ -74,17 +74,6 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	if len(fallbackResponse) > 0 {
 		if responseText := extractResponseText(fallbackResponse); strings.TrimSpace(responseText) != "" {
 			text = responseText
-			if executionID != "" {
-				stableID := assistantOutputID(executionID)
-				for i := len(m.entries) - 1; i >= 0; i-- {
-					if m.entries[i].Kind == KindUser {
-						break
-					}
-					if m.entries[i].Kind == KindAssistant && m.entries[i].ExecutionID == executionID && m.entries[i].ID != stableID {
-						m.entries = append(m.entries[:i], m.entries[i+1:]...)
-					}
-				}
-			}
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
@@ -33,7 +34,36 @@ func recommendedQuestionOptionIndex(options []core.UserQuestionOption) int {
 func newActiveQuestion(request core.UserQuestionRequest) *ActiveQuestion {
 	q := &ActiveQuestion{Request: request}
 	q.ensureDrafts()
+	q.restoreDraft()
 	return q
+}
+
+func (q *ActiveQuestion) restoreDraft() {
+	if q.Request.Draft == nil {
+		return
+	}
+	draft := q.Request.Draft
+	for index, item := range q.Request.Questions {
+		for _, response := range draft.Responses {
+			if response.QuestionID != item.ID {
+				continue
+			}
+			selected := response.SelectedOption
+			if selected < 0 {
+				selected = len(item.Options)
+			} else {
+				selected = min(selected, len(item.Options))
+			}
+			q.Drafts[index] = questionDraft{
+				Selected: selected, Custom: response.CustomAnswer,
+				NoteText: response.Notes, Confirmed: response.Confirmed,
+			}
+			break
+		}
+		if item.ID == draft.CurrentQuestionID {
+			q.CurrentIndex = index
+		}
+	}
 }
 
 func (q *ActiveQuestion) ensureDrafts() {
@@ -80,15 +110,144 @@ func (q *ActiveQuestion) confirmedAnswers() []core.UserQuestionResponse {
 	return answers
 }
 
-func (m *tuiModel) questionDraftChanged(q *ActiveQuestion) {
+func (m *tuiModel) questionDraftChanged(q *ActiveQuestion) tea.Cmd {
+	if q == nil {
+		return nil
+	}
 	q.currentDraft().Confirmed = false
 	q.Error = ""
+	q.draftRevision++
 	m.recordQuestionAnswers(q)
+	return m.scheduleQuestionDraftSave(q)
+}
+
+type questionDraftSaveDueMsg struct {
+	key               questionWaitKey
+	bindingGeneration uint64
+	revision          uint64
+}
+
+type questionDraftSavedMsg struct {
+	key               questionWaitKey
+	bindingGeneration uint64
+	revision          uint64
+	err               error
+}
+
+func (m *tuiModel) scheduleQuestionDraftSave(q *ActiveQuestion) tea.Cmd {
+	if q == nil || q.Submitting || m.runtime == nil || q.draftRevision <= q.savedRevision {
+		return nil
+	}
+	key, generation, revision := m.questionKey(q.Request), m.bindingGeneration, q.draftRevision
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+		return questionDraftSaveDueMsg{key: key, bindingGeneration: generation, revision: revision}
+	})
+}
+
+func (m *tuiModel) questionDraftValue(q *ActiveQuestion) core.UserQuestionDraft {
+	q.ensureDrafts()
+	draft := core.UserQuestionDraft{Responses: make([]core.UserQuestionDraftResponse, 0, len(q.Request.Questions))}
+	if q.CurrentIndex >= 0 && q.CurrentIndex < len(q.Request.Questions) {
+		draft.CurrentQuestionID = q.Request.Questions[q.CurrentIndex].ID
+	}
+	for index, item := range q.Request.Questions {
+		answer := q.Drafts[index]
+		selected := answer.Selected
+		if selected >= len(item.Options) {
+			selected = -1
+		}
+		draft.Responses = append(draft.Responses, core.UserQuestionDraftResponse{
+			QuestionID: item.ID, SelectedOption: selected, Notes: answer.NoteText,
+			CustomAnswer: answer.Custom, Confirmed: answer.Confirmed,
+		})
+	}
+	return draft
+}
+
+func (m *tuiModel) saveQuestionDraftCommand(q *ActiveQuestion, revision uint64) tea.Cmd {
+	if q == nil || m.runtime == nil {
+		return nil
+	}
+	runtime := m.runtime
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key, generation := m.questionKey(q.Request), m.bindingGeneration
+	draft := m.questionDraftValue(q)
+	answer := core.UserQuestionAnswer{
+		ExecutionID: q.Request.ExecutionID, RunID: q.Request.RunID,
+		InvocationID: q.Request.InvocationID, CallID: q.Request.CallID,
+	}
+	return func() tea.Msg {
+		m.questionDraftSaveMu.Lock()
+		defer m.questionDraftSaveMu.Unlock()
+		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		err := runtime.SaveUserQuestionDraft(writeCtx, answer, draft)
+		return questionDraftSavedMsg{key: key, bindingGeneration: generation, revision: revision, err: err}
+	}
+}
+
+func (m *tuiModel) flushQuestionDraft(ctx context.Context) error {
+	q := m.activeQuestion
+	if q == nil || q.Submitting || q.draftRevision <= q.savedRevision || m.runtime == nil {
+		return nil
+	}
+	runtime := m.runtime
+	draft := m.questionDraftValue(q)
+	answer := core.UserQuestionAnswer{
+		ExecutionID: q.Request.ExecutionID, RunID: q.Request.RunID,
+		InvocationID: q.Request.InvocationID, CallID: q.Request.CallID,
+	}
+	m.questionDraftSaveMu.Lock()
+	defer m.questionDraftSaveMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	flushCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := runtime.SaveUserQuestionDraft(flushCtx, answer, draft); err != nil {
+		return err
+	}
+	q.savedRevision = q.draftRevision
+	return nil
+}
+
+func (m *tuiModel) handleQuestionDraftSaveDue(msg questionDraftSaveDueMsg) tea.Cmd {
+	q := m.activeQuestion
+	if q == nil || msg.key != m.questionKey(q.Request) || msg.bindingGeneration != m.bindingGeneration ||
+		msg.revision != q.draftRevision || q.Submitting || q.saveInFlight {
+		return nil
+	}
+	q.saveInFlight = true
+	return m.saveQuestionDraftCommand(q, msg.revision)
+}
+
+func (m *tuiModel) finishQuestionDraftSave(msg questionDraftSavedMsg) tea.Cmd {
+	q := m.activeQuestion
+	if q == nil || msg.key != m.questionKey(q.Request) || msg.bindingGeneration != m.bindingGeneration {
+		return nil
+	}
+	q.saveInFlight = false
+	if msg.err == nil {
+		q.savedRevision = max(q.savedRevision, msg.revision)
+	} else if !q.Submitting && msg.revision == q.draftRevision {
+		q.Error = "Could not save question draft: " + msg.err.Error()
+		m.updateLayout()
+		return nil
+	}
+	if q.draftRevision > q.savedRevision && !q.Submitting {
+		return m.scheduleQuestionDraftSave(q)
+	}
+	m.updateLayout()
+	return nil
 }
 
 type questionSubmittedMsg struct {
-	key questionWaitKey
-	err error
+	key               questionWaitKey
+	bindingGeneration uint64
+	err               error
 }
 
 func (m *tuiModel) questionKey(request core.UserQuestionRequest) questionWaitKey {
@@ -153,6 +312,7 @@ func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 	}
 	m.run.questionSubmissions[key] = questionSubmitting
 	q.Submitting, q.Error = true, ""
+	q.draftRevision++
 	// WaitTurn can still be returning the pause that produced this question.
 	// Its result must not finalize the resumed attempt under the same execution ID.
 	delete(m.run.awaitingTurns, key.ExecutionID)
@@ -163,11 +323,12 @@ func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 		Answers: answers,
 	}
 	runtime := m.runtime
+	bindingGeneration := m.bindingGeneration
 	return func() tea.Msg {
 		if runtime == nil {
-			return questionSubmittedMsg{key: key, err: errors.New("session runtime is unavailable")}
+			return questionSubmittedMsg{key: key, bindingGeneration: bindingGeneration, err: errors.New("session runtime is unavailable")}
 		}
-		return questionSubmittedMsg{key: key, err: runtime.ResolveUserQuestion(context.Background(), answer)}
+		return questionSubmittedMsg{key: key, bindingGeneration: bindingGeneration, err: runtime.ResolveUserQuestion(context.Background(), answer)}
 	}
 }
 
@@ -181,6 +342,8 @@ func (m *tuiModel) finishQuestionSubmission(msg questionSubmittedMsg) tea.Cmd {
 		if q != nil && m.questionKey(q.Request) == msg.key {
 			q.Submitting = false
 			q.Error = "Failed to submit answers: " + msg.err.Error() + ". Press enter to retry."
+			m.updateLayout()
+			return m.scheduleQuestionDraftSave(q)
 		}
 		m.updateLayout()
 		return nil

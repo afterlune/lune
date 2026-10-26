@@ -27,8 +27,10 @@ func (m *tuiModel) resolveActiveQuestion() (tea.Model, tea.Cmd) {
 		next := (q.CurrentIndex + offset) % len(q.Request.Questions)
 		if !q.Drafts[next].Confirmed {
 			q.CurrentIndex = next
+			q.draftRevision++
+			cmd := m.scheduleQuestionDraftSave(q)
 			m.updateLayout()
-			return m, nil
+			return m, cmd
 		}
 	}
 
@@ -71,9 +73,14 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 	m.updateLayout()
 
 	runtime := m.runtime
+	sessionID, bindingGeneration := m.sessionID, m.bindingGeneration
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return m, func() tea.Msg {
-		impl, err := runtime.ImplementPlan(context.Background(), review.ExecutionID, core.PlanImplementationOptions{Mode: mode, PermissionMode: permissionMode})
-		return planImplementedMsg{impl: impl, planText: review.Text, err: err}
+		impl, err := runtime.ImplementPlan(ctx, review.ExecutionID, core.PlanImplementationOptions{Mode: mode, PermissionMode: permissionMode})
+		return planImplementedMsg{impl: impl, planText: review.Text, sessionID: sessionID, bindingGeneration: bindingGeneration, err: err}
 	}
 }
 
@@ -120,24 +127,30 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 
 	runtime := m.runtime
 	executionID := m.run.runningExecution
+	sessionID, bindingGeneration := m.sessionID, m.bindingGeneration
 	return m, tea.Batch(
 		tickClock(),
 		m.waitForExecution(executionID),
 		func() tea.Msg {
-			return approvalResolvedMsg{approvalID: apprID, err: runtime.ResolveApprovalDecision(apprID, approvalDecision)}
+			return approvalResolvedMsg{approvalID: apprID, sessionID: sessionID, bindingGeneration: bindingGeneration, err: runtime.ResolveApprovalDecision(apprID, approvalDecision)}
 		},
 	)
 }
 
 // approvalResolvedMsg reports the outcome of an approval decision sent to Core.
 type approvalResolvedMsg struct {
-	approvalID string
-	err        error
+	approvalID        string
+	sessionID         string
+	bindingGeneration uint64
+	err               error
 }
 
 // finishApprovalResolution surfaces a failed decision instead of swallowing it:
 // the card comes back and the run state stops claiming a task Core never resumed.
 func (m *tuiModel) finishApprovalResolution(msg approvalResolvedMsg) tea.Cmd {
+	if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
+		return nil
+	}
 	if msg.err == nil {
 		return nil
 	}
@@ -205,13 +218,17 @@ func (m *tuiModel) resolveActiveToolRecovery() (tea.Model, tea.Cmd) {
 
 	runtime := m.runtime
 	sessionID := m.sessionID
+	bindingGeneration := m.bindingGeneration
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return m, func() tea.Msg {
-		ctx := context.Background()
 		if err := runtime.ResolveToolRecovery(ctx, invocationID, decision); err != nil {
-			return turnSubmittedMsg{sessionID: sessionID, err: err}
+			return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, err: err}
 		}
 		sub, err := runtime.Recover(ctx)
-		return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+		return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 	}
 }
 

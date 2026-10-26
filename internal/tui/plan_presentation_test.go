@@ -50,10 +50,10 @@ func TestPlanOrderMatchesLiveCompletedAndRestoredResponse(t *testing.T) {
 	m.width, m.height = 100, 60
 	m.run.currentStreamText = text
 	m.updateLayout()
-	live := strings.TrimSpace(ansi.Strip(m.viewport.View()))
+	live := strings.TrimSpace(ansi.Strip(m.view.liveContent))
 	m.finalizeTurnOutput(plan, nil, "plan-execution")
 	m.updateLayout()
-	completed := strings.TrimSpace(ansi.Strip(m.viewport.View()))
+	completed := strings.TrimSpace(ansi.Strip(m.viewport.GetContent()))
 	if m.activePlanReview == nil {
 		t.Fatal("a concrete plan in normal mode must still offer implementation")
 	}
@@ -65,8 +65,9 @@ func TestPlanOrderMatchesLiveCompletedAndRestoredResponse(t *testing.T) {
 	restored.width, restored.height = m.width, m.height
 	restored.entries = transcriptFromHistory(history)
 	restored.updateLayout()
-	if live != completed || completed != strings.TrimSpace(ansi.Strip(restored.viewport.View())) {
-		t.Fatalf("plan rendering changed between lifecycle stages:\nlive:\n%s\ncompleted:\n%s\nrestored:\n%s", live, completed, ansi.Strip(restored.viewport.View()))
+	restoredText := strings.TrimSpace(ansi.Strip(restored.viewport.GetContent()))
+	if live != completed || completed != restoredText {
+		t.Fatalf("plan rendering changed between lifecycle stages:\nlive:\n%s\ncompleted:\n%s\nrestored:\n%s", live, completed, restoredText)
 	}
 	before, middle, after := strings.Index(completed, "before-marker"), strings.Index(completed, "Proposed Plan"), strings.Index(completed, "after-marker")
 	if before < 0 || !(before < middle && middle < after) {

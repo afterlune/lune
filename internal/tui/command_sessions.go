@@ -11,6 +11,11 @@ import (
 )
 
 func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
+	if err := m.flushQuestionDraft(context.Background()); err != nil {
+		m.addSystemEntry("Could not save question draft; staying in the current session: " + err.Error())
+		m.updateLayout()
+		return m, nil
+	}
 	if m.runtime != nil {
 		if err := m.runtime.Close(); err != nil {
 			m.addSystemEntry("Failed to close the current session: " + err.Error())
@@ -21,6 +26,7 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 		m.run.runtimeCancel()
 		m.run.runtimeCancel = nil
 	}
+	m.replaceSessionBinding()
 
 	profile := m.pendingModelProfile
 	effort := m.reasoningEffort
@@ -40,20 +46,24 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 }
 
 type compactDoneMsg struct {
-	result    core.CompactionResult
-	err       error
-	sessionID string
+	result            core.CompactionResult
+	err               error
+	sessionID         string
+	bindingGeneration uint64
 }
 
 type sessionForkedMsg struct {
-	session core.Session
-	err     error
+	session           core.Session
+	sessionID         string
+	bindingGeneration uint64
+	err               error
 }
 
 type taskDiscardedMsg struct {
-	source    discardSource
-	discarded bool
-	err       error
+	source            discardSource
+	discarded         bool
+	err               error
+	bindingGeneration uint64
 }
 
 type discardSource uint8
@@ -64,8 +74,9 @@ const (
 )
 
 type queuedTurnCancelledMsg struct {
-	executionID string
-	err         error
+	executionID       string
+	bindingGeneration uint64
+	err               error
 }
 
 // handleRewindPreview displays a non-destructive summary of which turns would be rewound.

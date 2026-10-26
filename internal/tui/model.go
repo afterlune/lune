@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
@@ -24,11 +25,15 @@ const (
 )
 
 type tuiModel struct {
-	client       *core.Core
-	runtime      *core.SessionRuntime
-	workspace    string
-	sessionID    string
-	sessionTitle string
+	client    *core.Core
+	runtime   *core.SessionRuntime
+	workspace string
+	sessionID string
+	// bindingGeneration disambiguates delayed work across A→B→A session switches.
+	bindingGeneration uint64
+	boundContext      context.Context
+	boundCancel       context.CancelFunc
+	sessionTitle      string
 	// pendingTitle holds a /title value chosen before the draft session exists.
 	pendingTitle        string
 	currentModel        string
@@ -41,6 +46,8 @@ type tuiModel struct {
 	savedMode           core.PermissionMode
 	width               int
 	height              int
+	overlayMaxRows      int
+	layoutReady         bool
 	viewport            viewport.Model
 	entries             []TranscriptEntry
 	// Input line, autocomplete, prompt history, selection and copy feedback.
@@ -53,6 +60,7 @@ type tuiModel struct {
 	roundsCollapsedByUser  bool
 	scrolledUp             bool
 	activeQuestion         *ActiveQuestion
+	questionDraftSaveMu    sync.Mutex
 	activeApproval         *ActiveApproval
 	activePlanReview       *ActivePlanReview
 	activeRecovery         *ActiveRecovery
@@ -114,6 +122,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		run:          newRunState(),
 		agentMetrics: map[string]*agentRuntimeMetrics{},
 	}
+	m.bindingGeneration = 1
+	m.boundContext, m.boundCancel = context.WithCancel(context.Background())
 	m.ensureAgentMetrics("lead")
 	if client != nil && sessionID != "" {
 		if saved, err := client.GetSession(context.Background(), sessionID); err == nil {
@@ -130,6 +140,20 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		m.checkPendingState(context.Background())
 	}
 	return m
+}
+
+// replaceSessionBinding cancels host-side waits for the old runtime and creates
+// a fresh context. Cancelling WaitTurn does not cancel the Core execution.
+func (m *tuiModel) replaceSessionBinding() {
+	if m.boundCancel != nil {
+		m.boundCancel()
+	}
+	m.bindingGeneration++
+	m.boundContext, m.boundCancel = context.WithCancel(context.Background())
+}
+
+func (m *tuiModel) matchesBinding(generation uint64) bool {
+	return generation == 0 || generation == m.bindingGeneration
 }
 
 // loadSessionSnapshot restores the session-owned transcript, prompt history, and usage state.

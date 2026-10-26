@@ -149,6 +149,29 @@ func TestInvalidEnvironmentConfigFailsBeforeMigration(t *testing.T) {
 	}
 }
 
+func TestInvalidTypedConfigFailsBeforeSecretMigration(t *testing.T) {
+	document := []byte(strings.Replace(plaintextConfigDocument, `"runtime": {}`, `"runtime":{"maxParallelAgents":-1}`, 1))
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &observedProviderKeyring{testProviderKeyring: testProviderKeyring{available: true}}
+	var diagnostics strings.Builder
+	if _, err := prepareValidatedUserConfigWithKeyring(path, document, store, &diagnostics); err == nil || !strings.Contains(err.Error(), "maxParallelAgents") {
+		t.Fatalf("invalid runtime configuration was accepted: %v", err)
+	}
+	if store.calls != 0 || diagnostics.Len() != 0 {
+		t.Fatalf("invalid configuration touched secret storage or emitted migration warnings: calls=%d diagnostics=%q", store.calls, diagnostics.String())
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(document) {
+		t.Fatalf("invalid configuration was migrated before validation:\n got %s\nwant %s", stored, document)
+	}
+}
+
 func TestEnvironmentConfigMixesWithExistingKeyringAndPlaintextProviders(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux keyring migration")

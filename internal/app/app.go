@@ -106,7 +106,7 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		defer slog.SetDefault(previousLogger)
 	}
 
-	client, err := newCore(workspace, flags.NoSandbox)
+	client, err := newCoreWithDiagnostics(workspace, stderr, flags.NoSandbox)
 	if err != nil {
 		return err
 	}
@@ -206,7 +206,11 @@ func isSandboxDisabledEnv() bool {
 }
 
 func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
-	projectConfig, configPath, err := loadUserProjectConfig()
+	return newCoreWithDiagnostics(workspace, os.Stderr, noSandbox...)
+}
+
+func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox ...bool) (*core.Core, error) {
+	projectConfig, configPath, err := loadUserProjectConfigWithDiagnostics(diagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +255,10 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 }
 
 func loadUserProjectConfig() (core.ProjectConfig, string, error) {
+	return loadUserProjectConfigWithDiagnostics(os.Stderr)
+}
+
+func loadUserProjectConfigWithDiagnostics(diagnostics io.Writer) (core.ProjectConfig, string, error) {
 	configDirectory, err := settings.UserSettingsDirectory()
 	if err != nil {
 		return core.ProjectConfig{}, "", fmt.Errorf("find user configuration directory: %w", err)
@@ -260,9 +268,9 @@ func loadUserProjectConfig() (core.ProjectConfig, string, error) {
 	if err != nil {
 		return core.ProjectConfig{}, configPath, fmt.Errorf("read user config %s: %w; copy config.example.json there and edit it", configPath, err)
 	}
-	document, err := prepareUserConfig(configPath, data)
+	document, err := prepareValidatedUserConfig(configPath, data, diagnostics)
 	if err != nil {
-		return core.ProjectConfig{}, configPath, fmt.Errorf("secure user config %s: %w", configPath, err)
+		return core.ProjectConfig{}, configPath, fmt.Errorf("prepare user config %s: %w", configPath, err)
 	}
 	var projectConfig core.ProjectConfig
 	if err := json.Unmarshal(document, &projectConfig); err != nil {

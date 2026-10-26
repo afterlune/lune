@@ -144,6 +144,59 @@ func TestQuestionAnswerAcknowledgementSurvivesDelayedPauseEvents(t *testing.T) {
 	t.Run("model completed before acknowledgement", func(t *testing.T) { testQuestionAnswerAcknowledgement(t, true) })
 }
 
+func TestQuestionDraftPersistsAcrossRuntimeReopen(t *testing.T) {
+	provider := &questionResumeProvider{started: make(chan struct{}), release: make(chan struct{})}
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &publicmodel.Config{
+			Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid"}},
+			Profiles:  map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}}, DefaultProfile: "main",
+		},
+		ModelProviders: map[string]publicmodel.Provider{"host": provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close(); close(provider.release) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(ctx, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := core.ParseTaskInput("Ask me about scope")
+	submission, err := runtime.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := runtime.WaitTurn(ctx, submission.ExecutionID); err != nil || result.Status != core.TaskPaused {
+		t.Fatalf("question task did not pause: %#v, %v", result, err)
+	}
+	m := newTUIModel(client, runtime, saved.ID)
+	q := m.activeQuestion
+	if q == nil {
+		t.Fatal("pending question was not restored")
+	}
+	q.CurrentIndex = 1
+	q.Drafts[0].Selected = 1
+	q.Drafts[0].NoteText = "preserve across restart"
+	q.draftRevision++
+	if err := m.bindSessionRuntime(ctx, saved.ID); err != nil {
+		t.Fatalf("rebind session after saving question draft: %v", err)
+	}
+	if m.activeQuestion == nil {
+		t.Fatal("question disappeared while rebinding the same session")
+	}
+	restored := m.activeQuestion
+	if restored.CurrentIndex != 1 || restored.Drafts[0].Selected != 1 || restored.Drafts[0].NoteText != "preserve across restart" {
+		t.Fatalf("rebound runtime lost the saved draft: index=%d drafts=%+v", restored.CurrentIndex, restored.Drafts)
+	}
+}
+
 func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 	provider := &questionResumeProvider{started: make(chan struct{}), release: make(chan struct{})}
 	release := sync.OnceFunc(func() { close(provider.release) })
@@ -354,6 +407,33 @@ func TestActiveQuestionCustomAndNotesInput(t *testing.T) {
 	m = mod.(*tuiModel)
 	if m.activeQuestion.currentDraft().NoteText != "n" {
 		t.Fatalf("expected NoteText 'n', got %q", m.activeQuestion.currentDraft().NoteText)
+	}
+}
+
+func TestActiveQuestionRestoresAndSerializesDurableDraft(t *testing.T) {
+	request := core.UserQuestionRequest{
+		Questions: []core.UserQuestionItem{
+			{ID: "target", Options: []core.UserQuestionOption{{Label: "local"}, {Label: "remote"}}},
+			{ID: "scope", Options: []core.UserQuestionOption{{Label: "full"}}},
+		},
+		Draft: &core.UserQuestionDraft{
+			CurrentQuestionID: "scope",
+			Responses: []core.UserQuestionDraftResponse{
+				{QuestionID: "target", SelectedOption: 1, Notes: "keep this", Confirmed: true},
+				{QuestionID: "scope", SelectedOption: -1, CustomAnswer: "only storage"},
+			},
+		},
+	}
+	q := newActiveQuestion(request)
+	if q.CurrentIndex != 1 || q.Drafts[0].Selected != 1 || q.Drafts[0].NoteText != "keep this" || !q.Drafts[0].Confirmed {
+		t.Fatalf("saved choices were not restored: index=%d drafts=%+v", q.CurrentIndex, q.Drafts)
+	}
+	if q.Drafts[1].Selected != len(request.Questions[1].Options) || q.Drafts[1].Custom != "only storage" {
+		t.Fatalf("custom answer sentinel was not restored: %+v", q.Drafts[1])
+	}
+	draft := newTUIModel(nil, nil, "question-draft").questionDraftValue(q)
+	if draft.CurrentQuestionID != "scope" || draft.Responses[1].SelectedOption != -1 || draft.Responses[0].SelectedOption != 1 {
+		t.Fatalf("durable draft did not round trip: %+v", draft)
 	}
 }
 

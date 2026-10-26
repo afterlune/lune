@@ -152,8 +152,21 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 
 	if runtime != nil {
 		runtime.SetUserInteractionAvailable(true)
-		defer runtime.SetUserInteractionAvailable(false)
 	}
+	defer func() {
+		if model.run.runtimeCancel != nil {
+			model.run.runtimeCancel()
+		}
+		if model.boundCancel != nil {
+			model.boundCancel()
+		}
+		if model.runtime != nil {
+			model.runtime.SetUserInteractionAvailable(false)
+			if err := model.runtime.Close(); err != nil {
+				slog.Debug("failed to close active session runtime", "error", err)
+			}
+		}
+	}()
 	defer model.cancelMCPAuthentication(false)
 
 	// Always restore terminal state (disable mouse tracking, leave alt screen, show cursor, reset attributes)

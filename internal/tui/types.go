@@ -129,11 +129,14 @@ type AutocompleteItem struct {
 
 // ActiveQuestion holds the state of a pending clarification question.
 type ActiveQuestion struct {
-	Submitting   bool
-	Request      core.UserQuestionRequest
-	CurrentIndex int
-	Drafts       []questionDraft
-	Error        string
+	Submitting    bool
+	Request       core.UserQuestionRequest
+	CurrentIndex  int
+	Drafts        []questionDraft
+	Error         string
+	draftRevision uint64
+	savedRevision uint64
+	saveInFlight  bool
 }
 
 // questionDraft is the only source of answer state for an individual question.

@@ -18,9 +18,14 @@ func (m *tuiModel) handleQuestionKeyPress(msg tea.KeyPressMsg, key string) (hand
 		if key == "left" {
 			delta = -1
 		}
-		q.CurrentIndex = max(0, min(q.CurrentIndex+delta, len(q.Request.Questions)-1))
+		next := max(0, min(q.CurrentIndex+delta, len(q.Request.Questions)-1))
+		if next != q.CurrentIndex {
+			q.CurrentIndex = next
+			q.draftRevision++
+			cmd = m.scheduleQuestionDraftSave(q)
+		}
 		m.updateLayout()
-		return true, nil
+		return true, cmd
 	case "enter":
 		_, cmd = m.resolveActiveQuestion()
 		return true, cmd
@@ -33,7 +38,7 @@ func (m *tuiModel) handleQuestionKeyPress(msg tea.KeyPressMsg, key string) (hand
 	before := *draft
 	defer func() {
 		if before.Selected != draft.Selected || before.Custom != draft.Custom || before.NoteText != draft.NoteText {
-			m.questionDraftChanged(q)
+			cmd = tea.Batch(cmd, m.questionDraftChanged(q))
 		}
 		if handled {
 			m.updateLayout()

@@ -54,7 +54,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	switch event.Kind {
 	case core.EventGoalUpdated, core.EventGoalCleared:
 		m.refreshGoal()
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 		return m, nil
 	case core.EventTaskStarted:
@@ -77,6 +77,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			m.run.currentStreamText = ""
 			m.run.currentReasoningText = ""
+			m.view.invalidateLive()
 		}
 		if !queued && !goalTurn && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
 			return m, nil
@@ -136,7 +137,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			main.Model = event.Model
 		}
 		m.run.thinking = false
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 		return m, m.waitForExecution(execID)
 
@@ -176,7 +177,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
 			}
-			m.view.invalidateContent()
+			m.view.invalidateLive()
 
 		case "text_delta", "":
 			if m.run.currentReasoningText != "" {
@@ -195,7 +196,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				if elapsed >= 0.05 {
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
-				m.view.invalidateContent()
+				m.view.invalidateLive()
 			}
 		}
 
@@ -443,7 +444,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.run.taskActivity = "Finishing task"
 			main.Activity = m.run.taskActivity
 		}
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventUserQuestionRequired:
@@ -464,25 +465,25 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.run.thinking = false
 			m.run.running = false
 		}
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventUserInteractionRequired:
 		m.run.thinking = false
 		m.run.running = false
 		m.checkPendingState(context.Background())
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventApprovalRequired:
 		m.run.thinking = false
 		if event.Approval != nil && m.approveWithoutCard(*event.Approval) {
-			m.view.invalidateContent()
+			m.view.invalidateLive()
 			m.updateLayout()
 			return m, nil
 		}
 		m.checkPendingState(context.Background())
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventApprovalCancelled:
@@ -519,7 +520,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.run.thinking = false
 		m.run.running = false
 		m.checkPendingState(context.Background())
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 		if m.activeRecovery != nil && !m.activeRecovery.RetryNotBefore.IsZero() {
 			return m, tickClock()
@@ -529,7 +530,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.run.thinking = false
 		m.run.running = false
 		m.checkPendingState(context.Background())
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventRuntimeStreamFailed:
@@ -539,7 +540,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if event.Err != "" {
 			m.addSystemEntry("Runtime stream error: " + event.Err)
 		}
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 		return m, m.reconnectRuntimeEventStream()
 
@@ -547,7 +548,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.activeRecovery = nil
 		m.pausedCheckpoint = nil
 		m.run.running = true
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 
 	case core.EventTaskFinished:
@@ -569,8 +570,9 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.activeToolRecovery = nil
 		m.run.currentStreamText = ""
 		m.run.currentReasoningText = ""
+		m.view.invalidateLive()
 		m.markRunningSubagentsAndToolsDone()
-		m.view.invalidateContent()
+		m.view.invalidateLive()
 		m.updateLayout()
 	}
 

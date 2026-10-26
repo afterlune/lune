@@ -10,9 +10,10 @@ import (
 )
 
 type goalActionMsg struct {
-	sessionID string
-	action    string
-	err       error
+	sessionID         string
+	bindingGeneration uint64
+	action            string
+	err               error
 }
 
 func (m *tuiModel) handleGoalCommand(raw string) (tea.Model, tea.Cmd) {
@@ -61,9 +62,10 @@ func (m *tuiModel) handleGoalCommand(raw string) (tea.Model, tea.Cmd) {
 		subscription = m.startRuntimeEventSubscription(true)
 	}
 	runtime, sessionID := m.runtime, m.sessionID
+	bindingGeneration := m.bindingGeneration
 	action := func() tea.Msg {
 		_, err := goalcmd.Apply(context.Background(), runtime, command, false)
-		return goalActionMsg{sessionID: sessionID, action: command.Action, err: err}
+		return goalActionMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, action: command.Action, err: err}
 	}
 	return m, tea.Batch(subscription, action)
 }
@@ -77,7 +79,7 @@ func (m *tuiModel) refreshGoal() {
 }
 
 func (m *tuiModel) finishGoalAction(msg goalActionMsg) (tea.Model, tea.Cmd) {
-	if msg.sessionID != m.sessionID {
+	if msg.sessionID != m.sessionID || !m.matchesBinding(msg.bindingGeneration) {
 		return m, nil
 	}
 	m.refreshGoal()

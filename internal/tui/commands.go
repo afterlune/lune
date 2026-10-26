@@ -159,6 +159,8 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 	case "/clear":
 		m.entries = nil
 		m.run.currentStreamText = ""
+		m.run.currentReasoningText = ""
+		m.view.invalidateLive()
 		m.viewport.SetContent("")
 		m.scrolledUp = false
 		m.clearTranscriptSelection()
@@ -259,19 +261,24 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			m.addSystemEntry("Compaction is already in progress.")
 			return m, nil
 		}
-		client, sessionID := m.client, m.sessionID
+		client, sessionID, bindingGeneration := m.client, m.sessionID, m.bindingGeneration
 		m.usage.beginCompaction()
 		m.addSystemEntry("Compacting older conversation history…")
 		m.updateLayout()
 		return m, func() tea.Msg {
 			result, err := client.Compact(context.Background(), sessionID)
-			return compactDoneMsg{result: result, err: err, sessionID: sessionID}
+			return compactDoneMsg{result: result, err: err, sessionID: sessionID, bindingGeneration: bindingGeneration}
 		}
 
 	case "/fork":
+		client, sessionID, bindingGeneration := m.client, m.sessionID, m.bindingGeneration
+		ctx := m.boundContext
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		return m, func() tea.Msg {
-			session, err := m.client.ForkSession(context.Background(), m.sessionID)
-			return sessionForkedMsg{session: session, err: err}
+			session, err := client.ForkSession(ctx, sessionID)
+			return sessionForkedMsg{session: session, sessionID: sessionID, bindingGeneration: bindingGeneration, err: err}
 		}
 
 	case "/continue":
@@ -300,9 +307,14 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 				m.addSystemEntry("Resuming execution from checkpoint...")
 				m.updateLayout()
 				sessionID := m.sessionID
+				runtime, bindingGeneration := m.runtime, m.bindingGeneration
+				ctx := m.boundContext
+				if ctx == nil {
+					ctx = context.Background()
+				}
 				return m, func() tea.Msg {
-					sub, err := m.runtime.Recover(context.Background())
-					return turnSubmittedMsg{sessionID: sessionID, submission: sub, err: err}
+					sub, err := runtime.Recover(ctx)
+					return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 				}
 			}
 		}
@@ -342,9 +354,14 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 	m.updateLayout()
 	runtime := m.runtime
 	executionID := target.ExecutionID
+	bindingGeneration := m.bindingGeneration
+	ctx := m.boundContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return m, func() tea.Msg {
-		err := runtime.CancelQueuedTurn(context.Background(), executionID)
-		return queuedTurnCancelledMsg{executionID: executionID, err: err}
+		err := runtime.CancelQueuedTurn(ctx, executionID)
+		return queuedTurnCancelledMsg{executionID: executionID, bindingGeneration: bindingGeneration, err: err}
 	}
 }
 
@@ -373,9 +390,10 @@ func (m *tuiModel) discardPausedTask(source discardSource) (tea.Model, tea.Cmd) 
 	m.addSystemEntry("Discarding paused task…")
 	m.updateLayout()
 	runtime := m.runtime
+	bindingGeneration := m.bindingGeneration
 	return m, func() tea.Msg {
 		discarded, err := runtime.DiscardPaused(context.Background())
-		return taskDiscardedMsg{source: source, discarded: discarded, err: err}
+		return taskDiscardedMsg{source: source, discarded: discarded, err: err, bindingGeneration: bindingGeneration}
 	}
 }
 

@@ -231,6 +231,33 @@ func TestSplitProposedPlanStreamStylesPartialAndCompatCompleteBlocks(t *testing.
 	}
 }
 
+func TestProposedPlanParsingProtectsCodeSpans(t *testing.T) {
+	text := "Use ``<proposed_plan>`` and a fence:\n```go\n// <proposed_plan>not a plan</proposed_plan>\n```\n" +
+		"<proposed_plan>## Real plan</proposed_plan>"
+	plan, remaining := ExtractProposedPlan(text)
+	if plan != "## Real plan" {
+		t.Fatalf("extracted plan = %q, want real block only", plan)
+	}
+	if !strings.Contains(remaining, "``<proposed_plan>``") || !strings.Contains(remaining, "// <proposed_plan>not a plan</proposed_plan>") {
+		t.Fatalf("code examples were changed while extracting a plan: %q", remaining)
+	}
+	if got := StripProposedPlan(text); strings.Contains(got, "## Real plan") || !strings.Contains(got, "<proposed_plan>not a plan") {
+		t.Fatalf("strip removed code examples or retained the actual plan: %q", got)
+	}
+	partial := "Example: `unfinished <proposed_plan>literal"
+	stream := SplitProposedPlanStream(partial)
+	if stream.Found || stream.Before != partial {
+		t.Fatalf("an incomplete inline-code span was treated as a plan: %#v", stream)
+	}
+
+	marker := "\x00LUNE_CODE_0\x00"
+	withMarker := marker + " `code <proposed_plan>` <proposed_plan>## Kept</proposed_plan>"
+	plan, remaining = ExtractProposedPlan(withMarker)
+	if plan != "## Kept" || !strings.HasPrefix(remaining, marker) || !strings.Contains(remaining, "`code <proposed_plan>`") {
+		t.Fatalf("a literal placeholder collided with protected code: plan=%q remaining=%q", plan, remaining)
+	}
+}
+
 func TestInlineMarkdownTokenizationSafety(t *testing.T) {
 	input := "请检查 **TUI.md** 以及 `go test -v ./...` 的输出。"
 	formatted := formatInline(input, testPalette())

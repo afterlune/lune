@@ -608,9 +608,7 @@ func TestReasoningRenderingAndToggle(t *testing.T) {
 }
 
 func TestMouseWheelScrolling(t *testing.T) {
-	m := &tuiModel{
-		viewport: newTUIModel(nil, nil, "test-sess").viewport,
-	}
+	m := newTUIModel(nil, nil, "test-sess")
 	m.width = 80
 	m.height = 24
 	m.viewport.SetWidth(80)
@@ -1290,10 +1288,45 @@ func TestViewportAutoStickToBottomOnMultiTurn(t *testing.T) {
 		t.Errorf("expected viewport to remain at bottom when running in turn 2, atBottom=%v, yoffset=%d", m.viewport.AtBottom(), m.viewport.YOffset())
 	}
 
-	// Verify working indicator is rendered in the viewport visible lines
-	viewText := m.viewport.View()
-	if !strings.Contains(viewText, "Working") {
-		t.Errorf("expected working indicator to be visible in viewport view, got:\n%s", viewText)
+	// Live activity renders beside the historical viewport so streamed changes
+	// do not rebuild or remeasure every transcript entry.
+	if !strings.Contains(m.view.liveContent, "Working") {
+		t.Errorf("expected working indicator in live content, got:\n%s", m.view.liveContent)
+	}
+}
+
+func TestShortOverlayKeepsSelectedChoiceVisible(t *testing.T) {
+	for rows := 1; rows <= 3; rows++ {
+		panel := fitOverlayHeight("Question\nPrompt\n  1. First\n› 2. Selected\n  3. Third\nHint", rows)
+		if !strings.Contains(panel, "› 2. Selected") || len(strings.Split(panel, "\n")) > rows {
+			t.Fatalf("short overlay with %d rows lost the selected option or overflowed: %q", rows, panel)
+		}
+	}
+}
+
+func TestQuestionOverlayFitsSmallTerminalHeights(t *testing.T) {
+	options := make([]core.UserQuestionOption, 12)
+	for i := range options {
+		options[i] = core.UserQuestionOption{Label: fmt.Sprintf("Option %d", i+1)}
+	}
+	m := newTUIModel(nil, nil, "small-terminal")
+	m.width = 80
+	m.entries = []TranscriptEntry{{Kind: KindUser, Text: "choose"}}
+	m.activeQuestion = newActiveQuestion(core.UserQuestionRequest{Questions: []core.UserQuestionItem{{
+		ID: "q", Question: "Choose an option", Options: options,
+	}}})
+	m.activeQuestion.currentDraft().Selected = len(options) - 1
+	for _, height := range []int{10, 14, 18, 24} {
+		m.height = height
+		m.updateLayout()
+		view := ansi.Strip(m.View().Content)
+		lines := strings.Split(view, "\n")
+		if len(lines) > height {
+			t.Fatalf("question overlay rendered %d rows in a %d-row terminal", len(lines), height)
+		}
+		if height >= 14 && !strings.Contains(view, "› 12. Option 12") {
+			t.Fatalf("selected option disappeared at height %d:\n%s", height, view)
+		}
 	}
 }
 

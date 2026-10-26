@@ -114,6 +114,14 @@ func (r *runState) finishRestore() bool {
 // session.
 func (r *runState) reset() {
 	live := r.reasoningLiveCollapsed
+	subscriptionGeneration := r.subscriptionGeneration
+	waitGeneration := r.waitGeneration
+	restoreGeneration := r.restoreGeneration
 	*r = newRunState()
 	r.reasoningLiveCollapsed = live
+	// Keep asynchronous identities unique across session resets. Resetting these
+	// counters could let delayed results from A→B→A switches look current.
+	r.subscriptionGeneration = subscriptionGeneration
+	r.waitGeneration = waitGeneration
+	r.restoreGeneration = restoreGeneration
 }

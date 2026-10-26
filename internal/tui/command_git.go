@@ -31,10 +31,11 @@ type diffLoadedMsg struct {
 // reviewMaterialsMsg carries the workspace review materials collected off the
 // update goroutine.
 type reviewMaterialsMsg struct {
-	targetPath string
-	materials  string
-	changed    bool
-	err        error
+	targetPath        string
+	materials         string
+	changed           bool
+	bindingGeneration uint64
+	err               error
 }
 
 // diffModalVisibleLines calculates the visible line capacity of the diff modal.
@@ -152,14 +153,18 @@ func (m *tuiModel) handleReviewCommand(parts []string) (tea.Model, tea.Cmd) {
 	if len(parts) > 1 {
 		targetPath = strings.Join(parts[1:], " ")
 	}
+	bindingGeneration := m.bindingGeneration
 	return m, func() tea.Msg {
 		materials, changed, err := workspacereview.CollectMaterials(workspace, targetPath)
-		return reviewMaterialsMsg{targetPath: targetPath, materials: materials, changed: changed, err: err}
+		return reviewMaterialsMsg{targetPath: targetPath, materials: materials, changed: changed, bindingGeneration: bindingGeneration, err: err}
 	}
 }
 
 // handleReviewMaterials submits the review turn once the materials are ready.
 func (m *tuiModel) handleReviewMaterials(msg reviewMaterialsMsg) (tea.Model, tea.Cmd) {
+	if !m.matchesBinding(msg.bindingGeneration) {
+		return m, nil
+	}
 	if msg.err != nil {
 		m.addSystemEntry("Could not prepare workspace review: " + msg.err.Error())
 		m.updateLayout()
