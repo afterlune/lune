@@ -15,6 +15,7 @@ import (
 	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/memory"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type cliRuntime interface {
@@ -28,6 +29,7 @@ type cliRuntime interface {
 	DiscardPaused(context.Context) (bool, error)
 	PendingRequests(context.Context) ([]core.PendingRequest, error)
 	ResolveApproval(string, bool) error
+	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
 	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
 	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
 	SetUserInteractionAvailable(bool)

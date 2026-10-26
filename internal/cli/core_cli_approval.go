@@ -33,7 +33,7 @@ func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, wo
 			return nil
 		}
 	}
-	err := runtime.ResolveApproval(request.ID, false)
+	err := runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalDeny)
 	if err == nil {
 		fmt.Fprintf(stderr, "Denied %s because interactive keyboard input became unavailable.\n", cliApprovalSummary(request, workspace))
 	} else {
@@ -44,7 +44,7 @@ func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, wo
 
 func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, workspace string, key cliInputEvent, stderr io.Writer) (bool, error) {
 	if key.err != nil {
-		err := runtime.ResolveApproval(request.ID, false)
+		err := runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalDeny)
 		if err == nil {
 			fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(request, workspace))
 		} else {
@@ -55,39 +55,50 @@ func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, work
 	if key.escape {
 		return false, errors.New("approval interrupted")
 	}
-	var allowed bool
+	var decision publictool.ApprovalDecision
+	var decisionText string
 	switch unicode.ToLower(key.rune) {
-	case 'y':
-		allowed = true
-	case 'n':
-		allowed = false
+	case '1', 'y':
+		if request.PathGrant != nil {
+			decision = publictool.ApprovalAllowSession
+			decisionText = "Granted directory access for this session."
+		} else {
+			decision = publictool.ApprovalAllowOnce
+			decisionText = "Approved this tool call once."
+		}
+	case '2', 's':
+		decision = publictool.ApprovalAllowSession
+		if request.PathGrant != nil {
+			decisionText = "Granted directory access for this session."
+		} else {
+			decisionText = "Approved for this session."
+		}
+	case '3', 'n':
+		decision = publictool.ApprovalDeny
+		decisionText = "Denied this tool call."
 	default:
 		return false, nil
 	}
-	if err := runtime.ResolveApproval(request.ID, allowed); err != nil {
+	if err := runtime.ResolveApprovalDecision(request.ID, decision); err != nil {
 		fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
 		return true, fmt.Errorf("resolve approval: %w", err)
 	}
-	if allowed {
-		if request.PathGrant != nil {
-			_, _ = fmt.Fprintln(stderr, "Granted directory access for this session.")
-		} else {
-			_, _ = fmt.Fprintln(stderr, "Approved this tool call once.")
-		}
-	} else {
-		_, _ = fmt.Fprintln(stderr, "Denied this tool call.")
-	}
+	_, _ = fmt.Fprintln(stderr, decisionText)
 	return true, nil
 }
 
 func formatCLIToolApproval(request core.ApprovalRequest, workspace string) string {
+	autoReview := ""
+	if request.AutoReviewReason != "" {
+		autoReview = "\nModel Review: " + cleanCLIInlineText(request.AutoReviewReason)
+	}
 	if request.PathGrant != nil {
 		access := "read-only"
 		if request.PathGrant.Access == publictool.PathReadWrite {
 			access = "read and write"
 		}
-		return fmt.Sprintf("Grant %s access to %s and its subdirectories for this session?\nPress Y to grant access, N to deny, or Esc to interrupt the task.",
-			access, cleanCLIInlineText(request.PathGrant.Path))
+		return fmt.Sprintf("Grant %s access to %s and its subdirectories for this session?%s\nPress 1/Y to grant access, 3/N to deny, or Esc to interrupt the task.",
+			access, cleanCLIInlineText(request.PathGrant.Path), autoReview)
 	}
 	details := ""
 	warning := ""
@@ -99,8 +110,8 @@ func formatCLIToolApproval(request core.ApprovalRequest, workspace string) strin
 		details = "\nCommand: " + cleanCLIInlineText(command)
 		warning = "\nCore runs commands inside the operating system sandbox."
 	}
-	return fmt.Sprintf("Allow %s once?%s%s\nPress Y to approve once, N to deny, or Esc to interrupt the task.",
-		cliApprovalSummary(request, workspace), details, warning)
+	return fmt.Sprintf("Allow %s once?%s%s%s\nPress 1/Y to approve once, 2/S to allow for session, 3/N to deny, or Esc to interrupt the task.",
+		cliApprovalSummary(request, workspace), autoReview, details, warning)
 }
 
 func cliApprovalSummary(request core.ApprovalRequest, workspace string) string {

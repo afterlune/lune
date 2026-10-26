@@ -41,6 +41,7 @@ type fakeCLICore struct {
 	sessions          []core.Session
 	sequence          int
 	resolved          []bool
+	approvalDecisions []publictool.ApprovalDecision
 	resolveErr        error
 	runtime           *fakeCLIRuntime
 	memories          []memory.Item
@@ -628,6 +629,15 @@ func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
 	return nil
 }
 
+func (r *fakeCLIRuntime) ResolveApprovalDecision(id string, decision publictool.ApprovalDecision) error {
+	allowed := decision != publictool.ApprovalDeny
+	if err := r.ResolveApproval(id, allowed); err != nil {
+		return err
+	}
+	r.client.approvalDecisions = append(r.client.approvalDecisions, decision)
+	return nil
+}
+
 func (r *fakeCLIRuntime) ListCommands(_ context.Context) ([]core.CommandInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -932,14 +942,19 @@ func TestChatLoopEscapeCancelsActiveTaskAndReturnsToPrompt(t *testing.T) {
 	}
 }
 
-func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
+func TestChatLoopInteractiveApprovalPreservesDecisionScope(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		key     rune
-		allowed bool
+		name     string
+		key      rune
+		allowed  bool
+		decision publictool.ApprovalDecision
 	}{
-		{name: "uppercase approve", key: 'Y', allowed: true},
-		{name: "lowercase deny", key: 'n', allowed: false},
+		{name: "uppercase approve", key: 'Y', allowed: true, decision: publictool.ApprovalAllowOnce},
+		{name: "lowercase deny", key: 'n', allowed: false, decision: publictool.ApprovalDeny},
+		{name: "digit 1 approve once", key: '1', allowed: true, decision: publictool.ApprovalAllowOnce},
+		{name: "digit 2 allow session", key: '2', allowed: true, decision: publictool.ApprovalAllowSession},
+		{name: "lowercase s allow session", key: 's', allowed: true, decision: publictool.ApprovalAllowSession},
+		{name: "digit 3 deny", key: '3', allowed: false, decision: publictool.ApprovalDeny},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := newApprovalCLICore(core.ApprovalRequest{
@@ -956,6 +971,9 @@ func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
 			if len(client.resolved) != 1 || client.resolved[0] != test.allowed {
 				t.Fatalf("resolved approvals = %v, want [%v]", client.resolved, test.allowed)
 			}
+			if len(client.approvalDecisions) != 1 || client.approvalDecisions[0] != test.decision {
+				t.Fatalf("approval decisions = %v, want [%v]", client.approvalDecisions, test.decision)
+			}
 			if !strings.Contains(stdout, fmt.Sprintf("approved=%t", test.allowed)) {
 				t.Fatalf("stdout = %q, want approval result %v", stdout, test.allowed)
 			}
@@ -968,7 +986,7 @@ func TestChatLoopInteractiveApprovalUsesYAndNOnce(t *testing.T) {
 					t.Errorf("stderr = %q, missing %q", stderr, expected)
 				}
 			}
-			if test.allowed && !strings.Contains(stderr, "Approved this tool call once.") {
+			if test.allowed && !strings.Contains(stderr, "Approved this tool call once.") && !strings.Contains(stderr, "Approved for this session.") {
 				t.Errorf("stderr = %q, missing approval confirmation", stderr)
 			}
 			if !test.allowed && !strings.Contains(stderr, "Denied this tool call.") {
