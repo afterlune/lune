@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,35 @@ import (
 
 	"github.com/afterlune/lune/internal/settings"
 )
+
+type testProviderKeyring struct {
+	available bool
+	secrets   map[string][]byte
+	setErr    error
+}
+
+func (k *testProviderKeyring) Available() bool { return k.available }
+func (k *testProviderKeyring) Get(_, account string) ([]byte, error) {
+	secret, ok := k.secrets[account]
+	if !ok {
+		return nil, errors.New("secret not found")
+	}
+	return append([]byte(nil), secret...), nil
+}
+func (k *testProviderKeyring) Set(_, account string, secret []byte) error {
+	if k.setErr != nil {
+		return k.setErr
+	}
+	if k.secrets == nil {
+		k.secrets = make(map[string][]byte)
+	}
+	k.secrets[account] = append([]byte(nil), secret...)
+	return nil
+}
+func (k *testProviderKeyring) Delete(_, account string) error {
+	delete(k.secrets, account)
+	return nil
+}
 
 // plaintextConfigDocument mirrors the shape of a user config with a plain key.
 const plaintextConfigDocument = `{
@@ -30,7 +60,7 @@ func TestPrepareUserConfigKeepsTheKeyReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	document, err := prepareUserConfig(path, []byte(plaintextConfigDocument))
+	document, err := prepareUserConfigWithKeyring(path, []byte(plaintextConfigDocument), &testProviderKeyring{})
 	if err != nil {
 		t.Fatalf("prepare user config: %v", err)
 	}
@@ -98,14 +128,14 @@ func TestPrepareUserConfigProtectsKeysOnWindows(t *testing.T) {
 // TestPrepareUserConfigSkipsProtectionWithoutDPAPI keeps other platforms on the
 // documented plaintext path instead of failing to start.
 func TestPrepareUserConfigSkipsProtectionWithoutDPAPI(t *testing.T) {
-	if settings.SecretsProtected() {
-		t.Skip("this platform protects secrets")
+	if settings.SecretsProtected() || runtime.GOOS == "linux" {
+		t.Skip("Windows uses DPAPI and Linux may use Secret Service")
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(plaintextConfigDocument), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	document, err := prepareUserConfig(path, []byte(plaintextConfigDocument))
+	document, err := prepareUserConfigWithKeyring(path, []byte(plaintextConfigDocument), &testProviderKeyring{})
 	if err != nil {
 		t.Fatalf("prepare user config: %v", err)
 	}
@@ -118,9 +148,133 @@ func TestPrepareUserConfigSkipsProtectionWithoutDPAPI(t *testing.T) {
 	}
 }
 
+func TestPrepareUserConfigMigratesKeysToLinuxSecretService(t *testing.T) {
+	if runtime.GOOS != "linux" || settings.SecretsProtected() {
+		t.Skip("Linux Secret Service migration only applies on Linux")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(plaintextConfigDocument), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := &testProviderKeyring{available: true}
+
+	document, err := prepareUserConfigWithKeyring(path, []byte(plaintextConfigDocument), store)
+	if err != nil {
+		t.Fatalf("prepare user config: %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "plain-secret") || !strings.Contains(string(stored), configAPIKeyKeyringRefField) {
+		t.Fatalf("stored config should contain only a keyring reference: %s", stored)
+	}
+	if !strings.Contains(string(document), "plain-secret") || strings.Contains(string(document), configAPIKeyKeyringRefField) {
+		t.Fatalf("Core document should contain the key but not the keyring reference: %s", document)
+	}
+	if len(store.secrets) != 1 {
+		t.Fatalf("stored keyring items = %d, want 1", len(store.secrets))
+	}
+	for _, secret := range store.secrets {
+		if string(secret) != "plain-secret" {
+			t.Fatalf("keyring secret = %q, want original API key", secret)
+		}
+	}
+
+	second, err := prepareUserConfigWithKeyring(path, stored, store)
+	if err != nil {
+		t.Fatalf("prepare keyring-backed config: %v", err)
+	}
+	if !strings.Contains(string(second), "plain-secret") {
+		t.Fatalf("keyring-backed config did not resolve: %s", second)
+	}
+	again, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(stored) {
+		t.Fatal("keyring-backed config was rewritten on every start")
+	}
+}
+
+func TestPrepareUserConfigFallsBackWhenLinuxSecretServiceCannotStore(t *testing.T) {
+	if runtime.GOOS != "linux" || settings.SecretsProtected() {
+		t.Skip("Linux Secret Service fallback only applies on Linux")
+	}
+	for _, test := range []struct {
+		name  string
+		store *testProviderKeyring
+	}{
+		{name: "unavailable", store: &testProviderKeyring{}},
+		{name: "store failure", store: &testProviderKeyring{available: true, setErr: errors.New("service locked")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(plaintextConfigDocument), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			warningFile, err := os.CreateTemp(t.TempDir(), "stderr")
+			if err != nil {
+				t.Fatal(err)
+			}
+			previousStderr := os.Stderr
+			os.Stderr = warningFile
+			t.Cleanup(func() { os.Stderr = previousStderr })
+
+			document, err := prepareUserConfigWithKeyring(path, []byte(plaintextConfigDocument), test.store)
+			if err != nil {
+				t.Fatalf("prepare user config: %v", err)
+			}
+			if err := warningFile.Close(); err != nil {
+				t.Fatal(err)
+			}
+			os.Stderr = previousStderr
+			warning, err := os.ReadFile(warningFile.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(warning), "stores provider API keys in plain text") || !strings.Contains(string(warning), "Secret Service") {
+				t.Fatalf("warning = %q, want plaintext and Secret Service fallback guidance", warning)
+			}
+			if !strings.Contains(string(document), "plain-secret") {
+				t.Fatalf("fallback document lost the API key: %s", document)
+			}
+			stored, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(stored) != plaintextConfigDocument {
+				t.Fatalf("fallback rewrote config: %s", stored)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm()&0o077 != 0 {
+				t.Fatalf("config permissions = %v, want owner-only", info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestPrepareUserConfigFailsClosedForMissingKeyringReference(t *testing.T) {
+	if runtime.GOOS != "linux" || settings.SecretsProtected() {
+		t.Skip("keyring references are created on Linux")
+	}
+	document := []byte(`{"models":{"providers":{"host":{"apiKeyKeyringRef":"missing"}}}}`)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := prepareUserConfigWithKeyring(path, document, &testProviderKeyring{available: true})
+	if err == nil || !strings.Contains(err.Error(), "resolve apiKey from Linux Secret Service") {
+		t.Fatalf("missing keyring reference error = %v, want fail-closed resolution error", err)
+	}
+}
+
 func TestPrepareUserConfigRejectsMalformedDocuments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if _, err := prepareUserConfig(path, []byte("{not json")); err == nil {
+	if _, err := prepareUserConfigWithKeyring(path, []byte("{not json"), &testProviderKeyring{}); err == nil {
 		t.Fatal("malformed config was accepted")
 	}
 }
@@ -131,7 +285,7 @@ func TestPrepareUserConfigIgnoresEmptyKeys(t *testing.T) {
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := prepareUserConfig(path, document)
+	prepared, err := prepareUserConfigWithKeyring(path, document, &testProviderKeyring{})
 	if err != nil {
 		t.Fatalf("prepare user config: %v", err)
 	}

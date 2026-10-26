@@ -12,6 +12,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
+	github.com/go-keyring/keyring v0.4.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.34
 	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.49.0
@@ -31,7 +32,6 @@ require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/go-freedesktop/secretservice v0.2.0 // indirect
-	github.com/go-keyring/keyring v0.4.0 // indirect
 	github.com/go-macos/keychain v0.3.0 // indirect
 	github.com/go-macos/objc v0.11.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect

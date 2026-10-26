@@ -59,7 +59,8 @@ Playwright 截图基线在 Windows runner 上验证。发布版本以 `cmd/deskt
 `%APPDATA%\luneAgent\config.json` 是 TUI/CLI 的唯一配置来源。读取时会收紧该文件权限（0600），并按平台保护 provider 的 `apiKey`：
 
 - Windows：明文 `apiKey` 会被 DPAPI 加密为 `apiKeyEncrypted` 后写回，启动时在内存中解密再交给 Core，文件本身不再保存明文密钥。
-- 非 Windows：没有可用的系统凭证加密接口，`apiKey` 保持明文；启动时会在 stderr 提示风险，该平台需要自行限制配置文件权限。
+- Linux：Secret Service 可用时，密钥保存在系统凭证库中，配置文件只保存随机引用；启动时在内存中恢复密钥再交给 Core。无桌面凭证服务或写入失败时，保留明文配置并在 stderr 提示风险，文件权限仍限制为当前用户。
+- 其它平台：`apiKey` 保持明文；启动时会在 stderr 提示风险，该平台需要自行限制配置文件权限。
 
 桌面端不使用该文件，它的 provider 密钥以加密形式保存在 `settings.db`。
 
