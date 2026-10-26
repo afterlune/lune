@@ -387,7 +387,7 @@ func TestDiscardResetsCompactingState(t *testing.T) {
 	m.run.compactInFlight = true
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "exec-test-3"}
 
-	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceCommand, discarded: true})
+	mod, _ := m.Update(taskDiscardedMsg{source: discardSourcePausedTask, discarded: true})
 	m = mod.(*tuiModel)
 
 	if m.usage.compacting {

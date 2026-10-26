@@ -181,8 +181,8 @@ func TestEffortCommandOpensInteractivePicker(t *testing.T) {
 		t.Fatalf("expected no system entry when opening the picker, got: %+v", m.entries)
 	}
 
-	// 3. Navigate down to "high" (index 4) and apply with Enter.
-	for i := 0; i < 4; i++ {
+	// 3. Navigate down from max to "high" (index 4) and apply with Enter.
+	for i := 0; i < 5; i++ {
 		m.handleKeyPress(tea.KeyPressMsg{Code: tea.KeyDown})
 	}
 	if m.effortPicker == nil || m.effortPicker.Selected != 4 {

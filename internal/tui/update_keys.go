@@ -134,10 +134,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		switch m.activeCardKind() {
 		case cardRecovery:
-			return m.discardPausedTask(discardSourceRecovery)
+			return m.discardPausedTask(discardSourceModelRecovery)
 		case cardToolRecovery:
-			m.activeToolRecovery.Selected = 1
-			return m.resolveActiveToolRecovery()
+			return m.discardPausedTask(discardSourcePausedTask)
 		case cardApproval:
 			m.activeApproval.Selected = 2
 			return m.resolveActiveApproval()
@@ -158,7 +157,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 			}
-			return m.noteQuestionPending()
+			return m.discardPausedTask(discardSourcePausedTask)
 		case cardEffort:
 			m.effortPicker = nil
 			m.updateLayout()
@@ -292,7 +291,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case "2", "d":
 			m.activeRecovery.Selected = 1
-			return m.discardPausedTask(discardSourceRecovery)
+			return m.discardPausedTask(discardSourceModelRecovery)
 		case "enter":
 			if m.activeRecovery.Selected == 0 {
 				m.activeRecovery = nil
@@ -310,7 +309,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
 				}
 			} else {
-				return m.discardPausedTask(discardSourceRecovery)
+				return m.discardPausedTask(discardSourceModelRecovery)
 			}
 		}
 	}

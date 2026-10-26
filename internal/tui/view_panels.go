@@ -124,11 +124,11 @@ func renderQuestionPanel(q *ActiveQuestion, width int) string {
 		optionsRows = append(optionsRows, styleTextPrimary().Render(notesLine))
 	}
 
-	hintText := "↑/↓ select | tab to add notes | enter to confirm answer | /discard to drop"
+	hintText := "↑/↓ select | tab to add notes | enter to confirm answer | esc to stop task"
 	if draft.NotesOpen {
 		hintText = "tab to finish notes | enter to confirm answer | esc to close notes"
 	} else if len(qItem.Options) > 0 && draft.Selected == len(qItem.Options) {
-		hintText = "enter to confirm custom answer | esc to clear | /discard to drop"
+		hintText = "enter to confirm custom answer | esc clears answer, again stops task"
 	}
 	if total > 1 {
 		hintText = "←/→ switch question | " + hintText
@@ -355,8 +355,8 @@ func renderCountdownProgressBar(remainingSecs, maxSecs, width int) string {
 // renderPausedBanner renders an actionable checkpoint status banner in the composer gap.
 func renderPausedBanner(width int) string {
 	th := activeTheme()
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Task Paused (Checkpoint saved)")
-	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · /continue to continue · /discard to drop")
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextPrimary)).Bold(true).Render("Task paused")
+	actions := lipgloss.NewStyle().Foreground(lipgloss.Color(th.AccentBlue)).Render(" · send a message to continue in a new turn")
 	banner := label + actions
 	pad := max(0, (width-lipgloss.Width(banner))/2)
 	return strings.Repeat(" ", pad) + banner
@@ -494,7 +494,7 @@ func renderToolRecoveryPanel(recovery *ActiveToolRecovery, width int) string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, styleTextMuted().Render("enter select · esc / 2 skip · 1 retry · r / s quick action"))
+	lines = append(lines, styleTextMuted().Render("enter select · esc stop · 1 / r retry · 2 / s skip"))
 
 	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }

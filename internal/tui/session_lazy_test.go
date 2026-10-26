@@ -234,7 +234,7 @@ func TestDraftSessionRejectsSessionCommands(t *testing.T) {
 	client := newLazySessionTestCore(t)
 	m := newTUIModel(client, nil, "")
 
-	for _, command := range []string{"/rewind", "/fork", "/export", "/agents", "/compact", "/continue", "/discard"} {
+	for _, command := range []string{"/rewind", "/fork", "/export", "/agents", "/compact"} {
 		before := len(m.entries)
 		mod, _ := m.handleSlashCommand(command)
 		m = mod.(*tuiModel)

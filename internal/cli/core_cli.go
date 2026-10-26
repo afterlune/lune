@@ -26,13 +26,9 @@ type cliRuntime interface {
 	SubscribeEvents(context.Context, int64) (<-chan core.Event, error)
 	State(context.Context) (core.RuntimeState, error)
 	Interrupt(string) bool
-	Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error)
 	DiscardPaused(context.Context) (bool, error)
-	PendingRequests(context.Context) ([]core.PendingRequest, error)
 	ResolveApproval(string, bool) error
 	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
-	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
-	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
 	SetUserInteractionAvailable(bool)
 	ListCommands(context.Context) ([]core.CommandInfo, error)
 	ReadCommand(context.Context, string, core.CommandReadOptions) (core.CommandOutput, error)
@@ -288,7 +284,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 			fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
 		}
-		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PlanMode: planMode}, false, watchKeys, stderr)
+		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PlanMode: planMode}, watchKeys, stderr)
 		return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
 	}
 
@@ -469,34 +465,6 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			handleCoreCLIPermissions(client, planMode, line, stdout, stderr)
 		case line == "/toolchains" || strings.HasPrefix(line, "/toolchains "):
 			handleCoreCLIToolchains(client, line, stdout, stderr)
-		case line == "/discard":
-			discarded, err := runtime.DiscardPaused(ctx)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: discard task: %v\n", err)
-			} else if discarded {
-				fmt.Fprintln(stdout, "Interrupted task discarded.")
-			} else {
-				fmt.Fprintln(stdout, "No interrupted task to discard.")
-			}
-		case line == "/continue":
-			state, err := runtime.State(ctx)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: inspect pending task: %v\n", err)
-			} else if state.Goal != nil && state.Task.GoalID == state.Goal.ID {
-				fmt.Fprintln(stdout, "Use /goal resume to continue this goal and its checkpoint.")
-			} else if state.Task.Status != core.TaskPaused {
-				fmt.Fprintln(stdout, "No paused task to continue.")
-			} else {
-				requests, requestErr := runtime.PendingRequests(ctx)
-				if requestErr != nil {
-					fmt.Fprintf(stderr, "error: inspect task decisions: %v\n", requestErr)
-					continue
-				}
-				result, callErr, interrupted := resumePausedTaskCLI(runtime, reader, workspace, requests, watchKeys, stdout, stderr)
-				if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
-					return err
-				}
-			}
 		case line == "/compact":
 			fmt.Fprintln(stderr, "Compacting context...")
 			result, err := client.Compact(ctx, sessionID)

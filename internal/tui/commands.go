@@ -283,49 +283,6 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 			return sessionForkedMsg{session: session, sessionID: sessionID, bindingGeneration: bindingGeneration, err: err}
 		}
 
-	case "/continue":
-		if m.runtime != nil {
-			if state, err := m.runtime.State(context.Background()); err == nil && state.Goal != nil && state.Task.GoalID == state.Goal.ID {
-				m.addSystemEntry("Use `/goal resume` to continue this goal and its checkpoint.")
-				return m, nil
-			}
-		}
-		if len(parts) > 1 {
-			m.addSystemEntry("Usage: `/continue` continues the paused task in this session.")
-			return m, nil
-		}
-		if m.taskBusy() {
-			m.addSystemEntry("A task is already running.")
-			return m, nil
-		}
-		if m.runtime != nil {
-			state, err := m.runtime.State(context.Background())
-			if (err == nil && state.Task.Status == core.TaskPaused) || m.hasPausedTask() {
-				m.run.running = true
-				m.run.taskStartedAt = time.Now()
-				m.pausedCheckpoint = nil
-				m.activeRecovery = nil
-				m.activeToolRecovery = nil
-				m.addSystemEntry("Resuming execution from checkpoint...")
-				m.updateLayout()
-				sessionID := m.sessionID
-				runtime, bindingGeneration := m.runtime, m.bindingGeneration
-				ctx := m.boundContext
-				if ctx == nil {
-					ctx = context.Background()
-				}
-				return m, func() tea.Msg {
-					sub, err := runtime.Recover(ctx)
-					return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
-				}
-			}
-		}
-		m.addSystemEntry("No paused task to continue. Use `/resume` to switch sessions.")
-		return m, nil
-
-	case "/discard":
-		return m.discardPausedTask(discardSourceCommand)
-
 	case "/shortcuts":
 		m.modals.open()
 		m.modals.shortcuts = true
@@ -367,10 +324,8 @@ func (m *tuiModel) cancelQueuedTurn() (tea.Model, tea.Cmd) {
 	}
 }
 
-const questionPendingNotice = "This task is waiting for your answer. Answer it, or run `/discard` to abandon the paused task."
+const questionPendingNotice = "This task is waiting for your answer. Answer it, or press Esc to stop the task."
 
-// noteQuestionPending explains that a paused task is waiting for an answer and
-// that discarding it stays an explicit action. Consecutive duplicates are suppressed.
 func (m *tuiModel) noteQuestionPending() (tea.Model, tea.Cmd) {
 	if len(m.entries) == 0 || m.entries[len(m.entries)-1].Kind != KindSystem || m.entries[len(m.entries)-1].Text != questionPendingNotice {
 		m.addSystemEntry(questionPendingNotice)

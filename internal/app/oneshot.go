@@ -241,7 +241,7 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 				}
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
-					_, writeErr = fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, continue with `lune --session %s --cli` and use /continue\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
+					_, writeErr = fmt.Fprintf(stderr, "warning: tool approval required for %s in non-interactive mode; if the task pauses, reopen it with `lune --session %s --cli` and send a follow-up message\n", terminaltext.Sanitize(event.Approval.Tool), terminaltext.Sanitize(sessionID))
 				}
 			}
 			if writeErr != nil {
@@ -310,7 +310,7 @@ func oneShotAssistantDelta(event core.Event) bool {
 }
 
 func oneShotPausedTaskError(sessionID string) error {
-	return fmt.Errorf("task paused for approval or a decision in session %s; continue with `lune --session %s --cli` and use /continue", sessionID, sessionID)
+	return fmt.Errorf("task paused for approval or a decision in session %s; reopen it with `lune --session %s --cli` and send a follow-up message to start a new turn", sessionID, sessionID)
 }
 
 func applyOneShotModelProfile(ctx context.Context, client *core.Core, sessionID, profile string) error {

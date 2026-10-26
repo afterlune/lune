@@ -67,7 +67,7 @@ func TestCLIGoalCreatesDraftAndPrintsAllRounds(t *testing.T) {
 	}
 }
 
-func TestCLIGoalPauseAndContinueAdvice(t *testing.T) {
+func TestCLIGoalPauseAndResume(t *testing.T) {
 	p := &goalCLIProvider{}
 	client, err := core.New(core.Config{Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
 		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
@@ -83,12 +83,12 @@ func TestCLIGoalPauseAndContinueAdvice(t *testing.T) {
 		}
 	})
 	var stdout, stderr bytes.Buffer
-	input := "/goal Initial task\n/goal pause\n/continue\n/goal resume\n/exit\n"
+	input := "/goal Initial task\n/goal pause\n/goal resume\n/exit\n"
 	if err := runCoreChatLoop(coreCLIApplication{client}, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, nil); err != nil {
 		t.Fatal(err)
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "Use /goal resume to continue this goal and its checkpoint.") {
-		t.Fatalf("expected /continue to guide to /goal resume; got stdout=%s", output)
+	if !strings.Contains(output, "Goal: active") {
+		t.Fatalf("expected /goal resume to restart the paused goal; got stdout=%s", output)
 	}
 }

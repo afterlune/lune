@@ -57,7 +57,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	}
 	blocked := []string{
 		"/new", "/resume", "/drop", "/export", "/review", "/compact", "/fork", "/rewind",
-		"/continue", "/discard", "/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear",
+		"/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear",
 	}
 	for _, command := range blocked {
 		if reason := m.slashCommandUnavailable(command); reason == "" {
@@ -68,9 +68,14 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	for _, item := range m.commandsForAutocomplete("/") {
 		suggested[item.Command] = true
 	}
-	for _, command := range []string{"/new", "/resume", "/review", "/export", "/continue", "/discard"} {
+	for _, command := range []string{"/new", "/resume", "/review", "/export"} {
 		if suggested[command] {
 			t.Errorf("autocomplete suggested unavailable command %s during a task", command)
+		}
+	}
+	for _, command := range []string{"/continue", "/discard"} {
+		if suggested[command] {
+			t.Errorf("autocomplete still contains removed command %s", command)
 		}
 	}
 	for _, command := range []string{"/status", "/permissions", "/memory", "/mcp", "/cancel-queue"} {

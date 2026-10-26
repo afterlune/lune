@@ -166,23 +166,6 @@ func TestSessionsCommandAndResumeGeneratedTools(t *testing.T) {
 	}
 	m.modals.sessions.open = false
 
-	// 5. Checkpoint recovery has a separate /continue command.
-	s1Prefix := s1.ID
-	if len(s1Prefix) > 8 {
-		s1Prefix = s1Prefix[:8]
-	}
-	mod, _ = m.handleSlashCommand("/continue " + s1Prefix)
-	m = mod.(*tuiModel)
-	if !strings.Contains(m.entries[len(m.entries)-1].Text, "Usage: `/continue`") {
-		t.Fatalf("expected /continue to reject session IDs, session=%s entry=%q", m.sessionID, m.entries[len(m.entries)-1].Text)
-	}
-
-	// 6. /continue without a paused task reports that no checkpoint is available.
-	mod, _ = m.handleSlashCommand("/continue")
-	m = mod.(*tuiModel)
-	if m.modals.sessions.open || !strings.Contains(m.entries[len(m.entries)-1].Text, "No paused task to continue") {
-		t.Fatalf("expected /continue to report no paused task without opening a modal")
-	}
 }
 
 func TestExportMultiFormat(t *testing.T) {
@@ -423,28 +406,14 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 
 	// Verify View does not render the modal lock banner
 	viewOutput := ansi.Strip(m.View().Content)
-	if strings.Contains(viewOutput, "Task Paused (Checkpoint saved)") {
+	if strings.Contains(viewOutput, "send a message to continue in a new turn") {
 		t.Errorf("expected View() not to render paused task banner, got:\n%s", viewOutput)
 	}
 
 	// Verify footer does not show paused task modal hint
 	footerText := ansi.Strip(renderFooter(m, 100))
-	if strings.Contains(footerText, "task paused · /continue or /discard") {
+	if strings.Contains(footerText, "send a message to continue in a new turn") {
 		t.Errorf("expected footer not to show paused task hint, got: %s", footerText)
-	}
-
-	// Discard paused task
-	mod, cmd := m.handleSlashCommand("/discard")
-	m = mod.(*tuiModel)
-	if cmd != nil {
-		mod, _ = m.Update(cmd())
-		m = mod.(*tuiModel)
-	}
-	if m.pausedCheckpoint != nil {
-		t.Fatalf("expected pausedCheckpoint to be nil after /discard")
-	}
-	if m.hasPausedTask() {
-		t.Fatalf("expected hasPausedTask() to be false after /discard")
 	}
 }
 
@@ -536,7 +505,7 @@ func TestActiveToolRecoveryDetailsAndShortcuts(t *testing.T) {
 	if !strings.Contains(rendered, "SyntaxError: Unexpected token") {
 		t.Errorf("expected error details in modal, got: %s", rendered)
 	}
-	if !strings.Contains(rendered, "1 retry") || !strings.Contains(rendered, "r / s quick action") {
+	if !strings.Contains(rendered, "1 / r retry") || !strings.Contains(rendered, "2 / s skip") || !strings.Contains(rendered, "esc stop") {
 		t.Errorf("expected quick action hints in modal, got: %s", rendered)
 	}
 

@@ -9,7 +9,7 @@ import (
 // TestSlashCommandUnavailableUsesRegistryText keeps the running-task interlock in
 // one place: the message a blocked command shows comes from the shared registry.
 func TestSlashCommandUnavailableUsesRegistryText(t *testing.T) {
-	blocked := []string{"/rewind", "/resume", "/drop", "/new", "/fork", "/continue", "/discard", "/exit"}
+	blocked := []string{"/rewind", "/resume", "/drop", "/new", "/fork", "/exit"}
 	for _, name := range blocked {
 		spec, ok := slashcmd.Find(name)
 		if !ok {

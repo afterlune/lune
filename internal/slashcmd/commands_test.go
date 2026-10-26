@@ -50,7 +50,7 @@ func TestTargetDifferenceMatchesFrontends(t *testing.T) {
 
 func TestNeedsSessionSetIsStable(t *testing.T) {
 	want := []string{
-		"/agents", "/compact", "/continue", "/detail", "/discard", "/effort", "/export",
+		"/agents", "/compact", "/detail", "/effort", "/export",
 		"/fork", "/logs", "/model", "/ps", "/review", "/rewind", "/stop", "/title",
 	}
 	var got []string
@@ -65,8 +65,16 @@ func TestNeedsSessionSetIsStable(t *testing.T) {
 	}
 }
 
+func TestPausedTaskCommandsAreNotRegistered(t *testing.T) {
+	for _, name := range []string{"/continue", "/discard"} {
+		if _, ok := Find(name); ok {
+			t.Errorf("%s is still registered", name)
+		}
+	}
+}
+
 func TestDraftCommandsMatchTUIDraftGate(t *testing.T) {
-	want := []string{"/agents", "/compact", "/continue", "/discard", "/export", "/fork", "/logs", "/ps", "/rewind", "/stop"}
+	want := []string{"/agents", "/compact", "/export", "/fork", "/logs", "/ps", "/rewind", "/stop"}
 	var got []string
 	for _, command := range All() {
 		if command.NeedsSession && !command.DraftOK {

@@ -151,7 +151,7 @@ func TestDelayedSessionResultsAreIgnoredAfterReturningToSameSession(t *testing.T
 		generation: 1, result: core.TurnResult{Status: core.TaskFailed},
 	})
 	m.run.discardInFlight = true
-	m.Update(taskDiscardedMsg{bindingGeneration: oldGeneration, source: discardSourceCommand, discarded: true})
+	m.Update(taskDiscardedMsg{bindingGeneration: oldGeneration, source: discardSourcePausedTask, discarded: true})
 	m.Update(compactDoneMsg{sessionID: "session-a", bindingGeneration: oldGeneration, err: errors.New("stale compact")})
 	m.Update(approvalResolvedMsg{bindingGeneration: oldGeneration, approvalID: "stale", err: errors.New("stale approval")})
 	m.Update(goalActionMsg{sessionID: "session-a", bindingGeneration: oldGeneration, action: "pause", err: errors.New("stale goal")})

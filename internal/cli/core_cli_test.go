@@ -29,7 +29,6 @@ type fakeCLICore struct {
 	firstErr          error
 	responses         int
 	pending           bool
-	resumes           int
 	discarded         int
 	compact           int
 	mode              core.PermissionMode
@@ -48,9 +47,6 @@ type fakeCLICore struct {
 	memSeq            int
 	settingsErr       error
 	permissionErr     error
-	pendingRequests   []core.PendingRequest
-	questionAnswers   []core.UserQuestionAnswer
-	toolDecisions     []core.ToolRecoveryDecision
 	toolchainPaths    []string
 }
 
@@ -221,7 +217,7 @@ func (f *fakeCLICore) PermissionMode() core.PermissionMode {
 }
 
 func (f *fakeCLICore) SetPermissionMode(mode core.PermissionMode) error {
-	if f.permissionErr != nil {
+	if f.permissionErr != nil && mode == core.PermissionReadOnly {
 		return f.permissionErr
 	}
 	switch mode {
@@ -565,21 +561,6 @@ func (r *fakeCLIRuntime) Interrupt(id string) bool {
 	return true
 }
 
-func (r *fakeCLIRuntime) Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error) {
-	r.client.resumes++
-	r.client.pending = false
-	r.client.pendingRequests = nil
-	r.mu.Lock()
-	r.sequence++
-	id := fmt.Sprintf("execution-%d", r.sequence)
-	turn := fakeCLITurn{done: make(chan struct{}), result: core.TurnResult{ExecutionID: id, Status: core.TaskCompleted, Response: cliResponse("resumed")}}
-	r.turns[id] = turn
-	r.status, r.active = core.TaskCompleted, ""
-	close(turn.done)
-	r.mu.Unlock()
-	return core.TurnSubmission{Status: core.SubmissionAccepted, ExecutionID: id}, nil
-}
-
 func (r *fakeCLIRuntime) DiscardPaused(context.Context) (bool, error) {
 	if !r.client.pending {
 		return false, nil
@@ -590,25 +571,6 @@ func (r *fakeCLIRuntime) DiscardPaused(context.Context) (bool, error) {
 }
 
 func (*fakeCLIRuntime) SetUserInteractionAvailable(bool) {}
-func (r *fakeCLIRuntime) PendingRequests(context.Context) ([]core.PendingRequest, error) {
-	return append([]core.PendingRequest(nil), r.client.pendingRequests...), nil
-}
-func (r *fakeCLIRuntime) ResolveUserQuestion(_ context.Context, answer core.UserQuestionAnswer) error {
-	r.client.questionAnswers = append(r.client.questionAnswers, answer)
-	r.client.pending = false
-	r.client.pendingRequests = nil
-	turn := fakeCLITurn{done: make(chan struct{}), result: core.TurnResult{ExecutionID: answer.ExecutionID, Status: core.TaskCompleted, Response: cliResponse("answered")}}
-	r.mu.Lock()
-	r.turns[answer.ExecutionID] = turn
-	close(turn.done)
-	r.mu.Unlock()
-	r.client.resumes++
-	return nil
-}
-func (r *fakeCLIRuntime) ResolveToolRecovery(_ context.Context, _ string, decision core.ToolRecoveryDecision) error {
-	r.client.toolDecisions = append(r.client.toolDecisions, decision)
-	return nil
-}
 func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
 	if r.client.resolveErr != nil {
 		return r.client.resolveErr
@@ -829,7 +791,7 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 		"/help",
 		"/permissions [mode]",
 		"/resume [id|prefix]",
-		"/continue",
+		"/compact",
 		"read-only, workspace, auto, full-access",
 	} {
 		if !strings.Contains(stdout, expected) {
@@ -838,6 +800,9 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 	}
 	if strings.Contains(stdout, "/open") {
 		t.Fatalf("help output still exposes the removed /open command: %q", stdout)
+	}
+	if strings.Contains(stdout, "/continue") || strings.Contains(stdout, "/discard") {
+		t.Fatalf("help output still exposes removed paused-task commands: %q", stdout)
 	}
 	if client.responses != 0 || len(client.inputs) != 0 {
 		t.Fatalf("help started a task: responses=%d inputs=%#v", client.responses, client.inputs)
@@ -852,18 +817,24 @@ func TestChatLoopHelpListsCommandsWithoutStartingTask(t *testing.T) {
 
 func TestCLIUnknownSlashTextSubmitsPrompt(t *testing.T) {
 	client := &fakeCLICore{}
-	_, stderr := runCLI(t, client, "/open session-2\n/home/iacsadmin/notes.txt 看一下这个文件\n/exit\n", nil)
+	_, stderr := runCLI(t, client, "/open session-2\n/continue\n/discard\n/home/iacsadmin/notes.txt 看一下这个文件\n/exit\n", nil)
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want slash-prefixed text submitted without errors", stderr)
 	}
-	if len(client.inputs) != 2 {
-		t.Fatalf("inputs = %#v, want both slash-prefixed lines treated as prompts", client.inputs)
+	if len(client.inputs) != 4 {
+		t.Fatalf("inputs = %#v, want every unregistered slash-prefixed line treated as a prompt", client.inputs)
 	}
 	if got := string(client.inputs[0].Input.Raw); got != `"/open session-2"` {
 		t.Fatalf("first prompt = %s, want the removed /open line kept verbatim", got)
 	}
-	if got := string(client.inputs[1].Input.Raw); !strings.Contains(got, "/home/iacsadmin/notes.txt") {
-		t.Fatalf("second prompt = %s, want the pasted absolute path", got)
+	if got := string(client.inputs[1].Input.Raw); got != `"/continue"` {
+		t.Fatalf("second prompt = %s, want the removed continue command kept as ordinary text", got)
+	}
+	if got := string(client.inputs[2].Input.Raw); got != `"/discard"` {
+		t.Fatalf("third prompt = %s, want the removed discard command kept as ordinary text", got)
+	}
+	if got := string(client.inputs[3].Input.Raw); !strings.Contains(got, "/home/iacsadmin/notes.txt") {
+		t.Fatalf("fourth prompt = %s, want the pasted absolute path", got)
 	}
 }
 
@@ -1099,71 +1070,6 @@ func TestCLIPathApprovalExplainsSessionDirectoryGrant(t *testing.T) {
 	}
 }
 
-func TestChatLoopContinuesPausedCheckpointExplicitly(t *testing.T) {
-	client := &fakeCLICore{pending: true}
-	stdout, _ := runCLI(t, client, "/continue\n/exit\n", nil)
-	if client.resumes != 1 || client.pending {
-		t.Fatalf("resume calls=%d pending=%v, want one resume and no pending task", client.resumes, client.pending)
-	}
-	if !strings.Contains(stdout, "resumed") {
-		t.Fatalf("stdout = %q, want resumed response", stdout)
-	}
-}
-
-func TestCLIResumeAnswersUserQuestionBatch(t *testing.T) {
-	question := &core.UserQuestionRequest{
-		ID: "question-1", RunID: "run-1", InvocationID: "invocation-1", CallID: "call-1", ExecutionID: "execution-paused",
-		Questions: []core.UserQuestionItem{
-			{ID: "q1", Question: "Choose a strategy", Options: []core.UserQuestionOption{{Label: "Fast"}, {Label: "Safe", Recommended: true}}},
-			{ID: "q2", Question: "Any constraints?"},
-		},
-	}
-	client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingUserQuestion, UserQuestion: question}}}
-	stdout, stderr := runCLI(t, client, "/continue\n\nKeep the API stable\n/exit\n", nil)
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty", stderr)
-	}
-	if len(client.questionAnswers) != 1 {
-		t.Fatalf("resolved answers = %#v, want one batch", client.questionAnswers)
-	}
-	answer := client.questionAnswers[0]
-	if answer.ExecutionID != "execution-paused" || answer.RunID != "run-1" || answer.InvocationID != "invocation-1" || answer.CallID != "call-1" || len(answer.Answers) != 2 {
-		t.Fatalf("question identity or batch was not preserved: %#v", answer)
-	}
-	if answer.Answers[0] != (core.UserQuestionResponse{QuestionID: "q1", Answer: "Safe"}) || answer.Answers[1] != (core.UserQuestionResponse{QuestionID: "q2", Answer: "Keep the API stable"}) {
-		t.Fatalf("answers = %#v, want ordered option and free-text answers", answer.Answers)
-	}
-	if !strings.Contains(stdout, "answered") || !strings.Contains(stdout, "Question 2/2") {
-		t.Fatalf("stdout = %q, want question prompts and resumed output", stdout)
-	}
-	if !strings.Contains(stdout, "[Recommended]") || !strings.Contains(stdout, "default: Safe") {
-		t.Fatalf("stdout = %q, want recommendation marker and default prompt", stdout)
-	}
-}
-
-func TestCLIResumeHandlesModelAndToolRecovery(t *testing.T) {
-	t.Run("model", func(t *testing.T) {
-		modelRecovery := &core.PendingModelRecovery{ExecutionID: "execution-paused", Failure: core.ModelFailure{RetryNotBefore: time.Now().Add(-time.Second)}}
-		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingModelRecoveryRequest, ModelRecovery: modelRecovery}}}
-		stdout, stderr := runCLI(t, client, "/continue\nr\n/exit\n", nil)
-		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
-			t.Fatalf("stdout=%q stderr=%q resumes=%d, want retry", stdout, stderr, client.resumes)
-		}
-	})
-
-	t.Run("tool skip", func(t *testing.T) {
-		toolRecovery := &core.ToolRecoveryRequest{InvocationID: "invocation-2", Tool: "run_command"}
-		client := &fakeCLICore{pending: true, pendingRequests: []core.PendingRequest{{Kind: core.PendingToolRecovery, ToolRecovery: toolRecovery}}}
-		stdout, stderr := runCLI(t, client, "/continue\ns\n/exit\n", nil)
-		if stderr != "" || client.resumes != 1 || !strings.Contains(stdout, "resumed") {
-			t.Fatalf("stdout=%q stderr=%q resumes=%d, want skip and recover", stdout, stderr, client.resumes)
-		}
-		if len(client.toolDecisions) != 1 || client.toolDecisions[0] != core.ToolRecoverySkip {
-			t.Fatalf("tool decisions = %#v, want one skip", client.toolDecisions)
-		}
-	})
-}
-
 func TestChatLoopDiscardsPausedCheckpointWhenStartingNewPrompt(t *testing.T) {
 	client := &fakeCLICore{pending: true}
 	stdout, stderr := runCLI(t, client, "new task\n/exit\n", nil)
@@ -1318,15 +1224,19 @@ func TestCLIPlanMode(t *testing.T) {
 
 func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
 	client := &fakeCLICore{mode: core.PermissionAuto, permissionErr: errors.New("permission store unavailable")}
-	stdout, stderr := runCLI(t, client, "/plan\n/status\n/exit\n", nil)
+	var stdout, stderr bytes.Buffer
+	err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader("/plan\n/status\n/exit\n")), &stdout, &stderr, nil, LaunchOptions{PermissionMode: core.PermissionAuto})
+	if err != nil {
+		t.Fatalf("runCoreChatLoopWithOptions: %v", err)
+	}
 	if client.PermissionMode() != core.PermissionAuto {
 		t.Fatalf("permission mode changed after rejected Plan transition: %s", client.PermissionMode())
 	}
-	if !strings.Contains(stderr, "error: enter Plan mode: permission store unavailable") {
-		t.Fatalf("stderr = %q, want permission failure", stderr)
+	if !strings.Contains(stderr.String(), "error: enter Plan mode: permission store unavailable") {
+		t.Fatalf("stderr = %q, want permission failure", stderr.String())
 	}
-	if !strings.Contains(stdout, "Permissions: auto (Plan mode: false)") {
-		t.Fatalf("stdout = %q, want original mode and Plan state", stdout)
+	if !strings.Contains(stdout.String(), "Permissions: auto (Plan mode: false)") {
+		t.Fatalf("stdout = %q, want original mode and Plan state", stdout.String())
 	}
 }
 
@@ -1971,7 +1881,7 @@ func TestCLIPlanModeReachesSubmittedTurn(t *testing.T) {
 				input = "plan this task\n/plan\nimplement this task\n/exit\n"
 			}
 			var stdout, stderr bytes.Buffer
-			err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, nil, LaunchOptions{PlanMode: startup})
+			err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader(input)), &stdout, &stderr, nil, LaunchOptions{PermissionMode: core.PermissionAuto, PlanMode: startup})
 			if err != nil {
 				t.Fatal(err)
 			}

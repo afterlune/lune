@@ -204,50 +204,6 @@ func TestEventCursorAdvances(t *testing.T) {
 	}
 }
 
-// TestActiveApprovalAllowsComposerAndDiscard covers P0-2: when an approval card is active,
-// non-option typing (like /discard) falls through to composer, and submitting with Enter
-// executes the slash command instead of resolving the approval.
-func TestActiveApprovalAllowsComposerAndDiscard(t *testing.T) {
-	m, _ := newApprovalTestModel(t)
-	m.activeApproval = &ActiveApproval{
-		Request:  core.ApprovalRequest{ID: "approval-p0", Tool: "command"},
-		Selected: 0,
-	}
-
-	// Typing "/" should pass through to composer and trigger autocomplete
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
-	m = mod.(*tuiModel)
-	if m.input.composer.Value() != "/" {
-		t.Fatalf("expected composer to receive '/', got %q", m.input.composer.Value())
-	}
-	if !m.input.autocompleteOpen {
-		t.Fatalf("expected autocomplete to be open for slash command")
-	}
-
-	// Type the rest of "/discard"
-	for _, ch := range "discard" {
-		mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: rune(ch), Text: string(ch)}))
-		m = mod.(*tuiModel)
-	}
-	if m.input.composer.Value() != "/discard" {
-		t.Fatalf("expected composer to hold '/discard', got %q", m.input.composer.Value())
-	}
-
-	// Submitting with Enter executes /discard, approval must NOT be resolved!
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	m = mod.(*tuiModel)
-
-	// Discarding the paused task adds a system entry starting with "Discarding paused task"
-	// or "Paused-task management is unavailable".
-	lastEntry := m.entries[len(m.entries)-1]
-	if !strings.Contains(lastEntry.Text, "Discarding paused task") && !strings.Contains(lastEntry.Text, "Paused-task management is unavailable") {
-		t.Fatalf("expected /discard execution note, got %+v", lastEntry)
-	}
-	if m.input.composer.Value() != "" {
-		t.Fatalf("expected composer to be reset after submit, got %q", m.input.composer.Value())
-	}
-}
-
 // TestInteractiveCardRenderAndKeyDispatchConsistency covers P0-1:
 // Ensures visual-dispatch consistency between activeCardKind(), rendering, and key dispatch.
 func TestInteractiveCardRenderAndKeyDispatchConsistency(t *testing.T) {

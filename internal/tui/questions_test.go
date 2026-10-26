@@ -437,59 +437,8 @@ func TestActiveQuestionRestoresAndSerializesDurableDraft(t *testing.T) {
 	}
 }
 
-func TestActiveQuestionAllowsComposerAndDiscard(t *testing.T) {
-	m := newTUIModel(nil, nil, "q-sess")
-	m.activeQuestion = &ActiveQuestion{
-		Request: core.UserQuestionRequest{
-			ID: "q-req-1",
-			Questions: []core.UserQuestionItem{
-				{
-					ID:       "q1",
-					Question: "Choose an option",
-					Options: []core.UserQuestionOption{
-						{Label: "Opt A"},
-					},
-				},
-			},
-		},
-	}
-
-	// Typing "/" should pass through to composer and trigger autocomplete
-	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
-	m = mod.(*tuiModel)
-	if m.input.composer.Value() != "/" {
-		t.Fatalf("expected composer to receive '/', got %q", m.input.composer.Value())
-	}
-	if !m.input.autocompleteOpen {
-		t.Fatalf("expected autocomplete to be open for slash command")
-	}
-
-	// Type the rest of "/discard"
-	for _, ch := range "discard" {
-		mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: rune(ch), Text: string(ch)}))
-		m = mod.(*tuiModel)
-	}
-	if m.input.composer.Value() != "/discard" {
-		t.Fatalf("expected composer to hold '/discard', got %q", m.input.composer.Value())
-	}
-
-	// Submitting with Enter executes /discard
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	m = mod.(*tuiModel)
-
-	// Since m.runtime is nil in this test model, discardPausedTask records:
-	// "Paused-task management is unavailable."
-	lastEntry := m.entries[len(m.entries)-1]
-	if !strings.Contains(lastEntry.Text, "Paused-task management is unavailable") {
-		t.Fatalf("expected /discard execution note, got %+v", lastEntry)
-	}
-	if m.input.composer.Value() != "" {
-		t.Fatalf("expected composer to be reset after submit, got %q", m.input.composer.Value())
-	}
-}
-
 func TestActiveQuestionEscHierarchy(t *testing.T) {
-	m := newTUIModel(nil, nil, "q-sess")
+	m, _ := newApprovalTestModel(t)
 	m.activeQuestion = &ActiveQuestion{
 		Drafts: []questionDraft{{
 			Selected:  1, // "None of the above"
@@ -539,10 +488,15 @@ func TestActiveQuestionEscHierarchy(t *testing.T) {
 		t.Fatalf("expected Esc to clear composer draft, got %q", m.input.composer.Value())
 	}
 
-	// 4. Esc when on options list notes question pending
-	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	// 4. Esc when on the options list discards the paused task and returns to chat.
+	mod, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if len(m.entries) == 0 || !strings.Contains(m.entries[len(m.entries)-1].Text, "waiting for your answer") {
-		t.Fatalf("expected pending-question notice on options Esc, got: %+v", m.entries)
+	if cmd == nil || m.activeQuestion == nil {
+		t.Fatalf("expected Esc to request task discard and keep the card until confirmation: cmd=%v question=%+v", cmd != nil, m.activeQuestion)
+	}
+	mod, _ = m.Update(cmd())
+	m = mod.(*tuiModel)
+	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
+		t.Fatalf("expected Esc to close the question after discard settled, got question=%+v entries=%+v", m.activeQuestion, m.entries)
 	}
 }

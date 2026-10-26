@@ -69,8 +69,8 @@ type taskDiscardedMsg struct {
 type discardSource uint8
 
 const (
-	discardSourceCommand discardSource = iota
-	discardSourceRecovery
+	discardSourcePausedTask discardSource = iota
+	discardSourceModelRecovery
 )
 
 type queuedTurnCancelledMsg struct {

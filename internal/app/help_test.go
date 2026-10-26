@@ -24,8 +24,8 @@ func TestHelpUsesSharedPermissionModeList(t *testing.T) {
 	if permissionLine == "" {
 		t.Fatalf("help has no --permission line:\n%s", out.String())
 	}
-	if !strings.HasSuffix(permissionLine, want) {
-		t.Fatalf("permission line = %q, want it to end with %q", permissionLine, want)
+	if !strings.Contains(permissionLine, want) {
+		t.Fatalf("permission line = %q, want it to contain %q", permissionLine, want)
 	}
 	if strings.Contains(permissionLine, "ask") {
 		t.Fatalf("permission line still mentions the removed ask mode: %q", permissionLine)

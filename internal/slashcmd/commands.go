@@ -87,8 +87,6 @@ var registry = []Command{
 	{Name: "/fork", Summary: "fork the current chat", Usage: "/fork", Description: "Fork the current session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot fork a session while a task is running."},
 	{Name: "/rewind", Summary: "rewind session history: /rewind [N] or /rewind preview [N]", Usage: "/rewind [N|preview [N]]", Description: "Rewind conversation or preview turns to be removed.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot rewind while a task is running."},
 	{Name: "/status", Summary: "show session, model and token status", Usage: "/status", Description: "Show session, model, and token status.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},
-	{Name: "/continue", Summary: "continue the paused task in this session", Usage: "/continue", Description: "Continue the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "A task is already running."},
-	{Name: "/discard", Summary: "discard the paused task in this session", Usage: "/discard", Description: "Discard the paused task in this session.", Targets: TargetTUI | TargetCLI, NeedsSession: true, BlockedDuringTask: "Cannot discard a paused task while another task is running."},
 	{Name: "/shortcuts", Summary: "display keyboard shortcuts help", Targets: TargetTUI, AvailableDuringTask: true},
 	{Name: "/thought", Summary: "toggle visibility of latest thinking/reasoning block", Targets: TargetTUI, AvailableDuringTask: true},
 	{Name: "/help", Summary: "list all available slash commands", Usage: "/help", Description: "Show available commands.", Targets: TargetTUI | TargetCLI, AvailableDuringTask: true},

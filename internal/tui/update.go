@@ -360,10 +360,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		m.usage.resetCompaction()
 		if !msg.discarded {
 			m.addSystemEntry("No interrupted task to discard.")
-		} else if msg.source == discardSourceRecovery {
+		} else if msg.source == discardSourceModelRecovery {
 			m.addSystemEntry("Model recovery discarded.")
 		} else {
-			m.addSystemEntry("Discarded paused task.")
+			m.addSystemEntry("Paused task discarded.")
 		}
 		m.updateLayout()
 		return m, nil

@@ -352,8 +352,8 @@ func TestFinishTurnReportsTaskFailedWithoutModelFailure(t *testing.T) {
 	}
 }
 
-func TestEscKeepsActiveQuestionUntilDiscard(t *testing.T) {
-	m := newTUIModel(nil, nil, "test-sess")
+func TestEscDiscardsActiveQuestion(t *testing.T) {
+	m, _ := newApprovalTestModel(t)
 	m.activeQuestion = &ActiveQuestion{
 		Request: core.UserQuestionRequest{
 			ID: "req-1",
@@ -366,19 +366,32 @@ func TestEscKeepsActiveQuestionUntilDiscard(t *testing.T) {
 	mod, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 
-	if cmd != nil {
-		t.Fatal("Esc must not start a discard for a pending question")
+	if cmd == nil {
+		t.Fatal("Esc should start discarding a pending question")
 	}
 	if m.activeQuestion == nil {
-		t.Fatal("question should remain visible until the task is discarded explicitly")
+		t.Fatal("question should remain visible until Core confirms the discard")
 	}
-	if !strings.Contains(m.entries[len(m.entries)-1].Text, "waiting for your answer") {
-		t.Fatalf("missing pending-question hint: %+v", m.entries)
-	}
-	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceCommand, discarded: true})
+	mod, _ = m.Update(cmd())
 	m = mod.(*tuiModel)
-	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Discarded paused task") {
-		t.Fatalf("confirmed discard did not cancel question: active=%+v entries=%+v", m.activeQuestion, m.entries)
+	if m.activeQuestion != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
+		t.Fatalf("Esc did not return from the question after discard settled: active=%+v entries=%+v", m.activeQuestion, m.entries)
+	}
+}
+
+func TestEscDiscardsActiveToolRecovery(t *testing.T) {
+	m, _ := newApprovalTestModel(t)
+	m.activeToolRecovery = &ActiveToolRecovery{InvocationID: "invoke-1", ToolName: "run_command"}
+
+	mod, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
+	m = mod.(*tuiModel)
+	if cmd == nil || m.activeToolRecovery == nil {
+		t.Fatalf("Esc should request discard and preserve the card until Core confirms: cmd=%v recovery=%+v", cmd != nil, m.activeToolRecovery)
+	}
+	mod, _ = m.Update(cmd())
+	m = mod.(*tuiModel)
+	if m.activeToolRecovery != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
+		t.Fatalf("Esc did not close tool recovery after discard settled: recovery=%+v entries=%+v", m.activeToolRecovery, m.entries)
 	}
 }
 
@@ -497,7 +510,7 @@ func TestActiveRecoveryModalNavigationAndEsc(t *testing.T) {
 	if !strings.Contains(lastSys, "Paused-task management is unavailable") {
 		t.Errorf("expected unavailable-runtime message, got: %s", lastSys)
 	}
-	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceRecovery, discarded: true})
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceModelRecovery, discarded: true})
 	m = mod.(*tuiModel)
 	if m.activeRecovery != nil || !strings.Contains(m.entries[len(m.entries)-1].Text, "Model recovery discarded") {
 		t.Errorf("confirmed discard did not close recovery panel: recovery=%+v entries=%+v", m.activeRecovery, m.entries)
@@ -698,7 +711,7 @@ func TestDiscardResultKeepsRecoveryOnErrorAndReportsMissingTask(t *testing.T) {
 	m.activeRecovery = &ActiveRecovery{ExecutionID: "paused-exec"}
 	m.pausedCheckpoint = &PausedCheckpoint{ExecutionID: "paused-exec"}
 	m.run.discardInFlight = true
-	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceRecovery, err: errors.New("database locked")})
+	mod, _ := m.Update(taskDiscardedMsg{source: discardSourceModelRecovery, err: errors.New("database locked")})
 	m = mod.(*tuiModel)
 	if m.activeRecovery == nil || m.pausedCheckpoint == nil || m.run.discardInFlight {
 		t.Fatalf("failed discard lost recovery state: recovery=%+v checkpoint=%+v pending=%t", m.activeRecovery, m.pausedCheckpoint, m.run.discardInFlight)
@@ -708,7 +721,7 @@ func TestDiscardResultKeepsRecoveryOnErrorAndReportsMissingTask(t *testing.T) {
 	}
 
 	m.run.discardInFlight = true
-	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceRecovery, discarded: false})
+	mod, _ = m.Update(taskDiscardedMsg{source: discardSourceModelRecovery, discarded: false})
 	m = mod.(*tuiModel)
 	if m.activeRecovery != nil || m.pausedCheckpoint != nil || m.run.running {
 		t.Fatalf("missing paused task left stale recovery state: recovery=%+v checkpoint=%+v running=%t", m.activeRecovery, m.pausedCheckpoint, m.run.running)

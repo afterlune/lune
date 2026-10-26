@@ -129,10 +129,10 @@ func TestQuestionNavigationLeavesComposerInControl(t *testing.T) {
 	m := questionNavigationModel()
 	q := m.activeQuestion
 	pressQuestionKey(m, tea.KeyTab) // Leave question notes open.
-	m.input.composer.SetValue("/discard")
+	m.input.composer.SetValue("please continue")
 	pressQuestionKey(m, tea.KeyLeft)
 	m.Update(tea.PasteMsg{Content: "x"})
-	if q.CurrentIndex != 0 || q.currentDraft().NoteText != "" || m.input.composer.Value() != "/discarxd" {
+	if q.CurrentIndex != 0 || q.currentDraft().NoteText != "" || m.input.composer.Value() != "please continuxe" {
 		t.Fatalf("card captured composer movement or paste: composer=%q draft=%#v", m.input.composer.Value(), q.currentDraft())
 	}
 	pressQuestionKey(m, tea.KeyRight)
