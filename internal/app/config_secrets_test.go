@@ -277,7 +277,7 @@ func TestPrepareUserConfigFallsBackWhenLinuxSecretServiceCannotStore(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(warning), "stores provider API keys in plain text") || !strings.Contains(string(warning), "Secret Service") {
+			if !strings.Contains(string(warning), "stores provider API keys in plain text") || !strings.Contains(string(warning), "Secret Service") || !strings.Contains(string(warning), "apiKeyEnv") {
 				t.Fatalf("warning = %q, want plaintext and Secret Service fallback guidance", warning)
 			}
 			if !strings.Contains(string(document), "plain-secret") {

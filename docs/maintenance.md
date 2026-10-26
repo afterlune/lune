@@ -56,11 +56,42 @@ Playwright 截图基线在 Windows runner 上验证。发布版本以 `cmd/deskt
 
 ## 用户配置与凭证
 
-`%APPDATA%\luneAgent\config.json` 是 TUI/CLI 的唯一配置来源。读取时会收紧该文件权限（0600），并按平台保护 provider 的 `apiKey`：
+TUI/CLI 的用户配置在 Windows 为 `%APPDATA%\luneAgent\config.json`，Linux 通常为 `~/.config/luneAgent/config.json`（遵循 `XDG_CONFIG_HOME`）。读取时会收紧该文件权限（0600），并按平台保护 provider 的 `apiKey`：
 
 - Windows：明文 `apiKey` 会被 DPAPI 加密为 `apiKeyEncrypted` 后写回，启动时在内存中解密再交给 Core，文件本身不再保存明文密钥。
 - Linux：Secret Service 可用时，密钥保存在系统凭证库中，配置文件只保存随机引用；启动时在内存中恢复密钥再交给 Core。无桌面凭证服务或写入失败时，保留明文配置并在 stderr 提示风险，文件权限仍限制为当前用户。
 - 其它平台：`apiKey` 保持明文；启动时会在 stderr 提示风险，该平台需要自行限制配置文件权限。
+
+无桌面服务器可使用 `apiKeyEnv`，将 provider 的 `apiKey` 替换为环境变量引用，例如：
+
+```json
+{
+  "protocol": "responses",
+  "baseURL": "https://api.deepseek.com",
+  "apiKeyEnv": "LUNE_DEEPSEEK_API_KEY",
+  "serverCompaction": true
+}
+```
+
+所有平台均支持该字段。启动时变量值只会注入传给 Core 的内存配置；配置文件始终保存变量名。仅使用该来源时会跳过系统凭证库探测，并且不会产生明文配置警告。配置中的每个显式环境变量引用都必须可读取且非空；引用缺失、值为空或同时配置其它非空密钥来源时，启动会报告 provider 和字段/变量名。允许保留空的 `apiKey` 字段。
+
+在 Bash 中，可通过隐藏输入提供当前会话的密钥，避免把值写入命令历史：
+
+```bash
+IFS= read -r -s -p 'Provider API key: ' LUNE_DEEPSEEK_API_KEY
+printf '\n'
+export LUNE_DEEPSEEK_API_KEY
+./bin/lune
+```
+
+无人值守部署由 CI、容器或服务管理器的凭证机制在启动前注入同名环境变量。启动脚本继承该环境即可，例如：
+
+```bash
+#!/usr/bin/env bash
+exec /opt/lune/bin/lune "$@"
+```
+
+每次启动重新读取变量，因此轮换密钥只需更新启动环境。环境变量本身不提供磁盘加密，部署系统负责管理其来源。
 
 桌面端不使用该文件，它的 provider 密钥以加密形式保存在 `settings.db`。
 

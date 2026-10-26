@@ -14,13 +14,13 @@ import (
 	"github.com/go-keyring/keyring"
 )
 
-// Provider keys live in the user config document under
-// models.providers.<name>.apiKey. The desktop app keeps its keys in settings.db
-// encrypted with DPAPI. The TUI/CLI move keys out of the config file when the
-// platform has a secure credential store, then restore apiKey only in memory
-// before Core reads the document.
+// Provider keys live under models.providers.<name>.apiKey or are referenced by
+// apiKeyEnv. The desktop app keeps keys in settings.db encrypted with DPAPI.
+// The TUI/CLI migrate keys into the platform credential store when available
+// and resolve credentials only in memory for Core.
 const (
 	configAPIKeyField           = "apiKey"
+	configAPIKeyEnvField        = "apiKeyEnv"
 	configAPIKeyEncryptedField  = "apiKeyEncrypted"
 	configAPIKeyKeyringRefField = "apiKeyKeyringRef"
 	configKeyringService        = "luneAgent"
@@ -64,6 +64,10 @@ func prepareUserConfig(path string, document []byte) ([]byte, error) {
 }
 
 func prepareUserConfigWithKeyring(path string, document []byte, store providerKeyring) ([]byte, error) {
+	environmentKeys, err := readConfigEnvironmentKeys(document)
+	if err != nil {
+		return nil, err
+	}
 	defaulted, defaultsChanged, err := defaultResponsesServerCompaction(document)
 	if err != nil {
 		return nil, err
@@ -93,7 +97,7 @@ func prepareUserConfigWithKeyring(path string, document []byte, store providerKe
 			path, configProtectionHint())
 	}
 
-	revealed, revealedChanged, err := revealConfigSecrets(stored, store)
+	revealed, revealedChanged, err := revealConfigSecrets(stored, store, environmentKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -147,9 +151,9 @@ func configProtectionHint() string {
 		return "keep only files you trust in this directory"
 	}
 	if runtime.GOOS == "linux" {
-		return "Linux Secret Service is unavailable or could not store the key, so keep this file private"
+		return "Linux Secret Service is unavailable or could not store the key; use apiKeyEnv for environment-provided keys, or keep this file private"
 	}
-	return "API key encryption is only available on Windows, so keep this file private"
+	return "use apiKeyEnv for environment-provided keys, or keep this file private"
 }
 
 // protectConfigSecrets removes plaintext provider keys when a secure store is
@@ -183,7 +187,7 @@ func protectConfigSecrets(document []byte, store providerKeyring) (configSecretP
 		})
 		return configSecretProtection{document: protected, changed: changed}, err
 	}
-	if runtime.GOOS != "linux" || store == nil || !store.Available() {
+	if runtime.GOOS != "linux" || store == nil || !hasPlaintextConfigSecrets(document) || !store.Available() {
 		return configSecretProtection{}, nil
 	}
 
@@ -258,11 +262,27 @@ func deleteConfigKeyringRefs(store providerKeyring, references []string) {
 	}
 }
 
-// revealConfigSecrets restores encrypted or keyring-backed provider keys for
-// Core. A keyring reference that cannot be resolved is an error, never an empty
-// apiKey.
-func revealConfigSecrets(document []byte, store providerKeyring) ([]byte, bool, error) {
+// revealConfigSecrets resolves provider keys only in the document handed to Core.
+// References that cannot be resolved are errors, never empty API keys.
+func revealConfigSecrets(document []byte, store providerKeyring, environmentKeys map[string]string) ([]byte, bool, error) {
 	return mapConfigProviders(document, func(fields map[string]json.RawMessage) (bool, error) {
+		if raw, ok := fields[configAPIKeyEnvField]; ok {
+			var name string
+			if err := json.Unmarshal(raw, &name); err != nil {
+				return false, fmt.Errorf("read apiKeyEnv: %w", err)
+			}
+			key, ok := environmentKeys[name]
+			if !ok {
+				return false, fmt.Errorf("apiKeyEnv %q was not resolved", name)
+			}
+			encoded, err := json.Marshal(key)
+			if err != nil {
+				return false, err
+			}
+			fields[configAPIKeyField] = encoded
+			delete(fields, configAPIKeyEnvField)
+			return true, nil
+		}
 		changed := false
 		if raw, ok := fields[configAPIKeyEncryptedField]; ok {
 			var encrypted []byte

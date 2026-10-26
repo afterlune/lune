@@ -31,6 +31,8 @@ $env:GOWORK = 'off'
 ./scripts/build-linux.sh
 ```
 
+无桌面服务器可在 provider 中设置 `"apiKeyEnv": "LUNE_DEEPSEEK_API_KEY"`，由启动环境提供密钥；配置文件只保存变量名，无需 Secret Service。配置与启动示例见[用户配置与凭证](docs/maintenance.md#用户配置与凭证)。
+
 所有会产出仓库二进制文件的 Go 构建都必须传入 `-trimpath`，脚本、文档与测试辅助代码保持一致。
 
 ## 验证
