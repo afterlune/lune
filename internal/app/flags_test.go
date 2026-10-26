@@ -26,6 +26,21 @@ func TestParseFlagsHelpAndVersion(t *testing.T) {
 	}
 }
 
+func TestParseFlagsA2AListen(t *testing.T) {
+	for _, args := range [][]string{
+		{"--a2a-listen", "127.0.0.1:18091"},
+		{"--a2a-listen=127.0.0.1:18091"},
+	} {
+		flags, err := ParseFlags(args)
+		if err != nil || flags.A2AListen != "127.0.0.1:18091" || flags.Prompt != "" {
+			t.Fatalf("ParseFlags(%v) = %+v, %v", args, flags, err)
+		}
+	}
+	if _, err := ParseFlags([]string{"--a2a-listen"}); err == nil {
+		t.Fatal("missing A2A listen address was accepted")
+	}
+}
+
 func TestParseFlagsWorkspace(t *testing.T) {
 	flags, err := ParseFlags([]string{"-C", "test-dir"})
 	if err != nil {

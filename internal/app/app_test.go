@@ -26,6 +26,16 @@ func TestUseTUIRequiresBothStreamsToBeTerminals(t *testing.T) {
 	}
 }
 
+func TestA2AModeReachesListenerWithoutTTYOrPrompt(t *testing.T) {
+	writeUserProjectConfigForTest(t, `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`)
+	// An invalid numeric port exercises server-mode selection and Core setup
+	// without binding a socket or leaving a server running after the test.
+	err := RunWithStreams([]string{"--a2a-listen", "127.0.0.1:99999"}, nil, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "invalid port") {
+		t.Fatalf("expected the A2A listener error, got %v", err)
+	}
+}
+
 func TestRunWithStreamsHelp(t *testing.T) {
 	var stdout, stderr strings.Builder
 	err := RunWithStreams([]string{"--help"}, nil, &stdout, &stderr)

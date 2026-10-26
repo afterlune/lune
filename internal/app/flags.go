@@ -25,6 +25,7 @@ type CLIFlags struct {
 	NoSandbox      bool
 	ForceTUI       bool
 	ForceCLI       bool
+	A2AListen      string
 	Help           bool
 	Version        bool
 	Prompt         string
@@ -154,6 +155,21 @@ func ParseFlags(args []string) (CLIFlags, error) {
 			continue
 		}
 
+		// A2A server listen flag (--a2a-listen)
+		if arg == "--a2a-listen" {
+			if i+1 >= len(args) {
+				return flags, fmt.Errorf("flag %s requires a listen address argument", arg)
+			}
+			i++
+			flags.A2AListen = args[i]
+			continue
+		}
+		if strings.HasPrefix(arg, "--a2a-listen=") {
+			parts := strings.SplitN(arg, "=", 2)
+			flags.A2AListen = parts[1]
+			continue
+		}
+
 		// Unknown flag
 		if strings.HasPrefix(arg, "-") && arg != "-" {
 			return flags, fmt.Errorf("unknown flag: %s (run 'lune --help' for usage)", arg)
@@ -209,6 +225,7 @@ Flags:
       --no-sandbox           Disable OS sandbox and run commands directly
       --tui                  Force full-screen TUI when no prompt is supplied
       --cli                  Force line-oriented CLI when no prompt is supplied
+      --a2a-listen <addr>    Run A2A 1.0 HTTP/JSON-RPC server on <addr>
   -v, --version              Print version information and exit
   -h, --help                 Print this help message and exit
 
