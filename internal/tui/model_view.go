@@ -109,18 +109,21 @@ func (m *tuiModel) overlaySection(contentWidth int) (string, int) {
 		view = renderToolPagerModal(m, contentWidth)
 	case active == modalDiff:
 		view = renderDiffModal(m, contentWidth)
-	case m.activeRecovery != nil:
-		view = renderRecoveryPanel(m.activeRecovery, contentWidth)
-	case m.activeToolRecovery != nil:
-		view = renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)
-	case m.activeQuestion != nil:
-		view = renderQuestionPanel(m.activeQuestion, contentWidth)
-	case m.effortPicker != nil:
-		view = renderEffortPicker(m, contentWidth)
-	case m.activeApproval != nil:
-		view = renderApprovalPanel(m.activeApproval, contentWidth)
-	case m.activePlanReview != nil:
-		view = renderPlanReviewPanel(m.activePlanReview, contentWidth)
+	case m.activeCardKind() != cardNone:
+		switch m.activeCardKind() {
+		case cardRecovery:
+			view = renderRecoveryPanel(m.activeRecovery, contentWidth)
+		case cardToolRecovery:
+			view = renderToolRecoveryPanel(m.activeToolRecovery, contentWidth)
+		case cardApproval:
+			view = renderApprovalPanel(m.activeApproval, contentWidth)
+		case cardQuestion:
+			view = renderQuestionPanel(m.activeQuestion, contentWidth)
+		case cardEffort:
+			view = renderEffortPicker(m, contentWidth)
+		case cardPlanReview:
+			view = renderPlanReviewPanel(m.activePlanReview, contentWidth)
+		}
 	case m.input.autocompleteOpen && len(m.input.autocompleteItems) > 0:
 		// The popup sizes itself by its visible candidates plus the hint row,
 		// not by its rendered height.

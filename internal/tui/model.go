@@ -263,6 +263,44 @@ func (m *tuiModel) resetSessionState() {
 	m.view.invalidateBlocks()
 }
 
+// interactiveCardKind identifies the active non-modal interaction card.
+type interactiveCardKind int
+
+const (
+	cardNone interactiveCardKind = iota
+	cardRecovery
+	cardToolRecovery
+	cardApproval
+	cardQuestion
+	cardEffort
+	cardPlanReview
+)
+
+// activeCardKind returns the single highest-priority interactive card currently active.
+// Both model_view.go rendering and update_keys.go key dispatch MUST read this method
+// to guarantee that what is displayed on screen is identical to what receives keyboard events.
+func (m *tuiModel) activeCardKind() interactiveCardKind {
+	if m == nil {
+		return cardNone
+	}
+	switch {
+	case m.activeRecovery != nil:
+		return cardRecovery
+	case m.activeToolRecovery != nil:
+		return cardToolRecovery
+	case m.activeApproval != nil:
+		return cardApproval
+	case m.activeQuestion != nil:
+		return cardQuestion
+	case m.effortPicker != nil:
+		return cardEffort
+	case m.activePlanReview != nil:
+		return cardPlanReview
+	default:
+		return cardNone
+	}
+}
+
 // restoreRuntimeState restores the current execution state for the bound session.
 func (m *tuiModel) restoreRuntimeState(ctx context.Context) {
 	if m.runtime == nil {

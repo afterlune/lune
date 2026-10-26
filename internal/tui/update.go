@@ -72,10 +72,10 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(commands...)
 
 	case tea.PasteMsg:
-		if m.activeQuestion != nil && m.activeQuestion.Submitting {
+		if m.activeCardKind() == cardQuestion && m.activeQuestion.Submitting {
 			return m, nil
 		}
-		if m.activeQuestion != nil && len(m.activeQuestion.Request.Questions) > 0 && m.input.composer.Value() == "" {
+		if m.activeCardKind() == cardQuestion && len(m.activeQuestion.Request.Questions) > 0 && m.input.composer.Value() == "" {
 			draft := m.activeQuestion.currentDraft()
 			currIdx := min(m.activeQuestion.CurrentIndex, len(m.activeQuestion.Request.Questions)-1)
 			currQ := m.activeQuestion.Request.Questions[currIdx]

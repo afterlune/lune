@@ -14,10 +14,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.run.discardInFlight {
 		return m, nil
 	}
-	if m.activeQuestion != nil && m.activeQuestion.Submitting && keyStr != "ctrl+c" {
-		return m, nil
-	}
-
 	// Exactly one overlay can own the keyboard; modalState decides which one.
 	switch m.modals.active() {
 	case modalShortcuts:
@@ -41,6 +37,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case modalDiff:
 		return m.handleDiffModalKeyPress(msg, keyStr)
 	}
+	if m.activeCardKind() == cardQuestion && m.activeQuestion.Submitting && keyStr != "ctrl+c" {
+		return m, nil
+	}
+
 	// Trigger shortcut modal when typing '?' in an empty composer
 	if keyStr == "?" && m.input.composer.Value() == "" && !m.run.running {
 		m.modals.open()
@@ -62,7 +62,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.input.selectedText != "" {
 			return m, m.copyTextToClipboard(m.input.selectedText)
 		}
-		if m.activeQuestion != nil {
+		if m.activeCardKind() == cardQuestion {
 			if m.input.composer.Value() != "" {
 				m.input.composer.Reset()
 				m.input.autocompleteOpen = false
@@ -127,19 +127,21 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
-		if m.activeRecovery != nil {
-			return m.discardPausedTask(discardSourceRecovery)
+		if m.activeCardKind() != cardNone && m.input.composer.Value() != "" {
+			m.input.composer.Reset()
+			m.updateLayout()
+			return m, nil
 		}
-		if m.activeToolRecovery != nil {
+		switch m.activeCardKind() {
+		case cardRecovery:
+			return m.discardPausedTask(discardSourceRecovery)
+		case cardToolRecovery:
 			m.activeToolRecovery.Selected = 1
 			return m.resolveActiveToolRecovery()
-		}
-		if m.activeQuestion != nil {
-			if m.input.composer.Value() != "" {
-				m.input.composer.Reset()
-				m.updateLayout()
-				return m, nil
-			}
+		case cardApproval:
+			m.activeApproval.Selected = 2
+			return m.resolveActiveApproval()
+		case cardQuestion:
 			draft := m.activeQuestion.currentDraft()
 			if draft != nil && draft.NotesOpen {
 				draft.NotesOpen = false
@@ -147,7 +149,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			currIdx := m.activeQuestion.CurrentIndex
-			if currIdx < len(m.activeQuestion.Request.Questions) {
+			if draft != nil && currIdx >= 0 && currIdx < len(m.activeQuestion.Request.Questions) {
 				maxOpt := len(m.activeQuestion.Request.Questions[currIdx].Options)
 				if draft.Selected == maxOpt && draft.Custom != "" {
 					draft.Custom = ""
@@ -157,17 +159,11 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m.noteQuestionPending()
-		}
-		if m.activeApproval != nil {
-			m.activeApproval.Selected = 2
-			return m.resolveActiveApproval()
-		}
-		if m.effortPicker != nil {
+		case cardEffort:
 			m.effortPicker = nil
 			m.updateLayout()
 			return m, nil
-		}
-		if m.activePlanReview != nil {
+		case cardPlanReview:
 			return m.cancelActivePlanReview()
 		}
 		if m.scrolledUp {
@@ -264,7 +260,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.activeRecovery != nil {
+	if m.activeCardKind() == cardRecovery && m.input.composer.Value() == "" {
 		switch keyStr {
 		case "up", "k":
 			if m.activeRecovery.Selected > 0 {
@@ -317,10 +313,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m.discardPausedTask(discardSourceRecovery)
 			}
 		}
-		return m, nil
 	}
 
-	if m.activeToolRecovery != nil {
+	if m.activeCardKind() == cardToolRecovery && m.input.composer.Value() == "" {
 		switch keyStr {
 		case "up", "k":
 			if m.activeToolRecovery.Selected > 0 {
@@ -343,10 +338,9 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.resolveActiveToolRecovery()
 		}
-		return m, nil
 	}
 
-	if m.activeApproval != nil {
+	if m.activeCardKind() == cardApproval && m.input.composer.Value() == "" {
 		switch keyStr {
 		case "up", "k":
 			if m.activeApproval.Selected > 0 {
@@ -372,16 +366,15 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.resolveActiveApproval()
 		}
-		return m, nil
 	}
 
-	if m.activeQuestion != nil && m.input.composer.Value() == "" {
+	if m.activeCardKind() == cardQuestion && m.input.composer.Value() == "" {
 		if handled, cmd := m.handleQuestionKeyPress(msg, keyStr); handled {
 			return m, cmd
 		}
 	}
 
-	if m.effortPicker != nil {
+	if m.activeCardKind() == cardEffort {
 		options := reasoningEffortOptions()
 		switch keyStr {
 		case "esc", "ctrl+c", "q":
@@ -426,7 +419,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.activePlanReview != nil {
+	if m.activeCardKind() == cardPlanReview && m.input.composer.Value() == "" {
 		switch keyStr {
 		case "up", "k":
 			if m.activePlanReview.Selected > 0 {
@@ -452,11 +445,10 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.resolveActivePlanReview()
 		}
-		return m, nil
 	}
 
 	// 2.5 Prompt History Navigation (Up / Down)
-	if !m.input.autocompleteOpen && m.activeApproval == nil && m.activeQuestion == nil && m.activePlanReview == nil {
+	if !m.input.autocompleteOpen && m.activeCardKind() == cardNone {
 		switch keyStr {
 		case "up":
 			if m.input.composer.Line() == 0 && len(m.input.history) > 0 {

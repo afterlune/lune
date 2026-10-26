@@ -37,6 +37,10 @@ func normalizeReasoningEffort(raw string) (string, bool) {
 
 // openEffortPicker opens the interactive reasoning-effort selector.
 func (m *tuiModel) openEffortPicker() {
+	if card := m.activeCardKind(); card != cardNone && card != cardEffort {
+		m.addSystemEntry("Reasoning effort picker can only be opened after the pending interaction is resolved.")
+		return
+	}
 	current := m.currentReasoningEffort()
 	m.reasoningEffort = current
 	selected := 0

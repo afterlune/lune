@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -200,5 +201,94 @@ func TestEventCursorAdvances(t *testing.T) {
 	m = mod.(*tuiModel)
 	if m.run.lastEventCursor != 11 {
 		t.Fatalf("cursor = %d, want 11", m.run.lastEventCursor)
+	}
+}
+
+// TestActiveApprovalAllowsComposerAndDiscard covers P0-2: when an approval card is active,
+// non-option typing (like /discard) falls through to composer, and submitting with Enter
+// executes the slash command instead of resolving the approval.
+func TestActiveApprovalAllowsComposerAndDiscard(t *testing.T) {
+	m, _ := newApprovalTestModel(t)
+	m.activeApproval = &ActiveApproval{
+		Request:  core.ApprovalRequest{ID: "approval-p0", Tool: "command"},
+		Selected: 0,
+	}
+
+	// Typing "/" should pass through to composer and trigger autocomplete
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: '/', Text: "/"}))
+	m = mod.(*tuiModel)
+	if m.input.composer.Value() != "/" {
+		t.Fatalf("expected composer to receive '/', got %q", m.input.composer.Value())
+	}
+	if !m.input.autocompleteOpen {
+		t.Fatalf("expected autocomplete to be open for slash command")
+	}
+
+	// Type the rest of "/discard"
+	for _, ch := range "discard" {
+		mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: rune(ch), Text: string(ch)}))
+		m = mod.(*tuiModel)
+	}
+	if m.input.composer.Value() != "/discard" {
+		t.Fatalf("expected composer to hold '/discard', got %q", m.input.composer.Value())
+	}
+
+	// Submitting with Enter executes /discard, approval must NOT be resolved!
+	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	m = mod.(*tuiModel)
+
+	// Discarding the paused task adds a system entry starting with "Discarding paused task"
+	// or "Paused-task management is unavailable".
+	lastEntry := m.entries[len(m.entries)-1]
+	if !strings.Contains(lastEntry.Text, "Discarding paused task") && !strings.Contains(lastEntry.Text, "Paused-task management is unavailable") {
+		t.Fatalf("expected /discard execution note, got %+v", lastEntry)
+	}
+	if m.input.composer.Value() != "" {
+		t.Fatalf("expected composer to be reset after submit, got %q", m.input.composer.Value())
+	}
+}
+
+// TestInteractiveCardRenderAndKeyDispatchConsistency covers P0-1:
+// Ensures visual-dispatch consistency between activeCardKind(), rendering, and key dispatch.
+func TestInteractiveCardRenderAndKeyDispatchConsistency(t *testing.T) {
+	m, _ := newApprovalTestModel(t)
+	m.activeApproval = &ActiveApproval{
+		Request:  core.ApprovalRequest{ID: "appr-1", Tool: "command"},
+		Selected: 0,
+	}
+	m.activeQuestion = &ActiveQuestion{
+		Request: core.UserQuestionRequest{
+			ID: "q-1",
+			Questions: []core.UserQuestionItem{
+				{ID: "q1", Question: "Proceed?", Options: []core.UserQuestionOption{{Label: "Yes"}}},
+			},
+		},
+		Drafts: []questionDraft{{Selected: 0}},
+	}
+
+	// Approval has priority over Question
+	if kind := m.activeCardKind(); kind != cardApproval {
+		t.Fatalf("activeCardKind() = %v, want cardApproval", kind)
+	}
+
+	// Esc when composer is empty should deny approval, not cancel question
+	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	m = mod.(*tuiModel)
+
+	// In test model without live execution, resolving active approval adds a system entry:
+	// "Denied tool execution for `command`."
+	foundDenied := false
+	for _, entry := range m.entries {
+		if strings.Contains(entry.Text, "Denied tool execution") {
+			foundDenied = true
+			break
+		}
+	}
+	if !foundDenied {
+		t.Fatalf("expected Esc to resolve activeApproval as Denied, entries: %+v", m.entries)
+	}
+	// After approval is resolved, activeQuestion becomes the next active card!
+	if kind := m.activeCardKind(); kind != cardQuestion {
+		t.Fatalf("activeCardKind() after approval resolution = %v, want cardQuestion", kind)
 	}
 }
