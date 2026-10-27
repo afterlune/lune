@@ -41,6 +41,7 @@ type runtimeRestoreSettledMsg struct {
 type turnSubmittedMsg struct {
 	sessionID         string
 	bindingGeneration uint64
+	entryID           string
 	submission        core.TurnSubmission
 	err               error
 }
@@ -338,8 +339,10 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	if m.run.running || m.run.hasInterruptedExecution() {
 		// Queue follow-up turns while work is active or Core is cleaning up an
 		// explicitly interrupted execution.
+		entryID := fmt.Sprintf("queued-%d", time.Now().UnixNano())
+		steerInput := m.run.running
 		m.entries = append(m.entries, TranscriptEntry{
-			ID:            fmt.Sprintf("queued-%d", time.Now().UnixNano()),
+			ID:            entryID,
 			Kind:          KindQueued,
 			Text:          text,
 			AttachedFiles: attachedLabels,
@@ -350,8 +353,12 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		m.viewport.GotoBottom()
 
 		submitCmd := func() tea.Msg {
-			sub, err := runtime.SubmitTurn(ctx, req, core.QueueInput)
-			return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, submission: sub, err: err}
+			mode := core.QueueInput
+			if steerInput {
+				mode = core.SteerInput
+			}
+			sub, err := runtime.SubmitTurn(ctx, req, mode)
+			return turnSubmittedMsg{sessionID: sessionID, bindingGeneration: bindingGeneration, entryID: entryID, submission: sub, err: err}
 		}
 		return m, tea.Batch(runtimeEventsCmd, submitCmd)
 	}
@@ -371,6 +378,7 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 	m.run.turnStreamStartTime = time.Now()
 	m.run.streamFirstTokenTime = time.Time{}
 	m.run.streamGenerationTokens = 0
+	m.run.streamSegment = 0
 	m.run.resetStream()
 	m.run.resetReasoning()
 	m.view.invalidateLive()

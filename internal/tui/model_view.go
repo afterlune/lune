@@ -22,7 +22,6 @@ func (m *tuiModel) updateLayout() {
 		return
 	}
 	contentWidth := max(20, m.width-4)
-	m.refreshLiveContent(contentWidth)
 	// renderComposerBand reserves one leading column for the card surface.
 	m.input.composer.SetWidth(contentWidth - 1)
 
@@ -43,9 +42,6 @@ func (m *tuiModel) updateLayout() {
 	}
 
 	baseOccupied := headerHeight + gapHeight + composerBandHeight + footerHeight + queuedHeight
-	if m.view.liveContent != "" {
-		baseOccupied += lipgloss.Height(m.view.liveContent) + 1
-	}
 	m.overlayMaxRows = max(0, m.height-baseOccupied-2)
 	m.layoutReady = true
 	_, modalHeight := m.overlaySection(contentWidth)
@@ -66,7 +62,7 @@ func (m *tuiModel) updateLayout() {
 	}
 
 	entriesChanged := (len(m.entries) != m.view.cachedEntryCount)
-	needRefresh := widthChanged || entriesChanged || m.view.cachedDirty || m.view.transcriptDirty || m.trailingRoundViewChanged()
+	needRefresh := widthChanged || entriesChanged || m.view.cachedDirty || m.view.transcriptDirty || m.view.liveDirty || m.trailingRoundViewChanged()
 	if needRefresh {
 		m.refreshViewportContent()
 	}
@@ -229,9 +225,11 @@ func (m *tuiModel) refreshViewportContent() {
 		return
 	}
 	contentWidth := max(20, m.width-4)
+	previousLive := m.view.liveContent
 	m.refreshLiveContent(contentWidth)
+	liveChanged := previousLive != m.view.liveContent
 	if !m.view.cachedDirty && !m.view.transcriptDirty && m.view.cachedWidth == contentWidth &&
-		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount && !m.trailingRoundViewChanged() {
+		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount && !m.trailingRoundViewChanged() && !liveChanged {
 		return
 	}
 	animateTools := m.view.animateTools
@@ -446,6 +444,12 @@ func (m *tuiModel) refreshViewportContent() {
 		m.viewport.SoftWrap = transcriptNeedsSoftWrap(blocks, viewportWidth)
 	}
 	fullText := strings.Join(blocks, "\n\n")
+	if m.view.liveContent != "" {
+		if fullText != "" {
+			fullText += "\n\n"
+		}
+		fullText += m.view.liveContent
+	}
 	if fullText == "" {
 		m.view.transcriptLines = nil
 	} else {
@@ -498,15 +502,10 @@ func (m *tuiModel) refreshLiveContent(width int) {
 		return
 	}
 	m.run.ensureLiveTails()
-	if m.scrolledUp {
-		m.view.liveContent = ""
-		m.view.liveDirty = false
-		return
-	}
 	var blocks []string
 	if m.run.currentReasoningText != "" {
 		blocks = append(blocks, renderStreamingEntry(TranscriptEntry{
-			Kind: KindReasoning, Text: m.run.reasoningTail.RenderInput(),
+			Kind: KindReasoning, Text: m.run.currentReasoningText,
 			ReasoningDuration: time.Since(m.run.reasoningStartTime),
 			ReasoningExpanded: !m.run.reasoningLiveCollapsed, ReasoningLive: true,
 		}, width))
@@ -518,14 +517,15 @@ func (m *tuiModel) refreshLiveContent(width int) {
 			}
 		}
 		if m.run.planFound {
-			appendAssistant(m.run.planBeforeTail.RenderInput())
-			plan := m.run.planTail.RenderInput()
+			stream := tuiMarkdown.SplitProposedPlanStream(m.run.currentStreamText)
+			appendAssistant(stream.Before)
+			plan := stream.Plan
 			if tuiMarkdown.HasPlanContent(tuiMarkdown.CleanProposedPlanTags(plan)) {
 				blocks = append(blocks, renderStreamingEntry(TranscriptEntry{Kind: KindPlan, Text: plan}, width))
 			}
-			appendAssistant(m.run.planAfterTail.RenderInput())
+			appendAssistant(stream.After)
 		} else {
-			appendAssistant(m.run.assistantTail.RenderInput())
+			appendAssistant(m.run.currentStreamText)
 		}
 	}
 	if m.run.running {
@@ -541,15 +541,10 @@ func (m *tuiModel) refreshLiveContent(width int) {
 		if stream == nil || stream.tail == nil {
 			continue
 		}
-		blocks = append(blocks, renderLiveSubagentOutput(stream.agentName, agentID, stream.tail.RenderInput(), width))
+		blocks = append(blocks, renderLiveSubagentOutput(stream.agentName, agentID, stream.text.String(), width))
 	}
 	content := strings.Join(blocks, "\n\n")
-	const maxLiveRows = 16
-	lines := strings.Split(content, "\n")
-	if len(lines) > maxLiveRows {
-		lines = append([]string{"…"}, lines[len(lines)-maxLiveRows+1:]...)
-	}
-	m.view.liveContent = strings.Join(lines, "\n")
+	m.view.liveContent = content
 	m.view.liveDirty = false
 }
 
@@ -730,7 +725,9 @@ func (m *tuiModel) View() tea.View {
 		return tea.NewView(message)
 	}
 	contentWidth := max(20, m.width-4)
-	m.refreshLiveContent(contentWidth)
+	if m.view.liveDirty {
+		m.refreshViewportContent()
+	}
 
 	var sections []string
 
@@ -739,9 +736,6 @@ func (m *tuiModel) View() tea.View {
 
 	// 2. Viewport (Transcript / Empty State) with mouse selection overlay
 	sections = append(sections, m.renderViewportWithSelection())
-	if m.view.liveContent != "" {
-		sections = append(sections, m.view.liveContent)
-	}
 
 	// 2b. Pinned queue band: waiting turns never scroll away with the transcript.
 	if band := renderQueuedBand(m, contentWidth); band != "" {

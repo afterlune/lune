@@ -34,7 +34,9 @@ type entryLineRange struct {
 
 // QueuedItem tracks an input waiting in FIFO queue while another task runs.
 type QueuedItem struct {
-	ExecutionID string
+	ExecutionID       string
+	QueueID           string
+	ParentExecutionID string
 }
 
 // TranscriptEntry represents a single visual block in the conversation transcript.

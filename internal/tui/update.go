@@ -239,6 +239,15 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		}
 		m.pausedCheckpoint = nil
 		if msg.err != nil {
+			if msg.entryID != "" {
+				for i := range m.entries {
+					if m.entries[i].ID == msg.entryID && m.entries[i].Kind == KindQueued {
+						m.entries = append(m.entries[:i], m.entries[i+1:]...)
+						m.view.invalidateBlocks()
+						break
+					}
+				}
+			}
 			if len(m.run.queuedTurns) == 0 {
 				m.run.running = false
 			}
@@ -247,14 +256,35 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.submission.Status == core.SubmissionQueued {
-			m.run.queuedTurns = append(m.run.queuedTurns, QueuedItem{
-				ExecutionID: msg.submission.ExecutionID,
-			})
+			alreadyPromoted := m.run.running && m.run.runningExecution == msg.submission.ExecutionID
+			if msg.entryID != "" {
+				for i := range m.entries {
+					if m.entries[i].ID == msg.entryID && m.entries[i].Kind == KindUser && m.entries[i].ToolCallID == msg.submission.ExecutionID {
+						alreadyPromoted = true
+						break
+					}
+				}
+			}
+			queued := m.queuedItem(msg.submission.ExecutionID)
+			if queued == nil && !alreadyPromoted {
+				m.run.queuedTurns = append(m.run.queuedTurns, QueuedItem{
+					ExecutionID: msg.submission.ExecutionID,
+				})
+				queued = &m.run.queuedTurns[len(m.run.queuedTurns)-1]
+			}
+			if queued != nil {
+				queued.QueueID = msg.submission.QueueID
+				queued.ParentExecutionID = msg.submission.ParentExecutionID
+			}
 			for i := len(m.entries) - 1; i >= 0; i-- {
-				if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == "" {
+				if m.entries[i].ID == msg.entryID || msg.entryID == "" && m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == "" {
 					m.entries[i].ToolCallID = msg.submission.ExecutionID
 					break
 				}
+			}
+			if injected, ok := m.run.pendingInjected[msg.submission.ExecutionID]; ok {
+				delete(m.run.pendingInjected, msg.submission.ExecutionID)
+				m.promoteInjectedInput(injected)
 			}
 			m.refreshViewportContent()
 			return m, nil
@@ -643,7 +673,13 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 	if msg.result.ProposedPlan != nil {
 		planText = msg.result.ProposedPlan.Text
 	}
-	m.finalizeTurnOutput(planText, msg.result.Response, executionID)
+	queuedFollowup := len(m.run.queuedTurns) > 0
+	if m.runtime != nil {
+		if state, err := m.runtime.State(context.Background()); err == nil && len(state.Queue) > 0 {
+			queuedFollowup = true
+		}
+	}
+	m.finalizeTurnOutput(planText, msg.result.Response, executionID, !queuedFollowup)
 	if msg.err != nil {
 		m.addSystemEntry("Task failed: " + msg.err.Error())
 	} else if msg.result.Status == core.TaskFailed {

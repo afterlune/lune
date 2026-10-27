@@ -229,6 +229,10 @@ func (m *tuiModel) publishToolReveal(windowed bool) {
 		lines = append(lines, "")
 	}
 	lines = append(lines, rows...)
+	if m.view.liveContent != "" {
+		lines = append(lines, "")
+		lines = append(lines, strings.Split(m.view.liveContent, "\n")...)
+	}
 	m.view.transcriptLines = lines
 	m.view.entryLineRanges = append(m.view.entryLineRanges[:0], r.prefixRanges...)
 	for _, rr := range ranges {

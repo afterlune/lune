@@ -53,6 +53,8 @@ type runState struct {
 	autoApprovalFailures map[string]struct{}
 
 	queuedTurns              []QueuedItem
+	pendingInjected          map[string]core.Event
+	streamSegment            int
 	cancelingQueuedExecution string
 	discardInFlight          bool
 	compactInFlight          bool
@@ -98,6 +100,7 @@ func newRunState() runState {
 		awaitingTurns:          map[string]uint64{},
 		interruptedExecutions:  map[string]struct{}{},
 		terminalEvents:         map[string]core.Event{},
+		pendingInjected:        map[string]core.Event{},
 		autoApprovalFailures:   map[string]struct{}{},
 		reasoningLiveCollapsed: true,
 		assistantTail:          tuiMarkdown.NewLiveTail(liveMarkdownTailLines),

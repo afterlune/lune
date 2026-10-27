@@ -278,15 +278,19 @@ func (m *tuiModel) roundLive(start, end int) bool {
 // the user's explicit collapse so Ctrl+O and clicks work during execution, while a
 // finished round follows its own flag.
 func (m *tuiModel) roundExpanded(headIdx int, live bool) bool {
-	if live {
+	if live || m.activeExecutionRound(headIdx) {
 		return !m.roundsCollapsedByUser
 	}
 	return m.entries[headIdx].RoundExpanded
 }
 
+func (m *tuiModel) activeExecutionRound(headIdx int) bool {
+	return m.run.running && m.run.runningExecution != "" && headIdx >= 0 && headIdx < len(m.entries) && m.entries[headIdx].ExecutionID == m.run.runningExecution
+}
+
 // toggleRoundExpansion flips one round between expanded and collapsed.
 func (m *tuiModel) toggleRoundExpansion(headIdx int) {
-	if m.roundLive(headIdx, m.roundEndIndex(headIdx)) {
+	if m.activeExecutionRound(headIdx) || m.roundLive(headIdx, m.roundEndIndex(headIdx)) {
 		m.roundsCollapsedByUser = !m.roundsCollapsedByUser
 		return
 	}
@@ -296,6 +300,9 @@ func (m *tuiModel) toggleRoundExpansion(headIdx int) {
 // beginRoundIfNeeded clears the running-round collapse override so a new round in
 // the same turn opens expanded again.
 func (m *tuiModel) beginRoundIfNeeded() {
+	if m.run.running && m.roundsCollapsedByUser {
+		return
+	}
 	if n := len(m.entries); n > 0 && isRoundMember(m.entries, n-1) {
 		return
 	}

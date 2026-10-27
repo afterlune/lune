@@ -17,7 +17,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	if m.view.transcriptDirty || m.view.cachedDirty || m.trailingRoundViewChanged() {
 		m.refreshViewportContent()
 	} else if m.view.liveDirty {
-		m.refreshLiveContent(max(20, m.width-4))
+		m.refreshViewportContent()
 	}
 	return m, cmd
 }
@@ -33,6 +33,61 @@ func replaySafeDuringRestore(kind core.EventKind) bool {
 		return true
 	}
 	return false
+}
+
+func (m *tuiModel) queuedItem(executionID string) *QueuedItem {
+	for i := range m.run.queuedTurns {
+		if m.run.queuedTurns[i].ExecutionID == executionID {
+			return &m.run.queuedTurns[i]
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) promoteInjectedInput(event core.Event) bool {
+	entryIndex := -1
+	for i := range m.entries {
+		entry := &m.entries[i]
+		if entry.Kind == KindQueued && entry.ToolCallID == event.InputExecutionID {
+			entryIndex = i
+			break
+		}
+	}
+	if entryIndex < 0 {
+		return false
+	}
+	if m.run.running && m.run.runningExecution == event.ExecutionID {
+		m.finalizeSteeredSegment()
+	}
+	entry := m.entries[entryIndex]
+	entry.Kind = KindUser
+	entry.ExecutionID = event.ExecutionID
+	entry.ToolCallID = event.InputExecutionID
+	m.entries = append(m.entries[:entryIndex], m.entries[entryIndex+1:]...)
+	insertionIndex := len(m.entries)
+	if !m.run.running || m.run.runningExecution != event.ExecutionID {
+		finalOutputID := assistantOutputIDForSegment(event.ExecutionID, m.run.streamSegment)
+		finalPlanID := planOutputIDForSegment(event.ExecutionID, m.run.streamSegment)
+		for i := range m.entries {
+			if m.entries[i].ExecutionID == event.ExecutionID &&
+				(m.entries[i].ID == finalOutputID || m.entries[i].ID == finalOutputID+"-after-plan" || m.entries[i].ID == finalPlanID) {
+				insertionIndex = i
+				break
+			}
+		}
+	}
+	m.entries = append(m.entries, TranscriptEntry{})
+	copy(m.entries[insertionIndex+1:], m.entries[insertionIndex:])
+	m.entries[insertionIndex] = entry
+	for i := range m.run.queuedTurns {
+		if m.run.queuedTurns[i].ExecutionID == event.InputExecutionID || event.QueueID != "" && m.run.queuedTurns[i].QueueID == event.QueueID {
+			m.run.queuedTurns = append(m.run.queuedTurns[:i], m.run.queuedTurns[i+1:]...)
+			break
+		}
+	}
+	m.activePlanReview = nil
+	m.view.invalidateBlocks()
+	return true
 }
 
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
@@ -71,6 +126,39 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 	}
 	switch event.Kind {
+	case core.EventTaskQueued:
+		if event.ExecutionID == "" {
+			return m, nil
+		}
+		if queued := m.queuedItem(event.ExecutionID); queued != nil {
+			queued.QueueID = event.QueueID
+			queued.ParentExecutionID = event.ParentExecutionID
+		} else {
+			m.run.queuedTurns = append(m.run.queuedTurns, QueuedItem{
+				ExecutionID: event.ExecutionID, QueueID: event.QueueID,
+				ParentExecutionID: event.ParentExecutionID,
+			})
+		}
+		for i := range m.entries {
+			if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == "" {
+				m.entries[i].ToolCallID = event.ExecutionID
+				break
+			}
+		}
+		m.view.invalidateLive()
+		return m, nil
+	case core.EventTaskInputInjected:
+		if event.InputExecutionID == "" {
+			return m, nil
+		}
+		if !m.promoteInjectedInput(event) {
+			if m.run.pendingInjected == nil {
+				m.run.pendingInjected = make(map[string]core.Event)
+			}
+			m.run.pendingInjected[event.InputExecutionID] = event
+			m.view.invalidateLive()
+		}
+		return m, nil
 	case core.EventGoalUpdated, core.EventGoalCleared:
 		m.refreshGoal()
 		m.view.invalidateLive()
@@ -81,13 +169,20 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if execID == "" {
 			return m, nil
 		}
-		queued := len(m.run.queuedTurns) > 0 && m.run.queuedTurns[0].ExecutionID == execID
+		queuedIndex := -1
+		for i := range m.run.queuedTurns {
+			if m.run.queuedTurns[i].ExecutionID == execID {
+				queuedIndex = i
+				break
+			}
+		}
+		queued := queuedIndex >= 0
 		goalTurn := event.GoalID != "" && m.runtime != nil
 		if queued {
-			m.run.queuedTurns = m.run.queuedTurns[1:]
+			m.run.queuedTurns = append(m.run.queuedTurns[:queuedIndex], m.run.queuedTurns[queuedIndex+1:]...)
 			m.roundsCollapsedByUser = false
 			for i := range m.entries {
-				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
+				if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == execID {
 					m.entries[i].Kind = KindUser
 					m.entries[i].ToolCallID = execID
 					m.view.invalidateEntry(i)
@@ -96,6 +191,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			m.run.resetStream()
 			m.run.resetReasoning()
+			m.run.streamSegment = 0
 			m.view.invalidateLive()
 		}
 		if !queued && !goalTurn && ((!m.run.running && m.run.runningExecution != execID) || (m.run.runningExecution != "" && m.run.runningExecution != execID)) {
@@ -292,6 +388,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		entry := TranscriptEntry{
 			ID:          callID,
+			ExecutionID: event.ExecutionID,
 			Kind:        KindTool,
 			ToolCallID:  callID,
 			ToolName:    event.Tool.Name,
@@ -381,6 +478,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if !found {
 			entry := TranscriptEntry{
 				ID:          targetID,
+				ExecutionID: event.ExecutionID,
 				Kind:        KindTool,
 				ToolCallID:  targetID,
 				ToolName:    event.Tool.Name,
