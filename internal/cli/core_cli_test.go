@@ -221,7 +221,7 @@ func (f *fakeCLICore) SetPermissionMode(mode core.PermissionMode) error {
 		return f.permissionErr
 	}
 	switch mode {
-	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionAsk, core.PermissionFullAccess:
+	case core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess:
 		f.mode = mode
 		return nil
 	default:
