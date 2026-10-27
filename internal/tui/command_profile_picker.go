@@ -31,6 +31,16 @@ var permissionModes = []core.PermissionMode{
 	core.PermissionFullAccess,
 }
 
+// indexOfPermissionMode returns the picker index of a mode, or -1 when unknown.
+func indexOfPermissionMode(mode core.PermissionMode) int {
+	for i, candidate := range permissionModes {
+		if candidate == mode {
+			return i
+		}
+	}
+	return -1
+}
+
 func (m *tuiModel) openModelPicker() (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		m.addSystemEntry("Model switching is unavailable.")
@@ -69,7 +79,13 @@ func (m *tuiModel) openPermissionPicker() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Permission management is unavailable.")
 		return m, nil
 	}
-	selected := 0
+	// Fall back to auto, not to the first entry: a mode this build does not know
+	// must never be preselected as read-only, which would silently downgrade the
+	// user's permissions on Enter.
+	selected := indexOfPermissionMode(core.PermissionAuto)
+	if selected < 0 {
+		selected = 0
+	}
 	for i, mode := range permissionModes {
 		if mode == m.permissionMode {
 			selected = i
