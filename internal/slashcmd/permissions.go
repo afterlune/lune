@@ -17,6 +17,12 @@ var permissionModes = []core.PermissionMode{
 	core.PermissionFullAccess,
 }
 
+// PermissionModes returns the accepted permission modes in display order. Hosts
+// render pickers from this list so their index order cannot drift from parsing.
+func PermissionModes() []core.PermissionMode {
+	return append([]core.PermissionMode(nil), permissionModes...)
+}
+
 // PermissionModeNames returns the accepted permission modes in display order.
 func PermissionModeNames() []string {
 	names := make([]string, 0, len(permissionModes))

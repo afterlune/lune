@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
 )
 
@@ -24,12 +25,9 @@ type ActivePermissionPicker struct {
 	Selected int
 }
 
-var permissionModes = []core.PermissionMode{
-	core.PermissionReadOnly,
-	core.PermissionWorkspace,
-	core.PermissionAuto,
-	core.PermissionFullAccess,
-}
+// permissionModes comes from the shared slash-command registry: the picker index
+// and the accepted command arguments must never diverge.
+var permissionModes = slashcmd.PermissionModes()
 
 // indexOfPermissionMode returns the picker index of a mode, or -1 when unknown.
 func indexOfPermissionMode(mode core.PermissionMode) int {

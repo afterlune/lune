@@ -78,32 +78,34 @@ func (m *tuiModel) slashCommandUnavailable(raw string) string {
 	}
 	name := strings.ToLower(parts[0])
 	spec := lookupBuiltinCommand(name)
-	if spec == nil || spec.AvailableDuringTask {
-		switch name {
-		case "/mcp":
-			if len(parts) == 1 || strings.EqualFold(parts[1], "list") {
-				return ""
-			}
-			return "Only `/mcp list` is available while a task is running."
-		case "/memory":
-			if len(parts) == 1 {
-				return ""
-			}
-			switch strings.ToLower(parts[1]) {
-			case "add", "remove", "clear":
-				return "Workspace memory changes are unavailable while a task is running."
-			default:
-				return ""
-			}
-		}
-	}
 	if spec != nil && spec.AvailableDuringTask {
-		return ""
+		return subcommandUnavailableDuringTask(name, parts)
 	}
 	if spec != nil && spec.BlockedDuringTask != "" {
 		return spec.BlockedDuringTask
 	}
 	return fmt.Sprintf("`%s` is unavailable while a task is running. Interrupt the task or wait for it to finish.", name)
+}
+
+// subcommandUnavailableDuringTask reports the remaining task-time restrictions of
+// commands that stay available, so a read-only subcommand can run mid-task.
+func subcommandUnavailableDuringTask(name string, parts []string) string {
+	switch name {
+	case "/mcp":
+		if len(parts) == 1 || strings.EqualFold(parts[1], "list") {
+			return ""
+		}
+		return "Only `/mcp list` is available while a task is running."
+	case "/memory":
+		if len(parts) == 1 {
+			return ""
+		}
+		switch strings.ToLower(parts[1]) {
+		case "add", "remove", "clear":
+			return "Workspace memory changes are unavailable while a task is running."
+		}
+	}
+	return ""
 }
 
 // commandNeedsSession reports whether a slash command operates on a persisted session.
