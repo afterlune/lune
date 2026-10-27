@@ -345,6 +345,8 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	}
 
 	m := newTUIModel(client, rt, sess.ID)
+	// This test exercises the local interrupt presentation without a live Core task.
+	m.runtime = nil
 	m.width = 100
 	m.height = 30
 	m.updateLayout()

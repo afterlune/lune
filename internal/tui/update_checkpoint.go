@@ -10,11 +10,22 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// interruptRunningTask halts an ongoing execution, preserves the execution checkpoint,
-// and presents a rich checkpoint status card in the transcript.
+// interruptRunningTask ends an ongoing execution and records a terminal fence so
+// a delayed pause event cannot recreate its checkpoint in the transcript.
 func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 	if !m.run.running || m.run.runningExecution == "" {
 		return m, nil
+	}
+	execID := m.run.runningExecution
+	if m.runtime != nil && !m.runtime.Interrupt(execID) {
+		return m, nil
+	}
+	goalExecution := m.run.taskSnapshot.GoalID != "" || m.run.taskSnapshot.AutomaticGoal
+	if !goalExecution {
+		if m.run.interruptedExecutions == nil {
+			m.run.interruptedExecutions = make(map[string]struct{})
+		}
+		m.run.interruptedExecutions[execID] = struct{}{}
 	}
 
 	if m.run.currentReasoningText != "" {
@@ -41,7 +52,6 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 		m.view.invalidateBlocks()
 	}
 
-	execID := m.run.runningExecution
 	toolCount := 0
 	for i := len(m.entries) - 1; i >= 0; i-- {
 		if m.entries[i].Kind == KindUser {
@@ -52,9 +62,6 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.runtime != nil {
-		m.runtime.Interrupt(execID)
-	}
 	m.run.running = false
 	m.run.thinking = false
 	m.run.compactInFlight = false

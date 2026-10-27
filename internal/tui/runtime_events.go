@@ -90,7 +90,10 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		if m.client != nil {
 			limits = m.client.ExecutionDefaults()
 		}
-		nextTask := core.TaskState{TaskID: event.TaskID, ExecutionID: execID, Status: core.TaskRunning, Execution: limits}
+		nextTask := core.TaskState{
+			TaskID: event.TaskID, ExecutionID: execID, Status: core.TaskRunning, Execution: limits,
+			GoalID: event.GoalID, GoalRevision: event.GoalRevision, AutomaticGoal: event.AutomaticGoal,
+		}
 		if m.runtime != nil {
 			if state, err := m.runtime.State(context.Background()); err == nil && state.Task.ExecutionID == execID {
 				nextTask = state.Task

@@ -356,8 +356,9 @@ func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.Pe
 		ctx = context.Background()
 	}
 
-	if m.run.running {
-		// Queue follow-up turn while active task runs
+	if m.run.running || m.run.hasInterruptedExecution() {
+		// Queue follow-up turns while work is active or Core is cleaning up an
+		// explicitly interrupted execution.
 		m.entries = append(m.entries, TranscriptEntry{
 			ID:            fmt.Sprintf("queued-%d", time.Now().UnixNano()),
 			Kind:          KindQueued,

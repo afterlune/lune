@@ -35,11 +35,12 @@ type runState struct {
 	// streamReconnects counts the failed reconnects of the current stream.
 	streamReconnects int
 
-	awaitingTurns       map[string]uint64
-	waitGeneration      uint64
-	taskSnapshot        core.TaskState
-	questionSubmissions map[questionWaitKey]questionSubmissionState
-	terminalEvents      map[string]core.Event
+	awaitingTurns         map[string]uint64
+	waitGeneration        uint64
+	taskSnapshot          core.TaskState
+	interruptedExecutions map[string]struct{}
+	questionSubmissions   map[questionWaitKey]questionSubmissionState
+	terminalEvents        map[string]core.Event
 	// autoApprovalFailures keeps approval IDs whose silent full-access
 	// auto-approval failed, so the card is shown instead of retrying forever.
 	autoApprovalFailures map[string]struct{}
@@ -88,6 +89,7 @@ type runState struct {
 func newRunState() runState {
 	return runState{
 		awaitingTurns:          map[string]uint64{},
+		interruptedExecutions:  map[string]struct{}{},
 		terminalEvents:         map[string]core.Event{},
 		autoApprovalFailures:   map[string]struct{}{},
 		reasoningLiveCollapsed: true,
@@ -235,7 +237,16 @@ func (r *runState) ensureLiveTails() {
 
 // busy reports whether a task is running or waiting in the queue.
 func (r *runState) busy() bool {
-	return r.running || len(r.queuedTurns) > 0
+	return r.running || len(r.queuedTurns) > 0 || r.hasInterruptedExecution()
+}
+
+func (r *runState) wasInterrupted(executionID string) bool {
+	_, interrupted := r.interruptedExecutions[executionID]
+	return interrupted
+}
+
+func (r *runState) hasInterruptedExecution() bool {
+	return len(r.interruptedExecutions) > 0
 }
 
 // restoreFrom adopts Core's task snapshot. The paused/failed cards stay with the
