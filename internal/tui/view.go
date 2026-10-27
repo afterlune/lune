@@ -32,6 +32,14 @@ func assistantMarkerStyle() lipgloss.Style {
 
 // renderEntry renders a single transcript item according to LuneAgent visual patterns.
 func renderEntry(entry TranscriptEntry, width int) string {
+	return renderEntryMode(entry, width, false)
+}
+
+func renderStreamingEntry(entry TranscriptEntry, width int) string {
+	return renderEntryMode(entry, width, true)
+}
+
+func renderEntryMode(entry TranscriptEntry, width int, stableTail bool) string {
 	switch entry.Kind {
 	case KindUser:
 		text := terminaltext.Sanitize(strings.TrimSpace(entry.Text))
@@ -49,7 +57,12 @@ func renderEntry(entry TranscriptEntry, width int) string {
 	case KindAssistant:
 		bullet := assistantMarkerStyle().Render("• ")
 		cleanText := tuiMarkdown.CleanProposedPlanTags(entry.Text)
-		rendered := renderMarkdown(cleanText, width-4)
+		var rendered string
+		if stableTail {
+			rendered = renderMarkdownStable(cleanText, width-4)
+		} else {
+			rendered = renderMarkdown(cleanText, width-4)
+		}
 		lines := strings.Split(rendered, "\n")
 		var out []string
 		for i, line := range lines {
@@ -93,7 +106,12 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		th := activeTheme()
 		bullet := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("• ")
 		title := lipgloss.NewStyle().Foreground(lipgloss.Color(th.PlanPurple)).Bold(true).Render("Proposed Plan")
-		rendered := renderPlanMarkdown(cleanPlan, max(1, width-2))
+		var rendered string
+		if stableTail {
+			rendered = renderPlanMarkdownStable(cleanPlan, max(1, width-2))
+		} else {
+			rendered = renderPlanMarkdown(cleanPlan, max(1, width-2))
+		}
 		rows := []string{bullet + title, ""}
 		for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
 			for _, wrapped := range strings.Split(ansi.Hardwrap(line, max(1, width-2), true), "\n") {
@@ -117,6 +135,9 @@ func renderEntry(entry TranscriptEntry, width int) string {
 		return strings.Join(out, "\n")
 
 	case KindReasoning:
+		if stableTail {
+			entry.ReasoningLive = true
+		}
 		return renderReasoningEntry(entry, width)
 	}
 
@@ -172,6 +193,9 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 	header := bullet + action + " " + nameStyled + roleStyled + toolsStyled + durStyled
 	branch := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Render("└ ")
 
+	if entry.SubagentExpanded && entry.SubagentRunning {
+		return header + styleTextMuted().Render(" (live output below; click to collapse)")
+	}
 	if entry.SubagentExpanded && strings.TrimSpace(entry.Text) != "" {
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Border)).Render("│ ")
 		rendered := renderMarkdown(strings.TrimSpace(entry.Text), max(20, width-6))
@@ -201,6 +225,22 @@ func renderSubagentEntry(entry TranscriptEntry, width int) string {
 		collapseHint = styleTextMuted().Render(" (click to expand)")
 	}
 	return header + "\n  " + branch + styleTextMuted().Render(preview) + collapseHint
+}
+
+func renderLiveSubagentOutput(name, agentID, text string, width int) string {
+	if name == "" {
+		name = agentID
+	}
+	header := styleTextMuted().Render("Subagent " + terminaltext.Sanitize(name))
+	bar := lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().Border)).Render("│ ")
+	wrapped := renderMarkdownStable(text, max(20, width-6))
+	lines := strings.Split(wrapped, "\n")
+	rows := make([]string, 0, len(lines)+1)
+	rows = append(rows, header)
+	for _, line := range lines {
+		rows = append(rows, "  "+bar+line)
+	}
+	return strings.Join(rows, "\n")
 }
 
 // renderReasoningEntry renders a model thinking / chain-of-thought block.
@@ -256,7 +296,12 @@ func renderReasoningEntry(entry TranscriptEntry, width int) string {
 	thoughtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.TextMuted)).Italic(true)
 
 	contentWidth := max(20, width-4)
-	wrapped := renderMarkdown(bodyText, contentWidth)
+	var wrapped string
+	if entry.ReasoningLive {
+		wrapped = renderMarkdownStable(bodyText, contentWidth)
+	} else {
+		wrapped = renderMarkdown(bodyText, contentWidth)
+	}
 	lines := strings.Split(wrapped, "\n")
 
 	var outLines []string

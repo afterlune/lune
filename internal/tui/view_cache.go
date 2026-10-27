@@ -30,7 +30,7 @@ func (c *viewCache) invalidateContent() {
 }
 
 // invalidateEntry marks one transcript entry stale, re-rendering its cached
-// block when applicable. Tool and subagent events use this for in-place updates.
+// block when applicable. Tool and subagent status changes use this for updates.
 func (c *viewCache) invalidateEntry(index int) {
 	if index < 0 {
 		return
@@ -45,8 +45,8 @@ func (c *viewCache) invalidateEntry(index int) {
 	c.dirtyEntries[index] = struct{}{}
 }
 
-// invalidateLive marks only the small, independently rendered live response
-// area as stale. Historical transcript measurement is unaffected by token deltas.
+// invalidateLive marks only the independently rendered live output area as stale.
+// Historical transcript measurement is unaffected by token deltas.
 func (c *viewCache) invalidateLive() {
 	c.liveDirty = true
 }

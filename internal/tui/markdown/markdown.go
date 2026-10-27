@@ -133,20 +133,32 @@ func fillCodeBlockRow(line string, blockWidth int, th Palette) string {
 
 // Render renders ordinary Markdown text with terminal styles, wrapping lines to fit width.
 func Render(text string, width int, palette Palette) string {
-	return render(text, width, palette, false)
+	return render(text, width, palette, false, false)
+}
+
+// RenderStable renders a live Markdown stream without interpreting its final
+// unterminated line. That line is still wrapped and code-styled when applicable,
+// but incomplete Markdown markers remain visible until the line is complete.
+func RenderStable(text string, width int, palette Palette) string {
+	return render(text, width, palette, false, true)
 }
 
 // RenderPlan renders Markdown using the more spacious, source-preserving
 // typography used inside the proposed-plan block.
 func RenderPlan(text string, width int, palette Palette) string {
-	return render(text, width, palette, true)
+	return render(text, width, palette, true, false)
 }
 
-func render(text string, width int, palette Palette, planStyle bool) string {
-	return renderWithCodeState(text, width, palette, planStyle, false)
+// RenderPlanStable is RenderStable with the source-preserving plan typography.
+func RenderPlanStable(text string, width int, palette Palette) string {
+	return render(text, width, palette, true, true)
 }
 
-func renderWithCodeState(text string, width int, palette Palette, planStyle, inCodeBlock bool) string {
+func render(text string, width int, palette Palette, planStyle, stableTail bool) string {
+	return renderWithCodeState(text, width, palette, planStyle, stableTail, false)
+}
+
+func renderWithCodeState(text string, width int, palette Palette, planStyle, stableTail, inCodeBlock bool) string {
 	if width <= 0 {
 		width = 80
 	}
@@ -168,6 +180,38 @@ func renderWithCodeState(text string, width int, palette Palette, planStyle, inC
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSuffix(lines[i], "\r")
 		trimmed := strings.TrimSpace(line)
+		incomplete := stableTail && i == len(lines)-1 && !strings.HasSuffix(text, "\n")
+		if incomplete {
+			expanded := strings.ReplaceAll(line, "\t", "    ")
+			if inCodeBlock {
+				if isBoxDrawingLine(expanded) {
+					if lipgloss.Width(expanded) > codeWidth-2 {
+						expanded = ansi.Truncate(expanded, max(10, codeWidth-2), "…")
+					}
+					result = append(result, renderCodeBlockRow(expanded, codeWidth, th))
+					continue
+				}
+				if lipgloss.Width(expanded) > codeWidth-4 {
+					wrapped := ansi.Wrap(expanded, max(10, codeWidth-4), " .,()[]{}<>;=+-*/\\\"'")
+					for _, wl := range strings.Split(wrapped, "\n") {
+						result = append(result, renderCodeBlockRow(wl, codeWidth, th))
+					}
+				} else {
+					result = append(result, renderCodeBlockRow(expanded, codeWidth, th))
+				}
+				continue
+			}
+			if isBoxDrawingLine(expanded) {
+				if lipgloss.Width(expanded) > proseWidth {
+					expanded = ansi.Truncate(expanded, proseWidth, "…")
+				}
+				result = append(result, expanded)
+				continue
+			}
+			wrapped := ansi.Wrap(expanded, proseWidth, wrapBreakpoints)
+			result = append(result, strings.Split(wrapped, "\n")...)
+			continue
+		}
 		if strings.HasPrefix(trimmed, "```") {
 			if !inCodeBlock {
 				inCodeBlock = true

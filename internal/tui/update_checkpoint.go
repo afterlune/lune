@@ -64,6 +64,7 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 
 	m.run.running = false
 	m.run.thinking = false
+	m.settleAllSubagentStreams()
 	m.run.compactInFlight = false
 	m.run.compactionQuitRequested = false
 	m.usage.resetCompaction()

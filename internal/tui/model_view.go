@@ -422,7 +422,7 @@ func (m *tuiModel) refreshLiveContent(width int) {
 	}
 	var blocks []string
 	if m.run.currentReasoningText != "" {
-		blocks = append(blocks, renderEntry(TranscriptEntry{
+		blocks = append(blocks, renderStreamingEntry(TranscriptEntry{
 			Kind: KindReasoning, Text: m.run.reasoningTail.RenderInput(),
 			ReasoningDuration: time.Since(m.run.reasoningStartTime),
 			ReasoningExpanded: !m.run.reasoningLiveCollapsed, ReasoningLive: true,
@@ -431,14 +431,14 @@ func (m *tuiModel) refreshLiveContent(width int) {
 	if m.run.currentStreamText != "" {
 		appendAssistant := func(text string) {
 			if strings.TrimSpace(text) != "" {
-				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, width))
+				blocks = append(blocks, renderStreamingEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, width))
 			}
 		}
 		if m.run.planFound {
 			appendAssistant(m.run.planBeforeTail.RenderInput())
 			plan := m.run.planTail.RenderInput()
 			if tuiMarkdown.HasPlanContent(tuiMarkdown.CleanProposedPlanTags(plan)) {
-				blocks = append(blocks, renderEntry(TranscriptEntry{Kind: KindPlan, Text: plan}, width))
+				blocks = append(blocks, renderStreamingEntry(TranscriptEntry{Kind: KindPlan, Text: plan}, width))
 			}
 			appendAssistant(m.run.planAfterTail.RenderInput())
 		} else {
@@ -452,6 +452,13 @@ func (m *tuiModel) refreshLiveContent(width int) {
 		} else {
 			blocks = append(blocks, renderWorking(elapsed, m.run.thinking, m.subagentsStatusSummary()))
 		}
+	}
+	for _, agentID := range m.run.subagentStreamOrder {
+		stream := m.run.subagentStreams[agentID]
+		if stream == nil || stream.tail == nil {
+			continue
+		}
+		blocks = append(blocks, renderLiveSubagentOutput(stream.agentName, agentID, stream.tail.RenderInput(), width))
 	}
 	content := strings.Join(blocks, "\n\n")
 	const maxLiveRows = 16

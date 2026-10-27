@@ -267,6 +267,32 @@ func TestLiveTailBoundsTextAndPreservesCodeFenceState(t *testing.T) {
 	}
 }
 
+func TestRenderStableDefersMarkdownUntilCurrentLineCompletes(t *testing.T) {
+	tail := NewLiveTail(8)
+	tail.Append("**bold")
+	if got := ansi.Strip(RenderStable(tail.RenderInput(), 80, testPalette())); got != "**bold" {
+		t.Fatalf("incomplete bold marker should remain literal, got %q", got)
+	}
+	tail.Append(" text**")
+	if got := ansi.Strip(RenderStable(tail.RenderInput(), 80, testPalette())); got != "**bold text**" {
+		t.Fatalf("complete but unterminated line should remain literal, got %q", got)
+	}
+	tail.Append("\n")
+	if got := ansi.Strip(RenderStable(tail.RenderInput(), 80, testPalette())); got != "bold text\n" {
+		t.Fatalf("completed line should receive Markdown formatting, got %q", got)
+	}
+
+	tail.Reset()
+	tail.Append("```go\nvalue := `")
+	if got := ansi.Strip(RenderStable(tail.RenderInput(), 80, testPalette())); !strings.Contains(got, "value := `") {
+		t.Fatalf("unfinished code line should retain literal contents, got %q", got)
+	}
+	tail.Append("x`\n")
+	if got := ansi.Strip(RenderStable(tail.RenderInput(), 80, testPalette())); !strings.Contains(got, "value := `x`") {
+		t.Fatalf("completed code line disappeared, got %q", got)
+	}
+}
+
 func TestProposedPlanParsingProtectsCodeSpans(t *testing.T) {
 	text := "Use ``<proposed_plan>`` and a fence:\n```go\n// <proposed_plan>not a plan</proposed_plan>\n```\n" +
 		"<proposed_plan>## Real plan</proposed_plan>"

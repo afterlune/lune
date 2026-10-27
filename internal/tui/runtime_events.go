@@ -16,6 +16,8 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	m = mod.(*tuiModel)
 	if m.view.transcriptDirty || m.view.cachedDirty {
 		m.refreshViewportContent()
+	} else if m.view.liveDirty {
+		m.refreshLiveContent(max(20, m.width-4))
 	}
 	return m, cmd
 }
@@ -51,7 +53,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	if m.run.restoringSession && !replaySafeDuringRestore(event.Kind) {
 		return m, nil
 	}
-	var streamRenderCmd tea.Cmd
 	switch event.Kind {
 	case core.EventGoalUpdated, core.EventGoalCleared:
 		m.refreshGoal()
@@ -181,7 +182,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
 			}
-			streamRenderCmd = m.markStreamDirty()
+			m.markStreamDirty()
 
 		case "text_delta", "":
 			if m.run.currentReasoningText != "" {
@@ -200,7 +201,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				if elapsed >= 0.05 {
 					m.usage.setSpeed(float64(m.run.streamGenerationTokens) / elapsed)
 				}
-				streamRenderCmd = m.markStreamDirty()
+				m.markStreamDirty()
 			}
 		}
 
@@ -209,6 +210,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, true, 0)
 
 	case core.EventAgentFinished:
+		m.settleSubagentStream(event.AgentID)
 		m.updateAgentEvent(event, false)
 		m.upsertSubagentEntry(event.AgentID, event.AgentName, event.AgentRole, false, 0)
 
@@ -580,5 +582,5 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		m.updateLayout()
 	}
 
-	return m, streamRenderCmd
+	return m, nil
 }

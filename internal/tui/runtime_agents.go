@@ -9,6 +9,7 @@ import (
 )
 
 func (m *tuiModel) markRunningSubagentsAndToolsDone() {
+	m.settleAllSubagentStreams()
 	for i := range m.entries {
 		changed := false
 		if m.entries[i].Kind == KindTool && m.entries[i].ToolRunning {
@@ -34,6 +35,82 @@ func (m *tuiModel) markRunningSubagentsAndToolsDone() {
 			}
 		}
 	}
+}
+
+func (m *tuiModel) settleSubagentStream(agentID string) {
+	agentID = strings.TrimSpace(agentID)
+	state := m.run.finishSubagentStream(agentID)
+	if state == nil {
+		return
+	}
+	idx := state.entryIndex
+	if !m.validSubagentEntryIndex(idx, agentID) {
+		idx = m.findSubagentEntryIndex(agentID)
+	}
+	if idx >= 0 {
+		m.entries[idx].Text = state.text.String()
+		if preview := latestSubagentPreview(m.entries[idx].Text); preview != "" {
+			m.entries[idx].SubagentPreview = preview
+		}
+	}
+	m.view.invalidateLive()
+}
+
+func (m *tuiModel) settleAllSubagentStreams() {
+	if len(m.run.subagentStreams) == 0 {
+		return
+	}
+	for agentID, state := range m.run.subagentStreams {
+		i := state.entryIndex
+		if !m.validSubagentEntryIndex(i, agentID) {
+			i = m.findSubagentEntryIndex(agentID)
+		}
+		if i >= 0 {
+			entry := &m.entries[i]
+			entry.Text = state.text.String()
+			if preview := latestSubagentPreview(entry.Text); preview != "" {
+				entry.SubagentPreview = preview
+			}
+			if entry.SubagentRunning {
+				entry.SubagentRunning = false
+				if entry.SubagentDuration == 0 && !entry.Timestamp.IsZero() {
+					entry.SubagentDuration = time.Since(entry.Timestamp)
+				}
+			}
+			m.view.invalidateEntry(i)
+		}
+		delete(m.run.subagentStreams, agentID)
+	}
+	m.run.subagentStreamOrder = nil
+	m.view.invalidateLive()
+}
+
+func (m *tuiModel) findSubagentEntryIndex(agentID string) int {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *tuiModel) validSubagentEntryIndex(index int, agentID string) bool {
+	return index >= 0 && index < len(m.entries) && m.entries[index].Kind == KindSubagent && m.entries[index].AgentID == agentID
+}
+
+func latestSubagentPreview(text string) string {
+	for end := len(text); end > 0; {
+		start := strings.LastIndex(text[:end], "\n") + 1
+		line := strings.TrimSpace(text[start:end])
+		if line != "" && !strings.HasPrefix(line, "```") {
+			return line
+		}
+		if start == 0 {
+			break
+		}
+		end = start - 1
+	}
+	return ""
 }
 
 func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, running bool, duration time.Duration) {
@@ -205,12 +282,12 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 	if displayName == "" {
 		displayName = agentID
 	}
+	state := m.run.subagentStreams[agentID]
 	idx := -1
-	for i := len(m.entries) - 1; i >= 0; i-- {
-		if m.entries[i].Kind == KindSubagent && m.entries[i].AgentID == agentID {
-			idx = i
-			break
-		}
+	if state != nil && m.validSubagentEntryIndex(state.entryIndex, agentID) {
+		idx = state.entryIndex
+	} else {
+		idx = m.findSubagentEntryIndex(agentID)
 	}
 	created := idx < 0
 	if created {
@@ -226,6 +303,7 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 		idx = len(m.entries) - 1
 	}
 	entry := &m.entries[idx]
+	wasRunning := entry.SubagentRunning
 	entry.SubagentRunning = true
 	if event.AgentName != "" {
 		entry.AgentName = event.AgentName
@@ -233,19 +311,13 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 	if event.AgentRole != "" {
 		entry.AgentRole = event.AgentRole
 	}
-	entry.Text += delta
-	// Extract the latest non-empty line from entry.Text as a clean single-line status preview
-	lines := strings.Split(strings.TrimSpace(entry.Text), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line != "" && !strings.HasPrefix(line, "```") {
-			entry.SubagentPreview = line
-			break
-		}
-	}
+	state = m.run.appendSubagentDelta(agentID, displayName, entry.Text, delta)
+	state.entryIndex = idx
+	entry.Text = state.text.String()
 	if created {
 		m.view.invalidateContent()
-	} else {
+	} else if !wasRunning {
 		m.view.invalidateEntry(idx)
 	}
+	m.view.invalidateLive()
 }

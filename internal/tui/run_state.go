@@ -11,6 +11,13 @@ import (
 
 const liveMarkdownTailLines = 32
 
+type subagentStreamState struct {
+	text       strings.Builder
+	tail       *tuiMarkdown.LiveTail
+	agentName  string
+	entryIndex int
+}
+
 // runState owns everything about the task that is currently running (or was
 // running before a pause): the run flags, the Core task snapshot, waiting
 // bookkeeping, the queue, the streaming buffers and the restore freeze.
@@ -73,9 +80,8 @@ type runState struct {
 	planCloseEnd           int
 	planFound              bool
 	planComplete           bool
-	lastStreamRenderAt     time.Time
-	streamRenderPending    bool
-	streamRenderGeneration uint64
+	subagentStreams        map[string]*subagentStreamState
+	subagentStreamOrder    []string
 	taskActivity           string
 	reasoningStartTime     time.Time
 	reasoningLiveCollapsed bool
@@ -98,7 +104,41 @@ func newRunState() runState {
 		planBeforeTail:         tuiMarkdown.NewLiveTail(liveMarkdownTailLines),
 		planTail:               tuiMarkdown.NewLiveTail(liveMarkdownTailLines),
 		planAfterTail:          tuiMarkdown.NewLiveTail(liveMarkdownTailLines),
+		subagentStreams:        map[string]*subagentStreamState{},
 	}
+}
+
+func (r *runState) appendSubagentDelta(agentID, agentName, existingText, delta string) *subagentStreamState {
+	if r.subagentStreams == nil {
+		r.subagentStreams = make(map[string]*subagentStreamState)
+	}
+	state := r.subagentStreams[agentID]
+	if state == nil {
+		state = &subagentStreamState{tail: tuiMarkdown.NewLiveTail(liveMarkdownTailLines), agentName: agentName, entryIndex: -1}
+		if existingText != "" {
+			state.text.WriteString(existingText)
+			state.tail.Append(existingText)
+		}
+		r.subagentStreams[agentID] = state
+		r.subagentStreamOrder = append(r.subagentStreamOrder, agentID)
+	} else if agentName != "" {
+		state.agentName = agentName
+	}
+	state.text.WriteString(delta)
+	state.tail.Append(delta)
+	return state
+}
+
+func (r *runState) finishSubagentStream(agentID string) *subagentStreamState {
+	state := r.subagentStreams[agentID]
+	delete(r.subagentStreams, agentID)
+	for i, id := range r.subagentStreamOrder {
+		if id == agentID {
+			r.subagentStreamOrder = append(r.subagentStreamOrder[:i], r.subagentStreamOrder[i+1:]...)
+			break
+		}
+	}
+	return state
 }
 
 func (r *runState) appendStreamDelta(delta string) {
@@ -202,9 +242,6 @@ func (r *runState) resetStream() {
 	r.planCloseEnd = 0
 	r.planFound = false
 	r.planComplete = false
-	r.lastStreamRenderAt = time.Time{}
-	r.streamRenderPending = false
-	r.streamRenderGeneration++
 }
 
 func (r *runState) appendReasoningDelta(delta string) {

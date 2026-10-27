@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
+
+	core "github.com/afterlune/luneCore"
 )
 
 func TestRunStateStreamsIntoBoundedTailAndKeepsCanonicalText(t *testing.T) {
@@ -48,33 +49,75 @@ func TestRunStateIncrementallySplitsProposedPlanAcrossDeltas(t *testing.T) {
 	}
 }
 
-func TestStreamRenderThrottleSchedulesAndRejectsStaleFlush(t *testing.T) {
-	m := newTUIModel(nil, nil, "stream-throttle")
+func TestStreamDirtyInvalidatesLiveOutputImmediately(t *testing.T) {
+	m := newTUIModel(nil, nil, "stream-live")
 	m.width, m.height = 100, 30
-	m.run.appendStreamDelta("pending output")
-	m.run.lastStreamRenderAt = time.Now()
-	cmd := m.markStreamDirty()
-	if cmd == nil || !m.run.streamRenderPending || m.view.liveDirty {
-		t.Fatalf("throttled render state: cmd=%v pending=%v dirty=%v", cmd != nil, m.run.streamRenderPending, m.view.liveDirty)
+	m.run.running = true
+	event := core.Event{
+		Kind:    core.EventModelStream,
+		AgentID: "lead",
+		Stream:  &core.ModelStreamEvent{Type: "text_delta", Delta: "pending output"},
 	}
-	message := cmd().(streamRenderMsg)
-	updated, _ := m.Update(message)
+	updated, _ := m.handleRuntimeEvent(event)
 	current := updated.(*tuiModel)
-	if current.run.streamRenderPending || !strings.Contains(current.view.liveContent, "pending output") {
-		t.Fatalf("render tick did not flush pending content: pending=%v content=%q", current.run.streamRenderPending, current.view.liveContent)
+	if !strings.Contains(current.view.liveContent, "pending output") {
+		t.Fatalf("the next event update should show the delta without a timer: %q", current.view.liveContent)
+	}
+}
+
+func TestSubagentStreamStaysInLiveAreaUntilSettled(t *testing.T) {
+	m := newTUIModel(nil, nil, "subagent-live")
+	m.width, m.height = 100, 30
+	m.run.running = true
+	m.entries = []TranscriptEntry{
+		{ID: "subagent-a", Kind: KindSubagent, AgentID: "a", AgentName: "researcher", SubagentRunning: true},
+		{ID: "subagent-b", Kind: KindSubagent, AgentID: "b", AgentName: "reviewer", SubagentRunning: true},
+	}
+	m.refreshViewportContent()
+	cached := m.view.cachedBlocks[0]
+	m.view.liveDirty = false
+
+	for _, delta := range []string{"**live ", "output**"} {
+		m.upsertSubagentStream(core.Event{
+			AgentID: "a", AgentName: "researcher",
+			Stream: &core.ModelStreamEvent{Type: "text_delta", Delta: delta},
+		})
+	}
+	m.upsertSubagentStream(core.Event{
+		AgentID: "b", AgentName: "reviewer",
+		Stream: &core.ModelStreamEvent{Type: "text_delta", Delta: "parallel output"},
+	})
+	if got := m.entries[0].Text; got != "**live output**" {
+		t.Fatalf("canonical subagent stream = %q", got)
+	}
+	if m.view.transcriptDirty || m.view.cachedBlocks[0] != cached {
+		t.Fatal("subagent deltas must not invalidate the historical transcript")
+	}
+	m.refreshLiveContent(m.width - 4)
+	if !strings.Contains(m.view.liveContent, "**live output**") || !strings.Contains(m.view.liveContent, "parallel output") {
+		t.Fatalf("live area should show the unfinished Markdown literally: %q", m.view.liveContent)
+	}
+	if researcher, reviewer := strings.Index(m.view.liveContent, "Subagent researcher"), strings.Index(m.view.liveContent, "Subagent reviewer"); researcher < 0 || reviewer < 0 || researcher > reviewer {
+		t.Fatalf("concurrent subagent tails should stay in stream start order: %q", m.view.liveContent)
+	}
+	m.entries[0].SubagentExpanded = true
+	if rendered := renderSubagentEntry(m.entries[0], 96); strings.Contains(rendered, "**live output**") || !strings.Contains(rendered, "live output below") {
+		t.Fatalf("expanded running card should point to the live tail instead of rendering full text: %q", rendered)
 	}
 
-	current.run.lastStreamRenderAt = time.Now()
-	stale := current.markStreamDirty()
-	if stale == nil {
-		t.Fatal("expected a scheduled render")
+	m.settleSubagentStream("a")
+	m.upsertSubagentEntry("a", "researcher", "", false, 0)
+	if len(m.run.subagentStreams) != 1 || m.run.subagentStreams["b"] == nil {
+		t.Fatal("settling one agent should keep the other agent's stream active")
 	}
-	current.run.resetStream()
-	staleMessage := stale().(streamRenderMsg)
-	current.view.liveDirty = false
-	updated, _ = current.Update(staleMessage)
-	if updated.(*tuiModel).view.liveDirty {
-		t.Fatal("stale render timer dirtied a reset stream")
+	if got := m.entries[0].SubagentPreview; got != "**live output**" {
+		t.Fatalf("settled preview = %q", got)
+	}
+	if !m.view.transcriptDirty {
+		t.Fatal("settling should invalidate the transcript once")
+	}
+	if rendered := renderSubagentEntry(m.entries[0], 96); !strings.Contains(rendered, "live output") || strings.Contains(rendered, "**live output**") {
+		t.Fatalf("completed expanded card should render full Markdown: %q", rendered)
 	}
 }
 
@@ -91,5 +134,25 @@ func BenchmarkLiveStreamFrame_LongResponse(b *testing.B) {
 		m.run.appendStreamDelta(fmt.Sprintf("delta %d\n", index))
 		m.view.invalidateLive()
 		m.refreshLiveContent(m.width - 4)
+	}
+}
+
+func BenchmarkSubagentLiveStreamFrame_LongHistory(b *testing.B) {
+	m := benchmarkTranscriptModel(2000)
+	m.entries = append([]TranscriptEntry{{
+		ID: "subagent-bench", Kind: KindSubagent, AgentID: "bench", AgentName: "benchmark", SubagentRunning: true,
+	}}, m.entries...)
+	m.run.running = true
+	m.view.invalidateBlocks()
+	m.refreshViewportContent()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		m.upsertSubagentStream(core.Event{
+			AgentID: "bench", AgentName: "benchmark",
+			Stream: &core.ModelStreamEvent{Type: "text_delta", Delta: fmt.Sprintf("delta %d\n", index)},
+		})
+		m.refreshLiveContent(m.width - 4)
+		_ = m.View()
 	}
 }
