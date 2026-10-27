@@ -206,18 +206,6 @@ func isTerminal(file *os.File) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func isSandboxDisabledEnv() bool {
-	v := strings.ToLower(os.Getenv("LUNE_SANDBOX"))
-	if v == "off" || v == "0" || v == "false" || v == "no" {
-		return true
-	}
-	v2 := strings.ToLower(os.Getenv("LUNE_NO_SANDBOX"))
-	if v2 == "1" || v2 == "true" || v2 == "yes" || v2 == "on" {
-		return true
-	}
-	return false
-}
-
 func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 	return newCoreWithDiagnostics(workspace, os.Stderr, noSandbox...)
 }
@@ -228,10 +216,9 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 		return nil, err
 	}
 	helperPath := findSandboxHelper(workspace)
-	allowLocalCommand := isSandboxDisabledEnv()
-	if len(noSandbox) > 0 && noSandbox[0] {
-		allowLocalCommand = true
-	}
+	// Core owns the sandbox decision, including LUNE_SANDBOX/LUNE_NO_SANDBOX, so the
+	// host only forwards the explicit flag.
+	allowLocalCommand := len(noSandbox) > 0 && noSandbox[0]
 	var toolchainRoots []string
 	userStore, storeErr := settings.OpenUser()
 	if storeErr == nil {
