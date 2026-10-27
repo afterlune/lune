@@ -30,7 +30,7 @@ func (p *blockingDesktopProvider) StreamResponse(ctx context.Context, _ publicmo
 	return nil, ctx.Err()
 }
 
-func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
+func TestInterruptCancelsExecutionAndAllowsNewMessage(t *testing.T) {
 	workspace := t.TempDir()
 	stateDir := filepath.Join(workspace, ".luneagent")
 	provider := &blockingDesktopProvider{started: make(chan struct{}, 2)}
@@ -87,8 +87,8 @@ func TestInterruptDiscardsPausedExecutionAndAllowsNewMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime.State after interrupt: %v", err)
 	}
-	if state.Task.Status == core.TaskPaused {
-		t.Fatalf("task remains paused after Interrupt: %#v", state.Task)
+	if state.Task.Status != core.TaskCancelled {
+		t.Fatalf("task status after Interrupt = %q, want cancelled", state.Task.Status)
 	}
 
 	history, err := activityStore.ListSession(context.Background(), saved.ID)

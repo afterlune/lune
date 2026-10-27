@@ -427,6 +427,8 @@ func (s *DesktopService) Interrupt(sessionID, expectedExecutionID string) bool {
 			return false
 		}
 		saveInterruptedActivity(s, runtime.SessionID(), executionID)
+	} else if result.Status == core.TaskCancelled {
+		saveInterruptedActivity(s, runtime.SessionID(), executionID)
 	}
 	return true
 }

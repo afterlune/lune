@@ -9,10 +9,16 @@ import * as json$0 from "../../../../../encoding/json/models.js";
 import * as settings$0 from "../settings/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as toolchains$0 from "../toolchains/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as core$0 from "../../../luneCore/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as model$0 from "../../../luneCore/model/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as tool$0 from "../../../luneCore/tool/models.js";
 
 export interface ActivityCommandOutput {
     "text": string;
@@ -68,15 +74,9 @@ export interface Bootstrap {
 }
 
 /**
- * CommandToolchainCandidate is a host PATH lookup result. Detection never
- * launches the executable and never adds its root to workspace permissions.
+ * CommandToolchainCandidate is a host PATH lookup result.
  */
-export interface CommandToolchainCandidate {
-    "name": string;
-    "executable": string;
-    "root": string;
-    "note"?: string;
-}
+export type CommandToolchainCandidate = toolchains$0.Candidate;
 
 export interface ConversationMessage {
     "id": string;
@@ -231,7 +231,7 @@ export interface PendingRequestView {
     "callId": string;
     "tool": string;
     "arguments"?: json$0.RawMessage;
-    "pathGrant"?: { "path": string; "access": string };
+    "pathGrant"?: tool$0.PathGrant | null;
     "questions"?: model$0.UserQuestionItem[] | null;
     "reason"?: string;
 }

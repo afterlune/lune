@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	core "github.com/afterlune/luneCore"
+	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -671,13 +672,34 @@ func TestQueuedTurnCancellationErrorsDoNotClaimSuccess(t *testing.T) {
 	}
 }
 
+type interruptibleTUIProvider struct{ started chan struct{} }
+
+func (*interruptibleTUIProvider) Name() string { return "host" }
+
+func (p *interruptibleTUIProvider) CreateResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *interruptibleTUIProvider) StreamResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, _ func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	return p.CreateResponse(ctx, request, profile)
+}
+
 func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T) {
 	workspace := t.TempDir()
 	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
-	client, err := core.New(core.Config{Workspace: workspace})
+	provider := &interruptibleTUIProvider{started: make(chan struct{}, 1)}
+	client, err := core.New(core.Config{
+		Workspace: workspace, StateDir: filepath.Join(workspace, ".luneagent"), Memory: core.MemoryConfig{Disabled: true},
+		ModelProviders: map[string]publicmodel.Provider{"host": provider},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,14 +717,33 @@ func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T)
 		t.Fatal(err)
 	}
 	m := newTUIModel(client, runtime, session.ID)
+	input, err := core.ParseTaskInput("active task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	submission, err := runtime.SubmitTurn(context.Background(), core.TurnRequest{Input: input}, core.StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("model provider did not start")
+	}
 	m.run.running = true
-	m.run.runningExecution = "active-exec"
+	m.run.runningExecution = submission.ExecutionID
 	m.run.queuedTurns = []QueuedItem{{ExecutionID: "queued-exec"}}
 	m.entries = []TranscriptEntry{{Kind: KindQueued, ToolCallID: "queued-exec", Text: "waiting"}}
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
 	if m.run.running || len(m.run.queuedTurns) != 1 || m.run.cancelingQueuedExecution != "" {
 		t.Fatalf("Esc did not interrupt active work independently of queued work: running=%t checkpoint=%+v queue=%+v canceling=%q", m.run.running, m.pausedCheckpoint, m.run.queuedTurns, m.run.cancelingQueuedExecution)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := runtime.WaitTurn(ctx, submission.ExecutionID)
+	if err != nil || result.Status != core.TaskCancelled {
+		t.Fatalf("interrupted active turn = %#v, error=%v", result, err)
 	}
 }
 

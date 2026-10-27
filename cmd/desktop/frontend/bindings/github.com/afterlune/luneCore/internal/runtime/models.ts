@@ -3,6 +3,9 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as session$0 from "../session/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as time$0 from "../../../../../time/models.js";
 
 /**
@@ -42,6 +45,8 @@ export interface ExecutionOptions {
     "token_budget"?: number;
 }
 
+export type Goal = session$0.Goal;
+
 export interface QueuedTurnState {
     "QueueID": string;
     "Position": number;
@@ -51,6 +56,7 @@ export interface QueuedTurnState {
 }
 
 export interface RuntimeState {
+    "Goal": Goal | null;
     "Task": TaskState;
     "Queue": QueuedTurnState[] | null;
 }
@@ -62,7 +68,6 @@ export interface RuntimeState {
 export interface SessionSettings {
     "model_profile": string;
     "reasoning_effort"?: string;
-    "goal"?: string;
     "context_window"?: number | null;
     "reserve_output_tokens"?: number | null;
     "auto_compact"?: boolean | null;
@@ -80,6 +85,9 @@ export enum SubmissionStatus {
 };
 
 export interface TaskState {
+    "GoalID": string;
+    "GoalRevision": number;
+    "AutomaticGoal": boolean;
     "Status": TaskStatus;
     "SessionID": string;
     "TaskID": string;

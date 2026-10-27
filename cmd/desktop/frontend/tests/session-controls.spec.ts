@@ -68,8 +68,13 @@ async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) 
 
 test('Plan and permissions restore independently after switching sessions', async ({ page }) => {
   await openMockDesktop(page);
-  await page.getByRole('combobox', { name: '工具权限' }).selectOption('full-access');
-  await expect(page.getByRole('combobox', { name: '工具权限' })).toHaveValue('full-access');
+  const permission = page.getByRole('combobox', { name: '工具权限' });
+  expect(await permission.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value)))
+    .toEqual(['read-only', 'workspace', 'auto', 'full-access']);
+  await permission.selectOption('auto');
+  await expect(permission).toHaveValue('auto');
+  await permission.selectOption('full-access');
+  await expect(permission).toHaveValue('full-access');
   await page.getByRole('button', { name: 'Plan 模式' }).click();
   await expect(page.getByRole('combobox', { name: '工具权限' })).toHaveValue('read-only');
   await page.locator('.session-row').filter({ hasText: 'Session B' }).click();

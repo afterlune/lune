@@ -24,7 +24,7 @@ let { desktop }: { desktop: DesktopState } = $props();
       <div class="composer-right">
         {#if desktop.workspace}
           <select class="permission-profile-select" value={desktop.permissionMode} disabled={desktop.switchingSession || desktop.controlsPending || desktop.planMode || desktop.workOutstanding} aria-label="工具权限" onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = desktop.permissionMode; void desktop.setPermission(value); }}>
-            <option value="read-only">权限 · 只读</option><option value="workspace">权限 · 工作区</option><option value="ask">权限 · 每次询问</option><option value="full-access">权限 · 完全访问</option>
+            <option value="read-only">权限 · 只读</option><option value="workspace">权限 · 工作区</option><option value="auto">权限 · 自动审查</option><option value="full-access">权限 · 完全访问</option>
           </select>
         {/if}
         {#if desktop.models.configured && desktop.models.profiles?.length && desktop.session}
