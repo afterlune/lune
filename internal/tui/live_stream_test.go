@@ -21,6 +21,26 @@ func TestRunStateStreamsIntoBoundedTailAndKeepsCanonicalText(t *testing.T) {
 	}
 }
 
+func TestRunStateTracksVisibleStreamTextIncrementally(t *testing.T) {
+	run := newRunState()
+	run.appendStreamDelta(" \n")
+	if !run.streamTextEmpty() {
+		t.Fatal("whitespace-only stream should stay visually empty")
+	}
+	run.appendStreamDelta(" visible")
+	if run.streamTextEmpty() {
+		t.Fatal("visible stream delta was not recorded")
+	}
+	run.resetStream()
+	if !run.streamTextEmpty() {
+		t.Fatal("reset stream retained visible-text state")
+	}
+	run.currentStreamText = "restored text"
+	if run.streamTextEmpty() {
+		t.Fatal("directly restored stream text should use the exact fallback")
+	}
+}
+
 func TestRunStateIncrementallySplitsProposedPlanAcrossDeltas(t *testing.T) {
 	run := newRunState()
 	for _, delta := range []string{

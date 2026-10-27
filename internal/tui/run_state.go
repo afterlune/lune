@@ -66,6 +66,7 @@ type runState struct {
 
 	// Streaming buffers and generation diagnostics.
 	currentStreamText      string
+	currentStreamVisible   bool
 	currentReasoningText   string
 	streamBuilder          strings.Builder
 	reasoningBuilder       strings.Builder
@@ -144,6 +145,9 @@ func (r *runState) finishSubagentStream(agentID string) *subagentStreamState {
 func (r *runState) appendStreamDelta(delta string) {
 	if delta == "" {
 		return
+	}
+	if !r.currentStreamVisible && strings.TrimSpace(delta) != "" {
+		r.currentStreamVisible = true
 	}
 	r.streamBuilder.WriteString(delta)
 	r.currentStreamText = r.streamBuilder.String()
@@ -232,6 +236,7 @@ func planProbeSuffix(text string) string {
 func (r *runState) resetStream() {
 	r.streamBuilder.Reset()
 	r.currentStreamText = ""
+	r.currentStreamVisible = false
 	r.assistantTail.Reset()
 	r.planBeforeTail.Reset()
 	r.planTail.Reset()
@@ -242,6 +247,15 @@ func (r *runState) resetStream() {
 	r.planCloseEnd = 0
 	r.planFound = false
 	r.planComplete = false
+}
+
+func (r *runState) streamTextEmpty() bool {
+	// Tests and restored snapshots can seed currentStreamText directly, without
+	// going through appendStreamDelta. Keep that uncommon fallback exact.
+	if r.streamBuilder.Len() == 0 && r.currentStreamText != "" {
+		return strings.TrimSpace(r.currentStreamText) == ""
+	}
+	return !r.currentStreamVisible
 }
 
 func (r *runState) appendReasoningDelta(delta string) {

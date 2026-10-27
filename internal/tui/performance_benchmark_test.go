@@ -63,6 +63,33 @@ func BenchmarkTranscriptFrame_Scales(b *testing.B) {
 	}
 }
 
+func BenchmarkRefreshExpandedToolRounds_LongHistory(b *testing.B) {
+	for _, roundCount := range []int{50, 250, 500} {
+		b.Run(fmt.Sprintf("rounds=%d", roundCount), func(b *testing.B) {
+			m := newTUIModel(nil, nil, "expanded-round-bench")
+			m.width, m.height = 120, 40
+			for i := range roundCount {
+				m.entries = append(m.entries,
+					TranscriptEntry{
+						Kind: KindTool, ToolName: "read_file", ToolCommand: fmt.Sprintf("Read file-%d.go", i),
+						ToolOutput: "first line\nsecond line", RoundExpanded: true,
+					},
+					TranscriptEntry{Kind: KindAssistant, Text: fmt.Sprintf("Result %d", i)},
+				)
+			}
+			m.updateLayout()
+			entryIndex := len(m.entries) - 1
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				m.entries[entryIndex].Text = fmt.Sprintf("Updated result %d", i%2)
+				m.view.invalidateEntry(entryIndex)
+				m.refreshViewportContent()
+			}
+		})
+	}
+}
+
 func benchmarkTranscriptModel(entryCount int) *tuiModel {
 	m := newTUIModel(nil, nil, "bench-session")
 	m.width = 120

@@ -66,7 +66,7 @@ func (m *tuiModel) updateLayout() {
 	}
 
 	entriesChanged := (len(m.entries) != m.view.cachedEntryCount)
-	needRefresh := widthChanged || entriesChanged || m.view.cachedDirty || m.view.transcriptDirty
+	needRefresh := widthChanged || entriesChanged || m.view.cachedDirty || m.view.transcriptDirty || m.trailingRoundViewChanged()
 	if needRefresh {
 		m.refreshViewportContent()
 	}
@@ -224,12 +224,19 @@ func fitOverlayHeight(view string, maxRows int) string {
 
 // refreshViewportContent builds the entire transcript text and updates the viewport.
 func (m *tuiModel) refreshViewportContent() {
+	if m.input.selecting || m.input.composerSelecting {
+		m.view.animateTools = false
+		return
+	}
 	contentWidth := max(20, m.width-4)
 	m.refreshLiveContent(contentWidth)
 	if !m.view.cachedDirty && !m.view.transcriptDirty && m.view.cachedWidth == contentWidth &&
-		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount {
+		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount && !m.trailingRoundViewChanged() {
 		return
 	}
+	animateTools := m.view.animateTools
+	m.view.animateTools = false
+	var projectedRound *toolRoundReveal
 	viewportWidth := max(1, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 	if m.viewport.LeftGutterFunc != nil {
 		viewportWidth = max(1, viewportWidth-ansi.StringWidth(m.viewport.LeftGutterFunc(viewport.GutterContext{})))
@@ -242,6 +249,7 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.cachedDirty = false
 		m.view.dirtyEntries = nil
 		m.view.transcriptDirty = false
+		m.view.cachedHasTrailingRound = false
 		m.view.entryLineRanges = nil
 		m.view.transcriptLines = nil
 		m.viewport.SoftWrap = false
@@ -250,6 +258,14 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 
 	curThemeBg := activeTheme().CardBg
+	if m.view.cachedWidth != 0 && (m.view.cachedWidth != contentWidth || m.view.cachedThemeBg != curThemeBg || len(m.entries) < m.view.cachedEntryCount) {
+		m.view.toolReveal = nil
+		m.view.toolRevealGeneration++
+		m.view.toolRevealPending = false
+		m.view.toolRevealWindowed = false
+		m.view.toolRevealWindowStart = 0
+		animateTools = false
+	}
 	rebuildEntryCache := m.view.cachedDirty || m.view.cachedWidth != contentWidth || m.view.cachedThemeBg != curThemeBg || len(m.entries) < m.view.cachedEntryCount
 	if rebuildEntryCache {
 		m.viewport.SoftWrap = false
@@ -341,6 +357,10 @@ func (m *tuiModel) refreshViewportContent() {
 		}
 		appendBlock(block)
 	}
+	trailingEnd := len(m.entries)
+	for trailingEnd > 0 && m.entries[trailingEnd-1].Kind == KindQueued {
+		trailingEnd--
+	}
 
 	for i := 0; i < len(m.entries); {
 		if m.entries[i].Kind == KindQueued {
@@ -359,6 +379,34 @@ func (m *tuiModel) refreshViewportContent() {
 
 			if m.roundExpanded(i, live) {
 				block, relRanges := renderExpandedToolRound(roundSlice, i, live, contentWidth)
+				if live && end == trailingEnd && m.canRevealTools() {
+					r := m.view.toolReveal
+					if r == nil || r.start != i {
+						m.view.toolRevealGeneration++
+						m.view.toolRevealPending = false
+						r = &toolRoundReveal{start: i}
+						m.view.toolReveal = r
+					}
+					animate := animateTools || len(r.queue) > 0
+					for _, entry := range roundSlice {
+						if entry.ToolFailed {
+							animate = false
+							break
+						}
+					}
+					r.sync(block, relRanges, roundSlice, animate, time.Now())
+					flushRule()
+					prefix := strings.Join(blocks, "\n\n")
+					r.prefixLines = nil
+					if prefix != "" {
+						r.prefixLines = strings.Split(prefix, "\n")
+					}
+					r.prefixRanges = append(r.prefixRanges[:0], m.view.entryLineRanges...)
+					r.offset = nextBlockStart()
+					rows, ranges := r.project()
+					block, relRanges = strings.Join(rows, "\n"), ranges
+					projectedRound = r
+				}
 				appendRendered(block, relRanges)
 			} else {
 				block := renderCollapsedToolRound(roundSlice, contentWidth)
@@ -403,15 +451,50 @@ func (m *tuiModel) refreshViewportContent() {
 	} else {
 		m.view.transcriptLines = strings.Split(fullText, "\n")
 	}
-	m.viewport.SetContent(fullText)
-	if !m.scrolledUp {
-		m.viewport.GotoBottom()
+	if projectedRound != nil {
+		m.publishToolReveal(len(projectedRound.queue) > 0 || m.view.toolRevealWindowed)
+	} else {
+		if m.view.toolReveal != nil {
+			m.view.toolRevealGeneration++
+			m.view.toolRevealPending = false
+		}
+		m.view.toolReveal = nil
+		m.view.toolRevealWindowed = false
+		m.view.toolRevealWindowStart = 0
+		m.viewport.SetContent(fullText)
+		if !m.scrolledUp {
+			m.viewport.GotoBottom()
+		}
 	}
 	m.view.transcriptDirty = false
+	m.view.cachedHasTrailingRound = len(m.entries) > 0 && isRoundMember(m.entries, len(m.entries)-1)
+	if m.view.cachedHasTrailingRound {
+		m.view.cachedTrailingRunning = m.run.running
+		m.view.cachedTrailingTextEmpty = m.run.streamTextEmpty()
+	}
+}
+
+// A trailing round's live presentation depends on task and stream state even
+// when no transcript entry changed. Keep this check constant-time so stream
+// deltas do not force a history scan or redraw.
+func (m *tuiModel) trailingRoundViewChanged() bool {
+	if !m.view.cachedHasTrailingRound {
+		return false
+	}
+	return m.view.cachedTrailingRunning != m.run.running ||
+		m.view.cachedTrailingTextEmpty != m.run.streamTextEmpty()
 }
 
 func (m *tuiModel) refreshLiveContent(width int) {
-	if !m.view.liveDirty && m.view.liveContent != "" && width == m.view.cachedWidth {
+	if !m.view.liveDirty && width == m.view.cachedWidth {
+		if m.view.liveContent != "" || m.scrolledUp ||
+			(!m.run.running && m.run.streamTextEmpty() && m.run.currentReasoningText == "" && len(m.run.subagentStreamOrder) == 0) {
+			return
+		}
+	}
+	// Keep the reserved live band stable while a mouse selection is in progress.
+	// Its pending updates are rendered when the selection finishes.
+	if m.input.selecting || m.input.composerSelecting {
 		return
 	}
 	m.run.ensureLiveTails()

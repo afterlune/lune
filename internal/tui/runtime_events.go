@@ -14,7 +14,7 @@ import (
 func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 	mod, cmd := m.processRuntimeEventNoRefresh(event)
 	m = mod.(*tuiModel)
-	if m.view.transcriptDirty || m.view.cachedDirty {
+	if m.view.transcriptDirty || m.view.cachedDirty || m.trailingRoundViewChanged() {
 		m.refreshViewportContent()
 	} else if m.view.liveDirty {
 		m.refreshLiveContent(max(20, m.width-4))
@@ -52,6 +52,23 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 	}
 	if m.run.restoringSession && !replaySafeDuringRestore(event.Kind) {
 		return m, nil
+	}
+	switch event.Kind {
+	case core.EventToolStarted, core.EventToolDetails, core.EventToolFinished:
+		if (event.AgentID == "" || event.AgentID == "lead") && m.run.running && !m.run.restoringSession {
+			m.view.animateTools = true
+		}
+	case core.EventTaskFinished, core.EventTaskDiscarded, core.EventUserQuestionRequired,
+		core.EventUserInteractionRequired, core.EventApprovalRequired, core.EventModelRecoveryRequired,
+		core.EventToolRecoveryRequired, core.EventExecutionBlocked:
+		m.finishToolReveal()
+	case core.EventModelStream:
+		if event.Stream != nil && event.Stream.Delta != "" && (event.AgentID == "" || event.AgentID == "lead") && (event.Stream.Type == "text_delta" || event.Stream.Type == "") {
+			purpose := strings.TrimSpace(event.Stream.Purpose)
+			if purpose == "" || purpose == string(core.UsagePurposeMain) || purpose == string(core.UsagePurposeTeam) {
+				m.finishToolReveal()
+			}
+		}
 	}
 	switch event.Kind {
 	case core.EventGoalUpdated, core.EventGoalCleared:

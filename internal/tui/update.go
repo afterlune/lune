@@ -31,8 +31,15 @@ type clearCopyFeedbackMsg struct {
 
 // Update handles all incoming Bubble Tea messages and key events.
 func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
+	wasSelecting := m.input.selecting || m.input.composerSelecting
 	defer func() {
 		if current, ok := updated.(*tuiModel); ok {
+			if wasSelecting && !current.input.selecting && !current.input.composerSelecting && current.layoutReady {
+				current.updateLayout()
+			}
+			if next := current.nextToolRevealFrame(); next != nil {
+				cmd = tea.Batch(cmd, next)
+			}
 			current.syncTerminalTitle()
 			current.syncAttention()
 			if !current.scrolledUp {
@@ -42,8 +49,44 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 	}()
 
 	var cmds []tea.Cmd
+	switch event := msg.(type) {
+	case tea.MouseClickMsg:
+		const headerHeight = 3
+		if event.Y >= headerHeight && event.Y < headerHeight+m.viewport.Height() {
+			m.finishToolRevealForInput(event.Y - headerHeight)
+		} else {
+			m.finishToolReveal()
+		}
+	case tea.MouseWheelMsg:
+		m.finishToolRevealForInput(0)
+	case tea.KeyPressMsg:
+		if key := event.String(); key == "pgup" || key == "pgdown" {
+			m.finishToolRevealForInput(0)
+		} else {
+			m.finishToolReveal()
+		}
+	case tea.MouseMotionMsg:
+		if m.input.selecting || m.input.composerSelecting {
+			m.finishToolReveal()
+		}
+	case tea.PasteMsg, tea.WindowSizeMsg, tea.BackgroundColorMsg:
+		m.finishToolReveal()
+	}
 
 	switch msg := msg.(type) {
+	case toolRevealFrameMsg:
+		if msg.generation != m.view.toolRevealGeneration || !m.matchesBinding(msg.bindingGeneration) {
+			return m, nil
+		}
+		m.view.toolRevealPending = false
+		if !m.canRevealTools() {
+			m.finishToolReveal()
+			return m, nil
+		}
+		if r := m.view.toolReveal; r != nil && r.advance(msg.at) {
+			m.publishToolReveal(true)
+		}
+		return m, nil
 	case goalActionMsg:
 		return m.finishGoalAction(msg)
 	case exportResultMsg:

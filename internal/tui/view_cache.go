@@ -10,17 +10,26 @@ package tui
 //   - dirtyEntries: selected blocks must be rendered again, then the transcript
 //     is re-composed around them.
 type viewCache struct {
-	cachedBlocks     []string
-	cachedEntryCount int
-	cachedWidth      int
-	cachedThemeBg    string
-	cachedDirty      bool
-	dirtyEntries     map[int]struct{}
-	transcriptDirty  bool
-	liveDirty        bool
-	liveContent      string
-	transcriptLines  []string
-	entryLineRanges  []entryLineRange
+	cachedBlocks            []string
+	cachedEntryCount        int
+	cachedWidth             int
+	cachedThemeBg           string
+	cachedDirty             bool
+	cachedHasTrailingRound  bool
+	cachedTrailingRunning   bool
+	cachedTrailingTextEmpty bool
+	dirtyEntries            map[int]struct{}
+	transcriptDirty         bool
+	liveDirty               bool
+	liveContent             string
+	transcriptLines         []string
+	entryLineRanges         []entryLineRange
+	toolReveal              *toolRoundReveal
+	toolRevealGeneration    uint64
+	toolRevealPending       bool
+	toolRevealWindowed      bool
+	toolRevealWindowStart   int
+	animateTools            bool
 }
 
 // invalidateContent marks only the composed viewport text as stale.
@@ -53,6 +62,12 @@ func (c *viewCache) invalidateLive() {
 
 // invalidateBlocks marks the entry blocks and the composed text as stale.
 func (c *viewCache) invalidateBlocks() {
+	c.toolReveal = nil
+	c.toolRevealGeneration++
+	c.toolRevealPending = false
+	c.toolRevealWindowed = false
+	c.toolRevealWindowStart = 0
+	c.animateTools = false
 	c.cachedDirty = true
 	c.dirtyEntries = nil
 	c.transcriptDirty = true

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -272,7 +271,7 @@ func (m *tuiModel) roundLive(start, end int) bool {
 			return true
 		}
 	}
-	return end == len(m.entries) && m.run.running && strings.TrimSpace(m.run.currentStreamText) == ""
+	return end == len(m.entries) && m.run.running && m.run.streamTextEmpty()
 }
 
 // roundExpanded reports whether a round renders expanded. The running round follows
