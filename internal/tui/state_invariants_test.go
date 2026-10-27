@@ -90,6 +90,9 @@ func TestTranscriptCacheClearsMarkersAfterRender(t *testing.T) {
 	if m.view.cachedDirty || m.view.transcriptDirty {
 		t.Fatalf("refresh must clear both markers, got blocks=%v content=%v", m.view.cachedDirty, m.view.transcriptDirty)
 	}
+	if len(m.view.dirtyEntries) != 0 {
+		t.Fatalf("refresh must clear entry markers, got %v", m.view.dirtyEntries)
+	}
 	if len(m.view.cachedBlocks) != 1 || len(m.view.entryLineRanges) == 0 {
 		t.Fatalf("refresh must rebuild blocks and line ranges, got %d blocks and %d ranges",
 			len(m.view.cachedBlocks), len(m.view.entryLineRanges))
@@ -101,6 +104,68 @@ func TestTranscriptCacheClearsMarkersAfterRender(t *testing.T) {
 	}
 	if !m.view.transcriptDirty {
 		t.Fatal("invalidateContent must mark the composed text stale")
+	}
+}
+
+func TestTranscriptCacheInvalidatesOneEntryAndRecomposesRanges(t *testing.T) {
+	m := newTUIModel(nil, nil, "partial-cache-session")
+	m.width, m.height = 100, 40
+	m.entries = []TranscriptEntry{
+		{ID: "system-1", Kind: KindSystem, Text: "first line"},
+		{ID: "system-2", Kind: KindSystem, Text: "unchanged entry"},
+	}
+	m.view.invalidateBlocks()
+	m.refreshViewportContent()
+
+	unchangedBlock := m.view.cachedBlocks[1]
+	unchangedStart := m.view.entryLineRanges[1].StartLine
+	m.entries[0].Text = "first line\nsecond line"
+	m.view.invalidateEntry(0)
+	if m.view.cachedDirty {
+		t.Fatal("single-entry invalidation must not request a full cache rebuild")
+	}
+	if _, ok := m.view.dirtyEntries[0]; !ok || len(m.view.dirtyEntries) != 1 {
+		t.Fatalf("dirty entries = %v, want only entry 0", m.view.dirtyEntries)
+	}
+	m.refreshViewportContent()
+
+	if m.view.cachedBlocks[0] == "" || !strings.Contains(m.view.cachedBlocks[0], "second line") {
+		t.Fatalf("changed entry cache was not refreshed: %q", m.view.cachedBlocks[0])
+	}
+	if m.view.cachedBlocks[1] != unchangedBlock {
+		t.Fatal("single-entry invalidation changed an unrelated cached block")
+	}
+	if m.view.entryLineRanges[1].StartLine <= unchangedStart {
+		t.Fatalf("entry line ranges were not recomposed after a multiline change: before=%d after=%d",
+			unchangedStart, m.view.entryLineRanges[1].StartLine)
+	}
+	transcript := strings.Join(m.view.transcriptLines, "\n")
+	if !strings.Contains(transcript, "second line") || !strings.Contains(transcript, "unchanged entry") {
+		t.Fatalf("recomposed transcript lost updated or unchanged text: %q", transcript)
+	}
+	if m.view.transcriptDirty || len(m.view.dirtyEntries) != 0 {
+		t.Fatalf("refresh left stale cache state: transcript=%v entries=%v", m.view.transcriptDirty, m.view.dirtyEntries)
+	}
+}
+
+func TestTranscriptCacheAppendsAfterLocalInvalidation(t *testing.T) {
+	m := newTUIModel(nil, nil, "append-after-local-cache-session")
+	m.width, m.height = 100, 40
+	m.entries = []TranscriptEntry{{ID: "system-1", Kind: KindSystem, Text: "first"}}
+	m.view.invalidateBlocks()
+	m.refreshViewportContent()
+
+	m.entries[0].Text = "first updated"
+	m.view.invalidateEntry(0)
+	m.entries = append(m.entries, TranscriptEntry{ID: "system-2", Kind: KindSystem, Text: "appended"})
+	m.view.invalidateContent()
+	m.refreshViewportContent()
+
+	if m.view.cachedEntryCount != 2 || len(m.view.cachedBlocks) != 2 {
+		t.Fatalf("cache did not append the new entry: count=%d blocks=%d", m.view.cachedEntryCount, len(m.view.cachedBlocks))
+	}
+	if !strings.Contains(m.view.cachedBlocks[0], "first updated") || !strings.Contains(m.view.cachedBlocks[1], "appended") {
+		t.Fatalf("cache contents after update and append = %q / %q", m.view.cachedBlocks[0], m.view.cachedBlocks[1])
 	}
 }
 

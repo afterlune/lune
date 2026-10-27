@@ -9,8 +9,8 @@ import (
 )
 
 func (m *tuiModel) markRunningSubagentsAndToolsDone() {
-	changed := false
 	for i := range m.entries {
+		changed := false
 		if m.entries[i].Kind == KindTool && m.entries[i].ToolRunning {
 			m.entries[i].ToolRunning = false
 			changed = true
@@ -18,6 +18,9 @@ func (m *tuiModel) markRunningSubagentsAndToolsDone() {
 		if m.entries[i].Kind == KindSubagent && m.entries[i].SubagentRunning {
 			m.entries[i].SubagentRunning = false
 			changed = true
+		}
+		if changed {
+			m.view.invalidateEntry(i)
 		}
 	}
 	for _, stats := range m.agentMetrics {
@@ -30,9 +33,6 @@ func (m *tuiModel) markRunningSubagentsAndToolsDone() {
 				stats.Activity = "Completed"
 			}
 		}
-	}
-	if changed {
-		m.view.invalidateBlocks()
 	}
 }
 
@@ -60,7 +60,7 @@ func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, run
 			if !running && m.entries[i].SubagentPreview == "" {
 				m.entries[i].SubagentPreview = "Completed"
 			}
-			m.view.invalidateBlocks()
+			m.view.invalidateEntry(i)
 			return
 		}
 	}
@@ -79,7 +79,7 @@ func (m *tuiModel) upsertSubagentEntry(agentID, agentName, agentRole string, run
 		SubagentDuration: duration,
 		Timestamp:        time.Now(),
 	})
-	m.view.invalidateBlocks()
+	m.view.invalidateContent()
 }
 
 func (m *tuiModel) activeSubagentsCount() int {
@@ -156,7 +156,7 @@ func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, tool
 			if agentRole != "" {
 				m.entries[i].AgentRole = agentRole
 			}
-			m.view.invalidateBlocks()
+			m.view.invalidateEntry(i)
 			return
 		}
 	}
@@ -172,7 +172,7 @@ func (m *tuiModel) recordSubagentToolStarted(agentID, agentName, agentRole, tool
 		SubagentPreview:  preview,
 		Timestamp:        time.Now(),
 	})
-	m.view.invalidateBlocks()
+	m.view.invalidateContent()
 }
 
 func (m *tuiModel) recordSubagentToolFinished(agentID, toolName string, dur time.Duration) {
@@ -186,7 +186,7 @@ func (m *tuiModel) recordSubagentToolFinished(agentID, toolName string, dur time
 				m.entries[i].SubagentDuration += dur
 			}
 			m.entries[i].SubagentPreview = fmt.Sprintf("Finished %s", toolName)
-			m.view.invalidateBlocks()
+			m.view.invalidateEntry(i)
 			return
 		}
 	}
@@ -212,7 +212,8 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 			break
 		}
 	}
-	if idx < 0 {
+	created := idx < 0
+	if created {
 		m.entries = append(m.entries, TranscriptEntry{
 			ID:              "subagent-" + agentID,
 			Kind:            KindSubagent,
@@ -242,5 +243,9 @@ func (m *tuiModel) upsertSubagentStream(event core.Event) {
 			break
 		}
 	}
-	m.view.invalidateBlocks()
+	if created {
+		m.view.invalidateContent()
+	} else {
+		m.view.invalidateEntry(idx)
+	}
 }

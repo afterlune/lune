@@ -240,6 +240,7 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.cachedBlocks = nil
 		m.view.cachedEntryCount = 0
 		m.view.cachedDirty = false
+		m.view.dirtyEntries = nil
 		m.view.transcriptDirty = false
 		m.view.entryLineRanges = nil
 		m.view.transcriptLines = nil
@@ -262,15 +263,30 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.cachedWidth = contentWidth
 		m.view.cachedThemeBg = curThemeBg
 		m.view.cachedDirty = false
-	} else if len(m.entries) > m.view.cachedEntryCount {
-		for i := m.view.cachedEntryCount; i < len(m.entries); i++ {
-			if !isRoundMember(m.entries, i) {
-				m.view.cachedBlocks = append(m.view.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+		m.view.dirtyEntries = nil
+	} else {
+		cachedEntryCount := m.view.cachedEntryCount
+		if len(m.entries) > cachedEntryCount {
+			for i := cachedEntryCount; i < len(m.entries); i++ {
+				if !isRoundMember(m.entries, i) {
+					m.view.cachedBlocks = append(m.view.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+				} else {
+					m.view.cachedBlocks = append(m.view.cachedBlocks, "")
+				}
+			}
+			m.view.cachedEntryCount = len(m.entries)
+		}
+		for index := range m.view.dirtyEntries {
+			if index >= cachedEntryCount || index >= len(m.entries) {
+				continue
+			}
+			if isRoundMember(m.entries, index) {
+				m.view.cachedBlocks[index] = ""
 			} else {
-				m.view.cachedBlocks = append(m.view.cachedBlocks, "")
+				m.view.cachedBlocks[index] = renderEntry(m.entries[index], contentWidth)
 			}
 		}
-		m.view.cachedEntryCount = len(m.entries)
+		m.view.dirtyEntries = nil
 	}
 
 	m.view.entryLineRanges = make([]entryLineRange, 0, len(m.entries)+4)

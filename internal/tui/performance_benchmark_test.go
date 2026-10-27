@@ -9,20 +9,33 @@ import (
 func BenchmarkRefreshViewportContent_Scales(b *testing.B) {
 	for _, entryCount := range []int{50, 500, 2000} {
 		for _, variant := range []struct {
-			name       string
-			invalidate bool
+			name          string
+			invalidate    bool
+			invalidateOne bool
 		}{
 			{name: "cached"},
+			{name: "single-entry", invalidateOne: true},
 			{name: "uncached", invalidate: true},
 		} {
 			b.Run(fmt.Sprintf("entries=%d/%s", entryCount, variant.name), func(b *testing.B) {
 				m := benchmarkTranscriptModel(entryCount)
 				m.refreshViewportContent()
+				entryIndex := len(m.entries) - 1
+				originalText := m.entries[entryIndex].Text
+				updatedText := originalText + "\nUpdated benchmark entry."
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := range b.N {
 					if variant.invalidate {
 						m.view.invalidateBlocks()
+					}
+					if variant.invalidateOne {
+						if i%2 == 0 {
+							m.entries[entryIndex].Text = updatedText
+						} else {
+							m.entries[entryIndex].Text = originalText
+						}
+						m.view.invalidateEntry(entryIndex)
 					}
 					m.run.currentStreamText = fmt.Sprintf("Streaming token delta %d", i)
 					m.view.invalidateLive()

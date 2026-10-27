@@ -72,7 +72,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 				if m.entries[i].Kind == KindQueued && (m.entries[i].ToolCallID == execID || m.entries[i].ToolCallID == "") {
 					m.entries[i].Kind = KindUser
 					m.entries[i].ToolCallID = execID
-					m.view.invalidateBlocks()
+					m.view.invalidateEntry(i)
 					break
 				}
 			}
@@ -266,7 +266,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 							m.entries[i].ToolStartedAt = time.Now()
 						}
 					}
-					m.view.invalidateBlocks()
+					m.view.invalidateEntry(i)
 					return m, nil
 				}
 			}
@@ -287,7 +287,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		m.beginRoundIfNeeded()
 		m.entries = append(m.entries, entry)
-		m.view.invalidateBlocks()
+		m.view.invalidateContent()
 
 	case core.EventToolDetails:
 		if strings.EqualFold(event.Tool.Name, "select_tool_category") {
@@ -355,7 +355,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			if event.Tool.Duration > 0 {
 				m.entries[i].ToolDuration = event.Tool.Duration
 			}
-			m.view.invalidateBlocks()
+			m.view.invalidateEntry(i)
 			found = true
 			break
 		}
@@ -378,7 +378,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			}
 			m.beginRoundIfNeeded()
 			m.entries = append(m.entries, entry)
-			m.view.invalidateBlocks()
+			m.view.invalidateContent()
 		}
 
 	case core.EventToolFinished:
@@ -426,7 +426,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 						m.entries[i].ToolChanges = event.Tool.Details.Changes
 					}
 				}
-				m.view.invalidateBlocks()
+				m.view.invalidateEntry(i)
 				break
 			}
 		}
