@@ -280,6 +280,9 @@ func sanitizeAndTruncateLine(line string, maxWidth int) string {
 	return line
 }
 
+// isExploreTool classifies a tool for display only: exploration tools render with
+// the quiet read style, everything else with the execution style. Permission and
+// Plan-mode decisions live in Core and read tool metadata, never this list.
 func isExploreTool(toolName string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "read_file", "read_image", "list_dir", "grep", "glob", "find_files", "search_files":

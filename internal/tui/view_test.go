@@ -1884,3 +1884,18 @@ func TestAssistantNarrationStyleDiffersFromReasoning(t *testing.T) {
 		t.Fatalf("reasoning must not reuse the narration marker, got:\n%s", ansi.Strip(reasoning))
 	}
 }
+
+// isExploreTool only drives presentation, so pin the current classification: a new
+// read-only tool must be added here deliberately instead of drifting silently.
+func TestIsExploreToolClassifiesReadOnlyTools(t *testing.T) {
+	for _, name := range []string{"read_file", "read_image", "list_dir", "grep", "glob", "find_files", "search_files", " READ_FILE "} {
+		if !isExploreTool(name) {
+			t.Errorf("%q must render as an exploration tool", name)
+		}
+	}
+	for _, name := range []string{"write_file", "edit_file", "command", "read_url", ""} {
+		if isExploreTool(name) {
+			t.Errorf("%q must not render as an exploration tool", name)
+		}
+	}
+}

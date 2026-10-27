@@ -61,7 +61,6 @@ func (m *tuiModel) resolveActivePlanReview() (tea.Model, tea.Cmd) {
 	permissionMode := m.permissionMode
 	m.activePlanReview = nil
 	m.planMode = false
-	m.permissionMode = permissionMode
 	m.updateLayout()
 
 	runtime := m.runtime
