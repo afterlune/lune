@@ -938,6 +938,11 @@ func TestKnownSlashCommandStillDispatches(t *testing.T) {
 }
 
 func TestToolchainsCommand(t *testing.T) {
+	// Keep the user settings store out of the developer's real configuration.
+	userConfig := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", userConfig)
+	t.Setenv("AppData", userConfig)
+	t.Setenv("HOME", userConfig)
 	tmpDir := t.TempDir()
 	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
@@ -967,5 +972,48 @@ func TestToolchainsCommand(t *testing.T) {
 	last = m.entries[len(m.entries)-1].Text
 	if !strings.Contains(last, "Refreshed") {
 		t.Errorf("expected refresh output, got: %s", last)
+	}
+}
+
+// A failing user-settings write must be reported and must not leave Core ahead of
+// the configuration the next launch will load.
+func TestToolchainsRefreshReportsSettingsFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client, err := core.New(core.Config{Workspace: tmpDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	m := newTUIModel(client, nil, "toolchains-sess")
+	before := client.CommandToolchainPaths()
+
+	// A regular file blocks the settings directory, so persistence must fail.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(blocker, "config")
+	t.Setenv("XDG_CONFIG_HOME", blocked)
+	t.Setenv("AppData", blocked)
+	t.Setenv("HOME", blocked)
+
+	m.handleSlashCommand("/toolchains refresh")
+	last := m.entries[len(m.entries)-1].Text
+	if !strings.Contains(last, "Failed to save toolchains") {
+		t.Fatalf("expected a persistence failure message, got: %s", last)
+	}
+	after := client.CommandToolchainPaths()
+	if len(after) != len(before) {
+		t.Fatalf("Core authorization changed despite the settings failure: %v -> %v", before, after)
+	}
+	for i := range before {
+		if after[i] != before[i] {
+			t.Fatalf("Core authorization changed despite the settings failure: %v -> %v", before, after)
+		}
 	}
 }

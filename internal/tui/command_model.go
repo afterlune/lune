@@ -129,13 +129,15 @@ func (m *tuiModel) handleToolchainsCommand(parts []string) (tea.Model, tea.Cmd) 
 
 	case "refresh":
 		roots := toolchains.AutoDetectRoots()
-		if err := m.client.SetCommandToolchainPaths(roots); err != nil {
-			m.addSystemEntry("Failed to update toolchains in Core: " + err.Error())
+		// Persist before Core: a failure must leave the previous authorization in
+		// place instead of granting toolchains that disappear on the next launch.
+		if err := saveUserToolchains(m.client.Workspace(), roots); err != nil {
+			m.addSystemEntry("Failed to save toolchains to user settings: " + err.Error() + "\nCore authorization unchanged. Fix user settings and run `/toolchains refresh` again.")
 			return m, nil
 		}
-		if userStore, err := settings.OpenUser(); err == nil {
-			_ = userStore.SaveWorkspaceCommandToolchainPaths(m.client.Workspace(), roots)
-			_ = userStore.Close()
+		if err := m.client.SetCommandToolchainPaths(roots); err != nil {
+			m.addSystemEntry("Saved toolchains to user settings, but Core rejected them: " + err.Error())
+			return m, nil
 		}
 		var lines []string
 		lines = append(lines, fmt.Sprintf("**Refreshed Toolchains (%d):**", len(roots)))
@@ -149,6 +151,20 @@ func (m *tuiModel) handleToolchainsCommand(parts []string) (tea.Model, tea.Cmd) 
 		m.addSystemEntry("Unknown toolchains subcommand. Usage: `/toolchains [list|detect|refresh]`.")
 		return m, nil
 	}
+}
+
+// saveUserToolchains persists the workspace toolchain grant that Core enforces, so
+// a settings failure is reported instead of silently diverging from Core.
+func saveUserToolchains(workspace string, roots []string) error {
+	store, err := settings.OpenUser()
+	if err != nil {
+		return err
+	}
+	saveErr := store.SaveWorkspaceCommandToolchainPaths(workspace, roots)
+	if closeErr := store.Close(); saveErr == nil {
+		saveErr = closeErr
+	}
+	return saveErr
 }
 
 // validateTuiModelProfile fails fast for a `-m` profile that does not exist, even
