@@ -56,17 +56,22 @@ func (m *tuiModel) openEffortPicker() {
 // mutateSessionSettings updates only the requested session settings, preserving
 // all other fields already stored on the session.
 func (m *tuiModel) mutateSessionSettings(mutate func(*core.SessionSettings)) error {
-	if m.client == nil || m.sessionID == "" {
+	return m.applySessionSettings(context.Background(), m.sessionID, mutate)
+}
+
+// applySessionSettings updates one session's settings by id, so a session that is
+// not bound to the model yet can still be configured.
+func (m *tuiModel) applySessionSettings(ctx context.Context, sessionID string, mutate func(*core.SessionSettings)) error {
+	if m.client == nil || sessionID == "" {
 		return nil
 	}
-	ctx := context.Background()
-	saved, err := m.client.GetSession(ctx, m.sessionID)
+	saved, err := m.client.GetSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 	settings := saved.Settings
 	mutate(&settings)
-	return m.client.SetSessionSettings(ctx, m.sessionID, settings)
+	return m.client.SetSessionSettings(ctx, sessionID, settings)
 }
 
 // applyReasoningEffort persists and applies a reasoning-effort level.

@@ -230,6 +230,43 @@ func TestEnsureSessionCreatesOnceAndAppliesPendingChoices(t *testing.T) {
 	}
 }
 
+// A rejected draft-time choice must not leave an empty session behind, and the
+// pending values have to survive so a later attempt can still apply them.
+func TestEnsureSessionRollsBackRejectedDraftSettings(t *testing.T) {
+	client := newLazySessionTestCore(t)
+	m := newTUIModel(client, nil, "")
+	m.pendingTitle = "Deferred Title"
+	m.pendingModelProfile = "missing"
+
+	if err := m.ensureSession(context.Background()); err == nil {
+		t.Fatal("expected the unknown model profile to fail the draft creation")
+	}
+	if got := sessionCount(t, client); got != 0 {
+		t.Fatalf("failed draft creation left %d session(s) behind", got)
+	}
+	if m.sessionID != "" || m.runtime != nil {
+		t.Fatalf("failed draft creation stayed bound, sessionID=%q runtime=%v", m.sessionID, m.runtime)
+	}
+	if m.pendingTitle != "Deferred Title" || m.pendingModelProfile != "missing" {
+		t.Fatalf("pending choices were dropped, title=%q profile=%q", m.pendingTitle, m.pendingModelProfile)
+	}
+
+	m.pendingModelProfile = "fast"
+	if err := m.ensureSession(context.Background()); err != nil {
+		t.Fatalf("retry after fixing the profile: %v", err)
+	}
+	saved, err := client.GetSession(context.Background(), m.sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if saved.Title != "Deferred Title" || saved.Settings.ModelProfile != "fast" {
+		t.Fatalf("retry did not apply the deferred choices: %+v", saved.Settings)
+	}
+	if got := sessionCount(t, client); got != 1 {
+		t.Fatalf("expected one session after the retry, got %d", got)
+	}
+}
+
 func TestDraftSessionRejectsSessionCommands(t *testing.T) {
 	client := newLazySessionTestCore(t)
 	m := newTUIModel(client, nil, "")

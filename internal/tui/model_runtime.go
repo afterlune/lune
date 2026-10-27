@@ -169,35 +169,44 @@ func (m *tuiModel) ensureSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Write the deferred choices before anything binds the session. A failure here
+	// deletes the session and keeps the pending values, so the next attempt still
+	// applies them; binding first would silently drop them on later attempts.
+	if err := m.applyDraftSettings(ctx, created.ID, title, profile, effort); err != nil {
+		_ = m.client.DeleteSession(ctx, created.ID)
+		return err
+	}
 	if err := m.bindSessionRuntime(ctx, created.ID); err != nil {
 		_ = m.client.DeleteSession(ctx, created.ID)
 		return err
 	}
+	m.pendingTitle = ""
+	m.pendingModelProfile = ""
+	m.refreshViewportContent()
+	return nil
+}
 
+// applyDraftSettings stores the /title, model and effort choices made while the
+// session was still a draft. It runs before the session is bound, so a rejected
+// value cannot leave a half-applied session behind.
+func (m *tuiModel) applyDraftSettings(ctx context.Context, sessionID, title, profile, effort string) error {
 	if title != "" {
-		if err := m.client.SetSessionTitle(ctx, created.ID, title); err != nil {
-			return err
+		if err := m.client.SetSessionTitle(ctx, sessionID, title); err != nil {
+			return fmt.Errorf("apply session title: %w", err)
 		}
-		m.sessionTitle = title
-		m.pendingTitle = ""
 	}
 	if profile != "" {
-		if err := applySessionModelProfile(ctx, m.client, created.ID, profile); err != nil {
-			return err
+		if err := applySessionModelProfile(ctx, m.client, sessionID, profile); err != nil {
+			return fmt.Errorf("apply session model profile: %w", err)
 		}
-		m.pendingModelProfile = ""
-		m.currentModelProfile = profile
-		m.currentModel = m.client.ModelForSession(ctx, created.ID)
 	}
 	if effort != "" {
-		if err := m.mutateSessionSettings(func(settings *core.SessionSettings) {
+		if err := m.applySessionSettings(ctx, sessionID, func(settings *core.SessionSettings) {
 			settings.ReasoningEffort = effort
 		}); err != nil {
-			return err
+			return fmt.Errorf("apply session reasoning effort: %w", err)
 		}
-		m.reasoningEffort = effort
 	}
-	m.refreshViewportContent()
 	return nil
 }
 
