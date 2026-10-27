@@ -551,7 +551,6 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	}
 	t.Run("normal mode preserves current permissions", func(t *testing.T) {
 		m := newTUIModel(client, runtime, session.ID)
-		m.savedMode = core.PermissionReadOnly // Stale value from an earlier Plan mode.
 		m.activePlanReview = &ActivePlanReview{ExecutionID: "normal-plan", Text: "Inspect the project"}
 		_, cmd := m.resolveActivePlanReview()
 		if cmd == nil || m.planMode || m.activePlanReview != nil || m.permissionMode != core.PermissionAuto || client.PermissionMode() != core.PermissionAuto {
@@ -561,15 +560,11 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	m := newTUIModel(client, runtime, session.ID)
 	m.workspace = workspace
 	m.planMode = true
-	m.savedMode = core.PermissionAuto
-	if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-		t.Fatal(err)
-	}
-	m.permissionMode = core.PermissionReadOnly
+	m.permissionMode = core.PermissionAuto
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "1. Read code\n2. Run tests", Selected: 0}
 	_, cmd := m.resolveActivePlanReview()
 	if cmd == nil || m.activePlanReview != nil || m.planMode || m.permissionMode != core.PermissionAuto {
-		t.Fatal("plan implementation must dismiss review and restore the previous permission mode")
+		t.Fatal("plan implementation must dismiss review and preserve the current permission mode")
 	}
 	mod, planCmd := m.Update(planImplementedMsg{impl: core.PlanImplementation{Submission: core.TurnSubmission{ExecutionID: "implementation"}}, planText: "1. Read code\n2. Run tests"})
 	m = mod.(*tuiModel)

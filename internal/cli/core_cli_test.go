@@ -683,7 +683,7 @@ func runCLIWithOptions(t *testing.T, client cliCore, input string, watchKeys key
 func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	client := &fakeCLICore{}
 	var stdout, stderr bytes.Buffer
-	handleCoreCLIPermissions(client, false, "/permissions auto", &stdout, &stderr)
+	handleCoreCLIPermissions(client, "/permissions auto", &stdout, &stderr)
 	if client.PermissionMode() != core.PermissionAuto {
 		t.Fatalf("permission mode = %q, want auto", client.PermissionMode())
 	}
@@ -693,7 +693,7 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 
 	// The legacy ask alias is rejected instead of silently mapped to auto.
 	stderr.Reset()
-	handleCoreCLIPermissions(client, false, "/permissions ask", &stdout, &stderr)
+	handleCoreCLIPermissions(client, "/permissions ask", &stdout, &stderr)
 	if client.PermissionMode() != core.PermissionAuto {
 		t.Fatalf("permission mode = %q, want auto unchanged after a rejected alias", client.PermissionMode())
 	}
@@ -704,13 +704,13 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	// Any other value is rejected with the accepted modes instead of being
 	// forwarded to Core.
 	stderr.Reset()
-	handleCoreCLIPermissions(client, false, "/permissions nonsense", &stdout, &stderr)
+	handleCoreCLIPermissions(client, "/permissions nonsense", &stdout, &stderr)
 	if !strings.Contains(stderr.String(), "read-only, workspace, auto, full-access") {
 		t.Fatalf("stderr=%q, want the accepted modes listed", stderr.String())
 	}
 
 	stdout.Reset()
-	handleCoreCLIPermissions(client, false, "/permissions", &stdout, &stderr)
+	handleCoreCLIPermissions(client, "/permissions", &stdout, &stderr)
 	for _, mode := range []string{"read-only", "workspace", "auto", "full-access"} {
 		if !strings.Contains(stdout.String(), mode) {
 			t.Errorf("permission list %q does not contain %q", stdout.String(), mode)
@@ -718,9 +718,9 @@ func TestCLIPermissionsCommandSupportsAutoMode(t *testing.T) {
 	}
 
 	stderr.Reset()
-	handleCoreCLIPermissions(client, true, "/permissions full-access", &stdout, &stderr)
-	if !strings.Contains(stderr.String(), "Cannot change permissions while Plan mode is active") {
-		t.Fatalf("stderr=%q, want Plan mode lock error", stderr.String())
+	handleCoreCLIPermissions(client, "/permissions full-access", &stdout, &stderr)
+	if client.PermissionMode() != core.PermissionFullAccess || stderr.Len() != 0 {
+		t.Fatalf("mode=%q stderr=%q, want full-access", client.PermissionMode(), stderr.String())
 	}
 }
 
@@ -757,7 +757,7 @@ func TestCLIPermissionsTableKeepsFrontendsOnOneParser(t *testing.T) {
 		client := &fakeCLICore{}
 		initial := client.PermissionMode()
 		var stdout, stderr bytes.Buffer
-		handleCoreCLIPermissions(client, false, "/permissions "+raw, &stdout, &stderr)
+		handleCoreCLIPermissions(client, "/permissions "+raw, &stdout, &stderr)
 		if client.PermissionMode() != initial {
 			t.Fatalf("/permissions %s reached Core and changed it to %q", raw, client.PermissionMode())
 		}
@@ -1211,18 +1211,18 @@ func TestCLIStartupRejectsUnknownModelProfile(t *testing.T) {
 func TestCLIPlanMode(t *testing.T) {
 	client := &fakeCLICore{}
 	stdout, stderr := runCLI(t, client, "/plan\n/permissions workspace\n/plan\n/exit\n", nil)
-	if !strings.Contains(stdout, "Switched to Plan mode (permissions locked to read-only).") {
+	if !strings.Contains(stdout, "Switched to Plan mode (read-only tools).") {
 		t.Fatalf("stdout = %q, want Plan mode enter message", stdout)
 	}
-	if !strings.Contains(stderr, "Cannot change permissions while Plan mode is active.") {
-		t.Fatalf("stderr = %q, want Plan mode lock error", stderr)
+	if stderr != "" || client.PermissionMode() != core.PermissionWorkspace {
+		t.Fatalf("stderr = %q, permission = %q, want workspace", stderr, client.PermissionMode())
 	}
-	if !strings.Contains(stdout, "Exited Plan mode (permissions restored).") {
+	if !strings.Contains(stdout, "Exited Plan mode.") {
 		t.Fatalf("stdout = %q, want Plan mode exit message", stdout)
 	}
 }
 
-func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
+func TestCLIPlanModeDoesNotChangePermissions(t *testing.T) {
 	client := &fakeCLICore{mode: core.PermissionAuto, permissionErr: errors.New("permission store unavailable")}
 	var stdout, stderr bytes.Buffer
 	err := runCoreChatLoopWithOptions(client, bufio.NewReader(strings.NewReader("/plan\n/status\n/exit\n")), &stdout, &stderr, nil, LaunchOptions{PermissionMode: core.PermissionAuto})
@@ -1232,11 +1232,11 @@ func TestCLIPlanModePermissionFailureIsTransactional(t *testing.T) {
 	if client.PermissionMode() != core.PermissionAuto {
 		t.Fatalf("permission mode changed after rejected Plan transition: %s", client.PermissionMode())
 	}
-	if !strings.Contains(stderr.String(), "error: enter Plan mode: permission store unavailable") {
-		t.Fatalf("stderr = %q, want permission failure", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Permissions: auto (Plan mode: false)") {
-		t.Fatalf("stdout = %q, want original mode and Plan state", stdout.String())
+	if !strings.Contains(stdout.String(), "Permissions: auto (Plan mode: true)") {
+		t.Fatalf("stdout = %q, want original permissions in Plan mode", stdout.String())
 	}
 }
 

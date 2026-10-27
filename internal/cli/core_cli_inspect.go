@@ -15,7 +15,7 @@ import (
 	"github.com/afterlune/luneCore/memory"
 )
 
-func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout, stderr io.Writer) {
+func handleCoreCLIPermissions(client cliCore, line string, stdout, stderr io.Writer) {
 	fields := strings.Fields(line)
 	if len(fields) == 1 {
 		mode := client.PermissionMode()
@@ -24,10 +24,6 @@ func handleCoreCLIPermissions(client cliCore, planMode bool, line string, stdout
 	}
 	if len(fields) != 2 {
 		fmt.Fprintf(stderr, "usage: /permissions [%s]\n", strings.Join(slashcmd.PermissionModeNames(), "|"))
-		return
-	}
-	if planMode {
-		fmt.Fprintln(stderr, "Cannot change permissions while Plan mode is active.")
 		return
 	}
 	mode, err := slashcmd.ParsePermissionMode(fields[1])
@@ -230,9 +226,6 @@ func handleCoreCLIContext(client cliCore, sessionID, sessionTitle string, planMo
 	fmt.Fprintln(stdout, "Workspace & Permissions:")
 	fmt.Fprintf(stdout, "  Directory:   %s\n", workspace)
 	permStr := string(mode)
-	if planMode {
-		permStr += " (Plan mode locked)"
-	}
 	fmt.Fprintf(stdout, "  Permissions: %s\n", permStr)
 
 	ruleFiles := []string{"AGENTS.md", "CLAUDE.md"}

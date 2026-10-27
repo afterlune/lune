@@ -99,23 +99,13 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	}
 
 	// Apply permission mode if provided
-	savedMode := client.PermissionMode()
 	if opts.PermissionMode != "" {
 		if err := client.SetPermissionMode(opts.PermissionMode); err != nil {
 			return fmt.Errorf("set permission mode: %w", err)
 		}
-		savedMode = opts.PermissionMode
 	} else {
 		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
 			return fmt.Errorf("set default terminal permission mode: %w", err)
-		}
-		savedMode = core.PermissionFullAccess
-	}
-
-	// Apply plan mode if provided
-	if opts.PlanMode {
-		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-			return fmt.Errorf("set Plan mode permissions: %w", err)
 		}
 	}
 
@@ -153,8 +143,6 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	}
 	if opts.PlanMode {
 		model.planMode = true
-		model.savedMode = savedMode
-		model.permissionMode = core.PermissionReadOnly
 	}
 	if opts.ModelProfile != "" && sessionID != "" {
 		model.currentModel = client.ModelForSession(ctx, sessionID)

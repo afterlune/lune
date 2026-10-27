@@ -350,17 +350,17 @@ func TestModelUpdateKeys(t *testing.T) {
 	m.height = 30
 	m.updateLayout()
 
-	// Shift+Tab toggles Plan mode and locks permissions to read-only.
+	// Shift+Tab toggles Plan mode while preserving permissions.
 	normalMode := m.permissionMode
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
-	if !m.planMode || m.permissionMode != core.PermissionReadOnly {
-		t.Fatalf("expected Shift+Tab to enter Plan mode with read-only permissions, plan=%v permission=%s", m.planMode, m.permissionMode)
+	if !m.planMode || m.permissionMode != normalMode {
+		t.Fatalf("expected Shift+Tab to preserve permissions in Plan mode, plan=%v permission=%s", m.planMode, m.permissionMode)
 	}
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
 	if m.planMode || m.permissionMode != normalMode {
-		t.Fatalf("expected Shift+Tab to exit Plan mode and restore %s, plan=%v permission=%s", normalMode, m.planMode, m.permissionMode)
+		t.Fatalf("expected Shift+Tab to exit Plan mode and keep %s, plan=%v permission=%s", normalMode, m.planMode, m.permissionMode)
 	}
 
 	// Autocomplete trigger
@@ -693,7 +693,7 @@ func TestTranscriptFromHistory(t *testing.T) {
 func TestSystemMarkdownRendering(t *testing.T) {
 	entry := TranscriptEntry{
 		Kind: KindSystem,
-		Text: "Switched to **Plan mode** (permissions locked to Read-only).",
+		Text: "Switched to **Plan mode** (read-only tools).",
 	}
 	rendered := renderEntry(entry, 80)
 	if strings.Contains(rendered, "**") {

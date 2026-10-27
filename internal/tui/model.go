@@ -43,7 +43,6 @@ type tuiModel struct {
 	pendingModelProfile string
 	permissionMode      core.PermissionMode
 	planMode            bool
-	savedMode           core.PermissionMode
 	width               int
 	height              int
 	overlayMaxRows      int
@@ -116,9 +115,9 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 		client: client, runtime: runtime, workspace: workspace, sessionID: sessionID,
 		currentModel: currentModel, currentModelProfile: currentModel,
 		reasoningEffort: settings.DefaultReasoningEffort,
-		permissionMode:  permMode, savedMode: permMode,
-		input:    composerState{composer: comp, scanner: filemention.NewScanner(workspace)},
-		viewport: vp, entries: []TranscriptEntry{},
+		permissionMode:  permMode,
+		input:           composerState{composer: comp, scanner: filemention.NewScanner(workspace)},
+		viewport:        vp, entries: []TranscriptEntry{},
 		view:         viewCache{transcriptDirty: true},
 		run:          newRunState(),
 		agentMetrics: map[string]*agentRuntimeMetrics{},

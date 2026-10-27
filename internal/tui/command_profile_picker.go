@@ -69,10 +69,6 @@ func (m *tuiModel) openPermissionPicker() (tea.Model, tea.Cmd) {
 		m.addSystemEntry("Permission management is unavailable.")
 		return m, nil
 	}
-	if m.planMode {
-		m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
-		return m, nil
-	}
 	selected := 0
 	for i, mode := range permissionModes {
 		if mode == m.permissionMode {

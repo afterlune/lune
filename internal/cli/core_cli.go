@@ -188,25 +188,17 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 	}
 
 	// Apply permission mode if provided
-	savedPermissionMode := client.PermissionMode()
 	if opts.PermissionMode != "" {
 		if err := client.SetPermissionMode(opts.PermissionMode); err != nil {
 			return fmt.Errorf("set permission mode: %w", err)
 		}
-		savedPermissionMode = opts.PermissionMode
 	} else {
 		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
 			return fmt.Errorf("set default terminal permission mode: %w", err)
 		}
-		savedPermissionMode = core.PermissionFullAccess
 	}
 
 	planMode := opts.PlanMode
-	if planMode {
-		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-			return fmt.Errorf("set Plan mode permissions: %w", err)
-		}
-	}
 
 	var runtime cliRuntime
 	if sessionID != "" {
@@ -355,21 +347,11 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 						}
 					}
 				}
-				previousMode := client.PermissionMode()
-				if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-					fmt.Fprintf(stderr, "error: enter Plan mode: %v\n", err)
-					continue
-				}
-				savedPermissionMode = previousMode
 				planMode = true
-				fmt.Fprintln(stdout, "Switched to Plan mode (permissions locked to read-only).")
+				fmt.Fprintln(stdout, "Switched to Plan mode (read-only tools).")
 			} else {
-				if err := client.SetPermissionMode(savedPermissionMode); err != nil {
-					fmt.Fprintf(stderr, "error: exit Plan mode: %v\n", err)
-					continue
-				}
 				planMode = false
-				fmt.Fprintln(stdout, "Exited Plan mode (permissions restored).")
+				fmt.Fprintln(stdout, "Exited Plan mode.")
 			}
 		case line == "/status":
 			handleCoreCLIStatus(client, cliSessionLabel(sessionID), sessionTitle, planMode, stdout)
@@ -462,7 +444,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				}
 			}
 		case line == "/permissions" || strings.HasPrefix(line, "/permissions "):
-			handleCoreCLIPermissions(client, planMode, line, stdout, stderr)
+			handleCoreCLIPermissions(client, line, stdout, stderr)
 		case line == "/toolchains" || strings.HasPrefix(line, "/toolchains "):
 			handleCoreCLIToolchains(client, line, stdout, stderr)
 		case line == "/compact":

@@ -246,7 +246,7 @@ func TestCancelPlanReviewKeepsPlanModeAndPlan(t *testing.T) {
 	plan := "1. Inspect the implementation\n2. Run focused tests"
 	m := newTUIModel(nil, nil, "plan-cancel")
 	m.planMode = true
-	m.permissionMode = core.PermissionReadOnly
+	m.permissionMode = core.PermissionAuto
 	m.entries = []TranscriptEntry{{Kind: KindPlan, Text: plan}}
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: plan, Selected: 2}
 
@@ -255,8 +255,8 @@ func TestCancelPlanReviewKeepsPlanModeAndPlan(t *testing.T) {
 	if m.activePlanReview != nil {
 		t.Fatal("cancel should close the plan review card")
 	}
-	if !m.planMode || m.permissionMode != core.PermissionReadOnly {
-		t.Fatalf("cancel should keep Plan mode and read-only permission, plan=%v permission=%q", m.planMode, m.permissionMode)
+	if !m.planMode || m.permissionMode != core.PermissionAuto {
+		t.Fatalf("cancel should keep Plan mode and the selected permission, plan=%v permission=%q", m.planMode, m.permissionMode)
 	}
 	if len(m.entries) < 2 || m.entries[0].Text != plan || !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "continue discussing") {
 		t.Fatalf("expected original plan and continuation guidance to remain in transcript: %#v", m.entries)
@@ -266,12 +266,12 @@ func TestCancelPlanReviewKeepsPlanModeAndPlan(t *testing.T) {
 func TestEscapePlanReviewKeepsPlanMode(t *testing.T) {
 	m := newTUIModel(nil, nil, "plan-escape")
 	m.planMode = true
-	m.permissionMode = core.PermissionReadOnly
+	m.permissionMode = core.PermissionFullAccess
 	m.activePlanReview = &ActivePlanReview{ExecutionID: "plan-review", Text: "Keep planning", Selected: 0}
 
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc}))
 	m = mod.(*tuiModel)
-	if m.activePlanReview != nil || !m.planMode || m.permissionMode != core.PermissionReadOnly {
+	if m.activePlanReview != nil || !m.planMode || m.permissionMode != core.PermissionFullAccess {
 		t.Fatalf("Esc should close only the review card, review=%v plan=%v permission=%q", m.activePlanReview, m.planMode, m.permissionMode)
 	}
 	if !strings.Contains(strings.ToLower(m.entries[len(m.entries)-1].Text), "continue discussing") {
@@ -298,22 +298,31 @@ func TestShiftTabTogglesPlanModeWithGuards(t *testing.T) {
 
 	mod, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
-	if !m.planMode || m.permissionMode != core.PermissionReadOnly || client.PermissionMode() != core.PermissionReadOnly {
-		t.Fatalf("Shift+Tab should enter Plan mode with read-only permissions, plan=%v model=%s client=%s", m.planMode, m.permissionMode, client.PermissionMode())
-	}
-	if m.savedMode != normalMode {
-		t.Fatalf("expected saved permission %s, got %s", normalMode, m.savedMode)
+	if !m.planMode || m.permissionMode != normalMode || client.PermissionMode() != normalMode {
+		t.Fatalf("Shift+Tab should preserve permissions in Plan mode, plan=%v model=%s client=%s", m.planMode, m.permissionMode, client.PermissionMode())
 	}
 
 	m.handleSlashCommand("/permissions")
-	if m.modals.permission != nil {
-		t.Fatal("permissions picker must stay unavailable while Plan mode is active")
+	if m.modals.permission == nil {
+		t.Fatal("permissions picker must remain available while Plan mode is active")
+	}
+	m.modals.permission.Selected = 2
+	m.handleProfilePickerKeyPress("enter")
+	if m.permissionMode != core.PermissionAuto || client.PermissionMode() != core.PermissionAuto {
+		t.Fatal("permission picker did not change permissions in Plan mode")
+	}
+	if status := m.renderStatusTable(); !strings.Contains(status, "Permissions:    auto") || !strings.Contains(status, "Plan mode:      true") {
+		t.Fatalf("status did not show independent permissions and Plan mode: %s", status)
+	}
+	m.handleSlashCommand("/permissions full-access")
+	if m.permissionMode != core.PermissionFullAccess || client.PermissionMode() != core.PermissionFullAccess {
+		t.Fatal("direct permission command did not change permissions in Plan mode")
 	}
 
 	mod, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	m = mod.(*tuiModel)
-	if m.planMode || m.permissionMode != normalMode || client.PermissionMode() != normalMode {
-		t.Fatalf("Shift+Tab should exit Plan mode and restore %s, plan=%v model=%s client=%s", normalMode, m.planMode, m.permissionMode, client.PermissionMode())
+	if m.planMode || m.permissionMode != core.PermissionFullAccess || client.PermissionMode() != core.PermissionFullAccess {
+		t.Fatalf("Shift+Tab should keep the current permissions, plan=%v model=%s client=%s", m.planMode, m.permissionMode, client.PermissionMode())
 	}
 
 	m.run.running = true

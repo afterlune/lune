@@ -46,13 +46,6 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 		}
 	}
 
-	// Apply plan mode if provided
-	if flags.PlanMode {
-		if err := client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-			return fmt.Errorf("set Plan mode permissions: %w", err)
-		}
-	}
-
 	// Open session runtime
 	runtime, err := client.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {

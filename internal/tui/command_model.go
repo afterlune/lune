@@ -21,8 +21,7 @@ func (m *tuiModel) handlePlanCommand(parts []string) (tea.Model, tea.Cmd) {
 	return m.togglePlanMode()
 }
 
-// togglePlanMode switches between normal and Plan mode. Plan mode locks tool
-// permissions to read-only and restores the previous mode when it ends.
+// togglePlanMode switches between normal and Plan mode without changing permissions.
 func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 	if m.client == nil {
 		m.addSystemEntry("Plan mode is unavailable without a Core client.")
@@ -42,15 +41,9 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 	}
 
 	if m.planMode {
-		if err := m.client.SetPermissionMode(m.savedMode); err != nil {
-			m.addSystemEntry("Failed to restore permissions; Plan mode remains active: " + err.Error())
-			return m, nil
-		}
 		m.planMode = false
-		m.permissionMode = m.savedMode
-		m.addSystemEntry("Exited **Plan mode** (permissions restored).")
+		m.addSystemEntry("Exited **Plan mode**.")
 	} else {
-		savedMode := m.client.PermissionMode()
 		if m.runtime != nil {
 			if goal, err := m.runtime.GetGoal(context.Background()); err == nil && goal != nil && goal.Status == core.GoalActive {
 				if _, err := m.runtime.PauseGoal(context.Background()); err != nil {
@@ -60,14 +53,8 @@ func (m *tuiModel) togglePlanMode() (tea.Model, tea.Cmd) {
 				m.refreshGoal()
 			}
 		}
-		if err := m.client.SetPermissionMode(core.PermissionReadOnly); err != nil {
-			m.addSystemEntry("Failed to enter Plan mode: " + err.Error())
-			return m, nil
-		}
-		m.savedMode = savedMode
-		m.permissionMode = core.PermissionReadOnly
 		m.planMode = true
-		m.addSystemEntry("Switched to **Plan mode** (permissions locked to Read-only).")
+		m.addSystemEntry("Switched to **Plan mode** (read-only tools).")
 	}
 	m.input.autocompleteOpen = false
 	m.updateLayout()
@@ -86,9 +73,7 @@ func (m *tuiModel) handlePermissionsCommand(parts []string) (tea.Model, tea.Cmd)
 			m.addSystemEntry("Unknown permission mode. Choose: `" + strings.Join(slashcmd.PermissionModeNames(), "`, `") + "`.")
 			return m, nil
 		}
-		if m.planMode {
-			m.addSystemEntry("Cannot change permissions while **Plan mode** is active.")
-		} else if err := m.client.SetPermissionMode(mode); err != nil {
+		if err := m.client.SetPermissionMode(mode); err != nil {
 			m.addSystemEntry("Failed to set permission mode: " + err.Error())
 		} else {
 			m.permissionMode = mode

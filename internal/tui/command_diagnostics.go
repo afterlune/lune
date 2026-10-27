@@ -20,9 +20,6 @@ func (m *tuiModel) renderStatusTable() string {
 		modelName = "<default>"
 	}
 	permStr := string(m.permissionMode)
-	if m.planMode {
-		permStr += " (Plan mode locked)"
-	}
 	title := m.sessionTitle
 	if title == "" {
 		title = "<none>"
@@ -40,6 +37,7 @@ func (m *tuiModel) renderStatusTable() string {
 		fmt.Sprintf("Reasoning Effort: %s", effort),
 		fmt.Sprintf("Directory:      %s", m.workspace),
 		fmt.Sprintf("Permissions:    %s", permStr),
+		fmt.Sprintf("Plan mode:      %t", m.planMode),
 		fmt.Sprintf("Thread name:    %s", title),
 		fmt.Sprintf("Session:        %s", sessionLabel),
 		fmt.Sprintf("Theme:          %s", CurrentThemeMode()),
@@ -133,9 +131,6 @@ func (m *tuiModel) renderContextDiagnostics() string {
 		ws = m.client.Workspace()
 	}
 	permStr := string(m.permissionMode)
-	if m.planMode {
-		permStr += " (Plan mode locked)"
-	}
 	lines = append(lines, "**Workspace & Permissions:**")
 	lines = append(lines, fmt.Sprintf("- Directory: `%s`", ws))
 	lines = append(lines, fmt.Sprintf("- Permissions: `%s`", permStr))
