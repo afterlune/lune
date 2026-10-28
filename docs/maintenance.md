@@ -20,7 +20,7 @@ Windows 上的 vet 仅关闭 `unsafeptr` 分析器：ConPTY 测试按 Win32 API 
 `gofmt -w` 只用于主动格式化；CI 通过 `gofmt -l` 检查格式，不会改写文件。若本机同时检出 luneCore，可单独运行其测试：
 
 ```powershell
-go -C ..\luneCore test -trimpath ./...
+go -C ..\luneCore test -trimpath -count=1 -p 1 ./...
 ```
 
 Linux CI 运行 CLI/TUI 支持包测试（`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`），并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。Linux 本机运行 `./scripts/build-linux.sh` 会默认使用 `go.mod` 固定的 luneCore 版本，在 `bin/` 生成本机程序，并在 `bin/linux-amd64`、`bin/linux-arm64` 生成对应交叉构建产物；需要联调本地 luneCore 时，可显式设置 `GOWORK`。如果 Go 不在 `PATH`，可通过 `GO=/path/to/go` 或 `GOROOT=/path/to/go-root` 指定安装位置。Linux 上验证 CLI/TUI 改动时无需构建或测试 `internal/desktop`；该包需要 GTK4、WebKitGTK 6、GLib 和 libsoup 开发依赖，只有涉及 Desktop 的改动才按下方桌面端流程验证。
@@ -106,3 +106,9 @@ exec /opt/lune/bin/lune "$@"
 `internal/tui` 的状态所有权边界：`usage.go` 管会话用量与上下文窗口，`view_cache.go` 管转录渲染缓存与脏标记，`modal_state.go` 管互斥的模态浮层与优先级，`composer_state.go` 管输入框、补全、历史、选区与复制反馈，`run_state.go` 管任务运行态（运行标志、Core 任务快照、队列、流式缓冲与载入冻结）；`tuiModel` 只保留跨域状态（会话身份、任务交互卡片、注意力提醒与主题设置）。新增字段先决定归属，再决定放哪个文件。斜杠命令的名称、帮助文案、目标前端、是否需要会话与运行中可用性统一放在无 UI 依赖的 `internal/slashcmd`，两个前端只保留命令派发与子命令特例。
 
 当前边界如下：`internal/cli/core_cli.go` 保留 TUI 命令入口与调度；CLI 执行、授权、状态查询、进程操作、会话操作和项目集成各有独立文件。`internal/settings/store.go` 负责 SQLite 初始化与通用设置访问，模型、外观、工作区配置和恢复状态各自持久化。`internal/desktop/workspace_lifecycle.go` 管理工作区生命周期，会话搜索位于 `workspace_search.go`。`internal/tui` 保留共享 `tuiModel` 的交互协调；工作区文件提及和 Markdown／计划标签处理分别位于独立子包，渲染主题通过调色板参数传入。桌面前端的 `desktopState.svelte.ts` 协调对话与会话；执行活动、桌面进程、设置和共享类型分别由相邻模块持有。新增职责优先归入对应模块；若需要跨模块传递大量可变状态，应先收敛状态所有权，而不是只移动函数。
+
+## 安全检查与命令测试
+
+Core CI 固定使用 `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`，升级 Go 时同步验证分析器能识别新语法。Linux 上单独运行 Core 全量验证时使用 `GOWORK=off`，并运行 `go test -race -trimpath -p 1 ./internal/runtime ./internal/tool ./internal/command ./internal/mcp`。沙箱集成测试自动构建带 `-trimpath` 的 helper，并为 Go 工具链授权完整安装根目录。
+
+A2A 的权限、远程部署和交互合同见 [A2A 服务](a2a.md)。

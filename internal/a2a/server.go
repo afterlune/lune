@@ -4,15 +4,14 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 // SessionRuntime abstracts the Lune session runtime operations needed by the A2A server.
@@ -21,7 +20,12 @@ type SessionRuntime interface {
 	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
 	WaitTurn(context.Context, string) (core.TurnResult, error)
 	PendingRequests(context.Context) ([]core.PendingRequest, error)
-	ResolveApproval(string, bool) error
+	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
+	State(context.Context) (core.RuntimeState, error)
+	Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error)
+	DiscardPaused(context.Context) (bool, error)
+	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
+	ResolveUserInteraction(string, json.RawMessage) error
 	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
 	Interrupt(string) bool
 	SetUserInteractionAvailable(bool)
@@ -30,6 +34,7 @@ type SessionRuntime interface {
 // Backend abstracts session creation and runtime opening on top of core.Core.
 type Backend interface {
 	CreateSession(context.Context, json.RawMessage) (core.Session, error)
+	GetSession(context.Context, string) (core.Session, error)
 	OpenSessionRuntime(context.Context, string) (SessionRuntime, error)
 }
 
@@ -50,38 +55,48 @@ func (b *coreBackend) OpenSessionRuntime(ctx context.Context, sessionID string) 
 	return b.client.OpenSessionRuntime(ctx, sessionID)
 }
 
-type waitOutcome struct {
-	result core.TurnResult
-	err    error
+func (b *coreBackend) GetSession(ctx context.Context, id string) (core.Session, error) {
+	return b.client.GetSession(ctx, id)
 }
 
 type managedTask struct {
-	mu          sync.Mutex
-	id          string
-	contextID   string
-	sessionID   string
-	executionID string
-	state       string
-	runtime     SessionRuntime
-	pending     *core.PendingRequest
-	statusText  string
-	statusData  map[string]any
-	outputText  string
-	waitCh      chan waitOutcome
+	mu              sync.Mutex
+	opMu            sync.Mutex
+	id              string
+	contextID       string
+	sessionID       string
+	executionID     string
+	state           string
+	runtime         SessionRuntime
+	pending         *core.PendingRequest
+	statusText      string
+	statusData      map[string]any
+	outputText      string
+	changed         chan struct{}
+	finishedAt      time.Time
+	toolDecision    string
+	cancelRequested bool
 }
 
 // Server exposes Lune SessionRuntime over the A2A 1.0 JSON-RPC + Agent Card HTTP endpoints.
 type Server struct {
-	backend Backend
-	token   string
-	seq     atomic.Uint64
-	mu      sync.RWMutex
-	tasks   map[string]*managedTask
+	backend      Backend
+	token        string
+	mu           sync.RWMutex
+	tasks        map[string]*managedTask
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	closed       bool
+	now          func() time.Time
+	responseWait time.Duration
 }
 
 // NewServer constructs an A2A HTTP Server for Lune.
 func NewServer(backend Backend, token string) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
+		ctx: ctx, cancel: cancel, now: time.Now, responseWait: 15 * time.Second,
 		backend: backend,
 		token:   strings.TrimSpace(token),
 		tasks:   make(map[string]*managedTask),
@@ -89,6 +104,15 @@ func NewServer(backend Backend, token string) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		s.mu.RLock()
+		closed := s.closed
+		s.mu.RUnlock()
+		if closed {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "server is closing"})
+			return
+		}
+	}
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == "/.well-known/agent-card.json" || r.URL.Path == "/agent-card.json"):
 		s.handleAgentCard(w, r)
@@ -146,7 +170,7 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 		"capabilities": map[string]any{
 			"streaming":              false,
 			"pushNotifications":      false,
-			"stateTransitionHistory": true,
+			"stateTransitionHistory": false,
 			"cancellation":           true,
 		},
 		"defaultInputModes":  []string{"text/plain", "application/json"},
@@ -254,211 +278,58 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, ctx context.Context, r
 		writeRPCError(w, req.ID, -32602, "invalid SendMessage params")
 		return
 	}
-	text, dataPart := params.Message.extractInput()
-	if text == "" && len(dataPart) == 0 {
+	text, data := params.Message.extractInput()
+	if text == "" && len(data) == 0 {
 		writeRPCError(w, req.ID, -32602, "message parts must include text or data")
 		return
 	}
-
-	if taskID := params.Message.effectiveTaskID(); taskID != "" {
-		s.mu.RLock()
-		task := s.tasks[taskID]
-		s.mu.RUnlock()
+	if id := params.Message.effectiveTaskID(); id != "" {
+		dataParts := 0
+		for _, p := range params.Message.Parts {
+			if len(p.Data) > 0 {
+				dataParts++
+			}
+		}
+		if dataParts > 1 {
+			writeRPCError(w, req.ID, -32602, "continuation requires one data object")
+			return
+		}
+		task := s.findTask(id)
 		if task == nil {
 			writeRPCError(w, req.ID, -32001, "task not found")
 			return
 		}
-		if err := s.resumeTaskInput(ctx, task, text, dataPart); err != nil {
+		if err := s.resumeTaskInput(ctx, task, text, data); err != nil {
 			writeRPCError(w, req.ID, -32002, err.Error())
 			return
 		}
+		s.awaitTask(ctx, task)
 		writeRPCResult(w, req.ID, map[string]any{"task": s.snapshotTask(task)})
 		return
 	}
-
-	sess, err := s.backend.CreateSession(ctx, json.RawMessage("null"))
+	// Preserve every initial part in order. JSON is user content, never control input.
+	var parts []string
+	for _, part := range params.Message.Parts {
+		if strings.TrimSpace(part.Text) != "" {
+			parts = append(parts, part.Text)
+		}
+		if len(part.Data) > 0 {
+			encoded, _ := json.Marshal(part.Data)
+			parts = append(parts, "Structured data (JSON):\n"+string(encoded))
+		}
+	}
+	input, err := core.ParseTaskInput(strings.Join(parts, "\n\n"))
 	if err != nil {
-		writeRPCError(w, req.ID, -32000, fmt.Sprintf("create session: %v", err))
+		writeRPCError(w, req.ID, -32602, err.Error())
 		return
 	}
-	rt, err := s.backend.OpenSessionRuntime(ctx, sess.ID)
+	task, err := s.submitTask(ctx, params.Message.effectiveContextID(), input)
 	if err != nil {
-		writeRPCError(w, req.ID, -32000, fmt.Sprintf("open session runtime: %v", err))
+		writeRPCError(w, req.ID, -32002, err.Error())
 		return
 	}
-	rt.SetUserInteractionAvailable(true)
-
-	input, err := core.ParseTaskInput(text)
-	if err != nil {
-		_ = rt.Close()
-		writeRPCError(w, req.ID, -32602, fmt.Sprintf("parse task input: %v", err))
-		return
-	}
-	sub, err := rt.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)
-	if err != nil {
-		_ = rt.Close()
-		writeRPCError(w, req.ID, -32000, fmt.Sprintf("submit turn: %v", err))
-		return
-	}
-
-	taskID := fmt.Sprintf("lune-task-%d", s.seq.Add(1))
-	contextID := params.Message.effectiveContextID()
-	if contextID == "" {
-		contextID = sess.ID
-	}
-	task := &managedTask{
-		id:          taskID,
-		contextID:   contextID,
-		sessionID:   sess.ID,
-		executionID: sub.ExecutionID,
-		state:       "TASK_STATE_WORKING",
-		runtime:     rt,
-		waitCh:      make(chan waitOutcome, 1),
-	}
-	s.mu.Lock()
-	s.tasks[taskID] = task
-	s.mu.Unlock()
-
-	go func() {
-		res, waitErr := rt.WaitTurn(context.Background(), sub.ExecutionID)
-		task.waitCh <- waitOutcome{result: res, err: waitErr}
-	}()
-
-	s.advanceTask(ctx, task)
+	s.awaitTask(ctx, task)
 	writeRPCResult(w, req.ID, map[string]any{"task": s.snapshotTask(task)})
-}
-
-func (s *Server) resumeTaskInput(ctx context.Context, task *managedTask, text string, dataPart map[string]any) error {
-	task.mu.Lock()
-	if task.state != "TASK_STATE_INPUT_REQUIRED" || task.pending == nil {
-		task.mu.Unlock()
-		return errors.New("task is not waiting for user input")
-	}
-	pending := *task.pending
-	task.pending = nil
-	task.statusText = ""
-	task.statusData = nil
-	task.state = "TASK_STATE_WORKING"
-	rt := task.runtime
-	task.mu.Unlock()
-
-	switch pending.Kind {
-	case core.PendingApproval:
-		if pending.Approval == nil {
-			return errors.New("pending approval missing payload")
-		}
-		allowed := parseApprovalDecision(text, dataPart)
-		if err := rt.ResolveApproval(pending.Approval.ID, allowed); err != nil {
-			return fmt.Errorf("resolve approval: %w", err)
-		}
-	case core.PendingUserQuestion:
-		if pending.UserQuestion == nil {
-			return errors.New("pending user question missing payload")
-		}
-		answer := buildUserQuestionAnswer(*pending.UserQuestion, text, dataPart)
-		if err := rt.ResolveUserQuestion(ctx, answer); err != nil {
-			return fmt.Errorf("resolve user question: %w", err)
-		}
-	default:
-		return fmt.Errorf("unsupported pending request kind %q", pending.Kind)
-	}
-
-	s.advanceTask(ctx, task)
-	return nil
-}
-
-func (s *Server) advanceTask(ctx context.Context, task *managedTask) {
-	ticker := time.NewTicker(15 * time.Millisecond)
-	defer ticker.Stop()
-	timeout := time.NewTimer(15 * time.Second)
-	defer timeout.Stop()
-
-	for {
-		select {
-		case outcome := <-task.waitCh:
-			s.finalizeTaskOutcome(ctx, task, outcome)
-			return
-		case <-ticker.C:
-			reqs, err := task.runtime.PendingRequests(ctx)
-			if err == nil && len(reqs) > 0 {
-				s.parkTaskOnPending(task, reqs[0])
-				return
-			}
-		case <-timeout.C:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *Server) finalizeTaskOutcome(ctx context.Context, task *managedTask, outcome waitOutcome) {
-	if outcome.result.Status == core.TaskPaused {
-		reqs, err := task.runtime.PendingRequests(ctx)
-		if err == nil && len(reqs) > 0 {
-			s.parkTaskOnPending(task, reqs[0])
-			return
-		}
-	}
-	task.mu.Lock()
-	defer task.mu.Unlock()
-	switch {
-	case outcome.result.Status == core.TaskCancelled || errors.Is(outcome.err, context.Canceled):
-		task.state = "TASK_STATE_CANCELED"
-		task.statusText = "Task canceled"
-	case outcome.err != nil || outcome.result.Status == core.TaskFailed:
-		task.state = "TASK_STATE_FAILED"
-		if outcome.err != nil {
-			task.statusText = outcome.err.Error()
-		} else {
-			task.statusText = "Task failed"
-		}
-	default:
-		task.state = "TASK_STATE_COMPLETED"
-		task.outputText = extractTurnOutputText(outcome.result.Response)
-	}
-	_ = task.runtime.Close()
-}
-
-func (s *Server) parkTaskOnPending(task *managedTask, req core.PendingRequest) {
-	task.mu.Lock()
-	defer task.mu.Unlock()
-	reqCopy := req
-	task.pending = &reqCopy
-	task.state = "TASK_STATE_INPUT_REQUIRED"
-	switch req.Kind {
-	case core.PendingApproval:
-		toolName := ""
-		approvalID := ""
-		if req.Approval != nil {
-			toolName = req.Approval.Tool
-			approvalID = req.Approval.ID
-		}
-		task.statusText = fmt.Sprintf("Approval required for tool %q (ID: %s)", toolName, approvalID)
-		task.statusData = map[string]any{
-			"kind":        "approval",
-			"approval_id": approvalID,
-			"tool":        toolName,
-		}
-	case core.PendingUserQuestion:
-		prompt := "User question requires an answer"
-		callID := ""
-		if req.UserQuestion != nil {
-			callID = req.UserQuestion.CallID
-			if len(req.UserQuestion.Questions) > 0 {
-				prompt = req.UserQuestion.Questions[0].Question
-			}
-		}
-		task.statusText = prompt
-		task.statusData = map[string]any{
-			"kind":    "user_question",
-			"call_id": callID,
-			"prompt":  prompt,
-		}
-	default:
-		task.statusText = fmt.Sprintf("Paused on %s", req.Kind)
-		task.statusData = map[string]any{"kind": string(req.Kind)}
-	}
 }
 
 type taskIDParams struct {
@@ -471,9 +342,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, _ context.Context, req rpc
 		writeRPCError(w, req.ID, -32602, "invalid GetTask params")
 		return
 	}
-	s.mu.RLock()
-	task := s.tasks[params.ID]
-	s.mu.RUnlock()
+	task := s.findTask(params.ID)
 	if task == nil {
 		writeRPCError(w, req.ID, -32001, "task not found")
 		return
@@ -481,30 +350,22 @@ func (s *Server) handleGetTask(w http.ResponseWriter, _ context.Context, req rpc
 	writeRPCResult(w, req.ID, s.snapshotTask(task))
 }
 
-func (s *Server) handleCancelTask(w http.ResponseWriter, _ context.Context, req rpcRequest) {
+func (s *Server) handleCancelTask(w http.ResponseWriter, ctx context.Context, req rpcRequest) {
 	var params taskIDParams
-	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == "" {
+	if json.Unmarshal(req.Params, &params) != nil || params.ID == "" {
 		writeRPCError(w, req.ID, -32602, "invalid CancelTask params")
 		return
 	}
-	s.mu.RLock()
-	task := s.tasks[params.ID]
-	s.mu.RUnlock()
+	task := s.findTask(params.ID)
 	if task == nil {
 		writeRPCError(w, req.ID, -32001, "task not found")
 		return
 	}
-	task.mu.Lock()
-	execID := task.executionID
-	rt := task.runtime
-	task.state = "TASK_STATE_CANCELED"
-	task.statusText = "Task canceled by client"
-	task.pending = nil
-	task.mu.Unlock()
-	if rt != nil && execID != "" {
-		rt.Interrupt(execID)
-		_ = rt.Close()
+	if err := s.cancelTask(ctx, task); err != nil {
+		writeRPCError(w, req.ID, -32002, err.Error())
+		return
 	}
+	s.awaitTerminal(ctx, task)
 	writeRPCResult(w, req.ID, s.snapshotTask(task))
 }
 
@@ -542,24 +403,6 @@ func (s *Server) snapshotTask(task *managedTask) map[string]any {
 		"contextId": task.contextID,
 		"status":    status,
 		"artifacts": artifacts,
-	}
-}
-
-func parseApprovalDecision(text string, data map[string]any) bool {
-	if data != nil {
-		if v, ok := data["approved"].(bool); ok {
-			return v
-		}
-		if v, ok := data["allowed"].(bool); ok {
-			return v
-		}
-	}
-	normalized := strings.ToLower(strings.TrimSpace(text))
-	switch normalized {
-	case "y", "yes", "true", "1", "approve", "approved", "allow", "allowed", "同意", "允许", "确认", "通过":
-		return true
-	default:
-		return false
 	}
 }
 

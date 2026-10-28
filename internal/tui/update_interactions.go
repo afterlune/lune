@@ -163,7 +163,7 @@ func (m *tuiModel) approveWithoutCard(request core.ApprovalRequest) bool {
 	if _, failed := m.run.autoApprovalFailures[request.ID]; failed {
 		return false
 	}
-	if err := m.runtime.ResolveApproval(request.ID, true); err != nil {
+	if err := m.runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalAllowOnce); err != nil {
 		slog.Warn("auto-approve tool call in full-access mode", "tool", request.Tool, "error", err)
 		m.noteAutoApprovalFailure(request.ID)
 		return false

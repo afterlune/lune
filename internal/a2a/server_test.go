@@ -4,22 +4,32 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	publictool "github.com/afterlune/luneCore/tool"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	core "github.com/afterlune/luneCore"
 )
 
 type fakeRuntime struct {
-	mu          sync.Mutex
-	pending     []core.PendingRequest
-	resolvedID  string
-	approved    bool
-	answered    *core.UserQuestionAnswer
-	interrupted string
-	releaseCh   chan core.TurnResult
+	mu              sync.Mutex
+	pending         []core.PendingRequest
+	resolvedID      string
+	approved        bool
+	answered        *core.UserQuestionAnswer
+	interrupted     string
+	releaseCh       chan core.TurnResult
+	result          *core.TurnResult
+	failResolve     bool
+	recoverFailures int
+	toolResolves    int
+	submitted       core.TurnRequest
+	decision        publictool.ApprovalDecision
+	closeCount      int
 }
 
 func newFakeRuntime(initialPending ...core.PendingRequest) *fakeRuntime {
@@ -29,19 +39,72 @@ func newFakeRuntime(initialPending ...core.PendingRequest) *fakeRuntime {
 	}
 }
 
-func (f *fakeRuntime) Close() error { return nil }
+func (f *fakeRuntime) Close() error { f.mu.Lock(); defer f.mu.Unlock(); f.closeCount++; return nil }
 
-func (f *fakeRuntime) SubmitTurn(_ context.Context, _ core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
+func (f *fakeRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
+	f.mu.Lock()
+	f.submitted = request
+	f.result = nil
+	f.mu.Unlock()
 	return core.TurnSubmission{ExecutionID: "exec-1"}, nil
 }
 
-func (f *fakeRuntime) WaitTurn(ctx context.Context, _ string) (core.TurnResult, error) {
+func (f *fakeRuntime) State(context.Context) (core.RuntimeState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	select {
-	case res := <-f.releaseCh:
-		return res, nil
-	case <-ctx.Done():
-		return core.TurnResult{}, ctx.Err()
+	case r := <-f.releaseCh:
+		f.result = &r
+	default:
 	}
+	status := core.TaskRunning
+	if f.result != nil {
+		status = f.result.Status
+	}
+	return core.RuntimeState{Task: core.TaskState{Status: status, ExecutionID: "exec-1"}}, nil
+}
+func (f *fakeRuntime) WaitTurn(ctx context.Context, _ string) (core.TurnResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.result != nil {
+		return *f.result, nil
+	}
+	return core.TurnResult{Status: core.TaskRunning}, nil
+}
+func (f *fakeRuntime) Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recoverFailures > 0 {
+		f.recoverFailures--
+		return core.TurnSubmission{}, fmt.Errorf("retry temporarily unavailable")
+	}
+	f.pending = nil
+	f.result = nil
+	return core.TurnSubmission{ExecutionID: "exec-1"}, nil
+}
+func (f *fakeRuntime) DiscardPaused(context.Context) (bool, error) { return false, nil }
+func (f *fakeRuntime) ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolResolves++
+	f.pending = nil
+	return nil
+}
+func (f *fakeRuntime) ResolveUserInteraction(string, json.RawMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pending = nil
+	return nil
+}
+func (f *fakeRuntime) ResolveApprovalDecision(id string, d publictool.ApprovalDecision) error {
+	f.mu.Lock()
+	f.decision = d
+	fail := f.failResolve
+	f.mu.Unlock()
+	if fail {
+		return fmt.Errorf("resolve failed")
+	}
+	return f.ResolveApproval(id, d != publictool.ApprovalDeny)
 }
 
 func (f *fakeRuntime) PendingRequests(_ context.Context) ([]core.PendingRequest, error) {
@@ -102,6 +165,13 @@ type fakeBackend struct {
 	rt *fakeRuntime
 }
 
+func (b *fakeBackend) GetSession(_ context.Context, id string) (core.Session, error) {
+	if id != "sess-a2a-1" {
+		return core.Session{}, fmt.Errorf("unknown context")
+	}
+	return core.Session{ID: id}, nil
+}
+
 func (b *fakeBackend) CreateSession(_ context.Context, _ json.RawMessage) (core.Session, error) {
 	return core.Session{ID: "sess-a2a-1"}, nil
 }
@@ -135,6 +205,13 @@ func postRPC(t *testing.T, srv http.Handler, token, method string, params any) (
 func TestAgentCardAndAuthBoundary(t *testing.T) {
 	rt := newFakeRuntime()
 	srv := NewServer(&fakeBackend{rt: rt}, "secret-token")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 
 	cardReq := httptest.NewRequest(http.MethodGet, "/.well-known/agent-card.json", nil)
 	cardRec := httptest.NewRecorder()
@@ -165,6 +242,13 @@ func TestSendMessageApprovalInputRequiredToCompleted(t *testing.T) {
 		},
 	})
 	srv := NewServer(&fakeBackend{rt: rt}, "token-ok")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 
 	code, resp := postRPC(t, srv, "token-ok", "SendMessage", map[string]any{
 		"message": map[string]any{
@@ -210,6 +294,13 @@ func TestCancelTaskInterruptsRuntime(t *testing.T) {
 		},
 	})
 	srv := NewServer(&fakeBackend{rt: rt}, "")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := srv.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
 
 	_, resp := postRPC(t, srv, "", "SendMessage", map[string]any{
 		"message": map[string]any{

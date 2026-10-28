@@ -14,7 +14,7 @@ TUI/CLI 与桌面端的会话和配置彼此独立，互不迁移。工作区外
 
 ## 快速开始
 
-需要 Go 1.27.1；桌面端另需 Node.js 22.12+、npm 与固定版本的 Wails CLI（`wails3@v3.0.0-beta.34`）。
+需要 Go 1.27.3；桌面端另需 Node.js 22.12+、npm 与固定版本的 Wails CLI（`wails3@v3.0.0-beta.34`）。
 
 ```powershell
 # TUI / CLI：生成 bin/lune.exe 与 bin/lune-sandbox.exe
@@ -43,7 +43,7 @@ go vet -unsafeptr=false ./...
 go test -trimpath ./...
 ```
 
-Linux CI 只跑 CLI/TUI 相关包（`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
+Linux CI 验证 CLI/TUI/A2A 相关包（`internal/a2a`、`internal/assistanttext`、`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
 
 ## 文档
 
@@ -51,6 +51,7 @@ Linux CI 只跑 CLI/TUI 相关包（`internal/app`、`internal/cli`、`internal/
 - [`docs/tui-core.md`](docs/tui-core.md)：TUI 与 Core 的边界、状态所有权
 - [`docs/desktop.md`](docs/desktop.md)：桌面端构建、设置与布局
 - [`docs/maintenance.md`](docs/maintenance.md)：依赖更新、验证命令、生成文件与发布
+- [`docs/a2a.md`](docs/a2a.md)：A2A 权限、认证、任务生命周期与交互合同
 - [`docs/mcp.md`](docs/mcp.md)：外部 MCP 服务器配置
 - [`AGENTS.md`](AGENTS.md)：设计准则、权限档位与仓库约定
 

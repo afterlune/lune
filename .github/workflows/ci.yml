@@ -79,9 +79,13 @@ jobs:
             exit 1
           fi
       - name: Vet supported Go packages
-        run: go vet ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
+        run: go vet ./internal/a2a ./internal/assistanttext ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
       - name: Test supported Go packages
-        run: go test -trimpath ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
+        run: go test -trimpath ./internal/a2a ./internal/assistanttext ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
+      - name: Race-check execution hosts
+        run: go test -race -trimpath ./internal/a2a ./internal/app ./internal/cli ./internal/tui/...
+      - name: Scan non-desktop Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./internal/a2a ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
       - name: Cross-build Linux binaries
         shell: bash
         run: |

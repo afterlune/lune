@@ -27,7 +27,6 @@ type cliRuntime interface {
 	State(context.Context) (core.RuntimeState, error)
 	Interrupt(string) bool
 	DiscardPaused(context.Context) (bool, error)
-	ResolveApproval(string, bool) error
 	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
 	SetUserInteractionAvailable(bool)
 	ListCommands(context.Context) ([]core.CommandInfo, error)

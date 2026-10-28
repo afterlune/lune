@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/afterlune/lune/internal/a2a"
 	"github.com/afterlune/lune/internal/cli"
 	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/toolchains"
@@ -115,9 +113,19 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 	defer func() { runErr = errors.Join(runErr, client.Close()) }()
 
 	if flags.A2AListen != "" {
-		srv := a2a.NewServer(a2a.NewCoreBackend(client), os.Getenv("LUNE_A2A_TOKEN"))
-		fmt.Fprintf(stderr, "Lune A2A 1.0 server listening on %s\n", flags.A2AListen)
-		return http.ListenAndServe(flags.A2AListen, srv)
+		token := os.Getenv("LUNE_A2A_TOKEN")
+		if err := validateA2AListen(flags.A2AListen, token); err != nil {
+			return err
+		}
+		mode := flags.PermissionMode
+		if mode == "" {
+			mode = core.PermissionWorkspace
+		}
+		if err := client.SetPermissionMode(mode); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Lune A2A server listening on %s\n", flags.A2AListen)
+		return runA2AServer(client, flags.A2AListen, token)
 	}
 	if flags.PermissionMode == "" {
 		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {

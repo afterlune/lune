@@ -49,8 +49,8 @@ The tool permission setting has four modes:
   `workspace`：默认允许读取和写入工作区；工作区外文件访问、命令、web 工具及未分类工具需授权。
 - `auto`: based on `workspace` permissions with automatic model review; safe operations and commands run without prompts, while risky actions or review failures prompt for approval.
   `auto`：基于 `workspace` 档位并增加模型自动审查；安全操作与命令自动放行无需弹窗，有风险或审查失败的操作弹出交互式授权。
-- `full-access`: registered tools run without approval and may use current-user filesystem access; extremely dangerous commands are always blocked.
-  `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；极度危险命令始终被阻止。
+- `full-access`: registered tools run without approval and may use current-user filesystem access; known extremely dangerous command patterns are blocked as an additional safeguard.
+  `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；已知极度危险命令模式会被额外拦截。
 
 Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. CLI/TUI sessions start in `full-access` unless `--permission <mode>` is provided; Desktop explicitly uses `workspace`. In the TUI, `/permissions` opens the permission selector and `/permissions <mode>` selects a mode directly; `Shift+Tab` toggles Plan mode instead of cycling permissions.
 自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。CLI/TUI 会话默认以 `full-access` 启动，可通过 `--permission <mode>` 指定档位；Desktop 显式使用 `workspace`。TUI 中 `/permissions` 打开权限选择器，`/permissions <mode>` 可直接选择权限档位；`Shift+Tab` 用于切换 Plan 模式，不再循环权限档位。
@@ -75,8 +75,8 @@ Approved commands and commands run under `full-access` have network access enabl
   `/toolchains` 命令用于管理已授权的宿主工具链（`list` 查看、`detect` 检测、`refresh` 刷新），为命令沙箱提供编译器与版本控制软件安装目录的读取与执行权限。
 - Built-in file tools can request a session-scoped directory grant for paths outside the workspace. A grant covers that directory and descendants with either `read` or `read_write` access; a write grant also covers reads. Denials are not remembered, grants persist when reopening the same session, and new or forked sessions do not inherit them. Deleting a session deletes its grants. There is no separate grant-management UI. These grants apply only to built-in file tools, never to shell commands.
   内置文件工具可为工作区外路径请求会话级目录授权。授权范围覆盖指定目录及其子目录，权限为 `read` 或 `read_write`；读写授权也包含读取。拒绝不会被记住；重新打开同一会话时授权继续有效；新会话和分叉会话不继承授权。删除会话即删除授权，不另设授权管理界面。目录授权只作用于内置文件工具，不作用于 Shell 命令。
-- Commands that can be approved interactively are not permanently denied just because they match a high-risk pattern. A narrow extreme-danger denylist remains blocked in every mode, including `full-access`; non-interactive plan execution still requires exact authorization for high-risk commands.
-  可交互授权的命令不会仅因匹配一般高风险模式而永久禁止。少数极度危险命令在所有档位（包括 `full-access`）下始终被阻止；非交互计划执行仍要求对高风险命令逐条精确授权。
+- Commands that can be approved interactively are not permanently denied just because they match a high-risk pattern. A narrow denylist blocks known extreme-danger command spellings in every mode, including `full-access`. Shell expansion and arbitrary programs can evade string matching; OS sandbox capabilities and explicit permissions define the isolation boundary; non-interactive plan execution still requires exact authorization for high-risk commands.
+  可交互授权的命令不会仅因匹配一般高风险模式而永久禁止。少数已知极度危险命令写法在所有档位（包括 `full-access`）下会被拦截。Shell 展开和任意程序可绕过字符串匹配；隔离边界由 OS 沙箱能力与显式权限决定；非交互计划执行仍要求对高风险命令逐条精确授权。
 - Follow [the engineering maintenance guide](docs/maintenance.md) for dependency updates, validation commands, generated files, and release builds.
   依赖更新、验证命令、生成文件和发布构建按[工程维护指南](docs/maintenance.md)执行。
 - Keep the Chinese and English text in this file in sync.

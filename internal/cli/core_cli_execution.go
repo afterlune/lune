@@ -12,6 +12,7 @@ import (
 	"github.com/afterlune/lune/internal/assistanttext"
 	"github.com/afterlune/lune/internal/terminaltext"
 	core "github.com/afterlune/luneCore"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.TurnRequest, watchKeys keyEventWatcher, stderr io.Writer) (core.TurnResult, error, bool) {
@@ -153,7 +154,7 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
 					if keyEvents == nil {
-						if err := runtime.ResolveApproval(event.Approval.ID, false); err != nil {
+						if err := runtime.ResolveApprovalDecision(event.Approval.ID, publictool.ApprovalDeny); err != nil {
 							fmt.Fprintf(stderr, "error: deny approval: %v\n", err)
 							runtime.Interrupt(executionID)
 						} else {
