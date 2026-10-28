@@ -179,6 +179,9 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		}
 		m.run.streamReconnects = 0
 		cmds := []tea.Cmd{nextRuntimeEvent(m.sessionID, msg.generation, msg.events)}
+		if m.run.restoringSession {
+			cmds = append(cmds, restoreWatchdogCmd(m.run.restoreGeneration))
+		}
 		return m, tea.Batch(cmds...)
 
 	case runtimeReconnectMsg:
@@ -232,6 +235,18 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			m.finishSessionRestore()
 		}
 		return m, nil
+
+	case restoreWatchdogMsg:
+		if !m.run.restoringSession || msg.generation != m.run.restoreGeneration {
+			return m, nil
+		}
+		// Only a restore that has gone completely quiet is settled here; an active
+		// replay keeps its freeze until Core reports completion.
+		if m.run.restoreStalled(time.Now(), restoreStallWindow) {
+			m.finishSessionRestore()
+			return m, nil
+		}
+		return m, restoreWatchdogCmd(msg.generation)
 
 	case turnSubmittedMsg:
 		if (msg.sessionID != "" && msg.sessionID != m.sessionID) || !m.matchesBinding(msg.bindingGeneration) {
@@ -513,6 +528,7 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if m.input.selecting {
+			m.restoreTranscriptWindow()
 			headerHeight := 3
 			vpEnd := headerHeight + m.viewport.Height()
 			m.input.selectEndX = msg.X

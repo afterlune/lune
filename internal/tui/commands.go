@@ -163,6 +163,7 @@ func (m *tuiModel) handleSlashCommand(raw string) (tea.Model, tea.Cmd) {
 		m.run.resetStream()
 		m.run.resetReasoning()
 		m.view.invalidateLive()
+		m.view.windowedTail = false
 		m.viewport.SetContent("")
 		m.scrolledUp = false
 		m.clearTranscriptSelection()

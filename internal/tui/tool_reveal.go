@@ -242,6 +242,7 @@ func (m *tuiModel) publishToolReveal(windowed bool) {
 	}
 	m.view.toolRevealWindowed = windowed
 	m.view.toolRevealWindowStart = 0
+	m.view.windowedTail = false
 	visible := lines
 	if windowed && !m.viewport.SoftWrap {
 		m.view.toolRevealWindowStart = max(0, len(lines)-m.viewport.Height())
@@ -271,6 +272,7 @@ func (m *tuiModel) finishToolReveal() {
 // Keep the row under the pointer (or the top row for scrolling) anchored while
 // restoring the full viewport. New rows may have been inserted above that row.
 func (m *tuiModel) finishToolRevealForInput(screenRow int) {
+	m.restoreTranscriptWindow()
 	r := m.view.toolReveal
 	if r == nil || len(r.queue) == 0 {
 		m.finishToolReveal()

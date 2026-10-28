@@ -66,6 +66,9 @@ func (m *tuiModel) updateLayout() {
 	if needRefresh {
 		m.refreshViewportContent()
 	}
+	if !m.run.running && (m.view.windowedTail || m.view.liveTailOnly) {
+		m.restoreTranscriptWindow()
+	}
 }
 
 // overlaySection returns the one overlay the layout must reserve space for, its
@@ -248,6 +251,7 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.dirtyEntries = nil
 		m.view.transcriptDirty = false
 		m.view.cachedHasTrailingRound = false
+		m.view.windowedTail = false
 		m.view.entryLineRanges = nil
 		m.view.transcriptLines = nil
 		m.viewport.SoftWrap = false
@@ -267,10 +271,13 @@ func (m *tuiModel) refreshViewportContent() {
 	rebuildEntryCache := m.view.cachedDirty || m.view.cachedWidth != contentWidth || m.view.cachedThemeBg != curThemeBg || len(m.entries) < m.view.cachedEntryCount
 	if rebuildEntryCache {
 		m.viewport.SoftWrap = false
+		m.view.needsSoftWrap = false
+		m.view.roundBlocks = nil
 		m.view.cachedBlocks = make([]string, len(m.entries))
 		for i, entry := range m.entries {
 			if !isRoundMember(m.entries, i) {
 				m.view.cachedBlocks[i] = renderEntry(entry, contentWidth)
+				m.noteBlockWrap(m.view.cachedBlocks[i], viewportWidth)
 			}
 		}
 		m.view.cachedEntryCount = len(m.entries)
@@ -284,6 +291,7 @@ func (m *tuiModel) refreshViewportContent() {
 			for i := cachedEntryCount; i < len(m.entries); i++ {
 				if !isRoundMember(m.entries, i) {
 					m.view.cachedBlocks = append(m.view.cachedBlocks, renderEntry(m.entries[i], contentWidth))
+					m.noteBlockWrap(m.view.cachedBlocks[len(m.view.cachedBlocks)-1], viewportWidth)
 				} else {
 					m.view.cachedBlocks = append(m.view.cachedBlocks, "")
 				}
@@ -298,6 +306,7 @@ func (m *tuiModel) refreshViewportContent() {
 				m.view.cachedBlocks[index] = ""
 			} else {
 				m.view.cachedBlocks[index] = renderEntry(m.entries[index], contentWidth)
+				m.noteBlockWrap(m.view.cachedBlocks[index], viewportWidth)
 			}
 		}
 		m.view.dirtyEntries = nil
@@ -336,7 +345,7 @@ func (m *tuiModel) refreshViewportContent() {
 		if len(blocks) == 0 {
 			return
 		}
-		appendBlock(renderTranscriptRule(contentWidth))
+		appendBlock(m.transcriptRule(contentWidth))
 	}
 	appendRendered := func(block string, relRanges []entryLineRange) {
 		if block == "" {
@@ -374,10 +383,19 @@ func (m *tuiModel) refreshViewportContent() {
 			}
 			roundSlice := m.entries[i:end]
 			live := m.roundLive(i, end)
+			expanded := m.roundExpanded(i, live)
+			animated := expanded && live && end == trailingEnd && m.canRevealTools()
 
-			if m.roundExpanded(i, live) {
+			if cached, ok := m.view.roundBlock(i, end, expanded, live, contentWidth, curThemeBg, animated); ok {
+				m.noteBlockWrap(cached.block, viewportWidth)
+				appendRendered(cached.block, cached.ranges)
+				i = end
+				continue
+			}
+
+			if expanded {
 				block, relRanges := renderExpandedToolRound(roundSlice, i, live, contentWidth)
-				if live && end == trailingEnd && m.canRevealTools() {
+				if animated {
 					r := m.view.toolReveal
 					if r == nil || r.start != i {
 						m.view.toolRevealGeneration++
@@ -406,14 +424,21 @@ func (m *tuiModel) refreshViewportContent() {
 					projectedRound = r
 				}
 				appendRendered(block, relRanges)
+				if !animated {
+					m.noteBlockWrap(block, viewportWidth)
+					m.view.storeRoundBlock(i, end, expanded, live, contentWidth, curThemeBg, block, relRanges)
+				}
 			} else {
 				block := renderCollapsedToolRound(roundSlice, contentWidth)
+				m.noteBlockWrap(block, viewportWidth)
 				if block != "" {
-					appendRendered(block, []entryLineRange{{
+					ranges := []entryLineRange{{
 						EntryIndex:    i,
 						EndLine:       strings.Count(block, "\n"),
 						IsRoundHeader: true,
-					}})
+					}}
+					appendRendered(block, ranges)
+					m.view.storeRoundBlock(i, end, expanded, live, contentWidth, curThemeBg, block, ranges)
 				}
 			}
 			i = end
@@ -424,6 +449,7 @@ func (m *tuiModel) refreshViewportContent() {
 		if block == "" {
 			block = renderEntry(m.entries[i], contentWidth)
 			m.view.cachedBlocks[i] = block
+			m.noteBlockWrap(block, viewportWidth)
 		}
 		if block == "" {
 			i++
@@ -441,7 +467,8 @@ func (m *tuiModel) refreshViewportContent() {
 	}
 
 	if !m.viewport.SoftWrap {
-		m.viewport.SoftWrap = transcriptNeedsSoftWrap(blocks, viewportWidth)
+		m.noteBlockWrap(m.view.liveContent, viewportWidth)
+		m.viewport.SoftWrap = m.view.needsSoftWrap
 	}
 	fullText := strings.Join(blocks, "\n\n")
 	if m.view.liveContent != "" {
@@ -465,16 +492,59 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.toolReveal = nil
 		m.view.toolRevealWindowed = false
 		m.view.toolRevealWindowStart = 0
-		m.viewport.SetContent(fullText)
-		if !m.scrolledUp {
-			m.viewport.GotoBottom()
-		}
+		m.publishTranscript()
 	}
 	m.view.transcriptDirty = false
 	m.view.cachedHasTrailingRound = len(m.entries) > 0 && isRoundMember(m.entries, len(m.entries)-1)
 	if m.view.cachedHasTrailingRound {
 		m.view.cachedTrailingRunning = m.run.running
 		m.view.cachedTrailingTextEmpty = m.run.streamTextEmpty()
+	}
+}
+
+// publishTranscript hands the composed transcript to the viewport. While a turn is
+// live and the view follows the bottom, only the trailing screenful is measured:
+// the complete document stays in transcriptLines for scrolling, selection and copy,
+// and restoreTranscriptWindow puts it back before any interaction that needs
+// absolute rows. A tail window always starts at total-height, so restoring to the
+// bottom keeps every screen row pointing at the same document row.
+func (m *tuiModel) publishTranscript() {
+	lines := m.view.transcriptLines
+	height := m.viewport.Height()
+	live := m.run.running || m.view.liveContent != ""
+	if live && !m.view.liveForceFull && !m.scrolledUp && !m.viewport.SoftWrap && height > 0 && len(lines) > height*2 {
+		m.view.windowedTail = true
+		m.viewport.SetContentLines(lines[len(lines)-height:])
+		m.viewport.SetYOffset(0)
+		return
+	}
+	m.view.windowedTail = false
+	m.viewport.SetContentLines(lines)
+	if !m.scrolledUp {
+		m.viewport.GotoBottom()
+	}
+}
+
+// restoreTranscriptWindow replaces a tail window with the complete document. Any
+// handler that maps a screen row to a document row must call it first.
+func (m *tuiModel) restoreTranscriptWindow() {
+	if !m.view.windowedTail && !m.view.liveTailOnly {
+		return
+	}
+	m.view.windowedTail = false
+	if m.view.liveTailOnly {
+		// Re-render the live block from the whole message, then re-publish it with
+		// the complete document.
+		m.view.liveForceFull = true
+		m.view.liveDirty = true
+		m.view.transcriptDirty = true
+		m.refreshViewportContent()
+		m.view.liveForceFull = false
+	} else {
+		m.viewport.SetContentLines(m.view.transcriptLines)
+	}
+	if !m.scrolledUp {
+		m.viewport.GotoBottom()
 	}
 }
 
@@ -487,6 +557,19 @@ func (m *tuiModel) trailingRoundViewChanged() bool {
 	}
 	return m.view.cachedTrailingRunning != m.run.running ||
 		m.view.cachedTrailingTextEmpty != m.run.streamTextEmpty()
+}
+
+// livePreviewUsesTail reports whether the live block may be rendered from the
+// retained tail instead of the whole message. Any state that shows more than the
+// bottom of the transcript falls back to the complete text.
+func (m *tuiModel) livePreviewUsesTail() bool {
+	if m.view.liveForceFull || m.run.planFound || !m.run.running {
+		return false
+	}
+	if m.scrolledUp || m.input.selecting || m.input.composerSelecting || m.hasSelection() {
+		return false
+	}
+	return true
 }
 
 func (m *tuiModel) refreshLiveContent(width int) {
@@ -502,15 +585,28 @@ func (m *tuiModel) refreshLiveContent(width int) {
 		return
 	}
 	m.run.ensureLiveTails()
+	// While the view follows a live turn, the visible block is re-rendered from the
+	// retained tail: markdown rendering costs about 7.5 MB/s, so re-rendering the
+	// whole message for every delta would make long replies progressively slower.
+	// The complete text is restored as soon as the view stops following or a plan
+	// block appears (its layout depends on the whole message).
+	tailPreview := m.livePreviewUsesTail()
+	m.view.liveTailOnly = tailPreview
+	reasoningText := m.run.currentReasoningText
+	assistantText := m.run.currentStreamText
+	if tailPreview {
+		reasoningText = m.run.reasoningTail.RenderInput()
+		assistantText = m.run.assistantTail.RenderInput()
+	}
 	var blocks []string
-	if m.run.currentReasoningText != "" {
+	if reasoningText != "" {
 		blocks = append(blocks, renderStreamingEntry(TranscriptEntry{
-			Kind: KindReasoning, Text: m.run.currentReasoningText,
+			Kind: KindReasoning, Text: reasoningText,
 			ReasoningDuration: time.Since(m.run.reasoningStartTime),
 			ReasoningExpanded: !m.run.reasoningLiveCollapsed, ReasoningLive: true,
 		}, width))
 	}
-	if m.run.currentStreamText != "" {
+	if assistantText != "" {
 		appendAssistant := func(text string) {
 			if strings.TrimSpace(text) != "" {
 				blocks = append(blocks, renderStreamingEntry(TranscriptEntry{Kind: KindAssistant, Text: text}, width))
@@ -525,7 +621,7 @@ func (m *tuiModel) refreshLiveContent(width int) {
 			}
 			appendAssistant(stream.After)
 		} else {
-			appendAssistant(m.run.currentStreamText)
+			appendAssistant(assistantText)
 		}
 	}
 	if m.run.running {
@@ -549,26 +645,58 @@ func (m *tuiModel) refreshLiveContent(width int) {
 }
 
 func transcriptNeedsSoftWrap(blocks []string, width int) bool {
-	if width <= 0 {
-		return true
-	}
 	for _, block := range blocks {
-		for start := 0; start < len(block); {
-			relativeEnd := strings.IndexByte(block[start:], '\n')
-			end := len(block)
-			if relativeEnd >= 0 {
-				end = start + relativeEnd
-			}
-			if ansi.StringWidth(block[start:end]) > width {
-				return true
-			}
-			if relativeEnd < 0 {
-				break
-			}
-			start = end + 1
+		if blockNeedsSoftWrap(block, width) {
+			return true
 		}
 	}
 	return false
+}
+
+// blockNeedsSoftWrap reports whether one rendered block has a line wider than the
+// viewport, which is when the viewport's own soft wrap is required.
+func blockNeedsSoftWrap(block string, width int) bool {
+	if width <= 0 {
+		return true
+	}
+	for start := 0; start < len(block); {
+		relativeEnd := strings.IndexByte(block[start:], '\n')
+		end := len(block)
+		if relativeEnd >= 0 {
+			end = start + relativeEnd
+		}
+		if ansi.StringWidth(block[start:end]) > width {
+			return true
+		}
+		if relativeEnd < 0 {
+			break
+		}
+		start = end + 1
+	}
+	return false
+}
+
+// noteBlockWrap records the wrap requirement of a block rendered in this pass.
+// Rendered blocks are immutable, so the accumulated flag survives refreshes and
+// only new or re-rendered blocks have to be measured.
+func (m *tuiModel) noteBlockWrap(block string, width int) {
+	if m.view.needsSoftWrap {
+		return
+	}
+	if blockNeedsSoftWrap(block, width) {
+		m.view.needsSoftWrap = true
+	}
+}
+
+// transcriptRule memoizes the full-width transcript rule, which repeats for every
+// user turn in the document.
+func (m *tuiModel) transcriptRule(width int) string {
+	if m.view.ruleLine != "" && m.view.ruleWidth == width {
+		return m.view.ruleLine
+	}
+	m.view.ruleLine = renderTranscriptRule(width)
+	m.view.ruleWidth = width
+	return m.view.ruleLine
 }
 
 func (m *tuiModel) hasSelection() bool {

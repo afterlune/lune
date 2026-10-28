@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	core "github.com/afterlune/luneCore"
 )
@@ -96,6 +97,36 @@ func TestRestoreDefersTranscriptRefresh(t *testing.T) {
 	}
 	if m.view.cachedEntryCount != len(m.entries) {
 		t.Fatalf("transcript not rendered after settle: cached=%d entries=%d", m.view.cachedEntryCount, len(m.entries))
+	}
+}
+
+// TestRestoreWatchdogSettlesQuietRestore settles a restore that stopped receiving
+// events, so a missing replay-complete cannot freeze the footer forever.
+func TestRestoreWatchdogSettlesQuietRestore(t *testing.T) {
+	m := newTUIModel(nil, nil, "restore-quiet")
+	m.beginSessionRestore()
+	m.run.restoreLastProgressAt = time.Now().Add(-restoreStallWindow - time.Second)
+
+	mod, _ := m.Update(restoreWatchdogMsg{generation: m.run.restoreGeneration})
+	m = mod.(*tuiModel)
+	if m.run.restoringSession {
+		t.Fatal("a quiet restore should be settled by the watchdog")
+	}
+}
+
+// TestRestoreWatchdogKeepsActiveReplay checks that a replay which keeps delivering
+// events holds the freeze until Core reports completion.
+func TestRestoreWatchdogKeepsActiveReplay(t *testing.T) {
+	m := newTUIModel(nil, nil, "restore-active")
+	m.beginSessionRestore()
+
+	mod, cmd := m.Update(restoreWatchdogMsg{generation: m.run.restoreGeneration})
+	m = mod.(*tuiModel)
+	if !m.run.restoringSession {
+		t.Fatal("an active replay must keep the freeze")
+	}
+	if cmd == nil {
+		t.Fatal("the watchdog should schedule another check")
 	}
 }
 

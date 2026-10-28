@@ -185,6 +185,10 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 		tea.WithInput(in),
 		tea.WithOutput(out),
 		tea.WithWindowSize(120, 36),
+		// A 300 tok/s stream carries about five tokens per frame at 60 fps; the
+		// higher cap keeps streaming frames dense without extra render work, since
+		// the renderer only repaints the cells that changed.
+		tea.WithFPS(120),
 	)
 
 	if _, err := program.Run(); err != nil {

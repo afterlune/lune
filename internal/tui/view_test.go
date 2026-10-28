@@ -662,7 +662,7 @@ func TestApprovalPanelExplainsExternalDirectoryGrant(t *testing.T) {
 		PathGrant: &publictool.PathGrant{Path: `/home/user/private`, Access: publictool.PathReadWrite},
 	}}
 	rendered := renderApprovalPanel(appr, 90)
-	for _, expected := range []string{"Session grant", "read and write", "Directory:", "/home", "private", "Grant for this session"} {
+	for _, expected := range []string{"Session grant", "read and write", "Directory:", "/home", "private", "Allow this call once", "Grant for this session"} {
 		if !strings.Contains(rendered, expected) {
 			t.Errorf("approval panel is missing %q: %s", expected, rendered)
 		}

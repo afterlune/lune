@@ -59,12 +59,10 @@ func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, work
 	var decisionText string
 	switch unicode.ToLower(key.rune) {
 	case '1', 'y':
+		decision = publictool.ApprovalAllowOnce
+		decisionText = "Approved this tool call once."
 		if request.PathGrant != nil {
-			decision = publictool.ApprovalAllowSession
-			decisionText = "Granted directory access for this session."
-		} else {
-			decision = publictool.ApprovalAllowOnce
-			decisionText = "Approved this tool call once."
+			decisionText = "Allowed this call once; the directory is not remembered for the session."
 		}
 	case '2', 's':
 		decision = publictool.ApprovalAllowSession
@@ -97,7 +95,7 @@ func formatCLIToolApproval(request core.ApprovalRequest, workspace string) strin
 		if request.PathGrant.Access == publictool.PathReadWrite {
 			access = "read and write"
 		}
-		return fmt.Sprintf("Grant %s access to %s and its subdirectories for this session?%s\nPress 1/Y to grant access, 3/N to deny, or Esc to interrupt the task.",
+		return fmt.Sprintf("Grant %s access to %s and its subdirectories?%s\nPress 1/Y to allow this call once, 2/S to grant for this session, 3/N to deny, or Esc to interrupt the task.",
 			access, cleanCLIInlineText(request.PathGrant.Path), autoReview)
 	}
 	details := ""

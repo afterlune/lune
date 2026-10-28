@@ -125,12 +125,50 @@ func TestLiveOutputUsesMainTranscriptViewportAndRetainsLongText(t *testing.T) {
 	}
 	m.view.invalidateLive()
 	m.updateLayout()
-	transcript := strings.Join(m.view.transcriptLines, "\n")
-	if count := strings.Count(transcript, "stream line"); count != 100 {
-		t.Fatalf("main viewport retained %d of 100 live lines", count)
+	// While the view follows the bottom only the retained tail is rendered; the
+	// complete message returns as soon as the view has to measure absolute rows.
+	following := strings.Join(m.view.transcriptLines, "\n")
+	if count := strings.Count(following, "stream line"); count != liveMarkdownTailLines {
+		t.Fatalf("following transcript rendered %d of %d live lines", count, liveMarkdownTailLines)
 	}
-	if m.viewport.TotalLineCount() < 100 {
-		t.Fatalf("viewport document has only %d lines despite complete live output", m.viewport.TotalLineCount())
+	if !m.view.windowedTail {
+		t.Fatal("a live transcript longer than the viewport should publish a tail window")
+	}
+	m.restoreTranscriptWindow()
+	if m.view.windowedTail {
+		t.Fatal("restore should clear the windowed flag")
+	}
+	document := strings.Join(m.view.transcriptLines, "\n")
+	if count := strings.Count(document, "stream line"); count != 100 {
+		t.Fatalf("restored transcript kept %d of 100 live lines", count)
+	}
+	if doc := m.viewportAllLines(); len(doc) < 100 {
+		t.Fatalf("transcript document has only %d lines despite complete live output", len(doc))
+	}
+}
+
+func TestScrollingRestoresWindowedTranscript(t *testing.T) {
+	m := newTUIModel(nil, nil, "window-restore")
+	m.width, m.height = 100, 22
+	m.run.running = true
+	for line := 0; line < 100; line++ {
+		m.run.appendStreamDelta("stream line\n")
+	}
+	m.view.invalidateLive()
+	m.updateLayout()
+	if !m.view.windowedTail {
+		t.Fatal("expected a tail window before restoring")
+	}
+	windowed := m.viewport.TotalLineCount()
+	m.restoreTranscriptWindow()
+	if restored := m.viewport.TotalLineCount(); restored <= windowed {
+		t.Fatalf("restore kept the window: windowed=%d restored=%d", windowed, restored)
+	}
+	if m.view.windowedTail {
+		t.Fatal("restore should clear the windowed flag")
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatalf("restore should keep the view at the bottom, yoffset=%d", m.viewport.YOffset())
 	}
 }
 

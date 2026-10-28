@@ -483,6 +483,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// 3. Viewport Scrolling
+	m.restoreTranscriptWindow()
 	switch keyStr {
 	case "pgup":
 		m.viewport.HalfPageUp()

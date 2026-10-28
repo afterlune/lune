@@ -62,9 +62,9 @@ type runState struct {
 
 	// restoringSession freezes footer metrics and transcript rebuilds while Core
 	// replays durable events for a freshly loaded session.
-	restoringSession  bool
-	restoreGeneration uint64
-	restoreStartedAt  time.Time
+	restoringSession      bool
+	restoreGeneration     uint64
+	restoreLastProgressAt time.Time
 
 	// Streaming buffers and generation diagnostics.
 	currentStreamText      string
@@ -323,7 +323,23 @@ func (r *runState) restoreFrom(task core.TaskState) {
 func (r *runState) beginRestore() {
 	r.restoringSession = true
 	r.restoreGeneration++
-	r.restoreStartedAt = time.Now()
+	r.restoreLastProgressAt = time.Now()
+}
+
+// noteRestoreProgress records that the durable replay is still delivering, so a
+// watchdog only settles a restore that has gone quiet.
+func (r *runState) noteRestoreProgress() {
+	r.restoreLastProgressAt = time.Now()
+}
+
+// restoreStalled reports whether an in-flight restore has received nothing for
+// the given window. Core normally ends a replay with a completion event; this is
+// the fallback that keeps a missing completion from freezing the view for good.
+func (r *runState) restoreStalled(now time.Time, window time.Duration) bool {
+	if !r.restoringSession {
+		return false
+	}
+	return now.Sub(r.restoreLastProgressAt) >= window
 }
 
 // finishRestore clears the freeze; it reports whether a restore was in flight.

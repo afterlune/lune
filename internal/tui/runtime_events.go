@@ -91,6 +91,11 @@ func (m *tuiModel) promoteInjectedInput(event core.Event) bool {
 }
 
 func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, tea.Cmd) {
+	if m.run.restoringSession {
+		// Recorded before any early return so a replay that keeps delivering never
+		// trips the stall watchdog.
+		m.run.noteRestoreProgress()
+	}
 	if event.Kind == core.EventRuntimeReplayComplete {
 		if m.run.restoringSession {
 			m.finishSessionRestore()

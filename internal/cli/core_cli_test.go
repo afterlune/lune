@@ -961,6 +961,42 @@ func TestChatLoopInteractiveApprovalPreservesDecisionScope(t *testing.T) {
 	}
 }
 
+func TestChatLoopPathApprovalPreservesDecisionScope(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		key      rune
+		decision publictool.ApprovalDecision
+	}{
+		{name: "digit 1 allows once", key: '1', decision: publictool.ApprovalAllowOnce},
+		{name: "lowercase y allows once", key: 'y', decision: publictool.ApprovalAllowOnce},
+		{name: "digit 2 grants session", key: '2', decision: publictool.ApprovalAllowSession},
+		{name: "lowercase s grants session", key: 's', decision: publictool.ApprovalAllowSession},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newApprovalCLICore(core.ApprovalRequest{
+				ID:        "approval-path-1",
+				Tool:      "read_file",
+				Arguments: json.RawMessage(`{"path":"/srv/outside/notes.txt"}`),
+				PathGrant: &publictool.PathGrant{Path: "/srv/outside", Access: publictool.PathRead},
+			})
+			keyEvents := make(chan cliInputEvent, 1)
+			watchKeys := func() (<-chan cliInputEvent, func(), error) { return keyEvents, func() {}, nil }
+			go func() {
+				<-client.emitted
+				keyEvents <- cliInputEvent{rune: test.key}
+			}()
+
+			_, stderr := runCLI(t, client, "read the outside notes\n/exit\n", watchKeys)
+			if len(client.approvalDecisions) != 1 || client.approvalDecisions[0] != test.decision {
+				t.Fatalf("approval decisions = %v, want [%v]", client.approvalDecisions, test.decision)
+			}
+			if !strings.Contains(stderr, "and its subdirectories") {
+				t.Errorf("stderr = %q, missing directory grant scope", stderr)
+			}
+		})
+	}
+}
+
 func TestChatLoopDeniesApprovalWithoutInteractiveInput(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -1055,14 +1091,13 @@ func TestCLIApprovalPromptEscapesModelControlledTerminalText(t *testing.T) {
 	}
 }
 
-func TestCLIPathApprovalExplainsSessionDirectoryGrant(t *testing.T) {
+func TestCLIPathApprovalOffersOnceAndSession(t *testing.T) {
 	request := core.ApprovalRequest{Tool: "read_file", PathGrant: &publictool.PathGrant{Path: `C:\Users\Code\private`, Access: publictool.PathRead}}
 	prompt := formatCLIToolApproval(request, `C:\workspace`)
-	if !strings.Contains(prompt, "read-only access") || !strings.Contains(prompt, `C:\Users\Code\private`) || !strings.Contains(prompt, "for this session") {
-		t.Fatalf("prompt = %q, missing session grant scope", prompt)
-	}
-	if strings.Contains(prompt, "Allow this tool call once") {
-		t.Fatalf("prompt = %q, still describes a one-time approval", prompt)
+	for _, expected := range []string{"read-only access", `C:\Users\Code\private`, "allow this call once", "grant for this session"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("prompt = %q, missing %q", prompt, expected)
+		}
 	}
 	request.PathGrant.Access = publictool.PathReadWrite
 	if prompt := formatCLIToolApproval(request, ""); !strings.Contains(prompt, "read and write access") {

@@ -584,10 +584,12 @@ func renderApprovalPanel(approval *ActiveApproval, width int) string {
 	lines = append(lines, "")
 
 	sessionLabel := "2. Allow for this session"
+	onceLabel := "1. Allow execution"
 	if pathGrant != nil {
 		sessionLabel = "2. Grant for this session"
+		onceLabel = "1. Allow this call once"
 	}
-	options := []string{"1. Allow execution", sessionLabel, "3. Deny"}
+	options := []string{onceLabel, sessionLabel, "3. Deny"}
 	for i, opt := range options {
 		marker := "  "
 		if i == approval.Selected {

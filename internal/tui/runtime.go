@@ -38,6 +38,26 @@ type runtimeRestoreSettledMsg struct {
 	generation uint64
 }
 
+// restoreWatchdogMsg re-checks a session restore that has stopped receiving
+// events, so a missing replay-complete event cannot freeze the view forever.
+type restoreWatchdogMsg struct {
+	generation uint64
+}
+
+const (
+	// restoreWatchdogInterval is how often a quiet restore is re-checked.
+	restoreWatchdogInterval = time.Second
+	// restoreStallWindow is how long a restore may receive nothing before the
+	// watchdog settles it. A replay that is still delivering keeps resetting it.
+	restoreStallWindow = 3 * time.Second
+)
+
+func restoreWatchdogCmd(generation uint64) tea.Cmd {
+	return tea.Tick(restoreWatchdogInterval, func(time.Time) tea.Msg {
+		return restoreWatchdogMsg{generation: generation}
+	})
+}
+
 type turnSubmittedMsg struct {
 	sessionID         string
 	bindingGeneration uint64
