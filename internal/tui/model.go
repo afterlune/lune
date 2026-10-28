@@ -97,7 +97,8 @@ func newTUIModel(client *core.Core, runtime *core.SessionRuntime, sessionID stri
 	comp.DynamicHeight = true
 	comp.MinHeight = 1
 	comp.MaxHeight = 5
-	comp.SetVirtualCursor(true)
+	// A real terminal cursor anchors IME candidate windows during stream redraws.
+	comp.SetVirtualCursor(false)
 	comp.Focus()
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))

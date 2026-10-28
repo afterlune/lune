@@ -875,6 +875,43 @@ func (m *tuiModel) View() tea.View {
 		m.refreshViewportContent()
 	}
 
+	sections := m.composerPrefixSections(contentWidth)
+	cursorX, cursorY := composerOffsetFromSections(sections)
+
+	// 5. Composer
+	composerView := m.input.composer.View()
+	// SetWidth and programmatic SetValue can leave the textarea viewport at its
+	// old offset until the next key event. Populate its lines before asking the
+	// public height setter to bring the insertion point back into view.
+	if cursor := m.input.composer.Cursor(); cursor != nil && (cursor.Y < 0 || cursor.Y >= m.input.composer.Height()) {
+		m.input.composer.SetHeight(m.input.composer.Height())
+		composerView = m.input.composer.View()
+	}
+	sections = append(sections, renderComposerBand(composerView, contentWidth))
+
+	// 6. Footer
+	sections = append(sections, renderFooter(m, contentWidth))
+
+	content := strings.Join(sections, "\n")
+
+	view := tea.NewView(content)
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	if m.composerOwnsKeyboard() {
+		if cursor := m.input.composer.Cursor(); cursor != nil {
+			cursor.X += cursorX
+			cursor.Y += cursorY
+			if cursor.X >= 0 && cursor.Y >= 0 && cursor.X < m.width && cursor.Y < m.height {
+				view.Cursor = cursor
+			}
+		}
+	}
+	return view
+}
+
+// composerPrefixSections is shared by frame rendering and pointer hit testing,
+// so overlays, queued turns and reserved gaps have one coordinate definition.
+func (m *tuiModel) composerPrefixSections(contentWidth int) []string {
 	var sections []string
 
 	// 1. Top Header
@@ -922,16 +959,32 @@ func (m *tuiModel) View() tea.View {
 		sections = append(sections, gapLine)
 	}
 
-	// 5. Composer
-	sections = append(sections, renderComposerBand(m.input.composer.View(), contentWidth))
+	return sections
+}
 
-	// 6. Footer
-	sections = append(sections, renderFooter(m, contentWidth))
+// The composer band adds one top padding row and one left padding column.
+func composerOffsetFromSections(sections []string) (x, y int) {
+	y = 1
+	for _, section := range sections {
+		y += strings.Count(section, "\n") + 1
+	}
+	return 1, y
+}
 
-	content := strings.Join(sections, "\n")
-
-	view := tea.NewView(content)
-	view.AltScreen = true
-	view.MouseMode = tea.MouseModeCellMotion
-	return view
+func (m *tuiModel) composerOwnsKeyboard() bool {
+	if m.modals.active() != modalNone || m.run.discardInFlight || m.activeCardKind() == cardEffort {
+		return false
+	}
+	if m.activeCardKind() == cardQuestion {
+		q := m.activeQuestion
+		if q.Submitting {
+			return false
+		}
+		if m.input.composer.Value() == "" {
+			if draft := q.currentDraft(); draft != nil && (draft.NotesOpen || draft.Selected == len(q.Request.Questions[q.CurrentIndex].Options)) {
+				return false
+			}
+		}
+	}
+	return true
 }

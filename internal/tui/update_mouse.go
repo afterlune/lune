@@ -3,14 +3,7 @@ package tui
 import "charm.land/lipgloss/v2"
 
 func (m *tuiModel) composerMouseOffset() (int, int) {
-	contentWidth := max(20, m.width-4)
-	const headerHeight = 3
-	const composerGapHeight = 1
-	const composerTopPadding = 1
-	x := 1 // renderComposerBand adds one leading card-padding column.
-	_, overlayHeight := m.overlaySection(contentWidth)
-	y := headerHeight + m.viewport.Height() + overlayHeight + composerGapHeight + composerTopPadding
-	return x, y
+	return composerOffsetFromSections(m.composerPrefixSections(max(20, m.width-4)))
 }
 
 func (m *tuiModel) isComposerMousePoint(x, y int) bool {
