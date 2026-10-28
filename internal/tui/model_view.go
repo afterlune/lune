@@ -235,13 +235,23 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount && !m.trailingRoundViewChanged() && !liveChanged {
 		return
 	}
-	animateTools := m.view.animateTools
-	m.view.animateTools = false
-	var projectedRound *toolRoundReveal
 	viewportWidth := max(1, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 	if m.viewport.LeftGutterFunc != nil {
 		viewportWidth = max(1, viewportWidth-ansi.StringWidth(m.viewport.LeftGutterFunc(viewport.GutterContext{})))
 	}
+	// Live deltas leave the immutable historical line cache and hit ranges intact.
+	if !m.view.cachedDirty && !m.view.transcriptDirty && m.view.cachedWidth == contentWidth &&
+		m.view.cachedThemeBg == activeTheme().CardBg && len(m.entries) == m.view.cachedEntryCount &&
+		!m.trailingRoundViewChanged() && m.view.toolReveal == nil {
+		m.noteBlockWrap(m.view.liveContent, viewportWidth)
+		m.viewport.SoftWrap = m.view.needsSoftWrap
+		m.composeTranscriptLines()
+		m.publishTranscript()
+		return
+	}
+	animateTools := m.view.animateTools
+	m.view.animateTools = false
+	var projectedRound *toolRoundReveal
 
 	// If empty state (no entries, not running), keep viewport completely empty (no central dot matrix)
 	if len(m.entries) == 0 && !m.run.running && m.run.currentStreamText == "" && m.run.currentReasoningText == "" {
@@ -254,6 +264,7 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.windowedTail = false
 		m.view.entryLineRanges = nil
 		m.view.transcriptLines = nil
+		m.view.historyLines = nil
 		m.viewport.SoftWrap = false
 		m.viewport.SetContent("")
 		return
@@ -470,18 +481,12 @@ func (m *tuiModel) refreshViewportContent() {
 		m.noteBlockWrap(m.view.liveContent, viewportWidth)
 		m.viewport.SoftWrap = m.view.needsSoftWrap
 	}
-	fullText := strings.Join(blocks, "\n\n")
-	if m.view.liveContent != "" {
-		if fullText != "" {
-			fullText += "\n\n"
-		}
-		fullText += m.view.liveContent
+	history := strings.Join(blocks, "\n\n")
+	m.view.historyLines = nil
+	if history != "" {
+		m.view.historyLines = strings.Split(history, "\n")
 	}
-	if fullText == "" {
-		m.view.transcriptLines = nil
-	} else {
-		m.view.transcriptLines = strings.Split(fullText, "\n")
-	}
+	m.composeTranscriptLines()
 	if projectedRound != nil {
 		m.publishToolReveal(len(projectedRound.queue) > 0 || m.view.toolRevealWindowed)
 	} else {
@@ -500,6 +505,19 @@ func (m *tuiModel) refreshViewportContent() {
 		m.view.cachedTrailingRunning = m.run.running
 		m.view.cachedTrailingTextEmpty = m.run.streamTextEmpty()
 	}
+}
+
+// composeTranscriptLines reuses storage and never copies historical message bytes.
+func (m *tuiModel) composeTranscriptLines() {
+	lines := m.view.transcriptLines[:0]
+	lines = append(lines, m.view.historyLines...)
+	if m.view.liveContent != "" {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, strings.Split(m.view.liveContent, "\n")...)
+	}
+	m.view.transcriptLines = lines
 }
 
 // publishTranscript hands the composed transcript to the viewport. While a turn is

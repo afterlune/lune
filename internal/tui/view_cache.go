@@ -23,6 +23,7 @@ type viewCache struct {
 	liveDirty               bool
 	liveContent             string
 	transcriptLines         []string
+	historyLines            []string
 	entryLineRanges         []entryLineRange
 	toolReveal              *toolRoundReveal
 	toolRevealGeneration    uint64
