@@ -61,27 +61,25 @@ func (s *Server) findTask(id string) *managedTask {
 }
 
 func (s *Server) submitTask(ctx context.Context, contextID string, input core.TaskInput) (*managedTask, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+	select {
+	case <-s.admission:
+		defer func() { s.admission <- struct{}{} }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.admissionCtx.Done():
 		return nil, errors.New("A2A server is closing")
 	}
-	s.pruneLocked()
-	active := 0
-	for _, t := range s.tasks {
-		t.mu.Lock()
-		live := !terminal(t.state)
-		sid := t.sessionID
-		t.mu.Unlock()
-		if live {
-			active++
-			if contextID != "" && contextID == sid {
-				return nil, core.ErrSessionBusy
-			}
-		}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.admissionCtx, cancel)
+	defer stop()
+	defer cancel()
+	// Capacity and context reuse checks are serialized by admission. The task
+	// table mutex protects only in-memory state, never backend calls.
+	if err := s.checkAdmission(contextID); err != nil {
+		return nil, err
 	}
-	if active >= maxActiveTasks {
-		return nil, errors.New("active task limit reached")
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	var sess core.Session
 	var err error
@@ -105,10 +103,38 @@ func (s *Server) submitTask(ctx context.Context, contextID string, input core.Ta
 		return nil, err
 	}
 	task := &managedTask{id: "lune-task-" + rand.Text(), contextID: sess.ID, sessionID: sess.ID, executionID: sub.ExecutionID, state: "TASK_STATE_WORKING", runtime: rt, changed: make(chan struct{})}
+	s.mu.Lock()
 	s.tasks[task.id] = task
 	s.wg.Add(1)
+	s.mu.Unlock()
 	go s.observeTask(task)
 	return task, nil
+}
+
+func (s *Server) checkAdmission(contextID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("A2A server is closing")
+	}
+	s.pruneLocked()
+	active := 0
+	for _, t := range s.tasks {
+		t.mu.Lock()
+		live := !terminal(t.state)
+		sid := t.sessionID
+		t.mu.Unlock()
+		if live {
+			active++
+			if contextID != "" && contextID == sid {
+				return core.ErrSessionBusy
+			}
+		}
+	}
+	if active >= maxActiveTasks {
+		return errors.New("active task limit reached")
+	}
+	return nil
 }
 func (t *managedTask) notifyLocked() { close(t.changed); t.changed = make(chan struct{}) }
 func (s *Server) finishTask(t *managedTask, state, message string, data map[string]any, output string) {
@@ -450,6 +476,18 @@ func (s *Server) Close(ctx context.Context) error {
 	defer stopDeadline()
 	s.mu.Lock()
 	s.closed = true
+	s.mu.Unlock()
+	s.stopAdmission()
+	// An admission may have accepted a Core turn just before cancellation. Join
+	// its registration before taking the shutdown snapshot or waiting on wg.
+	select {
+	case <-s.admission:
+		s.admission <- struct{}{}
+	case <-ctx.Done():
+		s.cancel()
+		return ctx.Err()
+	}
+	s.mu.Lock()
 	var tasks []*managedTask
 	for _, t := range s.tasks {
 		tasks = append(tasks, t)

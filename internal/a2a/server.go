@@ -90,12 +90,20 @@ type Server struct {
 	closed       bool
 	now          func() time.Time
 	responseWait time.Duration
+	// Serialize admission without holding the task table lock during backend I/O.
+	admission     chan struct{}
+	admissionCtx  context.Context
+	stopAdmission context.CancelFunc
 }
 
 // NewServer constructs an A2A HTTP Server for Lune.
 func NewServer(backend Backend, token string) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
+	admissionCtx, stopAdmission := context.WithCancel(context.Background())
+	admission := make(chan struct{}, 1)
+	admission <- struct{}{}
 	return &Server{
+		admission: admission, admissionCtx: admissionCtx, stopAdmission: stopAdmission,
 		ctx: ctx, cancel: cancel, now: time.Now, responseWait: 15 * time.Second,
 		backend: backend,
 		token:   strings.TrimSpace(token),

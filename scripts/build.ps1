@@ -15,10 +15,12 @@ $linuxOutputDirectory = $outputDirectory
 $originalGoos = $env:GOOS
 $originalGoarch = $env:GOARCH
 $originalCgoEnabled = $env:CGO_ENABLED
+$originalGowork = $env:GOWORK
 
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 Push-Location $workspaceRoot
 try {
+	if ([string]::IsNullOrWhiteSpace($env:GOWORK)) { $env:GOWORK = 'off' }
 	& go build -trimpath -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune-sandbox.' }
 
@@ -45,5 +47,6 @@ finally {
 	if ($null -eq $originalGoos) { Remove-Item Env:GOOS -ErrorAction SilentlyContinue } else { $env:GOOS = $originalGoos }
 	if ($null -eq $originalGoarch) { Remove-Item Env:GOARCH -ErrorAction SilentlyContinue } else { $env:GOARCH = $originalGoarch }
 	if ($null -eq $originalCgoEnabled) { Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue } else { $env:CGO_ENABLED = $originalCgoEnabled }
+	if ($null -eq $originalGowork) { Remove-Item Env:GOWORK -ErrorAction SilentlyContinue } else { $env:GOWORK = $originalGowork }
 	Pop-Location
 }

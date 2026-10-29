@@ -58,10 +58,11 @@ func TestDetachedTaskKeepsObservingCompletion(t *testing.T) {
 	rt := newFakeRuntime()
 	s := testServer(t, rt)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
 	req := rpcRequest{ID: 1, Params: json.RawMessage(`{"message":{"parts":[{"text":"work"}]}}`)}
 	w := httptest.NewRecorder()
 	s.handleSendMessage(w, ctx, req)
+	cancel() // Only accepted work is required to outlive the request context.
 	var response struct {
 		Result struct {
 			Task struct {
