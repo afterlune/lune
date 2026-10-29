@@ -115,6 +115,20 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(commands...)
 
 	case tea.PasteMsg:
+		if m.run.discardInFlight {
+			return m, nil
+		}
+		if active := m.modals.active(); active != modalNone {
+			if active == modalSessions && !m.modals.sessions.confirmDelete {
+				m.modals.sessions.filter += cleanToolInline(msg.Content)
+				m.filterSessions()
+				m.updateLayout()
+			}
+			return m, nil
+		}
+		if m.activeCardKind() == cardEffort {
+			return m, nil
+		}
 		if m.activeCardKind() == cardQuestion && m.activeQuestion.Submitting {
 			return m, nil
 		}

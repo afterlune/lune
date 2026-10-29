@@ -204,19 +204,16 @@ func fitOverlayHeight(view string, maxRows int) string {
 		indices = indices[:maxRows]
 	}
 	result := make([]string, 0, len(indices))
-	previous := -2
+	previous := -1
+	spareRows := maxRows - len(indices)
 	for _, index := range indices {
-		if index > previous+1 && len(result) < maxRows {
+		// Omission markers must never displace the rows selected above.
+		if previous >= 0 && index > previous+1 && spareRows > 0 {
 			result = append(result, "…")
-		}
-		if len(result) >= maxRows {
-			break
+			spareRows--
 		}
 		result = append(result, lines[index])
 		previous = index
-	}
-	if len(result) > maxRows {
-		result = result[:maxRows]
 	}
 	return strings.Join(result, "\n")
 }
