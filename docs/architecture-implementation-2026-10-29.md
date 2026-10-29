@@ -100,6 +100,8 @@ Agent：CLI、TUI、oneshot、A2A 及测试适配以上 API；增加 `lune migra
 
 ## 7. 剩余问题与限制
 
+其中持续写失败与 MCP 关闭边界的后续实施见[后续修复报告](runtime-followup-2026-10-29.md)；下列内容保留本报告提交时的状态。
+
 - 跨仓库依赖联动已完成：先推送 Core，再固定 Agent 依赖并验证。未创建版本 tag 或发布安装包；后续二进制发布仍需按维护指南执行。
 - context 是协作取消，不会强杀任意自定义 provider/tool；普通互斥区、文件系统调用及 MCP transport 自身清理仍有其等待边界。不能把已验证的 held-operation deadline 推广为任意第三方实现的硬实时关停保证。
 - A2A runtime Close 失败时保留任务所有权，由既有观察循环重试，不发布终态或提前允许同会话新任务。长期故障最终仍依赖关停 deadline 返回错误与宿主处理，没有增加持久化清理队列。
