@@ -704,7 +704,7 @@ func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})
@@ -769,5 +769,30 @@ func TestDiscardResultKeepsRecoveryOnErrorAndReportsMissingTask(t *testing.T) {
 	}
 	if !strings.Contains(m.entries[len(m.entries)-1].Text, "No interrupted task to discard") {
 		t.Fatalf("missing-task outcome not reported: %+v", m.entries)
+	}
+}
+
+func TestLateTurnResultPreservesNextTurnStream(t *testing.T) {
+	m := newTUIModel(nil, nil, "test-sess")
+	m.entries = []TranscriptEntry{
+		{ID: "old-user", ExecutionID: "old", Kind: KindUser, Text: "first"},
+		{ID: "new-user", ExecutionID: "new", Kind: KindUser, Text: "second"},
+	}
+	m.run.running = true
+	m.run.thinking = true
+	m.run.runningExecution = "new"
+	m.run.awaitingTurns["old"] = 1
+	m.run.currentStreamText = "new live draft"
+	m.run.currentReasoningText = "new reasoning"
+	m.run.taskStartedAt = time.Now()
+	m.finishTurn(turnFinishedMsg{executionID: "old", generation: 1, result: core.TurnResult{
+		ExecutionID: "old", Status: core.TaskCompleted,
+		Response: json.RawMessage(`{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"old canonical response"}]}]}`),
+	}})
+	if !m.run.running || !m.run.thinking || m.run.runningExecution != "new" || m.run.currentStreamText != "new live draft" || m.run.currentReasoningText != "new reasoning" {
+		t.Fatalf("late result changed current run: %+v", m.run)
+	}
+	if len(m.entries) != 3 || m.entries[1].Text != "old canonical response" || m.entries[2].ID != "new-user" || m.entries[1].TurnDuration != 0 {
+		t.Fatalf("old output misplaced or borrowed duration: %+v", m.entries)
 	}
 }

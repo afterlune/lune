@@ -316,7 +316,7 @@ func (m *tuiModel) submitQuestionBatch(q *ActiveQuestion) tea.Cmd {
 	// WaitTurn can still be returning the pause that produced this question.
 	// Its result must not finalize the resumed attempt under the same execution ID.
 	delete(m.run.awaitingTurns, key.ExecutionID)
-	delete(m.run.terminalEvents, key.ExecutionID)
+
 	answer := core.UserQuestionAnswer{
 		ExecutionID: q.Request.ExecutionID, RunID: q.Request.RunID,
 		InvocationID: q.Request.InvocationID, CallID: q.Request.CallID,

@@ -102,7 +102,7 @@ func TestSessionsCommandAndResumeGeneratedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	s1, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -264,7 +264,7 @@ func TestRewindPreviewAndRestoration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	// Create session with 2 turns of history
@@ -332,7 +332,7 @@ func TestInterruptCheckpointCardAndBanner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	sess, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -539,7 +539,7 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if err := client.SetPermissionMode(core.PermissionAuto); err != nil {
 		t.Fatal(err)
 	}

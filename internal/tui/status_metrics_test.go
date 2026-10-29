@@ -87,7 +87,7 @@ func TestEffortPickerPersistsWithoutSwitchingModelProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	sess, err := client.CreateSession(ctx, json.RawMessage("null"))

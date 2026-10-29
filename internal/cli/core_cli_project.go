@@ -55,7 +55,7 @@ func handleCoreCLIReview(runtime cliRuntime, workspace, line string, watchKeys k
 		fmt.Fprintf(stderr, "error: parse review request: %v\n", err)
 		return nil
 	}
-	result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PermissionMode: core.PermissionReadOnly}, watchKeys, stderr)
+	result, callErr, interrupted := respondCoreWithKeys(context.Background(), runtime, workspace, core.TurnRequest{Input: input, PermissionMode: core.PermissionReadOnly}, watchKeys, stderr)
 	return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
 }
 

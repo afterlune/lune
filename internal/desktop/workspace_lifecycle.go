@@ -127,10 +127,10 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 	}
 	activityStore, err := OpenActivityStore(stateRoot)
 	if err != nil {
-		return errors.Join(fmt.Errorf("打开桌面执行记录: %w", err), created.Close())
+		return errors.Join(fmt.Errorf("打开桌面执行记录: %w", err), created.Close(context.Background()))
 	}
 	if err := s.store.TouchWorkspace(path); err != nil {
-		return errors.Join(fmt.Errorf("保存最近工作区: %w", err), activityStore.Close(), created.Close())
+		return errors.Join(fmt.Errorf("保存最近工作区: %w", err), activityStore.Close(), created.Close(context.Background()))
 	}
 	s.mu.Lock()
 	s.localCore, s.workspace = created, path
@@ -195,7 +195,7 @@ func (s *DesktopService) attachSessionRuntime(sessionContext *desktopSessionCont
 	sessionContext.runtime = runtime
 	state, err := runtime.State(context.Background())
 	if err != nil {
-		_ = runtime.Close()
+		_ = runtime.Close(context.Background())
 		sessionContext.runtime = nil
 		return err
 	}
@@ -240,7 +240,7 @@ func (s *DesktopService) releaseInactiveSessionRuntime(sessionID string) {
 		return
 	}
 	runtime.SetUserInteractionAvailable(false)
-	if err := runtime.Close(); err != nil {
+	if err := runtime.Close(context.Background()); err != nil {
 		return
 	}
 
@@ -515,7 +515,10 @@ func cancelWorkspaceSession(ctx context.Context, sessionContext *desktopSessionC
 		if state.Task.ExecutionID == "" {
 			return errors.New("无法确定当前任务，暂时不能关闭工作区")
 		}
-		sessionContext.runtime.Interrupt(state.Task.ExecutionID)
+		_, interruptErr := sessionContext.runtime.Interrupt(ctx, state.Task.ExecutionID)
+		if interruptErr != nil {
+			return interruptErr
+		}
 		return nil
 	}
 	if state.Task.Status == core.TaskPaused || len(requests) > 0 {
@@ -529,7 +532,7 @@ func cancelWorkspaceSession(ctx context.Context, sessionContext *desktopSessionC
 func closeCoreWithRetry(agent *core.Core) error {
 	var err error
 	for attempt := 0; attempt < 100; attempt++ {
-		err = agent.Close()
+		err = agent.Close(context.Background())
 		if err == nil || !isCoreBusyError(err) {
 			return err
 		}

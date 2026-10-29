@@ -24,7 +24,7 @@ func TestBindSessionRuntimeRestoresSnapshotAndKeepsOldStateOnFailure(t *testing.
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	ctx := context.Background()
 
 	first, err := client.CreateSession(ctx, json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"First session prompt"}]}]`))
@@ -89,7 +89,7 @@ func TestSessionSnapshotUsesConfiguredContextBeforeUsageHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	session, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -191,7 +191,7 @@ func TestSessionsModalInteractions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	s1, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -361,7 +361,7 @@ func TestSessionsModalDeleteAndDropCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	ctx := context.Background()
 	s1, err := client.CreateSession(ctx, json.RawMessage("null"))

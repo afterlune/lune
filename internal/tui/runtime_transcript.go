@@ -92,12 +92,25 @@ func (m *tuiModel) finalizeSteeredSegment() {
 }
 
 func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json.RawMessage, executionID string, showPlanReview ...bool) {
-	m.flushReasoningEntry()
-	m.markRunningSubagentsAndToolsDone()
-
-	text := m.run.currentStreamText
-	m.run.resetStream()
-	m.view.invalidateLive()
+	active := m.run.runningExecution == "" || m.run.runningExecution == executionID
+	text := ""
+	segment := 0
+	if active {
+		m.flushReasoningEntry()
+		m.markRunningSubagentsAndToolsDone()
+		text = m.run.currentStreamText
+		m.run.resetStream()
+		m.view.invalidateLive()
+		segment = m.run.streamSegment
+	} else {
+		// A prior result may arrive after the next queued turn starts. Its receipt
+		// cannot flush, reset, or borrow the next turn's live buffers.
+		for _, entry := range m.entries {
+			if entry.Kind == KindUser && entry.ExecutionID == executionID && entry.ToolCallID != "" && entry.ToolCallID != executionID {
+				segment++
+			}
+		}
+	}
 
 	if len(fallbackResponse) > 0 {
 		if responseText := extractResponseText(fallbackResponse); strings.TrimSpace(responseText) != "" {
@@ -116,7 +129,10 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		proposedPlan = ""
 	}
 	for i := len(m.entries) - 1; i >= 0; i-- {
-		if m.entries[i].Kind == KindUser {
+		if !active && m.entries[i].ExecutionID != executionID {
+			continue
+		}
+		if active && m.entries[i].Kind == KindUser {
 			break
 		}
 		if m.entries[i].Kind != KindAssistant || !strings.Contains(strings.ToLower(m.entries[i].Text), "proposed_plan") {
@@ -132,17 +148,17 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	}
 
 	var turnDur time.Duration
-	finalOutputID := assistantOutputIDForSegment(executionID, m.run.streamSegment)
+	finalOutputID := assistantOutputIDForSegment(executionID, segment)
 	if assistantIndex := m.assistantEntryIndexByID(executionID, finalOutputID); assistantIndex >= 0 {
 		turnDur = m.entries[assistantIndex].TurnDuration
-	} else if !m.run.taskStartedAt.IsZero() {
+	} else if active && !m.run.taskStartedAt.IsZero() {
 		turnDur = time.Since(m.run.taskStartedAt)
 	}
 
 	stream := tuiMarkdown.SplitProposedPlanStream(text)
 	unusablePlan = unusablePlan || stream.Found && stream.Complete && !tuiMarkdown.HasPlanContent(stream.Plan)
 	orderedPlan := strings.TrimSpace(proposedPlan) != "" && stream.Found && stream.Complete
-	planID := planOutputIDForSegment(executionID, m.run.streamSegment)
+	planID := planOutputIDForSegment(executionID, segment)
 	if orderedPlan {
 		// Keep the response order visible: text before the marker, the formal plan
 		// panel, then any ordinary model text after the closing marker.
@@ -150,7 +166,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 		postPlanID := ""
 		if executionID != "" {
 			mainID = finalOutputID
-			if m.run.streamSegment == 0 {
+			if segment == 0 {
 				postPlanID = assistantPostPlanID(executionID)
 			} else {
 				postPlanID = mainID + "-after-plan"
@@ -180,7 +196,7 @@ func (m *tuiModel) finalizeTurnOutput(proposedPlan string, fallbackResponse json
 	}
 
 	showReview := len(showPlanReview) == 0 || showPlanReview[0]
-	if strings.TrimSpace(proposedPlan) != "" && showReview {
+	if active && strings.TrimSpace(proposedPlan) != "" && showReview {
 		m.activePlanReview = &ActivePlanReview{
 			Text:        proposedPlan,
 			ExecutionID: executionID,
@@ -234,10 +250,7 @@ func (m *tuiModel) upsertAssistantSegment(executionID, id, text string, turnDur 
 	if id == "" {
 		id = fmt.Sprintf("asst-%d", time.Now().UnixNano())
 	}
-	m.entries = append(m.entries, TranscriptEntry{
-		ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: trimmed,
-		TurnDuration: turnDur, Timestamp: time.Now(),
-	})
+	m.insertExecutionEntry(TranscriptEntry{ID: id, ExecutionID: executionID, Kind: KindAssistant, Text: trimmed, TurnDuration: turnDur, Timestamp: time.Now()})
 	m.view.invalidateContent()
 }
 
@@ -269,10 +282,7 @@ func (m *tuiModel) upsertPlanEntry(executionID, text string, entryIDs ...string)
 	if entryID == "" {
 		entryID = fmt.Sprintf("plan-%d", time.Now().UnixNano())
 	}
-	m.entries = append(m.entries, TranscriptEntry{
-		ID: entryID, ExecutionID: executionID,
-		Kind: KindPlan, Text: trimmed, Timestamp: time.Now(),
-	})
+	m.insertExecutionEntry(TranscriptEntry{ID: entryID, ExecutionID: executionID, Kind: KindPlan, Text: trimmed, Timestamp: time.Now()})
 	m.view.invalidateContent()
 }
 
@@ -303,4 +313,32 @@ func (m *tuiModel) assistantEntryIndexByID(executionID, id string) int {
 		}
 	}
 	return -1
+}
+
+func (m *tuiModel) insertExecutionEntry(entry TranscriptEntry) {
+	at := len(m.entries)
+	if entry.ExecutionID != "" && m.run.runningExecution != "" && entry.ExecutionID != m.run.runningExecution {
+		last := -1
+		for i, existing := range m.entries {
+			if existing.ExecutionID == entry.ExecutionID {
+				last = i
+			}
+		}
+		if last >= 0 {
+			at = last + 1
+		} else {
+			for i, existing := range m.entries {
+				if existing.ExecutionID == m.run.runningExecution {
+					at = i
+					break
+				}
+			}
+		}
+	}
+	m.entries = append(m.entries, TranscriptEntry{})
+	copy(m.entries[at+1:], m.entries[at:])
+	m.entries[at] = entry
+	if at < len(m.entries)-1 {
+		m.view.invalidateBlocks()
+	}
 }

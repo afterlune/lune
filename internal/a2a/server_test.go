@@ -30,6 +30,7 @@ type fakeRuntime struct {
 	submitted       core.TurnRequest
 	decision        publictool.ApprovalDecision
 	closeCount      int
+	closeErr        error
 }
 
 func newFakeRuntime(initialPending ...core.PendingRequest) *fakeRuntime {
@@ -39,7 +40,12 @@ func newFakeRuntime(initialPending ...core.PendingRequest) *fakeRuntime {
 	}
 }
 
-func (f *fakeRuntime) Close() error { f.mu.Lock(); defer f.mu.Unlock(); f.closeCount++; return nil }
+func (f *fakeRuntime) Close(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeCount++
+	return f.closeErr
+}
 
 func (f *fakeRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
 	f.mu.Lock()
@@ -96,7 +102,7 @@ func (f *fakeRuntime) ResolveUserInteraction(string, json.RawMessage) error {
 	f.pending = nil
 	return nil
 }
-func (f *fakeRuntime) ResolveApprovalDecision(id string, d publictool.ApprovalDecision) error {
+func (f *fakeRuntime) ResolveApprovalDecision(_ context.Context, id string, d publictool.ApprovalDecision) error {
 	f.mu.Lock()
 	f.decision = d
 	fail := f.failResolve
@@ -147,7 +153,7 @@ func (f *fakeRuntime) ResolveUserQuestion(_ context.Context, answer core.UserQue
 	return nil
 }
 
-func (f *fakeRuntime) Interrupt(executionID string) bool {
+func (f *fakeRuntime) Interrupt(_ context.Context, executionID string) (bool, error) {
 	f.mu.Lock()
 	f.interrupted = executionID
 	f.pending = nil
@@ -156,7 +162,7 @@ func (f *fakeRuntime) Interrupt(executionID string) bool {
 	case f.releaseCh <- core.TurnResult{ExecutionID: executionID, Status: core.TaskCancelled}:
 	default:
 	}
-	return true
+	return true, nil
 }
 
 func (f *fakeRuntime) SetUserInteractionAvailable(bool) {}
@@ -317,5 +323,23 @@ func TestCancelTaskInterruptsRuntime(t *testing.T) {
 	}
 	if rt.interrupted != "exec-1" {
 		t.Fatalf("expected Interrupt(exec-1), got %q", rt.interrupted)
+	}
+}
+
+func TestFinalizationRetainsOwnershipUntilRuntimeCloses(t *testing.T) {
+	rt := newFakeRuntime()
+	rt.closeErr = fmt.Errorf("storage busy")
+	server := NewServer(&fakeBackend{}, "")
+	defer server.cancel()
+	task := &managedTask{id: "task", sessionID: "session", state: "TASK_STATE_WORKING", runtime: rt, changed: make(chan struct{})}
+	if server.finishTask(task, "TASK_STATE_COMPLETED", "", nil, "done") {
+		t.Fatal("finalized despite close failure")
+	}
+	if terminal(task.state) || !task.finishedAt.IsZero() {
+		t.Fatal("released task ownership before cleanup")
+	}
+	rt.closeErr = nil
+	if !server.finishTask(task, "TASK_STATE_COMPLETED", "", nil, "done") || !terminal(task.state) || rt.closeCount != 2 {
+		t.Fatalf("retry failed: task=%+v closes=%d", task, rt.closeCount)
 	}
 }

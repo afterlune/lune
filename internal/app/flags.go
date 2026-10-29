@@ -214,6 +214,7 @@ func PrintHelp(w io.Writer) {
 
 Usage:
   lune [flags] [prompt]
+  lune migrate --state-dir <directory>  Back up and upgrade old execution storage
 
 Flags:
   -C, --workspace <dir>      Set working directory (default: current directory)

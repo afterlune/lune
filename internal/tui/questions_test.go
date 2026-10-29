@@ -101,7 +101,7 @@ func TestStaleWaiterAndTaskPauseCannotOverwriteResumedAttempt(t *testing.T) {
 	m.run.awaitingTurns["execution"] = 2
 	m.Update(turnFinishedMsg{executionID: "execution", generation: 1, result: core.TurnResult{Status: core.TaskPaused}})
 	m.processRuntimeEventNoRefresh(core.Event{Kind: core.EventTaskFinished, ExecutionID: "execution", TaskID: "old-attempt", Status: core.TaskPaused})
-	if !m.run.running || m.hasPausedTask() || m.run.awaitingTurns["execution"] != 2 || len(m.run.terminalEvents) != 0 {
+	if !m.run.running || m.hasPausedTask() || m.run.awaitingTurns["execution"] != 2 {
 		t.Fatalf("old pause overwrote the resumed attempt: running=%v paused=%v waits=%v", m.run.running, m.hasPausedTask(), m.run.awaitingTurns)
 	}
 }
@@ -157,7 +157,7 @@ func TestQuestionDraftPersistsAcrossRuntimeReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close(); close(provider.release) })
+	t.Cleanup(func() { _ = client.Close(context.Background()); close(provider.release) })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -211,7 +211,7 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
 	t.Cleanup(release)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -347,7 +347,7 @@ func TestDelegationFooterUsesEffectiveLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	m := newTUIModel(client, nil, "session")
 	footer := ansi.Strip(renderFooter(m, 160))
 	if !strings.Contains(footer, "0 active · disabled") || strings.Contains(footer, "4 max") || m.maxParallelAgents() != 4 {

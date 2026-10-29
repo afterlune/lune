@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -343,7 +344,7 @@ func TestModelUpdateKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	m := newTUIModel(client, nil, "test-sess")
 	m.workspace = client.Workspace()
 	m.width = 100

@@ -58,7 +58,7 @@ func integrationCore(t *testing.T, p *integrationProvider) *core.Core {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() {
-		if e := c.Close(); e != nil {
+		if e := c.Close(context.Background()); e != nil {
 			t.Error(e)
 		}
 	})

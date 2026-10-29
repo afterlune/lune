@@ -284,6 +284,14 @@ func (m *tuiModel) Update(msg tea.Msg) (updated tea.Model, cmd tea.Cmd) {
 			m.updateLayout()
 			return m, nil
 		}
+		if msg.entryID != "" {
+			for i := range m.entries {
+				if m.entries[i].ID == msg.entryID {
+					m.entries[i].ExecutionID = msg.submission.ExecutionID
+					break
+				}
+			}
+		}
 		if msg.submission.Status == core.SubmissionQueued {
 			alreadyPromoted := m.run.running && m.run.runningExecution == msg.submission.ExecutionID
 			if msg.entryID != "" {
@@ -656,10 +664,6 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 	if msg.generation != 0 && m.run.awaitingTurns[executionID] != msg.generation {
 		return nil
 	}
-	interrupted := m.run.wasInterrupted(executionID)
-	if interrupted && msg.result.Status == core.TaskPaused {
-		msg.result.Status = core.TaskCancelled
-	}
 	if msg.result.Status == core.TaskPaused && m.stalePause(executionID, "") {
 		delete(m.run.awaitingTurns, executionID)
 		if m.run.taskSnapshot.ExecutionID == executionID {
@@ -671,29 +675,15 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 		}
 		return m.waitForExecution(executionID)
 	}
-	event, eventFinalized := m.run.terminalEvents[executionID]
-	if m.run.runningExecution != executionID && !eventFinalized {
+	_, awaiting := m.run.awaitingTurns[executionID]
+	if m.run.runningExecution != executionID && !awaiting {
 		return nil
-	}
-	if eventFinalized {
-		if msg.err != nil {
-			msg.result = core.TurnResult{ExecutionID: executionID, Status: event.Status, BudgetReason: event.BudgetReason}
-		}
-		if event.Status == core.TaskCancelled {
-			msg.result.Status = core.TaskCancelled
-		}
-		if event.Err != "" {
-			msg.err = fmt.Errorf("%s", event.Err)
-		}
-	}
-	if interrupted && msg.result.Status == core.TaskPaused {
-		msg.result.Status = core.TaskCancelled
 	}
 	if msg.result.Status == core.TaskCancelled {
 		msg.err = nil
 	}
 	delete(m.run.awaitingTurns, executionID)
-	delete(m.run.terminalEvents, executionID)
+
 	delete(m.run.interruptedExecutions, executionID)
 	if m.run.taskSnapshot.ExecutionID == executionID {
 		m.run.taskSnapshot.Status = msg.result.Status
@@ -768,7 +758,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 			return
 		}
 	}
-	if _, finalized := m.run.terminalEvents[executionID]; finalized {
+	if m.run.taskSnapshot.ExecutionID == executionID && m.run.taskSnapshot.Status == event.Status {
 		return
 	}
 	main := m.ensureAgentMetrics("lead")
@@ -789,7 +779,7 @@ func (m *tuiModel) finishTurnEvent(event core.Event) {
 		main.Duration = time.Since(m.run.taskStartedAt)
 	}
 	m.noteTurnFinished(executionID, event.Status, main.Duration)
-	m.run.terminalEvents[executionID] = event
+	m.run.taskSnapshot.ExecutionID = executionID
 	m.run.taskSnapshot.Status = event.Status
 	m.run.thinking = false
 	m.run.taskActivity = ""

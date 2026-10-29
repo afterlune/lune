@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,16 +17,26 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func resolveCLIApproval(runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
+func resolveCLIApproval(ctx context.Context, runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
 	if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(request, workspace)); err != nil {
 		return err
 	}
-	return resolveCLIApprovalKeys(runtime, request, workspace, keys, stderr)
+	return resolveCLIApprovalKeys(ctx, runtime, request, workspace, keys, stderr)
 }
 
-func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
-	for key := range keys {
-		handled, err := handleCLIApprovalKey(runtime, request, workspace, key, stderr)
+func resolveCLIApprovalKeys(ctx context.Context, runtime cliRuntime, request core.ApprovalRequest, workspace string, keys <-chan cliInputEvent, stderr io.Writer) error {
+	for {
+		var key cliInputEvent
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case key, ok = <-keys:
+			if !ok {
+				goto unavailable
+			}
+		}
+		handled, err := handleCLIApprovalKey(ctx, runtime, request, workspace, key, stderr)
 		if err != nil {
 			return err
 		}
@@ -33,7 +44,8 @@ func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, wo
 			return nil
 		}
 	}
-	err := runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalDeny)
+unavailable:
+	err := runtime.ResolveApprovalDecision(ctx, request.ID, publictool.ApprovalDeny)
 	if err == nil {
 		fmt.Fprintf(stderr, "Denied %s because interactive keyboard input became unavailable.\n", cliApprovalSummary(request, workspace))
 	} else {
@@ -42,9 +54,9 @@ func resolveCLIApprovalKeys(runtime cliRuntime, request core.ApprovalRequest, wo
 	return err
 }
 
-func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, workspace string, key cliInputEvent, stderr io.Writer) (bool, error) {
+func handleCLIApprovalKey(ctx context.Context, runtime cliRuntime, request core.ApprovalRequest, workspace string, key cliInputEvent, stderr io.Writer) (bool, error) {
 	if key.err != nil {
-		err := runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalDeny)
+		err := runtime.ResolveApprovalDecision(ctx, request.ID, publictool.ApprovalDeny)
 		if err == nil {
 			fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(request, workspace))
 		} else {
@@ -77,7 +89,7 @@ func handleCLIApprovalKey(runtime cliRuntime, request core.ApprovalRequest, work
 	default:
 		return false, nil
 	}
-	if err := runtime.ResolveApprovalDecision(request.ID, decision); err != nil {
+	if err := runtime.ResolveApprovalDecision(ctx, request.ID, decision); err != nil {
 		fmt.Fprintf(stderr, "error: resolve approval: %v\n", err)
 		return true, fmt.Errorf("resolve approval: %w", err)
 	}

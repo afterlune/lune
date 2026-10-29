@@ -47,7 +47,7 @@ type runState struct {
 	taskSnapshot          core.TaskState
 	interruptedExecutions map[string]struct{}
 	questionSubmissions   map[questionWaitKey]questionSubmissionState
-	terminalEvents        map[string]core.Event
+
 	// autoApprovalFailures keeps approval IDs whose silent full-access
 	// auto-approval failed, so the card is shown instead of retrying forever.
 	autoApprovalFailures map[string]struct{}
@@ -97,9 +97,9 @@ type runState struct {
 // newRunState returns the empty run state used by a fresh model.
 func newRunState() runState {
 	return runState{
-		awaitingTurns:          map[string]uint64{},
-		interruptedExecutions:  map[string]struct{}{},
-		terminalEvents:         map[string]core.Event{},
+		awaitingTurns:         map[string]uint64{},
+		interruptedExecutions: map[string]struct{}{},
+
 		pendingInjected:        map[string]core.Event{},
 		autoApprovalFailures:   map[string]struct{}{},
 		reasoningLiveCollapsed: true,

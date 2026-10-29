@@ -41,7 +41,7 @@ func TestCLIGoalCreatesDraftAndPrintsAllRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -78,7 +78,7 @@ func TestCLIGoalPauseAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})

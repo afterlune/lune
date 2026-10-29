@@ -150,3 +150,24 @@ func TestShutdownIncludesTurnAcceptedDuringAdmission(t *testing.T) {
 		t.Fatalf("accepted turn escaped shutdown: state=%s closes=%d", state, closeCount)
 	}
 }
+
+func TestCloseDeadlineWhileTaskOperationIsHeld(t *testing.T) {
+	s := NewServer(&fakeBackend{rt: newFakeRuntime()}, "")
+	task := submitFake(t, s)
+	task.opMu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Close(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("close error=%v", err)
+		}
+	case <-time.After(time.Second):
+		task.opMu.Unlock()
+		<-done
+		t.Fatal("Close remained blocked on task operation past its deadline")
+	}
+	task.opMu.Unlock()
+}

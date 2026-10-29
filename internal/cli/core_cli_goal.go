@@ -102,7 +102,7 @@ func handleCoreCLIGoal(runtime cliRuntime, workspace string, command goalcmd.Com
 			if event.Kind != core.EventTaskStarted || event.GoalID != goal.ID {
 				continue
 			}
-			result, callErr, interrupted := awaitCoreExecution(manager, workspace, event.ExecutionID, events, keys, stderr)
+			result, callErr, interrupted := awaitCoreExecution(ctx, manager, workspace, event.ExecutionID, events, keys, stderr)
 			if err := printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted); err != nil {
 				return err
 			}

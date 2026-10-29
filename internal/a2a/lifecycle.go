@@ -99,7 +99,9 @@ func (s *Server) submitTask(ctx context.Context, contextID string, input core.Ta
 	sub, err := rt.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)
 	if err != nil {
 		rt.SetUserInteractionAvailable(false)
-		_ = rt.Close()
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = rt.Close(cleanupCtx)
+		cancel()
 		return nil, err
 	}
 	task := &managedTask{id: "lune-task-" + rand.Text(), contextID: sess.ID, sessionID: sess.ID, executionID: sub.ExecutionID, state: "TASK_STATE_WORKING", runtime: rt, changed: make(chan struct{})}
@@ -137,18 +139,21 @@ func (s *Server) checkAdmission(contextID string) error {
 	return nil
 }
 func (t *managedTask) notifyLocked() { close(t.changed); t.changed = make(chan struct{}) }
-func (s *Server) finishTask(t *managedTask, state, message string, data map[string]any, output string) {
+func (s *Server) finishTask(t *managedTask, state, message string, data map[string]any, output string) bool {
 	t.mu.Lock()
 	if terminal(t.state) {
 		t.mu.Unlock()
-		return
+		return true
 	}
 	t.mu.Unlock()
 	// Release the old handle and its capability before admitting another task in
 	// the same session. Callers serialize finalization with opMu.
 	t.runtime.SetUserInteractionAvailable(false)
-	if err := t.runtime.Close(); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+	if err := t.runtime.Close(cleanupCtx); err != nil {
 		slog.Warn("close A2A session runtime", "session_id", t.sessionID, "error", err)
+		return false
 	}
 	t.mu.Lock()
 	t.state = state
@@ -162,13 +167,16 @@ func (s *Server) finishTask(t *managedTask, state, message string, data map[stri
 	s.mu.Lock()
 	s.pruneLocked()
 	s.mu.Unlock()
+	return true
 }
 func (s *Server) observeTask(t *managedTask) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(taskPollInterval)
 	defer ticker.Stop()
 	for {
-		t.opMu.Lock()
+		if err := acquireTaskOperation(s.ctx, t); err != nil {
+			return
+		}
 		done := s.refreshTask(t)
 		t.opMu.Unlock()
 		if done {
@@ -204,12 +212,10 @@ func (s *Server) refreshTask(t *managedTask) bool {
 	if len(reqs) > 0 && !t.cancelRequested {
 		p := reqs[0]
 		if p.Kind == core.PendingExecutionBlocker {
-			s.finishTask(t, "TASK_STATE_FAILED", "Execution requires replanning", map[string]any{"kind": p.Kind, "payload": p.Blocker}, "")
-			return true
+			return s.finishTask(t, "TASK_STATE_FAILED", "Execution requires replanning", map[string]any{"kind": p.Kind, "payload": p.Blocker}, "")
 		}
 		if err := s.parkTask(t, p); err != nil {
-			s.finishTask(t, "TASK_STATE_FAILED", err.Error(), nil, "")
-			return true
+			return s.finishTask(t, "TASK_STATE_FAILED", err.Error(), nil, "")
 		}
 		return false
 	}
@@ -225,20 +231,18 @@ func (s *Server) refreshTask(t *managedTask) bool {
 		}
 		switch {
 		case result.Status == core.TaskCancelled || errors.Is(err, context.Canceled):
-			s.finishTask(t, "TASK_STATE_CANCELED", "Task canceled", nil, "")
+			return s.finishTask(t, "TASK_STATE_CANCELED", "Task canceled", nil, "")
 		case err != nil || result.Status == core.TaskFailed:
 			message := "Task failed"
 			if err != nil {
 				message = err.Error()
 			}
-			s.finishTask(t, "TASK_STATE_FAILED", message, nil, "")
+			return s.finishTask(t, "TASK_STATE_FAILED", message, nil, "")
 		default:
-			s.finishTask(t, "TASK_STATE_COMPLETED", "", nil, extractTurnOutputText(result.Response))
+			return s.finishTask(t, "TASK_STATE_COMPLETED", "", nil, extractTurnOutputText(result.Response))
 		}
-		return true
 	case core.TaskPaused:
-		s.finishTask(t, "TASK_STATE_FAILED", "Core session is paused; resume through a host with replanning or budget controls", map[string]any{"kind": "paused", "context_id": t.contextID}, "")
-		return true
+		return s.finishTask(t, "TASK_STATE_FAILED", "Core session is paused; resume through a host with replanning or budget controls", map[string]any{"kind": "paused", "context_id": t.contextID}, "")
 	}
 	return false
 }
@@ -301,7 +305,13 @@ func (s *Server) parkTask(t *managedTask, p core.PendingRequest) error {
 	return nil
 }
 func (s *Server) resumeTaskInput(ctx context.Context, t *managedTask, text string, data map[string]any) error {
-	t.opMu.Lock()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.admissionCtx, cancel)
+	defer stop()
+	defer cancel()
+	if err := acquireTaskOperation(ctx, t); err != nil {
+		return err
+	}
 	defer t.opMu.Unlock()
 	t.mu.Lock()
 	if t.cancelRequested || t.state != "TASK_STATE_INPUT_REQUIRED" || t.pending == nil {
@@ -333,7 +343,7 @@ func (s *Server) resumeTaskInput(ctx context.Context, t *managedTask, text strin
 		default:
 			return errors.New("decision must be allow_once, allow_session, or deny")
 		}
-		err = t.runtime.ResolveApprovalDecision(p.Approval.ID, d)
+		err = t.runtime.ResolveApprovalDecision(ctx, p.Approval.ID, d)
 	case core.PendingUserQuestion:
 		if len(data) == 0 && len(p.UserQuestion.Questions) != 1 {
 			return errors.New("multiple questions require structured answers")
@@ -403,7 +413,9 @@ func (s *Server) resumeTaskInput(ctx context.Context, t *managedTask, text strin
 	return nil
 }
 func (s *Server) cancelTask(ctx context.Context, t *managedTask) error {
-	t.opMu.Lock()
+	if err := acquireTaskOperation(ctx, t); err != nil {
+		return err
+	}
 	defer t.opMu.Unlock()
 	return s.cancelTaskLocked(ctx, t)
 }
@@ -414,7 +426,11 @@ func (s *Server) cancelTaskLocked(ctx context.Context, t *managedTask) error {
 	if done {
 		return nil
 	}
-	if t.runtime.Interrupt(t.executionID) {
+	accepted, err := t.runtime.Interrupt(ctx, t.executionID)
+	if err != nil {
+		return err
+	}
+	if accepted {
 		t.cancelRequested = true
 		t.toolDecision = ""
 		t.mu.Lock()
@@ -438,7 +454,9 @@ func (s *Server) cancelTaskLocked(ctx context.Context, t *managedTask) error {
 		return err
 	}
 	if discarded {
-		s.finishTask(t, "TASK_STATE_CANCELED", "Task canceled", nil, "")
+		if !s.finishTask(t, "TASK_STATE_CANCELED", "Task canceled", nil, "") {
+			return errors.New("task discarded but runtime cleanup failed; retry cancellation")
+		}
 		return nil
 	}
 	return nil // A completed execution is reconciled by the observer.
@@ -506,5 +524,27 @@ func (s *Server) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		s.cancel()
 		return errors.Join(closeErr, ctx.Err())
+	}
+}
+
+// Acquire only the handoff lock; the caller context also governs backend I/O.
+func acquireTaskOperation(ctx context.Context, task *managedTask) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if task.opMu.TryLock() {
+		return nil
+	}
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+			if task.opMu.TryLock() {
+				return nil
+			}
+		}
 	}
 }

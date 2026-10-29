@@ -157,7 +157,7 @@ func newDesktopServiceForTest(t *testing.T, provider publicmodel.Provider) (*Des
 	}
 	activityStore, err := OpenActivityStore(stateDir)
 	if err != nil {
-		_ = agent.Close()
+		_ = agent.Close(context.Background())
 		t.Fatalf("OpenActivityStore: %v", err)
 	}
 	service := &DesktopService{localCore: agent, workspace: workspace, activityStore: activityStore, waiting: map[string]bool{}}

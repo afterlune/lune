@@ -20,14 +20,14 @@ import (
 )
 
 type cliRuntime interface {
-	Close() error
+	Close(context.Context) error
 	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
 	WaitTurn(context.Context, string) (core.TurnResult, error)
 	SubscribeEvents(context.Context, int64) (<-chan core.Event, error)
 	State(context.Context) (core.RuntimeState, error)
-	Interrupt(string) bool
+	Interrupt(context.Context, string) (bool, error)
 	DiscardPaused(context.Context) (bool, error)
-	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
+	ResolveApprovalDecision(context.Context, string, publictool.ApprovalDecision) error
 	SetUserInteractionAvailable(bool)
 	ListCommands(context.Context) ([]core.CommandInfo, error)
 	ReadCommand(context.Context, string, core.CommandReadOptions) (core.CommandOutput, error)
@@ -209,7 +209,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 	}
 	defer func() {
 		if runtime != nil {
-			_ = runtime.Close()
+			_ = runtime.Close(context.Background())
 		}
 	}()
 
@@ -275,7 +275,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			}
 			fmt.Fprintln(stdout, "Discarded the paused checkpoint; starting a new turn.")
 		}
-		result, callErr, interrupted := respondCoreWithKeys(runtime, workspace, core.TurnRequest{Input: input, PlanMode: planMode}, watchKeys, stderr)
+		result, callErr, interrupted := respondCoreWithKeys(ctx, runtime, workspace, core.TurnRequest{Input: input, PlanMode: planMode}, watchKeys, stderr)
 		return printCoreTaskResult(stdout, stderr, result.Response, callErr, interrupted)
 	}
 
@@ -331,7 +331,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 			fmt.Fprint(stdout, "\033[H\033[2J")
 		case line == "/new":
 			if runtime != nil {
-				_ = runtime.Close()
+				_ = runtime.Close(context.Background())
 				runtime = nil
 			}
 			sessionID, sessionTitle, workspace = "", "", ""
@@ -392,7 +392,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				fmt.Fprintf(stderr, "error: resume session: %v\n", resumeErr)
 			} else if newRuntime != nil {
 				if runtime != nil {
-					_ = runtime.Close()
+					_ = runtime.Close(context.Background())
 				}
 				sessionID = newID
 				runtime = newRuntime
@@ -436,7 +436,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 					}
 				} else {
 					if runtime != nil {
-						_ = runtime.Close()
+						_ = runtime.Close(context.Background())
 					}
 					sessionID, sessionTitle, workspace, runtime = newSession.ID, newSession.Title, newSession.Workspace, newRuntime
 					fmt.Fprintf(stdout, "Forked to new session: %s\n", sessionID)

@@ -16,18 +16,18 @@ import (
 
 // SessionRuntime abstracts the Lune session runtime operations needed by the A2A server.
 type SessionRuntime interface {
-	Close() error
+	Close(context.Context) error
 	SubmitTurn(context.Context, core.TurnRequest, core.SubmissionMode) (core.TurnSubmission, error)
 	WaitTurn(context.Context, string) (core.TurnResult, error)
 	PendingRequests(context.Context) ([]core.PendingRequest, error)
-	ResolveApprovalDecision(string, publictool.ApprovalDecision) error
+	ResolveApprovalDecision(context.Context, string, publictool.ApprovalDecision) error
 	State(context.Context) (core.RuntimeState, error)
 	Recover(context.Context, ...core.ExecutionOptions) (core.TurnSubmission, error)
 	DiscardPaused(context.Context) (bool, error)
 	ResolveToolRecovery(context.Context, string, core.ToolRecoveryDecision) error
 	ResolveUserInteraction(string, json.RawMessage) error
 	ResolveUserQuestion(context.Context, core.UserQuestionAnswer) error
-	Interrupt(string) bool
+	Interrupt(context.Context, string) (bool, error)
 	SetUserInteractionAvailable(bool)
 }
 

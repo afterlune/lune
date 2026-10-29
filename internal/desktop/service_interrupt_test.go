@@ -50,7 +50,7 @@ func TestInterruptCancelsExecutionAndAllowsNewMessage(t *testing.T) {
 	}
 	activityStore, err := OpenActivityStore(stateDir)
 	if err != nil {
-		_ = agent.Close()
+		_ = agent.Close(context.Background())
 		t.Fatalf("OpenActivityStore: %v", err)
 	}
 	service := &DesktopService{

@@ -17,8 +17,15 @@ func (m *tuiModel) interruptRunningTask() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	execID := m.run.runningExecution
-	if m.runtime != nil && !m.runtime.Interrupt(execID) {
-		return m, nil
+	if m.runtime != nil {
+		accepted, err := m.runtime.Interrupt(m.boundContext, execID)
+		if err != nil {
+			m.addSystemEntry("Failed to interrupt task: " + err.Error())
+			return m, nil
+		}
+		if !accepted {
+			return m, nil
+		}
 	}
 	goalExecution := m.run.taskSnapshot.GoalID != "" || m.run.taskSnapshot.AutomaticGoal
 	if !goalExecution {

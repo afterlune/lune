@@ -244,7 +244,7 @@ func TestFinishRestoreResyncsIdleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = runtime.Close() })
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
 	m := newTUIModel(client, runtime, session.ID)
 	if !m.run.restoringSession {

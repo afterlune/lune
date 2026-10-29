@@ -166,7 +166,7 @@ func TestPermissionsCommandRejectsModesOutsideTheRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	m := newTUIModel(client, nil, "permission-table")
 	for _, raw := range []string{"ask", "nonsense", "readonly", "full_access"} {
@@ -707,7 +707,7 @@ func TestMemoryCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	mWithClient := newTUIModel(client, nil, "test-sess")
 
 	// Initially empty
@@ -832,7 +832,7 @@ func TestProcessCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -952,7 +952,7 @@ func TestToolchainsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	m := newTUIModel(client, nil, "toolchains-sess")
 
@@ -987,7 +987,7 @@ func TestToolchainsRefreshReportsSettingsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	m := newTUIModel(client, nil, "toolchains-sess")
 	before := client.CommandToolchainPaths()

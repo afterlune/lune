@@ -116,13 +116,14 @@ func (m *tuiModel) resolveActiveApproval() (tea.Model, tea.Cmd) {
 	m.addSystemEntry(fmt.Sprintf("%s tool execution for `%s`.", decisionText, toolName))
 
 	runtime := m.runtime
+	ctx := m.boundContext
 	executionID := m.run.runningExecution
 	sessionID, bindingGeneration := m.sessionID, m.bindingGeneration
 	return m, tea.Batch(
 		tickClock(),
 		m.waitForExecution(executionID),
 		func() tea.Msg {
-			return approvalResolvedMsg{approvalID: apprID, sessionID: sessionID, bindingGeneration: bindingGeneration, err: runtime.ResolveApprovalDecision(apprID, approvalDecision)}
+			return approvalResolvedMsg{approvalID: apprID, sessionID: sessionID, bindingGeneration: bindingGeneration, err: runtime.ResolveApprovalDecision(ctx, apprID, approvalDecision)}
 		},
 	)
 }
@@ -163,7 +164,7 @@ func (m *tuiModel) approveWithoutCard(request core.ApprovalRequest) bool {
 	if _, failed := m.run.autoApprovalFailures[request.ID]; failed {
 		return false
 	}
-	if err := m.runtime.ResolveApprovalDecision(request.ID, publictool.ApprovalAllowOnce); err != nil {
+	if err := m.runtime.ResolveApprovalDecision(m.boundContext, request.ID, publictool.ApprovalAllowOnce); err != nil {
 		slog.Warn("auto-approve tool call in full-access mode", "tool", request.Tool, "error", err)
 		m.noteAutoApprovalFailure(request.ID)
 		return false

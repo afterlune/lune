@@ -51,7 +51,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 	if err != nil {
 		return fmt.Errorf("open session runtime: %w", err)
 	}
-	defer runtime.Close()
+	defer runtime.Close(context.Background())
 	runtime.SetUserInteractionAvailable(false)
 
 	streamCtx, stopStream := context.WithCancel(ctx)
@@ -89,7 +89,7 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 // and slow output can be exercised deterministically.
 type oneShotTurnRuntime interface {
 	WaitTurn(context.Context, string) (core.TurnResult, error)
-	Interrupt(string) bool
+	Interrupt(context.Context, string) (bool, error)
 }
 
 func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID, executionID string, events <-chan core.Event, stopStream context.CancelFunc, stdout, stderr io.Writer) error {
@@ -160,11 +160,11 @@ func awaitOneShotTurn(ctx context.Context, runtime oneShotTurnRuntime, sessionID
 		flushErr := flushPending()
 		// Release blocked stream producers before joining the interrupted turn.
 		stopStream()
-		runtime.Interrupt(executionID)
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		_, interruptErr := runtime.Interrupt(cleanupCtx, executionID)
 		_, cleanupErr := runtime.WaitTurn(cleanupCtx, executionID)
-		return errors.Join(err, flushErr, cleanupErr)
+		return errors.Join(err, flushErr, interruptErr, cleanupErr)
 	}
 	var result core.TurnResult
 	var streamedText strings.Builder

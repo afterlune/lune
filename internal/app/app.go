@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/afterlune/lune/internal/cli"
 	"github.com/afterlune/lune/internal/settings"
@@ -30,6 +32,9 @@ func Run() error {
 
 // RunWithStreams executes the application with custom arguments and streams.
 func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (runErr error) {
+	if len(args) > 0 && args[0] == "migrate" {
+		return runMigration(args[1:], stdout, stderr)
+	}
 	flags, err := ParseFlags(args)
 	if err != nil {
 		return err
@@ -110,7 +115,11 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 	if err != nil {
 		return err
 	}
-	defer func() { runErr = errors.Join(runErr, client.Close()) }()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		runErr = errors.Join(runErr, client.Close(cleanupCtx))
+	}()
 
 	if flags.A2AListen != "" {
 		token := os.Getenv("LUNE_A2A_TOKEN")

@@ -58,3 +58,5 @@ Linux CI 验证 CLI/TUI/A2A 相关包（`internal/a2a`、`internal/assistanttext
 ## 非目标
 
 不实现 skill（技能）机制：没有 `/skill` 命令、没有 skill 加载器、没有 `skills/*.md` 目录约定。能力扩展走既有的工具注册表与工具分类（`select_tool_category`），Plan 模式通过工具元数据把可见工具集裁剪为只读工具。
+
+旧执行存储升级前请停止所有实例，运行 `lune migrate --state-dir <状态目录>`。升级保留历史、设置和已记录用量，备份后作废旧未完成任务；操作说明见[工程维护指南](docs/maintenance.md#执行存储升级)。

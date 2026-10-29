@@ -6,6 +6,7 @@ import (
 
 	core "github.com/afterlune/luneCore"
 	publicmodel "github.com/afterlune/luneCore/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func (s *DesktopService) ResolveApproval(sessionID string, id string, allowed bool) error {
@@ -18,7 +19,11 @@ func (s *DesktopService) ResolveApproval(sessionID string, id string, allowed bo
 	if runtime == nil {
 		return errors.New("会话已关闭")
 	}
-	return runtime.ResolveApproval(id, allowed)
+	decision := publictool.ApprovalDeny
+	if allowed {
+		decision = publictool.ApprovalAllowOnce
+	}
+	return runtime.ResolveApprovalDecision(context.Background(), id, decision)
 }
 
 type QuestionAnswerInput struct {

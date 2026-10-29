@@ -36,7 +36,7 @@ func TestA2AAppAppliesPermissionBeforeServing(t *testing.T) {
 			}
 			return nil
 		}
-		args := []string{"--a2a-listen", "127.0.0.1:18091"}
+		args := []string{"-C", t.TempDir(), "--a2a-listen", "127.0.0.1:18091"}
 		if mode != "" {
 			args = append(args, "--permission", string(mode))
 		}

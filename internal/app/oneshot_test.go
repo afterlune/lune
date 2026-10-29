@@ -30,9 +30,9 @@ func (r *oneShotTestRuntime) WaitTurn(ctx context.Context, _ string) (core.TurnR
 		return core.TurnResult{}, ctx.Err()
 	}
 }
-func (r *oneShotTestRuntime) Interrupt(string) bool {
+func (r *oneShotTestRuntime) Interrupt(context.Context, string) (bool, error) {
 	r.once.Do(func() { close(r.interrupted); close(r.ready) })
-	return true
+	return true, nil
 }
 func oneShotText(text string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{"output": []any{map[string]any{"type": "message", "content": []any{map[string]string{"type": "output_text", "text": text}}}}})
@@ -396,7 +396,7 @@ func TestRunOneShotPlanPreservesSelectedPermissions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer client.Close()
+			defer client.Close(context.Background())
 			if err := RunOneShot(client, "hello", CLIFlags{PlanMode: true, PermissionMode: mode}, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
@@ -420,7 +420,7 @@ func TestRunOneShotWithSlowOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})

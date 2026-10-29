@@ -112,3 +112,27 @@ exec /opt/lune/bin/lune "$@"
 Core CI 固定使用 `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`，升级 Go 时同步验证分析器能识别新语法。Linux 上单独运行 Core 全量验证时使用 `GOWORK=off`，并运行 `go test -race -trimpath -p 1 ./internal/runtime ./internal/tool ./internal/command ./internal/mcp`。沙箱集成测试自动构建带 `-trimpath` 的 helper，并为 Go 工具链授权完整安装根目录。
 
 A2A 的权限、远程部署和交互合同见 [A2A 服务](a2a.md)。
+
+## 执行存储升级
+
+新执行引擎使用 `execution-format` 标记和 `executions-v2.db`。旧状态目录不会在正常启动时隐式升级。
+停止所有使用该目录的 Lune 实例后执行：
+
+```bash
+lune migrate --state-dir /absolute/path/to/.luneagent
+```
+
+命令不需要模型配置或凭证。升级先取得独占锁，用 SQLite `VACUUM INTO` 在目录内创建私有的
+`upgrade-backup-*` 备份，再转换会话与清理执行状态，最后写入版本标记。
+历史、设置、标题和已记录用量保留；旧未完成任务被标记为 discarded，不再自动重放。
+未执行的排队输入仍在备份中，可以人工查看后重新提交。旧 checkpoint 文件保留不动，provider
+上下文由历史重建；活动目标变为暂停，需要明确恢复。失败时保留备份并允许重试。
+不要让旧二进制重新打开升级后的目录，也不要在运行实例存在时替换数据库文件。
+
+Core 的 `Close(ctx)`、`SessionRuntime.Close(ctx)`、`Interrupt(ctx, id)` 和
+`ResolveApprovalDecision(ctx, id, decision)` 均接收调用上下文。`Interrupt` 返回 `(accepted, error)`；
+布尔授权接口已删除，调用方明确选择本次允许、会话允许或拒绝。超时关停会返回错误并保持存储打开，
+应等待已接受的工作结束后重试关闭。自定义 provider/tool 仍须配合 context 取消。
+
+发布此跨仓库改动时，先发布 luneCore，再更新 Agent 的固定依赖版本并运行 `GOWORK=off` 检查。
+本地联调允许使用未跟踪的 go.work；不要提交指向本地目录的 replace，也不要伪造未发布的 pseudo-version。

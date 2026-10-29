@@ -22,7 +22,7 @@ func newApprovalTestModel(t *testing.T) (*tuiModel, *core.SessionRuntime) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = runtime.Close() })
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	return newTUIModel(client, runtime, session.ID), runtime
 }
 

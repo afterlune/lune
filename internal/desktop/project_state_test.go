@@ -64,7 +64,7 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 		_ = settingsStore.Close()
 		t.Fatal(err)
 	}
-	defer legacyCore.Close()
+	defer legacyCore.Close(context.Background())
 	configPath := filepath.Join(workspace, "config.json")
 	ignoredConfig := []byte(`{"not":"a Desktop config"}`)
 	if err := os.WriteFile(configPath, ignoredConfig, 0600); err != nil {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/afterlune/lune/internal/assistanttext"
 	"github.com/afterlune/lune/internal/terminaltext"
@@ -15,7 +16,7 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.TurnRequest, watchKeys keyEventWatcher, stderr io.Writer) (core.TurnResult, error, bool) {
+func respondCoreWithKeys(ctx context.Context, runtime cliRuntime, workspace string, request core.TurnRequest, watchKeys keyEventWatcher, stderr io.Writer) (core.TurnResult, error, bool) {
 	var keyEvents <-chan cliInputEvent
 	stopWatching := func() {}
 	if watchKeys != nil {
@@ -31,7 +32,7 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	}
 	defer stopWatching()
 
-	streamCtx, stopStream := context.WithCancel(context.Background())
+	streamCtx, stopStream := context.WithCancel(ctx)
 	events, err := runtime.SubscribeEvents(streamCtx, 0)
 	defer stopStream()
 	if err != nil {
@@ -39,14 +40,14 @@ func respondCoreWithKeys(runtime cliRuntime, workspace string, request core.Turn
 	}
 	runtime.SetUserInteractionAvailable(false)
 	request.NoInteractiveDecisions = keyEvents == nil
-	submission, err := runtime.SubmitTurn(context.Background(), request, core.StartIfIdle)
+	submission, err := runtime.SubmitTurn(ctx, request, core.StartIfIdle)
 	if err != nil {
 		return core.TurnResult{}, err, false
 	}
-	return awaitCoreExecution(runtime, workspace, submission.ExecutionID, events, keyEvents, stderr)
+	return awaitCoreExecution(ctx, runtime, workspace, submission.ExecutionID, events, keyEvents, stderr)
 }
 
-func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, events <-chan core.Event, keyEvents <-chan cliInputEvent, stderr io.Writer) (core.TurnResult, error, bool) {
+func awaitCoreExecution(ctx context.Context, runtime cliRuntime, workspace, executionID string, events <-chan core.Event, keyEvents <-chan cliInputEvent, stderr io.Writer) (core.TurnResult, error, bool) {
 	progress := &cliProgressWriter{writer: stderr, errors: make(chan error, 1)}
 	stderr = progress
 	if keyEvents != nil {
@@ -59,7 +60,7 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 		err    error
 	}
 	done := make(chan waitResult, 1)
-	waitCtx, cancelWait := context.WithCancel(context.Background())
+	waitCtx, cancelWait := context.WithCancel(ctx)
 	defer cancelWait()
 	go func() {
 		result, waitErr := runtime.WaitTurn(waitCtx, executionID)
@@ -69,6 +70,11 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 	var pendingKey *cliInputEvent
 	for {
 		select {
+		case <-ctx.Done():
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_, interruptErr := runtime.Interrupt(cleanupCtx, executionID)
+			cancel()
+			return core.TurnResult{}, errors.Join(ctx.Err(), interruptErr), interrupted
 		case result := <-done:
 			pendingKey = nil
 			if result.result.Status == core.TaskPaused && result.err == nil {
@@ -154,31 +160,39 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 			case core.EventApprovalRequired:
 				if event.Approval != nil {
 					if keyEvents == nil {
-						if err := runtime.ResolveApprovalDecision(event.Approval.ID, publictool.ApprovalDeny); err != nil {
+						if err := runtime.ResolveApprovalDecision(ctx, event.Approval.ID, publictool.ApprovalDeny); err != nil {
 							fmt.Fprintf(stderr, "error: deny approval: %v\n", err)
-							runtime.Interrupt(executionID)
+							if _, interruptErr := runtime.Interrupt(ctx, executionID); interruptErr != nil {
+								return core.TurnResult{}, interruptErr, interrupted
+							}
 						} else {
 							fmt.Fprintf(stderr, "Denied %s because interactive keyboard input is unavailable.\n", cliApprovalSummary(*event.Approval, workspace))
 						}
 						continue
 					}
 					if _, err := fmt.Fprintln(stderr, formatCLIToolApproval(*event.Approval, workspace)); err != nil {
-						runtime.Interrupt(executionID)
+						if _, interruptErr := runtime.Interrupt(ctx, executionID); interruptErr != nil {
+							return core.TurnResult{}, interruptErr, interrupted
+						}
 						continue
 					}
 					if pendingKey != nil {
-						handled, err := handleCLIApprovalKey(runtime, *event.Approval, workspace, *pendingKey, stderr)
+						handled, err := handleCLIApprovalKey(ctx, runtime, *event.Approval, workspace, *pendingKey, stderr)
 						pendingKey = nil
 						if err != nil {
-							runtime.Interrupt(executionID)
+							if _, interruptErr := runtime.Interrupt(ctx, executionID); interruptErr != nil {
+								return core.TurnResult{}, interruptErr, interrupted
+							}
 							continue
 						}
 						if handled {
 							continue
 						}
 					}
-					if err := resolveCLIApprovalKeys(runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
-						runtime.Interrupt(executionID)
+					if err := resolveCLIApprovalKeys(ctx, runtime, *event.Approval, workspace, keyEvents, stderr); err != nil {
+						if _, interruptErr := runtime.Interrupt(ctx, executionID); interruptErr != nil {
+							return core.TurnResult{}, interruptErr, interrupted
+						}
 					}
 				}
 			case core.EventUserQuestionRequired, core.EventUserInteractionRequired,
@@ -192,7 +206,11 @@ func awaitCoreExecution(runtime cliRuntime, workspace, executionID string, event
 				continue
 			}
 			if key.escape {
-				interrupted = runtime.Interrupt(executionID)
+				var interruptErr error
+				interrupted, interruptErr = runtime.Interrupt(ctx, executionID)
+				if interruptErr != nil {
+					return core.TurnResult{}, interruptErr, interrupted
+				}
 				if interrupted {
 					slog.Warn("task interrupted by user", "source", "escape")
 				}

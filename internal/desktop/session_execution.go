@@ -412,7 +412,8 @@ func (s *DesktopService) Interrupt(sessionID, expectedExecutionID string) bool {
 		return false
 	}
 	executionID := state.Task.ExecutionID
-	if executionID == "" || !runtime.Interrupt(executionID) {
+	accepted, interruptErr := runtime.Interrupt(context.Background(), executionID)
+	if !accepted || interruptErr != nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)

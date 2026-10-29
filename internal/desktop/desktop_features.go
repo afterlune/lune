@@ -126,7 +126,7 @@ func (s *DesktopService) DeleteSession(sessionID string) error {
 	}
 	s.mu.Unlock()
 	if sessionContext.runtime != nil {
-		_ = sessionContext.runtime.Close()
+		_ = sessionContext.runtime.Close(context.Background())
 		sessionContext.runtime = nil
 	}
 	if sessionContext.eventDone != nil {

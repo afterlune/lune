@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,7 @@ func newTestCoreClient(t *testing.T) *core.Core {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = client.Close()
+		_ = client.Close(context.Background())
 	})
 	return client
 }

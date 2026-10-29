@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,7 +290,7 @@ func TestShiftTabTogglesPlanModeWithGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	m := newTUIModel(client, nil, "shift-tab-plan")
 	m.width, m.height = 100, 30

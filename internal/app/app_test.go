@@ -30,7 +30,7 @@ func TestA2AModeReachesListenerWithoutTTYOrPrompt(t *testing.T) {
 	writeUserProjectConfigForTest(t, `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`)
 	// An invalid numeric port exercises server-mode selection and Core setup
 	// without binding a socket or leaving a server running after the test.
-	err := RunWithStreams([]string{"--a2a-listen", "127.0.0.1:99999"}, nil, io.Discard, io.Discard)
+	err := RunWithStreams([]string{"-C", t.TempDir(), "--a2a-listen", "127.0.0.1:99999"}, nil, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "invalid port") {
 		t.Fatalf("expected the A2A listener error, got %v", err)
 	}
@@ -86,7 +86,7 @@ func newModelProfileTestCore(t *testing.T) *core.Core {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})
@@ -404,5 +404,5 @@ func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCore failed with config.example.json (with keys populated): %v", err)
 	}
-	defer coreClient.Close()
+	defer coreClient.Close(context.Background())
 }

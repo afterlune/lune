@@ -31,7 +31,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 	keepRuntime := false
 	defer func() {
 		if !keepRuntime {
-			_ = rt.Close()
+			_ = rt.Close(context.Background())
 		}
 	}()
 	saved, err := m.client.GetSession(ctx, sessionID)
@@ -56,7 +56,7 @@ func (m *tuiModel) bindSessionRuntime(ctx context.Context, sessionID string) err
 		// failed close must not abort the switch: the model would otherwise stay
 		// bound to a closed runtime with no way back.
 		m.runtime.SetUserInteractionAvailable(false)
-		if err := m.runtime.Close(); err != nil {
+		if err := m.runtime.Close(context.Background()); err != nil {
 			slog.Warn("close previous session runtime", "error", err)
 		}
 	}

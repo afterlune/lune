@@ -84,7 +84,7 @@ func TestAwaitCoreExecutionStopsOnStreamAndProgressFailures(t *testing.T) {
 	t.Run("runtime stream failure", func(t *testing.T) {
 		events := make(chan core.Event, 1)
 		events <- core.Event{Kind: core.EventRuntimeStreamFailed, Err: "journal unavailable"}
-		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
+		_, err, interrupted := awaitCoreExecution(context.Background(), newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "journal unavailable") || interrupted {
 			t.Fatalf("stream failure result = %v, interrupted=%v", err, interrupted)
 		}
@@ -92,7 +92,7 @@ func TestAwaitCoreExecutionStopsOnStreamAndProgressFailures(t *testing.T) {
 	t.Run("closed runtime stream", func(t *testing.T) {
 		events := make(chan core.Event)
 		close(events)
-		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
+		_, err, interrupted := awaitCoreExecution(context.Background(), newRuntime(), t.TempDir(), "execution", events, nil, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "event stream closed") || interrupted {
 			t.Fatalf("closed stream result = %v, interrupted=%v", err, interrupted)
 		}
@@ -100,13 +100,13 @@ func TestAwaitCoreExecutionStopsOnStreamAndProgressFailures(t *testing.T) {
 	t.Run("progress write failure", func(t *testing.T) {
 		events := make(chan core.Event, 1)
 		events <- core.Event{Kind: core.EventModelRetry, Err: "temporary failure"}
-		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", events, nil, failingCLIWriter{})
+		_, err, interrupted := awaitCoreExecution(context.Background(), newRuntime(), t.TempDir(), "execution", events, nil, failingCLIWriter{})
 		if err == nil || !strings.Contains(err.Error(), "broken pipe") || interrupted {
 			t.Fatalf("write failure result = %v, interrupted=%v", err, interrupted)
 		}
 	})
 	t.Run("initial progress write failure is not an interruption", func(t *testing.T) {
-		_, err, interrupted := awaitCoreExecution(newRuntime(), t.TempDir(), "execution", nil, make(chan cliInputEvent), failingCLIWriter{})
+		_, err, interrupted := awaitCoreExecution(context.Background(), newRuntime(), t.TempDir(), "execution", nil, make(chan cliInputEvent), failingCLIWriter{})
 		if err == nil || !strings.Contains(err.Error(), "broken pipe") || interrupted {
 			t.Fatalf("initial write failure result = %v, interrupted=%v", err, interrupted)
 		}
@@ -448,8 +448,8 @@ func newFakeCLIRuntime(client *fakeCLICore, sessionID string, approval *approval
 		outputs: make(map[string]string)}
 }
 
-func (r *fakeCLIRuntime) Close() error      { return nil }
-func (r *fakeCLIRuntime) SessionID() string { return r.sessionID }
+func (r *fakeCLIRuntime) Close(context.Context) error { return nil }
+func (r *fakeCLIRuntime) SessionID() string           { return r.sessionID }
 
 func (r *fakeCLIRuntime) SubmitTurn(_ context.Context, request core.TurnRequest, _ core.SubmissionMode) (core.TurnSubmission, error) {
 	r.client.inputs = append(r.client.inputs, request)
@@ -550,15 +550,15 @@ func (r *fakeCLIRuntime) State(context.Context) (core.RuntimeState, error) {
 	return core.RuntimeState{Task: core.TaskState{SessionID: r.sessionID, Status: status, ExecutionID: active}}, nil
 }
 
-func (r *fakeCLIRuntime) Interrupt(id string) bool {
+func (r *fakeCLIRuntime) Interrupt(_ context.Context, id string) (bool, error) {
 	r.mu.Lock()
 	cancel := r.cancels[id]
 	r.mu.Unlock()
 	if cancel == nil {
-		return false
+		return false, nil
 	}
 	cancel()
-	return true
+	return true, nil
 }
 
 func (r *fakeCLIRuntime) DiscardPaused(context.Context) (bool, error) {
@@ -585,7 +585,7 @@ func (r *fakeCLIRuntime) ResolveApproval(id string, allowed bool) error {
 	return nil
 }
 
-func (r *fakeCLIRuntime) ResolveApprovalDecision(id string, decision publictool.ApprovalDecision) error {
+func (r *fakeCLIRuntime) ResolveApprovalDecision(_ context.Context, id string, decision publictool.ApprovalDecision) error {
 	allowed := decision != publictool.ApprovalDeny
 	if err := r.ResolveApproval(id, allowed); err != nil {
 		return err
@@ -1063,7 +1063,7 @@ func TestCLIApprovalDoesNotApproveExpiredRequest(t *testing.T) {
 	keys := make(chan cliInputEvent, 1)
 	keys <- cliInputEvent{rune: 'y'}
 	close(keys)
-	resolveCLIApproval(runtime, core.ApprovalRequest{ID: "expired", Tool: "command"}, "", keys, &stderr)
+	resolveCLIApproval(context.Background(), runtime, core.ApprovalRequest{ID: "expired", Tool: "command"}, "", keys, &stderr)
 	if len(client.resolved) != 0 {
 		t.Fatalf("resolved approvals = %v, want no resolution", client.resolved)
 	}
@@ -1927,5 +1927,13 @@ func TestCLIPlanModeReachesSubmittedTurn(t *testing.T) {
 				t.Fatalf("restored permissions=%s", client.PermissionMode())
 			}
 		})
+	}
+}
+
+func TestApprovalWaitHonorsCancellationWithoutKeyboardInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := resolveCLIApprovalKeys(ctx, &fakeCLIRuntime{}, core.ApprovalRequest{ID: "pending"}, "", make(chan cliInputEvent), io.Discard); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v", err)
 	}
 }

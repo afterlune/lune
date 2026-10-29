@@ -189,6 +189,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			for i := range m.entries {
 				if m.entries[i].Kind == KindQueued && m.entries[i].ToolCallID == execID {
 					m.entries[i].Kind = KindUser
+					m.entries[i].ExecutionID = execID
 					m.entries[i].ToolCallID = execID
 					m.view.invalidateEntry(i)
 					break
@@ -230,7 +231,7 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 		}
 		if m.run.taskSnapshot.TaskID != "" && m.run.taskSnapshot.TaskID != event.TaskID {
 			delete(m.run.awaitingTurns, execID)
-			delete(m.run.terminalEvents, execID)
+
 		}
 		m.run.taskSnapshot = nextTask
 		m.run.running = true

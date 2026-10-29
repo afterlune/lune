@@ -160,7 +160,7 @@ func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 		}
 		if model.runtime != nil {
 			model.runtime.SetUserInteractionAvailable(false)
-			if err := model.runtime.Close(); err != nil {
+			if err := model.runtime.Close(context.Background()); err != nil {
 				slog.Debug("failed to close active session runtime", "error", err)
 			}
 		}

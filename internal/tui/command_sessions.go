@@ -17,7 +17,7 @@ func (m *tuiModel) startDraftSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.runtime != nil {
-		if err := m.runtime.Close(); err != nil {
+		if err := m.runtime.Close(context.Background()); err != nil {
 			m.addSystemEntry("Failed to close the current session: " + err.Error())
 			return m, nil
 		}

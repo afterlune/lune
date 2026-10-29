@@ -28,20 +28,20 @@ func TestDesktopInstancesCanOpenDifferentSessionsInSharedState(t *testing.T) {
 	}
 	firstActivity, err := OpenActivityStore(stateRoot)
 	if err != nil {
-		_ = firstCore.Close()
+		_ = firstCore.Close(context.Background())
 		t.Fatal(err)
 	}
 	secondCore, err := core.New(config)
 	if err != nil {
 		_ = firstActivity.Close()
-		_ = firstCore.Close()
+		_ = firstCore.Close(context.Background())
 		t.Fatalf("open second Desktop Core in shared state: %v", err)
 	}
 	secondActivity, err := OpenActivityStore(stateRoot)
 	if err != nil {
-		_ = secondCore.Close()
+		_ = secondCore.Close(context.Background())
 		_ = firstActivity.Close()
-		_ = firstCore.Close()
+		_ = firstCore.Close(context.Background())
 		t.Fatal(err)
 	}
 	first := &DesktopService{
