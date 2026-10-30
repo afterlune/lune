@@ -1,6 +1,6 @@
 # Lune
 
-`luneAgent` 是 Agent 引擎 `luneCore` 的三个前端宿主：全屏 TUI、行式 CLI 与 Windows 桌面端。前端只负责展示、输入与本地设置；Agent 图编排、模型调用、工具执行、会话持久化与权限沙箱都在 `luneCore` 中完成。
+`luneAgent` 是 Agent 引擎 `luneCore` 的宿主前端：全屏 TUI、行式 CLI、Windows 桌面端与 A2A 1.0 JSON-RPC 服务端。前端只负责展示、输入与本地设置；Agent 图编排、模型调用、工具执行、会话持久化与权限沙箱都在 `luneCore` 中完成。
 
 ## 前端与数据位置
 
@@ -9,6 +9,7 @@
 | TUI（Bubble Tea v2） | `cmd/main.go`，默认在交互终端启动 | 项目内 `.luneagent/` | `%APPDATA%\luneAgent\config.json` |
 | 行式 CLI | `cmd/main.go`，`--cli` 或非 TTY 环境 | 项目内 `.luneagent/` | 同上 |
 | 桌面端（Wails v3 + Svelte 5） | `cmd/desktop/main.go` | `%APPDATA%\luneAgent\desktop\<project-hash>` | `%APPDATA%\luneAgent\settings.db` |
+| A2A 服务端 | `cmd/main.go`，`--a2a-listen <addr>` | 项目内 `.luneagent/` | 同上 |
 
 TUI/CLI 与桌面端的会话和配置彼此独立，互不迁移。工作区外目录读取、命令执行与 Web 工具的授权规则见 [`AGENTS.md`](AGENTS.md)。
 

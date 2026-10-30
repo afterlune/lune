@@ -4,7 +4,7 @@
 
 ## 构建和运行
 
-安装 Go 1.27.1、Node.js 22.12+、npm 和仓库固定的 Wails CLI：
+安装 Go 1.27.3、Node.js 22.12+、npm 和仓库固定的 Wails CLI：
 
 ```powershell
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
@@ -16,7 +16,7 @@ go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
 
 ### CLI/TUI 本地安装（Windows）
 
-每台电脑分别 clone 仓库、安装 Go 1.27.1，然后在仓库根目录的 PowerShell 中运行：
+每台电脑分别 clone 仓库、安装 Go 1.27.3，然后在仓库根目录的 PowerShell 中运行：
 
 ```powershell
 $env:GOWORK = 'off'
@@ -85,9 +85,9 @@ Desktop 会记住上次打开的工作区、活动会话和窗口尺寸（DIP）
 
 ## 会话权限与 Plan 模式
 
-每个 Desktop 会话独立选择 `read-only`、`workspace`、`ask` 或 `full-access` 权限。开启 Plan 模式时，该会话的有效权限固定为 `read-only`，关闭后恢复其原有权限；其他会话不受影响。运行、排队或有待处理任务时不能修改该会话的控制设置。
+每个 Desktop 会话独立选择 `read-only`、`workspace`、`auto` 或 `full-access` 权限。开启 Plan 模式时，该会话的有效权限固定为 `read-only`，关闭后恢复其原有权限；其他会话不受影响。运行、排队或有待处理任务时不能修改该会话的控制设置。
 
-`read-only` 默认允许工作区读取，可审批工作区外目录的只读访问；`ask` 默认只允许工作区读取，其他操作均需审批；`workspace` 默认允许工作区读写，工作区外文件访问、命令和网络需审批；`full-access` 允许所有已注册工具，极度危险命令始终被阻止。工作区外文件授权按 session 保存，只作用于内置文件工具；新 session 和分叉 session 不继承，删除 session 后清除。
+`read-only` 默认允许工作区读取，可审批工作区外目录的只读访问；`workspace` 默认允许工作区读写，工作区外文件访问、命令和网络需审批；`auto` 基于 `workspace` 档位并增加模型自动审查，安全操作与命令自动放行无需弹窗，有风险或审查失败的操作弹出交互式授权；`full-access` 允许所有已注册工具，极度危险命令始终被阻止。工作区外文件授权按 session 保存，只作用于内置文件工具；新 session 和分叉 session 不继承，删除 session 后清除。
 
 新会话和重新打开工作区后的会话默认使用 `workspace`、关闭 Plan 模式。这些开关不写入数据库；修改模型或项目设置造成的内部 Core 重建会保留当前开关。已接受的任务将执行权限保存在自己的队列与检查点中，恢复任务沿用该权限。
 
