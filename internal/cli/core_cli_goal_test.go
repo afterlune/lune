@@ -32,7 +32,7 @@ func (p *goalCLIProvider) StreamResponse(ctx context.Context, request publicmode
 
 func TestCLIGoalCreatesDraftAndPrintsAllRounds(t *testing.T) {
 	p := &goalCLIProvider{}
-	client, err := core.New(core.Config{Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
+	client, err := core.New(core.Config{Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}},
 		DefaultProfile: "main",
@@ -69,7 +69,7 @@ func TestCLIGoalCreatesDraftAndPrintsAllRounds(t *testing.T) {
 
 func TestCLIGoalPauseAndResume(t *testing.T) {
 	p := &goalCLIProvider{}
-	client, err := core.New(core.Config{Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
+	client, err := core.New(core.Config{Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 		Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}},
 		DefaultProfile: "main",

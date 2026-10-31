@@ -87,7 +87,7 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 	if !samePath(opened.Workspace, workspace) {
 		t.Fatalf("opened workspace = %q, want %q", opened.Workspace, workspace)
 	}
-	if len(service.projectConfig.MCPServers) != 0 || service.projectConfig.Models.DefaultProfile != "main" {
+	if service.projectConfig.Models.DefaultProfile != "main" {
 		t.Fatalf("Desktop loaded project config.json instead of SQLite settings: %#v", service.projectConfig)
 	}
 	unchanged, err := os.ReadFile(configPath)

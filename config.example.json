@@ -60,18 +60,13 @@
     "maxTotalBytes": 0
   },
   "mcpServers": {
-    "example-stdio-server": {
+    "engram": {
       "transport": "stdio",
-      "command": "replace-with-your-mcp-server-command",
-      "args": [],
-      "env": {
-        "EXAMPLE_TOKEN": "replace-me"
-      }
-    },
-    "example-http-server": {
-      "transport": "streamable-http",
-      "url": "https://mcp.invalid/mcp",
-      "clientMetadataURL": "https://client.invalid/oauth/lune.json"
+      "command": "engram",
+      "args": [
+        "mcp",
+        "--tools=agent"
+      ]
     }
   }
 }

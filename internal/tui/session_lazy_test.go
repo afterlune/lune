@@ -89,8 +89,7 @@ func TestFirstLazySessionTurnSubscribesBeforeLiveOutput(t *testing.T) {
 	release := sync.OnceFunc(func() { close(provider.release) })
 	t.Cleanup(release)
 	client, err := core.New(core.Config{
-		Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
-		ModelConfig: &publicmodel.Config{
+		Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 			Providers: map[string]publicmodel.ProviderConfig{
 				"host": {Protocol: "responses", BaseURL: "https://example.invalid"},
 			},

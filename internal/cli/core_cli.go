@@ -15,7 +15,6 @@ import (
 	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
-	"github.com/afterlune/luneCore/memory"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
@@ -56,11 +55,6 @@ type cliCore interface {
 	EnableMCPServer(string) error
 	DisableMCPServer(string) error
 	AuthenticateMCPServer(context.Context, string) error
-	ListMemories(context.Context, int) ([]memory.Item, error)
-	SearchMemories(context.Context, string, int) ([]memory.SearchResult, error)
-	AddMemory(context.Context, memory.Input) (memory.Item, error)
-	DeleteMemory(context.Context, string) error
-	ClearMemories(context.Context) error
 	CommandToolchainPaths() []string
 	SetCommandToolchainPaths([]string) error
 }
@@ -367,7 +361,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				}
 			}
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
-			handleCoreCLIMemory(client, line, stdout, stderr)
+			fmt.Fprintln(stdout, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run '/mcp' to manage external memory servers.")
 		case line == "/ps" || strings.HasPrefix(line, "/ps "):
 			handleCoreCLIPS(runtime, stdout, stderr)
 		case line == "/stop" || strings.HasPrefix(line, "/stop "):

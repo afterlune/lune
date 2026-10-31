@@ -262,8 +262,6 @@ func (m *tuiModel) resetSessionState() {
 	m.scrolledUp = false
 	m.input.autocompleteOpen = false
 	m.modals.close()
-	m.modals.memory.pendingAdd = false
-	m.modals.memory.pendingCategory = ""
 	m.view.invalidateBlocks()
 }
 

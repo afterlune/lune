@@ -86,14 +86,8 @@ func (m *tuiModel) overlaySection(contentWidth int) (string, int) {
 		view = m.renderAgentsPanel(contentWidth)
 	case active == modalSessions:
 		view = renderSessionsModal(m, contentWidth)
-	case active == modalMemoryClear:
-		view = renderMemoryClearConfirm(m, contentWidth)
-	case active == modalMemoryPicker:
-		view = renderMemoryPicker(m, contentWidth)
 	case active == modalMCPPicker:
 		view = renderMCPServerPicker(m, contentWidth)
-	case m.modals.memory.pendingAdd:
-		view = renderMemoryInputPrompt(m, contentWidth)
 	case active == modalTheme:
 		view = renderThemePicker(m, contentWidth)
 	case active == modalModel:

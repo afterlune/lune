@@ -179,51 +179,6 @@ func renderPermissionPicker(m *tuiModel, width int) string {
 	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
 }
 
-func renderMemoryInputPrompt(m *tuiModel, width int) string {
-	cardStyle := panelCardStyle(width)
-	category := "preference"
-	if m.modals.memory.pendingCategory != "" {
-		category = m.modals.memory.pendingCategory
-	}
-	content := fmt.Sprintf("Add workspace memory (%s)\nType the memory in the composer. Enter saves · Esc cancels.", category)
-	return renderCardSurface(cardStyle, content)
-}
-
-func renderMemoryPicker(m *tuiModel, width int) string {
-	th := activeTheme()
-	cardStyle := panelCardStyle(width)
-	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.AccentBlue)).Render("Remove workspace memory")}
-	visible := 8
-	start := 0
-	if m.modals.memory.picker.Selected >= visible {
-		start = m.modals.memory.picker.Selected - visible + 1
-	}
-	end := min(len(m.modals.memory.picker.Items), start+visible)
-	for i := start; i < end; i++ {
-		item := m.modals.memory.picker.Items[i]
-		id := item.ID
-		if len(id) > 8 {
-			id = id[:8]
-		}
-		label := fmt.Sprintf("[%s] %s · %s", id, item.Category, sanitizeAndTruncateLine(item.Content, max(10, width-36)))
-		if i == m.modals.memory.picker.Selected {
-			lines = append(lines, styleSelectedRow().Render("› "+label))
-		} else {
-			lines = append(lines, "  "+label)
-		}
-	}
-	lines = append(lines, "", styleTextMuted().Render("↑/↓ navigate · enter remove · esc cancel"))
-	return renderCardSurface(cardStyle, strings.Join(lines, "\n"))
-}
-
-func renderMemoryClearConfirm(m *tuiModel, width int) string {
-	th := activeTheme()
-	cardStyle := panelCardStyle(width)
-	content := lipgloss.NewStyle().Foreground(lipgloss.Color(th.WarningAmber)).Bold(true).
-		Render("Clear all workspace memories?") + "\n" + styleTextMuted().Render("y confirm · n/Esc cancel")
-	return renderCardSurface(cardStyle, content)
-}
-
 func renderMCPServerPicker(m *tuiModel, width int) string {
 	th := activeTheme()
 	cardStyle := panelCardStyle(width)

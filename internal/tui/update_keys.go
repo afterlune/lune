@@ -18,8 +18,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.modals.active() {
 	case modalShortcuts:
 		return m.handleShortcutModalKeyPress(msg, keyStr)
-	case modalMemoryClear, modalMemoryPicker:
-		return m.handleMemoryPickerKeyPress(keyStr)
 	case modalMCPPicker:
 		return m.handleMCPServerPickerKeyPress(keyStr)
 	case modalTheme:
@@ -99,14 +97,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
-		if m.modals.memory.pendingAdd {
-			m.modals.memory.pendingAdd = false
-			m.modals.memory.pendingCategory = ""
-			m.input.composer.Placeholder = "Ask Lune to do anything"
-			m.addSystemEntry("Memory entry cancelled; the draft remains in the composer.")
-			m.updateLayout()
-			return m, nil
-		}
 		if m.modals.mcp.authCancel != nil {
 			m.cancelMCPAuthentication(true)
 			return m, nil
@@ -517,25 +507,6 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// 5. Enter to submit Composer
 	if keyStr == "enter" {
-		if m.modals.memory.pendingAdd {
-			content := strings.TrimSpace(m.input.composer.Value())
-			category := m.modals.memory.pendingCategory
-			m.modals.memory.pendingAdd = false
-			m.modals.memory.pendingCategory = ""
-			m.input.composer.Reset()
-			m.input.composer.Placeholder = "Ask Lune to do anything"
-			if content == "" {
-				m.addSystemEntry("Memory content cannot be empty.")
-				m.updateLayout()
-				return m, nil
-			}
-			parts := []string{"/memory", "add"}
-			if category != "" {
-				parts = append(parts, category)
-			}
-			parts = append(parts, content)
-			return m.handleMemoryCommand(parts)
-		}
 		val := strings.TrimSpace(m.input.composer.Value())
 		if val == "" {
 			return m, nil
@@ -564,9 +535,7 @@ func (m *tuiModel) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input.composer, cmd = m.input.composer.Update(msg)
 	val := m.input.composer.Value()
-	if m.modals.memory.pendingAdd {
-		m.input.autocompleteOpen = false
-	} else if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
+	if strings.HasPrefix(val, "/") && !strings.Contains(val, " ") {
 		items := m.commandsForAutocomplete(val)
 		if len(items) > 0 {
 			m.input.autocompleteOpen = true

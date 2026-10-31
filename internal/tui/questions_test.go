@@ -147,8 +147,7 @@ func TestQuestionAnswerAcknowledgementSurvivesDelayedPauseEvents(t *testing.T) {
 func TestQuestionDraftPersistsAcrossRuntimeReopen(t *testing.T) {
 	provider := &questionResumeProvider{started: make(chan struct{}), release: make(chan struct{})}
 	client, err := core.New(core.Config{
-		Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
-		ModelConfig: &publicmodel.Config{
+		Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 			Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid"}},
 			Profiles:  map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}}, DefaultProfile: "main",
 		},
@@ -201,8 +200,7 @@ func testQuestionAnswerAcknowledgement(t *testing.T, completeBeforeAck bool) {
 	provider := &questionResumeProvider{started: make(chan struct{}), release: make(chan struct{})}
 	release := sync.OnceFunc(func() { close(provider.release) })
 	client, err := core.New(core.Config{
-		Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
-		ModelConfig: &publicmodel.Config{
+		Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 			Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: "responses", BaseURL: "https://example.invalid"}},
 			Profiles:  map[string]publicmodel.ModelProfile{"main": {Provider: "host", Model: "test"}}, DefaultProfile: "main",
 		},

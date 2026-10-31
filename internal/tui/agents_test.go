@@ -207,7 +207,7 @@ func TestMultiAgentStreamIsolation(t *testing.T) {
 		Kind:    core.EventModelStream,
 		AgentID: "lead",
 		Stream: &core.ModelStreamEvent{
-			Purpose: string(core.UsagePurposeMemory),
+			Purpose: string(core.UsagePurposeCompaction),
 			Type:    "text_delta",
 			Delta:   "internal memory json",
 		},
@@ -500,7 +500,7 @@ func TestSubagentUsageDoesNotReplaceLeadContextMetrics(t *testing.T) {
 		EstimatedInputTokens: 180000, Usage: core.Usage{InputTokens: 180000, OutputTokens: 1000},
 	})
 	m.handleRuntimeEvent(core.Event{
-		Kind: core.EventUsage, AgentID: "memory", UsagePurpose: core.UsagePurposeMemory,
+		Kind: core.EventUsage, AgentID: "memory", UsagePurpose: core.UsagePurposeCompaction,
 		EstimatedInputTokens: 9000, Usage: core.Usage{InputTokens: 9000},
 	})
 

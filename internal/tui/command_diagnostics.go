@@ -247,23 +247,7 @@ func (m *tuiModel) renderContextDiagnostics() string {
 	activeSubs := m.activeSubagentsCount()
 	lines = append(lines, fmt.Sprintf("- Subagents: %d active (%d total in session); %s; use `/agents` to inspect", activeSubs, totalSubs, m.delegationLimitsLabel()))
 
-	// 6. Workspace Memory
-	lines = append(lines, "\n**Workspace Memory:**")
-	if m.client != nil {
-		if items, err := m.client.ListMemories(context.Background(), 100); err == nil {
-			if len(items) > 0 {
-				lines = append(lines, fmt.Sprintf("- Stored Memories: %d active items (use `/memory` to inspect or manage)", len(items)))
-			} else {
-				lines = append(lines, "- Stored Memories: None yet (use `/memory add <text>` to record conventions)")
-			}
-		} else {
-			lines = append(lines, fmt.Sprintf("- Memory Engine: unavailable (%v)", err))
-		}
-	} else {
-		lines = append(lines, "- Stored Memories: Unavailable (no client)")
-	}
-
-	// 7. Background Processes
+	// 6. Background Processes
 	lines = append(lines, "\n**Background Processes:**")
 	if m.runtime != nil {
 		if cmds, err := m.runtime.ListCommands(context.Background()); err == nil {

@@ -44,8 +44,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	m := newTUIModel(nil, nil, "task-session")
 	m.run.running = true
 	allowed := []string{
-		"/permissions auto", "/model", "/effort", "/theme", "/memory", "/memory list",
-		"/memory list context", "/memory coding style", "/agents", "/ps", "/stop all",
+		"/permissions auto", "/model", "/effort", "/theme", "/agents", "/ps", "/stop all",
 		"/logs process", "/sessions", "/detail", "/title In progress", "/context", "/diff",
 		"/mcp", "/mcp list", "/cancel-queue", "/status", "/shortcuts", "/thought", "/help",
 		"/toolchains", "/toolchains list", "/toolchains detect", "/toolchains refresh",
@@ -57,7 +56,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 	}
 	blocked := []string{
 		"/new", "/resume", "/drop", "/export", "/review", "/compact", "/fork", "/rewind",
-		"/exit", "/mcp enable server", "/memory add note", "/memory remove id", "/memory clear",
+		"/exit", "/mcp enable server",
 	}
 	for _, command := range blocked {
 		if reason := m.slashCommandUnavailable(command); reason == "" {
@@ -78,7 +77,7 @@ func TestSlashCommandAvailabilityDuringTask(t *testing.T) {
 			t.Errorf("autocomplete still contains removed command %s", command)
 		}
 	}
-	for _, command := range []string{"/status", "/permissions", "/memory", "/mcp", "/cancel-queue"} {
+	for _, command := range []string{"/status", "/permissions", "/mcp", "/cancel-queue"} {
 		if !suggested[command] {
 			t.Errorf("autocomplete omitted command %s that remains available during a task", command)
 		}
@@ -424,9 +423,6 @@ func TestContextCommand(t *testing.T) {
 	if !strings.Contains(lastEntry, "12,000 / 128,000 tokens") {
 		t.Errorf("expected tokens in context diagnostics, got: %s", lastEntry)
 	}
-	if !strings.Contains(lastEntry, "Workspace Memory:") {
-		t.Errorf("expected Workspace Memory in context diagnostics, got: %s", lastEntry)
-	}
 	if !strings.Contains(lastEntry, "Background Processes:") {
 		t.Errorf("expected Background Processes in context diagnostics, got: %s", lastEntry)
 	}
@@ -460,10 +456,6 @@ func TestSessionsCommandAndAutocomplete(t *testing.T) {
 	matchesCtx := filterCommands("/cont")
 	if len(matchesCtx) == 0 || matchesCtx[0].Command != "/context" {
 		t.Errorf("expected /context in autocomplete, got: %#v", matchesCtx)
-	}
-	matchesMem := filterCommands("/mem")
-	if len(matchesMem) == 0 || matchesMem[0].Command != "/memory" {
-		t.Errorf("expected /memory in autocomplete, got: %#v", matchesMem)
 	}
 	matchesPS := filterCommands("/ps")
 	if len(matchesPS) == 0 || matchesPS[0].Command != "/ps" {
@@ -689,115 +681,17 @@ func TestFileMentionAutocomplete(t *testing.T) {
 }
 
 func TestMemoryCommand(t *testing.T) {
-	// 1. Without client
 	m := newTUIModel(nil, nil, "test-sess")
 	m.handleSlashCommand("/memory")
 	lastSys := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "Memory management unavailable") {
-		t.Errorf("expected unavailable message without client, got: %s", lastSys)
+	if !strings.Contains(lastSys, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run `/mcp` to manage external memory servers.") {
+		t.Errorf("expected decoupling message, got: %s", lastSys)
 	}
 
-	// 2. With real core client in tempDir
-	tmpDir := t.TempDir()
-	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
-	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(projectConfig), 0600); err != nil {
-		t.Fatal(err)
-	}
-	client, err := core.New(core.Config{Workspace: tmpDir})
-	if err != nil {
-		t.Fatalf("failed to create core: %v", err)
-	}
-	defer client.Close(context.Background())
-	mWithClient := newTUIModel(client, nil, "test-sess")
-
-	// Initially empty
-	mWithClient.handleSlashCommand("/memory")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "No workspace memories stored yet") {
-		t.Errorf("expected empty message, got: %s", lastSys)
-	}
-
-	// Missing content opens a composer input flow and Enter saves it.
-	mWithClient.handleSlashCommand("/memory add convention")
-	if !mWithClient.modals.memory.pendingAdd || mWithClient.modals.memory.pendingCategory != "convention" {
-		t.Fatal("expected missing memory content to open an input flow")
-	}
-	mWithClient.input.composer.SetValue("Always verify tests")
-	mod, _ := mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	mWithClient = mod.(*tuiModel)
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Added workspace memory") || !strings.Contains(lastSys, "convention") {
-		t.Errorf("expected added message, got: %s", lastSys)
-	}
-
-	// Add preference
-	mWithClient.handleSlashCommand("/memory add Keep responses concise")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Added workspace memory") || !strings.Contains(lastSys, "preference") {
-		t.Errorf("expected added preference, got: %s", lastSys)
-	}
-
-	// List
-	mWithClient.handleSlashCommand("/memory list")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Workspace Memories (2 items)") {
-		t.Errorf("expected 2 items, got: %s", lastSys)
-	}
-
-	// Search
-	mWithClient.handleSlashCommand("/memory list verify")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Workspace Memories") || !strings.Contains(lastSys, "verify") {
-		t.Errorf("expected search match for verify, got: %s", lastSys)
-	}
-
-	// Missing remove ID opens a selector and removes the highlighted item on Enter.
-	mWithClient.handleSlashCommand("/memory remove")
-	if mWithClient.modals.memory.picker == nil {
-		t.Fatal("expected missing memory ID to open a selector")
-	}
-	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	mWithClient = mod.(*tuiModel)
-	if mWithClient.modals.memory.picker != nil || !strings.Contains(mWithClient.entries[len(mWithClient.entries)-1].Text, "Deleted workspace memory") {
-		t.Fatal("expected Enter to remove the selected memory")
-	}
-
-	// Remove by prefix or exact ID
-	// Extract short ID from list output: `[mem-...` or similar
-	items, err := client.ListMemories(context.Background(), 10)
-	if err != nil || len(items) == 0 {
-		t.Fatalf("expected memories in store, got error: %v", err)
-	}
-	targetID := items[0].ID
-	mWithClient.handleSlashCommand("/memory remove " + targetID[:6])
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Deleted workspace memory") {
-		t.Errorf("expected deleted confirmation, got: %s", lastSys)
-	}
-
-	// Clear requires confirmation
-	mWithClient.handleSlashCommand("/memory clear")
-	if !mWithClient.modals.memory.clearConfirm {
-		t.Fatal("expected /memory clear to open confirmation")
-	}
-	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: 'n', Text: "n"}))
-	mWithClient = mod.(*tuiModel)
-	if mWithClient.modals.memory.clearConfirm {
-		t.Fatal("expected n to cancel memory clear")
-	}
-	mWithClient.handleSlashCommand("/memory clear")
-	mod, _ = mWithClient.Update(tea.KeyPressMsg(tea.Key{Code: 'y', Text: "y"}))
-	mWithClient = mod.(*tuiModel)
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "Cleared all workspace memories.") {
-		t.Errorf("expected confirmed clear, got: %s", lastSys)
-	}
-
-	// List after clear
-	mWithClient.handleSlashCommand("/memory list")
-	lastSys = mWithClient.entries[len(mWithClient.entries)-1].Text
-	if !strings.Contains(lastSys, "No workspace memories stored yet") {
-		t.Errorf("expected empty list after clear, got: %s", lastSys)
+	m.handleSlashCommand("/memory list")
+	lastSys = m.entries[len(m.entries)-1].Text
+	if !strings.Contains(lastSys, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run `/mcp` to manage external memory servers.") {
+		t.Errorf("expected decoupling message for subcommand, got: %s", lastSys)
 	}
 }
 

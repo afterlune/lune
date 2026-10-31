@@ -17,8 +17,6 @@ const (
 	modalShortcuts
 	modalAgents
 	modalSessions
-	modalMemoryClear
-	modalMemoryPicker
 	modalMCPPicker
 	modalTheme
 	modalModel
@@ -34,7 +32,6 @@ const (
 type modalState struct {
 	shortcuts bool
 	sessions  sessionsModalState
-	memory    memoryModalState
 	mcp       mcpModalState
 	process   processModalState
 	agents    agentsModalState
@@ -57,12 +54,6 @@ type sessionsModalState struct {
 	deleteMode    bool
 }
 
-type memoryModalState struct {
-	picker          *ActiveMemoryPicker
-	clearConfirm    bool
-	pendingAdd      bool
-	pendingCategory string
-}
 
 type mcpModalState struct {
 	picker         *ActiveMCPServerPicker
@@ -112,10 +103,6 @@ func (s *modalState) active() modalKind {
 		return modalAgents
 	case s.sessions.open:
 		return modalSessions
-	case s.memory.clearConfirm:
-		return modalMemoryClear
-	case s.memory.picker != nil:
-		return modalMemoryPicker
 	case s.mcp.picker != nil:
 		return modalMCPPicker
 	case s.theme != nil:
@@ -146,8 +133,6 @@ func (s *modalState) open() {
 func (s *modalState) close() {
 	s.shortcuts = false
 	s.sessions = sessionsModalState{}
-	s.memory.picker = nil
-	s.memory.clearConfirm = false
 	s.mcp.picker = nil
 	s.process = processModalState{}
 	s.agents = agentsModalState{}

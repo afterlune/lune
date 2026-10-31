@@ -65,6 +65,9 @@ func isKnownSlashCommand(text string) bool {
 	if len(fields) == 0 {
 		return false
 	}
+	if strings.ToLower(fields[0]) == "/memory" {
+		return true
+	}
 	return lookupBuiltinCommand(fields[0]) != nil
 }
 

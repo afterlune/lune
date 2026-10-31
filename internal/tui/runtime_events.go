@@ -28,8 +28,7 @@ func (m *tuiModel) handleRuntimeEvent(event core.Event) (tea.Model, tea.Cmd) {
 func replaySafeDuringRestore(kind core.EventKind) bool {
 	switch kind {
 	case core.EventToolStarted, core.EventToolDetails, core.EventToolFinished,
-		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed,
-		core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
+		core.EventAgentStarted, core.EventAgentFinished, core.EventRuntimeStreamFailed:
 		return true
 	}
 	return false
@@ -559,20 +558,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.handleCompactionEvent(*event.Compaction)
 		}
 
-	case core.EventMemoryStarted, core.EventMemorySaved, core.EventMemorySkipped, core.EventMemoryFailed:
-		if !m.run.running || event.ExecutionID == "" || event.ExecutionID != m.run.runningExecution {
-			return m, nil
-		}
-		main := m.ensureAgentMetrics("lead")
-		if event.Kind == core.EventMemoryStarted {
-			m.run.taskActivity = "Extracting workspace memory"
-			main.Activity = m.run.taskActivity
-		} else if m.run.taskActivity == "Extracting workspace memory" {
-			m.run.taskActivity = "Finishing task"
-			main.Activity = m.run.taskActivity
-		}
-		m.view.invalidateLive()
-		m.updateLayout()
 
 	case core.EventUserQuestionRequired:
 		if m.staleTaskAttempt(event.ExecutionID, event.TaskID) {

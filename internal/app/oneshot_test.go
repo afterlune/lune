@@ -390,7 +390,7 @@ func (p burstOneShotProvider) StreamResponse(ctx context.Context, request public
 func TestRunOneShotPlanPreservesSelectedPermissions(t *testing.T) {
 	for _, mode := range []core.PermissionMode{"", core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess} {
 		t.Run(string(mode), func(t *testing.T) {
-			client, err := core.New(core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
+			client, err := core.New(core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), ModelConfig: &publicmodel.Config{
 				Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}}, Profiles: map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test"}}, DefaultProfile: "host",
 			}, ModelProviders: map[string]publicmodel.Provider{"host": burstOneShotProvider{count: 1}}})
 			if err != nil {
@@ -413,7 +413,7 @@ func TestRunOneShotPlanPreservesSelectedPermissions(t *testing.T) {
 
 func TestRunOneShotWithSlowOutput(t *testing.T) {
 	const count = 1000
-	client, err := core.New(core.Config{Workspace: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
+	client, err := core.New(core.Config{Workspace: t.TempDir(), ModelConfig: &publicmodel.Config{
 		Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}}, Profiles: map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test"}}, DefaultProfile: "host",
 	}, ModelProviders: map[string]publicmodel.Provider{"host": burstOneShotProvider{count: count}}})
 	if err != nil {

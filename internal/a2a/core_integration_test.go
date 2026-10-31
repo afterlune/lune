@@ -51,7 +51,7 @@ func (p *integrationProvider) StreamResponse(ctx context.Context, r publicmodel.
 }
 func integrationCore(t *testing.T, p *integrationProvider) *core.Core {
 	t.Helper()
-	c, e := core.New(core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true}, ModelConfig: &publicmodel.Config{
+	c, e := core.New(core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), ModelConfig: &publicmodel.Config{
 		Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}}, Profiles: map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test"}}, DefaultProfile: "host",
 	}, ModelProviders: map[string]publicmodel.Provider{"host": p}})
 	if e != nil {

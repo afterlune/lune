@@ -27,6 +27,36 @@ New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
 Copy-Item -LiteralPath $sourceApp -Destination (Join-Path $installDirectory 'lune.exe') -Force
 Copy-Item -LiteralPath $sourceHelper -Destination (Join-Path $installDirectory 'lune-sandbox.exe') -Force
 
+# Install engram (Persistent memory for AI coding agents via MCP)
+$engramInstalled = $false
+try {
+	Write-Output "Installing / updating engram via 'go install github.com/Gentleman-Programming/engram/v3/cmd/engram@latest'..."
+	& go install -trimpath github.com/Gentleman-Programming/engram/v3/cmd/engram@latest
+	if ($LASTEXITCODE -eq 0) {
+		$goBin = (go env GOBIN).Trim()
+		$goPath = (go env GOPATH).Trim()
+		$candidates = @()
+		if (-not [string]::IsNullOrWhiteSpace($goBin)) {
+			$candidates += (Join-Path $goBin 'engram.exe')
+		}
+		if (-not [string]::IsNullOrWhiteSpace($goPath)) {
+			$candidates += (Join-Path $goPath 'bin\engram.exe')
+		}
+		$candidates += (Join-Path $env:USERPROFILE 'go\bin\engram.exe')
+
+		foreach ($candidate in $candidates) {
+			if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+				Copy-Item -LiteralPath $candidate -Destination (Join-Path $installDirectory 'engram.exe') -Force
+				$engramInstalled = $true
+				Write-Output "Installed engram.exe to $installDirectory"
+				break
+			}
+		}
+	}
+} catch {
+	Write-Warning "Could not build/install engram: $_"
+}
+
 $createdConfig = $false
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 	$workspaceConfig = Join-Path $workspaceRoot 'config.json'
@@ -39,6 +69,30 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 		}
 		Copy-Item -LiteralPath $exampleConfig -Destination $configPath
 		$createdConfig = $true
+	}
+}
+
+# Ensure existing config has default engram MCP server configuration
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+	try {
+		$rawText = [System.IO.File]::ReadAllText($configPath)
+		$configObj = $rawText | ConvertFrom-Json
+		if ($null -eq $configObj.mcpServers) {
+			$configObj | Add-Member -MemberType NoteProperty -Name 'mcpServers' -Value ([PSCustomObject]@{})
+		}
+		if ($null -eq $configObj.mcpServers.engram) {
+			$engramConfig = [PSCustomObject]@{
+				transport = 'stdio'
+				command   = 'engram'
+				args      = @('mcp', '--tools=agent')
+			}
+			$configObj.mcpServers | Add-Member -MemberType NoteProperty -Name 'engram' -Value $engramConfig
+			$updatedJson = $configObj | ConvertTo-Json -Depth 10
+			[System.IO.File]::WriteAllText($configPath, $updatedJson + "`r`n")
+			Write-Output "Configured default 'engram' MCP server in $configPath"
+		}
+	} catch {
+		Write-Warning "Could not update $configPath with engram config: $_"
 	}
 }
 
@@ -74,7 +128,11 @@ if (-not $processPathContainsInstallDirectory) {
 	$env:Path = (($processPathEntries + $normalizedInstallDirectory) -join ';')
 }
 
-Write-Output "Installed lune.exe and lune-sandbox.exe to $installDirectory"
+if ($engramInstalled) {
+	Write-Output "Installed lune.exe, lune-sandbox.exe, and engram.exe to $installDirectory"
+} else {
+	Write-Output "Installed lune.exe and lune-sandbox.exe to $installDirectory"
+}
 Write-Output "User config: $configPath"
 if ($createdConfig) {
 	Write-Output 'Created config.json from config.example.json. Edit it and add your provider API key before starting Lune.'

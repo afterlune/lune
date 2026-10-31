@@ -21,8 +21,6 @@ func TestModalStateKeepsOneOverlay(t *testing.T) {
 		{modalShortcuts, func() { m.modals.shortcuts = true }},
 		{modalAgents, func() { m.modals.agents.open = true }},
 		{modalSessions, func() { m.modals.sessions.open = true }},
-		{modalMemoryClear, func() { m.modals.memory.clearConfirm = true }},
-		{modalMemoryPicker, func() { m.modals.memory.picker = &ActiveMemoryPicker{} }},
 		{modalMCPPicker, func() { m.modals.mcp.picker = &ActiveMCPServerPicker{} }},
 		{modalTheme, func() { m.modals.theme = &ActiveThemePicker{} }},
 		{modalModel, func() { m.modals.model = &ActiveModelPicker{} }},
