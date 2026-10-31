@@ -278,7 +278,7 @@ func tickClock() tea.Cmd {
 
 // submitTurn initiates a model turn for user input.
 func (m *tuiModel) submitTurn(rawInput string) (tea.Model, tea.Cmd) {
-	return m.submitTurnWithOptions(rawInput, "", m.planMode, true)
+	return m.submitTurnWithOptions(rawInput, m.permissionMode, m.planMode, true)
 }
 
 func (m *tuiModel) submitTurnWithOptions(rawInput string, permissionMode core.PermissionMode, planMode, expandMentions bool) (tea.Model, tea.Cmd) {
