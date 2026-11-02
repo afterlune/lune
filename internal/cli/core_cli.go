@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/afterlune/lune/internal/engram"
 	"github.com/afterlune/lune/internal/filemention"
 	"github.com/afterlune/lune/internal/goalcmd"
 	"github.com/afterlune/lune/internal/settings"
@@ -361,7 +362,7 @@ func runCoreChatLoopWithOptions(client cliCore, reader *bufio.Reader, stdout, st
 				}
 			}
 		case line == "/memory" || strings.HasPrefix(line, "/memory "):
-			fmt.Fprintln(stdout, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run '/mcp' to manage external memory servers.")
+			fmt.Fprintln(stdout, engram.StatusMessage(client.MCPServers()))
 		case line == "/ps" || strings.HasPrefix(line, "/ps "):
 			handleCoreCLIPS(runtime, stdout, stderr)
 		case line == "/stop" || strings.HasPrefix(line, "/stop "):

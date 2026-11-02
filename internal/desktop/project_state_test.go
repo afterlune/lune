@@ -49,6 +49,7 @@ func TestDesktopCanOpenWorkspaceWhileCoreOwnsLegacyStateDir(t *testing.T) {
 	cacheRoot := filepath.Join(t.TempDir(), "local")
 	t.Setenv("APPDATA", configRoot)
 	t.Setenv("LOCALAPPDATA", cacheRoot)
+	t.Setenv("PATH", t.TempDir()) // Avoid starting a user's local Engram during this lifecycle test.
 	workspace := t.TempDir()
 	projectConfig := `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test-key"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`
 	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte(projectConfig), 0600); err != nil {

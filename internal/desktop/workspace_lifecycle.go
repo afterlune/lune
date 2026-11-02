@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/afterlune/lune/internal/engram"
 	"github.com/afterlune/lune/internal/settings"
 	core "github.com/afterlune/luneCore"
 	_ "golang.org/x/image/webp"
@@ -118,12 +119,16 @@ func (s *DesktopService) startWorkspaceWithConfig(path string, projectConfig cor
 	localStateDir := filepath.Join(stateRoot, "local")
 	config := core.Config{
 		Workspace: path, StateDir: localStateDir, Logger: slog.Default(), SandboxHelperPath: helperPath,
-		ProjectConfig: &projectConfig, CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
+		PersonalInstructions: engram.Instructions(projectConfig.MCPServers),
+		ProjectConfig:        &projectConfig, CommandToolchainPaths: availableCommandToolchainPaths(commandToolchainPaths),
 		RestoreEnabledMCP: true,
 	}
 	created, err := core.New(config)
 	if err != nil {
 		return fmt.Errorf("打开工作区失败: %w", err)
+	}
+	if err := engram.EnsureEnabled(created, projectConfig.MCPServers); err != nil {
+		slog.Warn("Engram MCP could not be connected; continuing without automatic memory", "error_type", fmt.Sprintf("%T", err))
 	}
 	activityStore, err := OpenActivityStore(stateRoot)
 	if err != nil {

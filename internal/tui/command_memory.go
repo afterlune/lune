@@ -2,10 +2,16 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/afterlune/lune/internal/engram"
 )
 
 func (m *tuiModel) handleMemoryCommand(parts []string) (tea.Model, tea.Cmd) {
-	m.addSystemEntry("Workspace memory has been decoupled from Core. Engram MCP is configured by default; run `/mcp` to manage external memory servers.")
+	message := engram.StatusMessage(nil)
+	if m.client != nil {
+		message = engram.StatusMessage(m.client.MCPServers())
+	}
+	m.addSystemEntry(message)
 	m.updateLayout()
 	return m, nil
 }

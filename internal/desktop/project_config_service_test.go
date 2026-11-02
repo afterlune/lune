@@ -14,6 +14,7 @@ func TestSaveWorkspaceConfigRecreatesCoreAndRestoresActiveSession(t *testing.T) 
 	}
 	t.Setenv("APPDATA", filepath.Join(t.TempDir(), "roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "local"))
+	t.Setenv("PATH", t.TempDir()) // Avoid starting a user's local Engram during this lifecycle test.
 	workspace := t.TempDir()
 	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {

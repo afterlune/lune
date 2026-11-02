@@ -1437,13 +1437,13 @@ func TestCLIMemoryCommands(t *testing.T) {
 	client := &fakeCLICore{}
 
 	stdout, _ := runCLI(t, client, "/memory\n/exit\n", nil)
-	if !strings.Contains(stdout, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run '/mcp' to manage external memory servers.") {
-		t.Fatalf("stdout = %q, want decoupling notice", stdout)
+	if !strings.Contains(stdout, "Engram MCP is not configured, so automatic memory is off.") {
+		t.Fatalf("stdout = %q, want missing Engram notice", stdout)
 	}
 
 	stdout, _ = runCLI(t, client, "/memory list\n/exit\n", nil)
-	if !strings.Contains(stdout, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run '/mcp' to manage external memory servers.") {
-		t.Fatalf("stdout = %q, want decoupling notice", stdout)
+	if !strings.Contains(stdout, "Engram MCP is not configured, so automatic memory is off.") {
+		t.Fatalf("stdout = %q, want missing Engram notice", stdout)
 	}
 }
 

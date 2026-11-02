@@ -12,6 +12,7 @@ func TestOpenWorkspaceAndSessionRememberLocation(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Desktop settings require Windows DPAPI")
 	}
+	t.Setenv("PATH", t.TempDir()) // Avoid starting a user's local Engram during this lifecycle test.
 	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)

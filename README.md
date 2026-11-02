@@ -30,6 +30,7 @@ $env:GOWORK = 'off'
 ```bash
 # Linux：本机构建 + amd64/arm64 交叉构建，产物在 bin/ 与 bin/linux-<arch>/
 ./scripts/build-linux.sh
+./scripts/install-linux.sh  # 安装到 ~/.local/bin；配置写入 XDG_CONFIG_HOME 或 ~/.config/luneAgent
 ```
 
 无桌面服务器可在 provider 中设置 `"apiKeyEnv": "LUNE_DEEPSEEK_API_KEY"`，由启动环境提供密钥；配置文件只保存变量名，无需 Secret Service。配置与启动示例见[用户配置与凭证](docs/maintenance.md#用户配置与凭证)。

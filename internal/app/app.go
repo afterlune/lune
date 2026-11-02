@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/afterlune/lune/internal/cli"
+	"github.com/afterlune/lune/internal/engram"
 	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/toolchains"
 	"github.com/afterlune/lune/internal/tui"
@@ -258,6 +259,7 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 	baseCfg := core.Config{
 		Workspace:             workspace,
 		Logger:                slog.Default(),
+		PersonalInstructions:  engram.Instructions(projectConfig.MCPServers),
 		SandboxHelperPath:     helperPath,
 		AllowLocalCommand:     allowLocalCommand,
 		ProjectConfig:         &projectConfig,
@@ -267,6 +269,9 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 	client, err := core.New(baseCfg)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Lune with user config %s: %w", configPath, err)
+	}
+	if err := engram.EnsureEnabled(client, projectConfig.MCPServers); err != nil && diagnostics != nil {
+		fmt.Fprintln(diagnostics, "warning: Engram MCP could not be connected; continuing without automatic memory. Check `/mcp list` or retry with `/mcp enable engram`.")
 	}
 	return client, nil
 }

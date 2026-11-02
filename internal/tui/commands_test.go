@@ -684,14 +684,14 @@ func TestMemoryCommand(t *testing.T) {
 	m := newTUIModel(nil, nil, "test-sess")
 	m.handleSlashCommand("/memory")
 	lastSys := m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run `/mcp` to manage external memory servers.") {
-		t.Errorf("expected decoupling message, got: %s", lastSys)
+	if !strings.Contains(lastSys, "Engram MCP is not configured, so automatic memory is off.") {
+		t.Errorf("expected missing Engram message, got: %s", lastSys)
 	}
 
 	m.handleSlashCommand("/memory list")
 	lastSys = m.entries[len(m.entries)-1].Text
-	if !strings.Contains(lastSys, "Workspace memory has been decoupled from Core. Engram MCP is configured by default; run `/mcp` to manage external memory servers.") {
-		t.Errorf("expected decoupling message for subcommand, got: %s", lastSys)
+	if !strings.Contains(lastSys, "Engram MCP is not configured, so automatic memory is off.") {
+		t.Errorf("expected missing Engram message for subcommand, got: %s", lastSys)
 	}
 }
 

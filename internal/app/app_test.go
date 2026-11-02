@@ -116,6 +116,25 @@ func writeUserProjectConfigForTest(t *testing.T, config string) {
 	}
 }
 
+func TestConfiguredEngramConnectionFailureDoesNotBlockCore(t *testing.T) {
+	writeUserProjectConfigForTest(t, `{"models":{"providers":{"host":{"protocol":"responses","baseURL":"https://example.invalid","apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{},"mcpServers":{"engram":{"transport":"stdio","command":"/definitely-missing/lune-test-engram","args":["mcp","--tools=agent"]}}}`)
+
+	var diagnostics strings.Builder
+	client, err := newCoreWithDiagnostics(t.TempDir(), &diagnostics)
+	if err != nil {
+		t.Fatalf("newCoreWithDiagnostics() error = %v", err)
+	}
+	defer func() {
+		if err := client.Close(context.Background()); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	}()
+
+	if !strings.Contains(diagnostics.String(), "continuing without automatic memory") {
+		t.Fatalf("diagnostics = %q, want non-fatal Engram warning", diagnostics.String())
+	}
+}
+
 func TestRunOneShotRejectsUnknownModelProfile(t *testing.T) {
 	client := newModelProfileTestCore(t)
 	err := RunOneShot(client, "do not send this prompt", CLIFlags{ModelProfile: "missing"}, io.Discard, io.Discard)
@@ -398,9 +417,11 @@ func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 
 	// Also verify that with placeholder keys populated, core.New parses and validates config.example.json without schema or configuration errors
 	tmpData := strings.ReplaceAll(string(data), `"apiKey": ""`, `"apiKey": "test-key"`)
+	// Keep this parser test isolated from any user-installed Engram binary.
+	tmpData = strings.ReplaceAll(tmpData, `"command": "engram"`, `"command": "/definitely-missing/lune-test-engram"`)
 	tmpDir := t.TempDir()
 	writeUserProjectConfigForTest(t, tmpData)
-	coreClient, err := newCore(tmpDir)
+	coreClient, err := newCoreWithDiagnostics(tmpDir, io.Discard)
 	if err != nil {
 		t.Fatalf("newCore failed with config.example.json (with keys populated): %v", err)
 	}
