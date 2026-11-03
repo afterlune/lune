@@ -47,6 +47,19 @@ go test -trimpath ./...
 
 Linux CI 验证 CLI/TUI/A2A 相关包（`internal/a2a`、`internal/assistanttext`、`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
 
+## 按需 Lune A2A 容器
+
+`deploy/docker-compose.a2a.yml` 提供一个常驻轻代理。它在专用内网发布 A2A 1.0 Bearer 端点；收到请求后才启动原生 `lune --a2a-listen` worker。活动或等待交互的任务会保持 worker 运行，所有任务终态后一小时才卸载。A2A task 表是进程内状态，异常重启时代理不会自动重放结果不明的请求。
+
+先复制 `deploy/lune-runtime.config.example.json` 为被 Git 忽略的 `deploy/lune-runtime.config.json`，再复制 `.env.example` 为 `.env`，设置随机 `LUNE_A2A_TOKEN` 和 `LUNE_DEEPSEEK_API_KEY`。Windows DPAPI 配置不能由 Linux 容器解密，因此此服务使用自己的 Linux provider 配置。默认工作目录绑定为 `D:\WorkSpace:/workspace`，只使用 Lune `workspace` 权限；会话状态写在 `D:\WorkSpace\.luneagent`，全局设置保存在 Compose named volume。
+
+```powershell
+docker compose --env-file .env -f deploy/docker-compose.a2a.yml up -d --build
+docker compose -f deploy/docker-compose.a2a.yml ps
+```
+
+Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。MoonFei 通过该网络连接 `http://lune-a2a:18091`；需在 MoonFei `.env` 设置 `MOONFEI_A2A_INTERNAL_HTTP_ORIGINS=http://lune-a2a:18091`，再在网页「设置 → 外部协议扩展」添加 Lune 节点并保存同一 Bearer 令牌。容器带 Git、Bash、Go 1.27.3、Python 3 和 Java 17/Maven；Flutter/Android SDK 未包含。
+
 ## 文档
 
 - [`TUI.md`](TUI.md)：TUI 界面、快捷键与交互规范

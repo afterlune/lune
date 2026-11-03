@@ -1,0 +1,22 @@
+{
+  "models": {
+    "providers": {
+      "deepseek": {
+        "protocol": "responses",
+        "baseURL": "https://api.deepseek.com",
+        "apiKeyEnv": "LUNE_DEEPSEEK_API_KEY",
+        "serverCompaction": true
+      }
+    },
+    "profiles": {
+      "deepseek-flash": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "displayName": "DeepSeek V3",
+        "contextWindow": 0,
+        "supportsInputAudio": false
+      }
+    },
+    "defaultProfile": "deepseek-flash"
+  }
+}

@@ -1,0 +1,37 @@
+FROM golang:1.27.3-bookworm AS build
+
+WORKDIR /src
+ENV GOWORK=off
+
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/lune-sandbox github.com/afterlune/luneCore/cmd/lune-sandbox \
+    && CGO_ENABLED=0 go build -trimpath -o /out/lune ./cmd \
+    && CGO_ENABLED=0 go build -trimpath -o /out/lune-a2a-proxy ./cmd/a2a-proxy
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git bash python3 python3-venv python3-pip openjdk-17-jdk-headless maven \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 lune \
+    && useradd --uid 10001 --gid lune --create-home --home-dir /var/lib/lune --shell /usr/sbin/nologin lune \
+    && mkdir -p /var/lib/lune/.config/luneAgent /workspace /run/lune-runtime \
+    && chown -R lune:lune /var/lib/lune /workspace
+
+COPY --from=build /out/lune /usr/local/bin/lune
+COPY --from=build /out/lune-sandbox /usr/local/bin/lune-sandbox
+COPY --from=build /out/lune-a2a-proxy /usr/local/bin/lune-a2a-proxy
+COPY --from=build /usr/local/go /usr/local/go
+COPY deploy/lune-a2a-entrypoint.sh /usr/local/bin/lune-a2a-entrypoint
+RUN chmod 0555 /usr/local/bin/lune-a2a-entrypoint
+
+ENV HOME=/var/lib/lune \
+    XDG_CONFIG_HOME=/var/lib/lune/.config \
+    GOROOT=/usr/local/go \
+    GOPATH=/var/lib/lune/go \
+    PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+WORKDIR /workspace
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/lune-a2a-entrypoint"]

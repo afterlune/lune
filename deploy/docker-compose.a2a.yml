@@ -1,0 +1,57 @@
+name: lune-a2a
+
+services:
+  lune-a2a:
+    image: lune-a2a:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.a2a
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    env_file:
+      - ../.env
+    environment:
+      LUNE_A2A_TOKEN: ${LUNE_A2A_TOKEN:?Set LUNE_A2A_TOKEN in lune-agent/.env}
+      LUNE_DEEPSEEK_API_KEY: ${LUNE_DEEPSEEK_API_KEY:-}
+      LUNE_A2A_PROXY_ADDR: :18091
+      LUNE_A2A_WORKER_ADDR: 127.0.0.1:18092
+      LUNE_A2A_PUBLIC_URL: http://lune-a2a:18091
+      LUNE_BINARY: /usr/local/bin/lune
+      LUNE_WORKSPACE: /workspace
+    volumes:
+      - type: bind
+        source: ${LUNE_WORKSPACE_PATH:-D:/WorkSpace}
+        target: /workspace
+      - type: bind
+        source: ./lune-runtime.config.json
+        target: /run/lune-runtime/config.json
+        read_only: true
+      - lune-home:/var/lib/lune
+    networks:
+      default:
+      moonfei-lune-a2a:
+        aliases:
+          - lune-a2a
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18091/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  lune-home:
+
+networks:
+  default:
+  moonfei-lune-a2a:
+    name: moonfei-lune-a2a
+    internal: true
