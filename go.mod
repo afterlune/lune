@@ -6,7 +6,7 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/afterlune/luneCore v0.1.1-0.20261031054556-eacc99dd5230
+	github.com/afterlune/luneCore v0.1.1-0.20261110081710-3e34eb082a0d
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.9
@@ -21,7 +21,7 @@ require (
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect
-	github.com/afterlune/luneGraph v0.0.0-20261013021855-f9782c728a1b // indirect
+	github.com/afterlune/luneGraph v0.0.0-20261110064643-f949370056cc // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
