@@ -54,7 +54,6 @@ type sessionsModalState struct {
 	deleteMode    bool
 }
 
-
 type mcpModalState struct {
 	picker         *ActiveMCPServerPicker
 	authName       string

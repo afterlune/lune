@@ -4,7 +4,7 @@
 
 ## Go 模块与工作区
 
-`luneAgent` 通过 `go.mod` 固定 luneCore 版本。开发者可以在本机使用未跟踪的 `go.work` 联调兄弟目录中的 luneCore；CI 不使用该工作区，因此验证的是 `go.mod` 固定的版本。根目录的 `go test ./...` 只测试 luneAgent，不会运行 luneCore 的测试。
+`luneAgent` 通过 `go.mod` 固定 luneCore 版本。开发者可以在本机使用未跟踪的 `go.work` 联调兄弟目录中的 luneCore；提交前用 `GOWORK=off` 验证，确保验证的是 `go.mod` 固定的版本。根目录的 `go test ./...` 只测试 luneAgent，不会运行 luneCore 的测试。
 
 在 Windows 上运行完整的 luneAgent 验证：
 
@@ -17,19 +17,18 @@ go test -trimpath ./...
 
 Windows 上的 vet 仅关闭 `unsafeptr` 分析器：ConPTY 测试按 Win32 API 契约将不透明 `HPCON` 句柄作为 `lpValue` 传入；其余分析器仍会检查全部 Go 包。
 
-`gofmt -w` 只用于主动格式化；CI 通过 `gofmt -l` 检查格式，不会改写文件。若本机同时检出 luneCore，可单独运行其测试：
+提交前运行 `gofmt -l $(git ls-files '*.go')` 确认输出为空，需要格式化时运行 `gofmt -w`。若本机同时检出 luneCore，可单独运行其测试：
 
 ```powershell
 go -C ..\luneCore test -trimpath -count=1 -p 1 ./...
 ```
 
-Linux CI 运行 CLI/TUI/A2A 相关包的静态检查与测试（`internal/a2a`、`internal/assistanttext`、`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`），并交叉构建 Linux amd64、arm64 的 lune 与 sandbox。桌面 GUI 目前只在 Windows 构建。
-
-在 Linux 上验证 CLI/TUI/A2A 支持包：
+桌面 GUI 目前只在 Windows 构建。在 Linux 上验证除桌面外的全部包：
 
 ```bash
-GOWORK=off go vet ./internal/a2a ./internal/assistanttext ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
-GOWORK=off go test -trimpath ./internal/a2a ./internal/assistanttext ./internal/app ./internal/cli ./internal/tui/... ./internal/settings ./internal/slashcmd ./internal/workspacereview ./internal/filemention ./internal/goalcmd ./internal/terminaltext ./internal/toolchains
+pkgs=$(GOWORK=off go list ./... | grep -v -E '/cmd/desktop|/internal/desktop')
+GOWORK=off go vet $pkgs
+GOWORK=off go test -trimpath $pkgs
 ```
 
 Linux 本机运行 `./scripts/build-linux.sh` 会默认使用 `go.mod` 固定的 luneCore 版本，在 `bin/` 生成本机程序，并在 `bin/linux-amd64`、`bin/linux-arm64` 生成对应交叉构建产物；需要联调本地 luneCore 时，可显式设置 `GOWORK`。如果 Go 不在 `PATH`，可通过 `GO=/path/to/go` 或 `GOROOT=/path/to/go-root` 指定安装位置。Linux 上验证 CLI/TUI 改动时无需构建或测试 `internal/desktop`；该包需要 GTK4、WebKitGTK 6、GLib 和 libsoup 开发依赖，只有涉及 Desktop 的改动才按下方桌面端流程验证。
@@ -46,7 +45,7 @@ go get github.com/afterlune/luneCore@main
 go mod tidy
 ```
 
-如果所选依赖要求更高的 Go 版本，应同步提高 `go.mod` 的 `go` 指令和 CI 工具链。Wails Go 模块、`@wailsio/runtime` 与安装说明保持同一版本。前端安装固定使用 `npm ci`；更新 `package.json` 后提交对应的 `package-lock.json`，锁文件使用 npm 官方 registry。
+如果所选依赖要求更高的 Go 版本，应同步提高 `go.mod` 的 `go` 指令和 `deploy/Dockerfile.a2a` 的构建镜像版本。Wails Go 模块、`@wailsio/runtime` 与安装说明保持同一版本。前端安装固定使用 `npm ci`；更新 `package.json` 后提交对应的 `package-lock.json`，锁文件使用 npm 官方 registry。
 
 ## 桌面端验证与发布
 
@@ -61,7 +60,7 @@ npx playwright install chromium
 npm run test:screenshots
 ```
 
-Playwright 截图基线在 Windows runner 上验证。发布版本以 `cmd/desktop/build/config.yml` 为源；修改版本或 Wails 构建信息后，运行 `wails3 task common:update:build-assets` 并检查生成资产，再用 `scripts/package-desktop.ps1` 构建 Windows 安装包。CI 不发布安装包，也不调用真实模型 API。
+Playwright 截图基线在 Windows 本机上验证。发布版本以 `cmd/desktop/build/config.yml` 为源；修改版本或 Wails 构建信息后，运行 `wails3 task common:update:build-assets` 并检查生成资产，再用 `scripts/package-desktop.ps1` 构建 Windows 安装包。
 
 ## 用户配置与凭证
 

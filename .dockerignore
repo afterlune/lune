@@ -8,6 +8,11 @@ go.pinned.mod
 go.pinned.sum
 bin
 .luneagent
+**/.luneagent
+.tmp-go-cache
+.idea
+.codex
+frontend
 agent.log
 sessions.db
 *.db

@@ -558,7 +558,6 @@ func (m *tuiModel) processRuntimeEventNoRefresh(event core.Event) (tea.Model, te
 			m.handleCompactionEvent(*event.Compaction)
 		}
 
-
 	case core.EventUserQuestionRequired:
 		if m.staleTaskAttempt(event.ExecutionID, event.TaskID) {
 			return m, nil

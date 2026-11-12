@@ -45,7 +45,7 @@ go vet -unsafeptr=false ./...
 go test -trimpath ./...
 ```
 
-Linux CI 验证 CLI/TUI/A2A 相关包（`internal/a2a`、`internal/assistanttext`、`internal/app`、`internal/cli`、`internal/tui/...`、`internal/settings`、`internal/slashcmd`、`internal/workspacereview`、`internal/filemention`、`internal/goalcmd`、`internal/terminaltext`、`internal/toolchains`）并交叉构建二进制；桌面端需要 GTK4/WebKitGTK 开发依赖，仅在 Windows 构建与验证。完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
+仓库不配置 CI，提交前请在本机运行上述验证。Linux 上排除桌面包（需要 GTK4/WebKitGTK 开发依赖）即可验证 CLI/TUI/A2A，完整命令见 [`docs/maintenance.md`](docs/maintenance.md)。
 
 ## 按需 Lune A2A 容器
 
