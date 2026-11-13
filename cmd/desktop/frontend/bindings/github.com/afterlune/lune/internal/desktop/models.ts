@@ -78,6 +78,17 @@ export interface Bootstrap {
  */
 export type CommandToolchainCandidate = toolchains$0.Candidate;
 
+export interface CompactionResultView {
+    "before": number;
+    "after": number;
+    "threshold": number;
+    "mode": string;
+    "backend"?: string;
+    "fallback"?: boolean;
+    "compacted": boolean;
+    "turns": number;
+}
+
 export interface ConversationMessage {
     "id": string;
     "role": string;
@@ -136,9 +147,16 @@ export interface ExecutionActivityView {
     "queuePosition"?: number;
     "messageText"?: string;
     "messageImages"?: string[] | null;
+    "reasoningText"?: string;
     "startedAt": string;
     "finishedAt"?: string | null;
     "tools": ToolActivityView[] | null;
+}
+
+export interface ExportResultView {
+    "path": string;
+    "format": string;
+    "canceled": boolean;
 }
 
 export interface ImageInput {
@@ -184,6 +202,16 @@ export interface MCPServerView {
     "enabled": boolean;
     "connected": boolean;
     "toolCount": number;
+}
+
+export interface ModelFailureView {
+    "category"?: string;
+    "statusCode"?: number;
+    "code"?: string;
+    "requestId"?: string;
+    "attempts"?: number;
+    "streamStarted"?: boolean;
+    "retryNotBefore"?: string;
 }
 
 export interface ModelProfileInput {
@@ -232,8 +260,11 @@ export interface PendingRequestView {
     "tool": string;
     "arguments"?: json$0.RawMessage;
     "pathGrant"?: tool$0.PathGrant | null;
+    "autoReviewReason"?: string;
+    "fingerprint"?: string;
     "questions"?: model$0.UserQuestionItem[] | null;
     "reason"?: string;
+    "modelFailure"?: ModelFailureView | null;
 }
 
 export interface PendingSessionSummary {
@@ -300,6 +331,26 @@ export interface SessionSummary {
     "updatedAt": string;
     "workingDirectory": string;
     "status": string;
+}
+
+export interface SessionUsageView {
+    "requests": number;
+    "measured": number;
+    "input": number;
+    "estimatedInput"?: number;
+    "output": number;
+    "reasoning": number;
+    "total": number;
+    "cached": number;
+    "cacheCreation"?: number;
+    "contextWindow"?: number;
+    "reserveOutputTokens"?: number;
+    "autoCompact": boolean;
+    "autoCompactThreshold"?: number;
+    "lastInputTokens"?: number;
+    "lastEstimatedInput"?: number;
+    "lastOutputTokens"?: number;
+    "lastTotalTokens"?: number;
 }
 
 export interface SessionView {
@@ -381,6 +432,7 @@ export interface WorkspaceState {
     "controls": SessionControlsView;
     "models"?: ModelSettingsView | null;
     "runtimeState": core$0.RuntimeState;
+    "usage": SessionUsageView;
     "pending": PendingRequestView[] | null;
     "executionHistory": ExecutionActivityView[] | null;
 }

@@ -14,7 +14,7 @@ async function openMockDesktop(page: Page, flags: Record<string, boolean> = {}) 
       const appearance = {theme:'light',wallpaperType:'static',wallpaperFile:'',wallpaperName:'',wallpaperURL:'',panelOpacity:80};
       const policies = Object.fromEntries(['a','b','c'].map(id => [id,{permissionMode:'workspace',effectivePermissionMode:'workspace',planMode:false}]));
       const sessions = ['a','b','c'].map(id => ({id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',mode:'local',workingDirectory:workspace,status:'idle'}));
-      const snapshot = id => ({workspace,session:{id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',settings:{model_profile:'test'},messages:[]},sessions,controls:{...policies[id]},models,pending:[],executionHistory:[],runtimeState:{Task:{Status:flags.runningA && id==='a'?'running':'idle',ExecutionID:flags.runningA && id==='a'?'exec-a':''},Queue:[]}});
+      const snapshot = id => ({workspace,session:{id,title:'Session '+id.toUpperCase(),updatedAt:'2026-10-18T10:00:00Z',settings:{model_profile:'test'},messages:[]},sessions,controls:{...policies[id]},models,usage:{requests:0,measured:0,input:0,output:0,reasoning:0,total:0,cached:0,autoCompact:false},pending:[],executionHistory:[],runtimeState:{Task:{Status:flags.runningA && id==='a'?'running':'idle',ExecutionID:flags.runningA && id==='a'?'exec-a':''},Queue:[]}});
       installDesktopApi({
         Bootstrap: async () => ({theme:'light',appearance,recentWorkspaces:[{path:workspace,lastUsed:''}],models,workspace:'',sessionId:'',lastWorkspace:(flags.restore || flags.staleRestore) ? workspace : '',lastSessionId:flags.restore||flags.staleRestore?'b':'',controls:policies.a}),
         OpenWorkspace: async () => {

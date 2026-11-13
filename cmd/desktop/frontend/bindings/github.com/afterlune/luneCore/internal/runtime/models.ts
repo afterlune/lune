@@ -131,5 +131,6 @@ export interface TurnSubmission {
     "Status": SubmissionStatus;
     "QueueID": string;
     "ExecutionID": string;
+    "ParentExecutionID": string;
     "Position": number;
 }

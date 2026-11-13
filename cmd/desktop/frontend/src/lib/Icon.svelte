@@ -4,7 +4,7 @@
     | 'chevron-down' | 'chevron-right' | 'more' | 'close' | 'refresh'
     | 'edit' | 'trash' | 'chat' | 'pending' | 'process' | 'sun' | 'moon'
     | 'monitor' | 'sparkles' | 'flower' | 'sidebar-collapse' | 'sidebar-expand'
-    | 'image' | 'check' | 'copy';
+    | 'image' | 'check' | 'copy' | 'fork' | 'download';
 
   let {
     name,
@@ -84,5 +84,9 @@
     <path d="m5 12 4.5 4.5L19 7" />
   {:else if name === 'copy'}
     <rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+  {:else if name === 'fork'}
+    <circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><path d="M6 8.5v7M18 8.5v1a4.5 4.5 0 0 1-4.5 4.5H6" />
+  {:else if name === 'download'}
+    <path d="M12 4v11m0 0-4-4m4 4 4-4" /><path d="M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2" />
   {/if}
 </svg>

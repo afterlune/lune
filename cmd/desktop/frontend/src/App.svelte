@@ -5,6 +5,7 @@ import BrandMark from './lib/BrandMark.svelte';
 import Icon from './lib/Icon.svelte';
 import WelcomeArt from './lib/WelcomeArt.svelte';
 import ProcessesPopover from './lib/ProcessesPopover.svelte';
+import UsagePopover from './lib/UsagePopover.svelte';
 import WorkspaceSidebar from './lib/WorkspaceSidebar.svelte';
 import { createDesktopState } from './lib/desktopState.svelte';
 const desktop = createDesktopState();
@@ -63,6 +64,11 @@ const desktop = createDesktopState();
               <span>{desktop.activeDesktopProcessCount ? `${desktop.activeDesktopProcessCount} 运行中` : desktop.desktopProcesses.length ? `${desktop.desktopProcesses.length} 个进程` : '后台进程'}</span>
             </button>
           {/if}
+          {#if desktop.session}
+            <button class="process-chip usage-chip" aria-label="上下文与用量" aria-expanded={desktop.usagePopoverOpen} title="上下文与用量" onclick={() => (desktop.usagePopoverOpen = !desktop.usagePopoverOpen)}>
+              <span>{desktop.contextUsagePercent !== null ? `上下文 ${desktop.contextUsagePercent}%` : desktop.sessionUsage.total > 0 ? `${desktop.sessionUsage.total >= 1000 ? `${(desktop.sessionUsage.total / 1000).toFixed(1)}k` : desktop.sessionUsage.total} tok` : '上下文'}</span>
+            </button>
+          {/if}
           <div class="theme-switch" role="group" aria-label="主题快捷切换">
             <button class:active={!desktop.effectiveDarkTheme} aria-label="切换到浅色主题" aria-pressed={!desktop.effectiveDarkTheme} onclick={() => void desktop.changeTheme('light')} title="切换到浅色主题">
               <Icon name="sun" size={17} />
@@ -76,6 +82,13 @@ const desktop = createDesktopState();
             {#if desktop.workspaceMenuOpen}
               <div class="topbar-menu" role="menu">
                 {#if desktop.workspace}
+                  {#if desktop.session}
+                    <button role="menuitem" disabled={desktop.forkingSession} onclick={() => { desktop.workspaceMenuOpen = false; void desktop.forkCurrentSession(); }}>创建分支会话</button>
+                    <button role="menuitem" disabled={desktop.exportingSession} onclick={() => { desktop.workspaceMenuOpen = false; void desktop.exportCurrentSession('md'); }}>导出 Markdown (.md)</button>
+                    <button role="menuitem" disabled={desktop.exportingSession} onclick={() => { desktop.workspaceMenuOpen = false; void desktop.exportCurrentSession('html'); }}>导出 HTML (.html)</button>
+                    <button role="menuitem" disabled={desktop.exportingSession} onclick={() => { desktop.workspaceMenuOpen = false; void desktop.exportCurrentSession('jsonl'); }}>导出 JSONL (.jsonl)</button>
+                    <div class="topbar-menu-separator" role="separator"></div>
+                  {/if}
                   <button role="menuitem" onclick={() => { desktop.workspaceMenuOpen = false; void desktop.openFolderPicker(); }}>切换工作区</button>
                   <button role="menuitem" onclick={() => { desktop.workspaceMenuOpen = false; void desktop.closeWorkspace(); }}>关闭工作区</button>
                 {:else}
@@ -107,10 +120,12 @@ const desktop = createDesktopState();
       {/if}
 
       {#if desktop.processPopoverOpen}<ProcessesPopover {desktop} />{/if}
+      {#if desktop.usagePopoverOpen}<UsagePopover {desktop} />{/if}
     </main>
   </div>
 {/if}
 
+{#if desktop.exportNotice}<div class="toast-info" role="status">{desktop.exportNotice}<button aria-label="关闭导出提示" onclick={() => desktop.exportNotice = ''}><Icon name="close" size={16} /></button></div>{/if}
 {#if desktop.errorMessage}<div class="toast-error" role="status">{desktop.errorMessage}<button aria-label="关闭错误提示" onclick={() => desktop.errorMessage = ''}><Icon name="close" size={16} /></button></div>{/if}
 
 <DesktopDialogs {desktop} />

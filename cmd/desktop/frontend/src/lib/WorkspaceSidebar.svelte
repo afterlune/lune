@@ -78,6 +78,7 @@ onMount(() => {
                 {#if ['running', 'queued', 'waiting'].includes(item.status ?? '')}<span class={`session-activity ${item.status}`} title={item.status === 'waiting' ? '等待处理' : item.status === 'queued' ? '排队中' : '正在运行'}></span>{/if}
               </button>
               <div class="session-row-actions">
+                <button aria-label={`分支会话 ${item.title || '新会话'}`} title="从此会话创建分支" disabled={desktop.busy || desktop.forkingSession} onclick={(event) => { event.stopPropagation(); void desktop.forkCurrentSession(item.id); }}><Icon name="fork" size={13} /></button>
                 <button aria-label={`重命名会话 ${item.title || '新会话'}`} title="重命名" disabled={desktop.busy} onclick={(event) => { event.stopPropagation(); desktop.beginRenameSession(item); }}><Icon name="edit" size={13} /></button>
                 <button aria-label={`删除会话 ${item.title || '新会话'}`} title="删除" disabled={desktop.busy || ['running', 'queued', 'waiting'].includes(item.status ?? '')} onclick={(event) => { event.stopPropagation(); desktop.beginDeleteSession(item); }}><Icon name="close" size={13} /></button>
               </div>

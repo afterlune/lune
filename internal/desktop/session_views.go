@@ -27,6 +27,26 @@ type SessionView struct {
 	Messages  []ConversationMessage `json:"messages"`
 }
 
+type SessionUsageView struct {
+	Requests             int     `json:"requests"`
+	Measured             int     `json:"measured"`
+	Input                int64   `json:"input"`
+	EstimatedInput       int64   `json:"estimatedInput,omitempty"`
+	Output               int64   `json:"output"`
+	Reasoning            int64   `json:"reasoning"`
+	Total                int64   `json:"total"`
+	Cached               int64   `json:"cached"`
+	CacheCreation        int64   `json:"cacheCreation,omitempty"`
+	ContextWindow        int64   `json:"contextWindow,omitempty"`
+	ReserveOutputTokens  int64   `json:"reserveOutputTokens,omitempty"`
+	AutoCompact          bool    `json:"autoCompact"`
+	AutoCompactThreshold float64 `json:"autoCompactThreshold,omitempty"`
+	LastInputTokens      int64   `json:"lastInputTokens,omitempty"`
+	LastEstimatedInput   int64   `json:"lastEstimatedInput,omitempty"`
+	LastOutputTokens     int64   `json:"lastOutputTokens,omitempty"`
+	LastTotalTokens      int64   `json:"lastTotalTokens,omitempty"`
+}
+
 type WorkspaceState struct {
 	Workspace        string                  `json:"workspace"`
 	Session          SessionView             `json:"session"`
@@ -34,22 +54,36 @@ type WorkspaceState struct {
 	Controls         SessionControlsView     `json:"controls"`
 	Models           *ModelSettingsView      `json:"models,omitempty"`
 	State            core.RuntimeState       `json:"runtimeState"`
+	Usage            SessionUsageView        `json:"usage"`
 	Pending          []PendingRequestView    `json:"pending"`
 	ExecutionHistory []ExecutionActivityView `json:"executionHistory"`
 }
 
+type ModelFailureView struct {
+	Category       string `json:"category,omitempty"`
+	StatusCode     int    `json:"statusCode,omitempty"`
+	Code           string `json:"code,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
+	StreamStarted  bool   `json:"streamStarted,omitempty"`
+	RetryNotBefore string `json:"retryNotBefore,omitempty"`
+}
+
 type PendingRequestView struct {
-	Kind         string                         `json:"kind"`
-	ID           string                         `json:"id"`
-	ExecutionID  string                         `json:"executionId"`
-	RunID        string                         `json:"runId"`
-	InvocationID string                         `json:"invocationId"`
-	CallID       string                         `json:"callId"`
-	Tool         string                         `json:"tool"`
-	Arguments    json.RawMessage                `json:"arguments,omitempty"`
-	PathGrant    *publictool.PathGrant          `json:"pathGrant,omitempty"`
-	Questions    []publicmodel.UserQuestionItem `json:"questions,omitempty"`
-	Reason       string                         `json:"reason,omitempty"`
+	Kind             string                         `json:"kind"`
+	ID               string                         `json:"id"`
+	ExecutionID      string                         `json:"executionId"`
+	RunID            string                         `json:"runId"`
+	InvocationID     string                         `json:"invocationId"`
+	CallID           string                         `json:"callId"`
+	Tool             string                         `json:"tool"`
+	Arguments        json.RawMessage                `json:"arguments,omitempty"`
+	PathGrant        *publictool.PathGrant          `json:"pathGrant,omitempty"`
+	AutoReviewReason string                         `json:"autoReviewReason,omitempty"`
+	Fingerprint      string                         `json:"fingerprint,omitempty"`
+	Questions        []publicmodel.UserQuestionItem `json:"questions,omitempty"`
+	Reason           string                         `json:"reason,omitempty"`
+	ModelFailure     *ModelFailureView              `json:"modelFailure,omitempty"`
 }
 
 func (s *DesktopService) OpenSession(sessionID string) (WorkspaceState, error) {
@@ -125,6 +159,7 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	if err != nil {
 		return WorkspaceState{}, err
 	}
+	s.flushSessionReasoning(sessionID)
 	activityHistory, err := loadExecutionHistory(store, sessionID)
 	if err != nil {
 		return WorkspaceState{}, err
@@ -141,8 +176,9 @@ func (s *DesktopService) openSession(sessionID string, allowReconfigure bool) (W
 	return WorkspaceState{
 		Workspace: sessionContext.workspace,
 		Session:   view, Sessions: list.Sessions,
-		Controls: controls, Models: models, State: state, Pending: pendingRequestViews(pending),
-		ExecutionHistory: activityHistory,
+		Controls: controls, Models: models, State: state,
+		Usage:   buildSessionUsageView(sessionContext.core, saved),
+		Pending: pendingRequestViews(pending), ExecutionHistory: activityHistory,
 	}, nil
 }
 
@@ -215,6 +251,7 @@ func (s *DesktopService) RefreshSession(sessionID string) (WorkspaceState, error
 	if err != nil {
 		return WorkspaceState{}, err
 	}
+	s.flushSessionReasoning(sessionContext.sessionID)
 	activityHistory, err := loadExecutionHistory(store, sessionContext.sessionID)
 	if err != nil {
 		return WorkspaceState{}, err
@@ -226,8 +263,69 @@ func (s *DesktopService) RefreshSession(sessionID string) (WorkspaceState, error
 		Workspace: sessionContext.workspace,
 		Session:   SessionView{ID: saved.ID, Title: saved.Title, UpdatedAt: saved.UpdatedAt.Format(time.RFC3339), Settings: saved.Settings, Messages: transcriptMessages(saved.History)},
 		Sessions:  list.Sessions, Controls: controls, Models: models, State: state,
+		Usage:   buildSessionUsageView(sessionContext.core, saved),
 		Pending: pendingRequestViews(requests), ExecutionHistory: activityHistory,
 	}, nil
+}
+
+func buildSessionUsageView(coreClient *core.Core, saved core.Session) SessionUsageView {
+	var defaults core.ContextDefaults
+	if coreClient != nil {
+		defaults = coreClient.ProjectContextDefaults()
+	}
+	contextWindow := defaults.ContextWindow
+	if saved.Settings.ContextWindow != nil && *saved.Settings.ContextWindow > 0 {
+		contextWindow = *saved.Settings.ContextWindow
+	}
+	reserveOutput := defaults.ReserveOutputTokens
+	if saved.Settings.ReserveOutputTokens != nil {
+		reserveOutput = *saved.Settings.ReserveOutputTokens
+	}
+	autoCompact := defaults.AutoCompact
+	if saved.Settings.AutoCompact != nil {
+		autoCompact = *saved.Settings.AutoCompact
+	}
+	autoCompactThreshold := defaults.AutoCompactThreshold
+	if saved.Settings.AutoCompactThreshold != nil && *saved.Settings.AutoCompactThreshold > 0 {
+		autoCompactThreshold = *saved.Settings.AutoCompactThreshold
+	}
+	var lastInput, lastEstimated, lastOutput, lastTotal int64
+	for i := len(saved.UsageRequests) - 1; i >= 0; i-- {
+		rec := saved.UsageRequests[i]
+		purpose := string(rec.Purpose)
+		if purpose != "" && purpose != "agent" {
+			continue
+		}
+		if rec.Usage.InputTokens > 0 || rec.EstimatedInputTokens > 0 || rec.Usage.TotalTokens > 0 {
+			lastInput = rec.Usage.InputTokens
+			lastEstimated = rec.EstimatedInputTokens
+			lastOutput = rec.Usage.OutputTokens
+			lastTotal = rec.Usage.TotalTokens
+			if contextWindow <= 0 && rec.ContextWindow > 0 {
+				contextWindow = rec.ContextWindow
+			}
+			break
+		}
+	}
+	return SessionUsageView{
+		Requests:             saved.SessionUsage.Requests,
+		Measured:             saved.SessionUsage.Measured,
+		Input:                saved.SessionUsage.Input,
+		EstimatedInput:       saved.SessionUsage.EstimatedInput,
+		Output:               saved.SessionUsage.Output,
+		Reasoning:            saved.SessionUsage.Reasoning,
+		Total:                saved.SessionUsage.Total,
+		Cached:               saved.SessionUsage.Cached,
+		CacheCreation:        saved.SessionUsage.CacheCreation,
+		ContextWindow:        contextWindow,
+		ReserveOutputTokens:  reserveOutput,
+		AutoCompact:          autoCompact,
+		AutoCompactThreshold: autoCompactThreshold,
+		LastInputTokens:      lastInput,
+		LastEstimatedInput:   lastEstimated,
+		LastOutputTokens:     lastOutput,
+		LastTotalTokens:      lastTotal,
+	}
 }
 
 func loadExecutionHistory(store *ActivityStore, sessionID string) ([]ExecutionActivityView, error) {

@@ -8,13 +8,13 @@ import {
 } from './desktopActivity';
 import { createDesktopProcessState } from './desktopProcessState.svelte';
 import type {
-  Activity, ActivityRun, DesktopProcess, DesktopProcessSession, ExecutionState, ExecutionTimelineBlock,
-  LocalMessage,
+  Activity, ActivityRun, ApprovalDecision, CompactionNotice, DesktopProcess, DesktopProcessSession, ExecutionState, ExecutionTimelineBlock,
+  LocalMessage, UsageEventView,
 } from './desktopStateTypes';
 import { TaskStatus } from '../../bindings/github.com/afterlune/luneCore/internal/runtime/models';
 import type {
     Bootstrap, ConversationMessage, ModelSettingsView,
-    SessionControlsView, SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, SessionSearchResult, SessionSummary,
+    SessionControlsView, SessionUsageView, SubmitInput, PendingRequestView, PendingSessionSummary as PendingSessionSummaryView, SessionSearchResult, SessionSummary,
     WorkspaceOpenResult, WorkspaceState,
   } from '../../bindings/github.com/afterlune/lune/internal/desktop/models';
 
@@ -76,9 +76,34 @@ export function createDesktopState() {
   let activities = $state<Activity[]>([]);
   let activityHistory = $state<ActivityRun[]>([]);
   let streamText = $state('');
+  let reasoningText = $state('');
+  let sessionUsage = $state<SessionUsageView>(emptyUsage());
+  let usagePopoverOpen = $state(false);
+  let compactingSession = $state(false);
+  let compactionNotice = $state<CompactionNotice | null>(null);
+  let exportingSession = $state(false);
+  let exportNotice = $state('');
+  let forkingSession = $state(false);
   let running = $state(false);
   let executionID = $state('');
   let executionState = $state<ExecutionState>('idle');
+
+  function emptyUsage(): SessionUsageView {
+    return { requests: 0, measured: 0, input: 0, output: 0, reasoning: 0, total: 0, cached: 0, autoCompact: false };
+  }
+
+  let effectiveContextBudget = $derived.by(() => {
+    const windowSize = sessionUsage.contextWindow ?? 0;
+    if (windowSize <= 0) return 0;
+    const reserve = sessionUsage.reserveOutputTokens ?? 0;
+    return Math.max(windowSize - reserve, windowSize > reserve ? windowSize - reserve : windowSize);
+  });
+
+  let contextUsagePercent = $derived.by(() => {
+    const used = (sessionUsage.lastInputTokens ?? 0) || (sessionUsage.lastEstimatedInput ?? 0);
+    if (effectiveContextBudget <= 0 || used <= 0) return null;
+    return Math.min(100, Math.round((used / effectiveContextBudget) * 100));
+  });
   let currentStatus = $state('');
   let elapsedSeconds = $state(0);
   let turnStartedAt = $state(0);
@@ -149,7 +174,7 @@ export function createDesktopState() {
     const createBlock = (index: number, userMessage: LocalMessage | null, id = ''): ExecutionTimelineBlock => ({
       key: id || userMessage?.id || `execution-${index}-${blocks.length}`,
       executionId: id || userMessage?.executionID || '', userMessageIndex: index, userMessage,
-      assistantMessages: [], activityRuns: [], pendingRequests: [], streamText: '',
+      assistantMessages: [], activityRuns: [], pendingRequests: [], streamText: '', reasoningText: '',
     });
     for (const message of messages) {
       if (message.role === 'user') {
@@ -173,6 +198,9 @@ export function createDesktopState() {
         blocks.push(block);
       }
       block.activityRuns.push(run);
+      if (run.reasoningText?.trim()) {
+        block.reasoningText = block.reasoningText ? `${block.reasoningText}\n\n${run.reasoningText}` : run.reasoningText;
+      }
       if (!block.executionId) block.executionId = run.executionId;
     }
     const activeBlock = findBlock(executionID) ?? blocks.at(-1);
@@ -194,7 +222,10 @@ export function createDesktopState() {
         blocks.push(unattached);
       }
     }
-    if (streamText && activeBlock) activeBlock.streamText = streamText;
+    if (activeBlock) {
+      if (streamText) activeBlock.streamText = streamText;
+      if (reasoningText) activeBlock.reasoningText = reasoningText;
+    }
     return { leadingMessages, blocks };
   });
 
@@ -368,6 +399,7 @@ export function createDesktopState() {
         tools: mergeToolActivities(tools, previous?.tools ?? []),
         expanded: previous?.expanded ?? false,
         elapsedSeconds: previous?.elapsedSeconds,
+        reasoningText: run.reasoningText || previous?.reasoningText || '',
       };
     });
     const unmatchedLocal = localRuns.filter((run) => !run.executionId || localByID.has(run.executionId));
@@ -399,6 +431,7 @@ export function createDesktopState() {
       expanded: update.expanded ?? previous?.expanded ?? false,
       elapsedSeconds: update.elapsedSeconds ?? previous?.elapsedSeconds,
       queuePosition: update.queuePosition ?? previous?.queuePosition,
+      reasoningText: update.reasoningText ?? previous?.reasoningText ?? '',
     };
     if (index < 0) activityHistory = [...activityHistory, next];
     else activityHistory = activityHistory.map((run, runIndex) => runIndex === index ? next : run);
@@ -591,6 +624,15 @@ export function createDesktopState() {
     messages = [...(state.session.messages ?? [])];
     activities = [];
     activityHistory = mergeExecutionHistory(state.executionHistory ?? [], []);
+    sessionUsage = state.usage ?? emptyUsage();
+    if (!sameSession) {
+      usagePopoverOpen = false;
+      compactionNotice = null;
+      exportNotice = '';
+      reasoningText = '';
+    } else if (state.runtimeState?.Task?.Status !== 'running') {
+      reasoningText = '';
+    }
     attachQueuedState(state);
     restorePendingExecutionMessages();
     streamText = '';
@@ -626,6 +668,7 @@ export function createDesktopState() {
     sessions = state.sessions ?? sessions;
     installControls(state.controls);
     if (state.models) models = state.models;
+    if (state.usage) sessionUsage = state.usage;
     pending = state.pending ?? [];
     seedRecommendedAnswers(pending);
     messages = mergeMessagesFromSession(state.session.messages ?? [], messages);
@@ -879,7 +922,9 @@ export function createDesktopState() {
       details?: Activity['details']; started?: boolean; failed: boolean; canceled: boolean; durationMs: number;
       truncated?: boolean;
     };
-    stream?: { type: string; delta: string };
+    stream?: { type: string; delta: string; purpose?: string };
+    usage?: UsageEventView;
+    compaction?: CompactionNotice;
   };
   type TurnResultEvent = { sessionId: string; executionId: string; status: string; text: string; plan?: string; error?: string };
 
@@ -891,6 +936,7 @@ export function createDesktopState() {
     activities = currentRun?.tools ?? [];
     activitySequence = 0;
     streamText = '';
+    reasoningText = '';
     updateMessageForExecution(event.executionId, { deliveryState: 'submitted' });
     running = true;
     startElapsedTimer(true);
@@ -955,6 +1001,9 @@ export function createDesktopState() {
         setExecutionStatus('running', '正在中断任务');
         return;
       }
+      if (reasoningText.trim() && finishedExecutionID) {
+        upsertActivityRun({ executionId: finishedExecutionID, reasoningText });
+      }
       running = false;
       stopElapsedTimer();
       executionState = 'waiting';
@@ -965,6 +1014,10 @@ export function createDesktopState() {
           : '等待你处理恢复请求';
       setExecutionStatus('waiting', waitingLabel, { expand: true });
       return;
+    }
+    if (reasoningText.trim() && finishedExecutionID) {
+      upsertActivityRun({ executionId: finishedExecutionID, reasoningText });
+      reasoningText = '';
     }
     running = false;
     stopElapsedTimer();
@@ -1028,15 +1081,55 @@ export function createDesktopState() {
     }
     if (event.kind === 'model_stream' && event.stream?.type === 'reasoning_delta') {
       running = true;
+      if ((!event.stream.purpose || event.stream.purpose === 'agent') && event.stream.delta) {
+        reasoningText += event.stream.delta;
+      }
       setExecutionStatus('running', '模型正在分析请求', { expand: true });
     }
     if (event.kind === 'model_stream' && event.stream?.type === 'text_delta') {
       running = true;
+      if (reasoningText.trim() && (event.executionId || executionID)) {
+        upsertActivityRun({ executionId: event.executionId || executionID, reasoningText });
+      }
       streamText += event.stream.delta;
       setExecutionStatus('running', '正在生成回复', { expand: true });
       scrollToLatest();
     }
+    if (event.kind === 'usage' && event.usage) {
+      const u = event.usage;
+      const isMain = !u.purpose || u.purpose === 'agent';
+      sessionUsage = {
+        ...sessionUsage,
+        requests: sessionUsage.requests + 1,
+        measured: sessionUsage.measured + ((u.inputTokens ?? 0) > 0 ? 1 : 0),
+        input: sessionUsage.input + (u.inputTokens ?? 0),
+        estimatedInput: (sessionUsage.estimatedInput ?? 0) + (u.estimatedInputTokens ?? 0),
+        output: sessionUsage.output + (u.outputTokens ?? 0),
+        reasoning: sessionUsage.reasoning + (u.reasoningTokens ?? 0),
+        total: sessionUsage.total + (u.totalTokens ?? 0),
+        cached: sessionUsage.cached + (u.cachedTokens ?? 0),
+        cacheCreation: (sessionUsage.cacheCreation ?? 0) + (u.cacheCreationTokens ?? 0),
+        contextWindow: sessionUsage.contextWindow || u.contextWindow || 0,
+        lastInputTokens: isMain ? (u.inputTokens || sessionUsage.lastInputTokens) : sessionUsage.lastInputTokens,
+        lastEstimatedInput: isMain ? (u.estimatedInputTokens || sessionUsage.lastEstimatedInput) : sessionUsage.lastEstimatedInput,
+        lastOutputTokens: isMain ? (u.outputTokens || sessionUsage.lastOutputTokens) : sessionUsage.lastOutputTokens,
+        lastTotalTokens: isMain ? (u.totalTokens || sessionUsage.lastTotalTokens) : sessionUsage.lastTotalTokens,
+      };
+    }
+    if (event.kind === 'context_compaction' && event.compaction) {
+      compactionNotice = event.compaction;
+      if (event.compaction.stage === 'started') {
+        setExecutionStatus('running', '正在压缩上下文', { expand: false });
+      } else if (event.compaction.stage === 'completed') {
+        if ((event.compaction.afterTokens ?? 0) > 0) {
+          sessionUsage = { ...sessionUsage, lastInputTokens: event.compaction.afterTokens, lastEstimatedInput: event.compaction.afterTokens };
+        }
+      }
+    }
     if (event.kind === 'tool_started' || event.kind === 'tool_finished' || event.kind === 'tool_details') {
+      if (reasoningText.trim() && (event.executionId || executionID)) {
+        upsertActivityRun({ executionId: event.executionId || executionID, reasoningText });
+      }
       handleToolEvent(event);
     }
 
@@ -1413,6 +1506,115 @@ export function createDesktopState() {
     session = { ...session, settings: { ...session.settings, model_profile: value } };
   }
 
+  async function setSessionEffort(value: string) {
+    const targetSessionID = session?.id || '';
+    const targetEpoch = workspaceEpoch;
+
+    if (!session) return;
+    if (!previewMode) {
+      try { await Desktop.SetSessionEffort(targetSessionID, value); }
+      catch (error) { showError(error); return; }
+    }
+    if (targetEpoch !== workspaceEpoch || session?.id !== targetSessionID) return;
+    session = { ...session, settings: { ...session.settings, reasoning_effort: value === 'default' ? '' : value } };
+  }
+
+  async function compactSession() {
+    const targetSessionID = session?.id || '';
+    const targetEpoch = workspaceEpoch;
+    if (!session || compactingSession || running) return;
+    compactingSession = true;
+    try {
+      if (previewMode) {
+        const before = (sessionUsage.lastInputTokens ?? 0) || (sessionUsage.lastEstimatedInput ?? 0) || 6800;
+        const after = Math.max(1200, Math.round(before * 0.35));
+        compactionNotice = { stage: 'completed', mode: 'local', reason: 'manual', beforeTokens: before, afterTokens: after, turns: 4 };
+        sessionUsage = { ...sessionUsage, lastInputTokens: after, lastEstimatedInput: after };
+        return;
+      }
+      const res = await Desktop.CompactSession(targetSessionID);
+      if (targetEpoch !== workspaceEpoch || session?.id !== targetSessionID) return;
+      compactionNotice = {
+        stage: res.compacted ? 'completed' : 'skipped',
+        mode: res.mode,
+        reason: 'manual',
+        beforeTokens: res.before,
+        afterTokens: res.after,
+        threshold: res.threshold,
+        turns: res.turns,
+      };
+      await refreshSession();
+    } catch (error) {
+      if (targetEpoch === workspaceEpoch && session?.id === targetSessionID) showError(error);
+    } finally {
+      if (targetEpoch === workspaceEpoch) compactingSession = false;
+    }
+  }
+
+  async function forkCurrentSession(sourceID?: string) {
+    const targetSessionID = sourceID || session?.id || '';
+    const targetEpoch = workspaceEpoch;
+    if (!targetSessionID || forkingSession) return;
+    forkingSession = true;
+    try {
+      if (previewMode) {
+        const source = sessions.find((item) => item.id === targetSessionID);
+        const forkedID = `session-fork-${Date.now()}`;
+        const forkedTitle = `${source?.title || session?.title || '会话'} (分支)`;
+        const nextSummary: SessionSummary = {
+          id: forkedID,
+          title: forkedTitle,
+          updatedAt: new Date().toISOString(),
+          workingDirectory: workspace,
+          status: 'idle',
+        };
+        sessions = [nextSummary, ...sessions];
+        session = {
+          ...(session ?? { id: forkedID, title: forkedTitle, updatedAt: nextSummary.updatedAt, settings: { model_profile: '工作模型' }, messages: [] }),
+          id: forkedID,
+          title: forkedTitle,
+          updatedAt: nextSummary.updatedAt,
+          messages: [...messages],
+        };
+        pending = [];
+        executionID = '';
+        running = false;
+        executionState = 'idle';
+        usagePopoverOpen = false;
+        return;
+      }
+      const state = await Desktop.ForkSession(targetSessionID);
+      if (targetEpoch !== workspaceEpoch) return;
+      installWorkspaceState(state);
+    } catch (error) {
+      if (targetEpoch === workspaceEpoch) showError(error);
+    } finally {
+      if (targetEpoch === workspaceEpoch) forkingSession = false;
+    }
+  }
+
+  async function exportCurrentSession(format: 'md' | 'html' | 'jsonl', sourceID?: string) {
+    const targetSessionID = sourceID || session?.id || '';
+    const targetEpoch = workspaceEpoch;
+    if (!targetSessionID || exportingSession) return;
+    exportingSession = true;
+    try {
+      if (previewMode) {
+        exportNotice = `预览模式已模拟导出为 ${format.toUpperCase()}`;
+        return;
+      }
+      const res = await Desktop.ExportSession(targetSessionID, format);
+      if (targetEpoch !== workspaceEpoch) return;
+      if (!res.canceled && res.path) {
+        exportNotice = `已导出至 ${res.path}`;
+      }
+    } catch (error) {
+      if (targetEpoch === workspaceEpoch) showError(error);
+    } finally {
+      if (targetEpoch === workspaceEpoch) exportingSession = false;
+    }
+  }
+
   async function setPlanMode(enabled: boolean) {
     const id = session?.id;
     const epoch = workspaceEpoch;
@@ -1526,7 +1728,7 @@ export function createDesktopState() {
     onAgentEvent({ kind: 'task_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running' });
     applySessionRefresh(runningState);
 
-    window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'reasoning_delta', delta: 'not rendered' } }), 350);
+    window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'reasoning_delta', delta: '先梳理服务状态事件与消息生命周期，再执行工具读取代码。' } }), 350);
     window.setTimeout(() => onAgentEvent({ kind: 'tool_started', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', invocationId: 'tool-preview-invocation', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, started: true, failed: false, canceled: false, durationMs: 0 } }), 800);
     window.setTimeout(() => onAgentEvent({ kind: 'tool_finished', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', tool: { id: 'tool-preview', invocationId: 'tool-preview-invocation', name: 'read_file', arguments: { path: 'internal/desktop/service.go' }, details: { output: 'package desktop\n\nfunc Submit(input SubmitInput) {}' }, started: false, failed: false, canceled: false, durationMs: 420 } }), 1200);
     window.setTimeout(() => onAgentEvent({ kind: 'model_stream', sessionId: previewState.session.id, taskId: 'task-preview', executionId: previewExecutionID, status: 'running', stream: { type: 'text_delta', delta: '已读取服务代码，正在整理结果。' } }), 1500);
@@ -1818,14 +2020,20 @@ export function createDesktopState() {
     }
   }
 
-  async function resolveApproval(request: PendingRequestView, allowed: boolean) {
+  async function resolveApproval(request: PendingRequestView, decision: ApprovalDecision) {
     const targetSessionID = session?.id || '';
     const targetEpoch = workspaceEpoch;
 
     try {
-      await Desktop.ResolveApproval(targetSessionID, request.id, allowed);
+      if (previewMode) {
+        pending = pending.filter((item) => item.id !== request.id);
+        removePreviewPendingSummary(request);
+        if (!pending.length && executionState === 'waiting') executionState = 'idle';
+        return;
+      }
+      await Desktop.ResolveApproval(targetSessionID, request.id, decision);
       if (targetEpoch !== workspaceEpoch || session?.id !== targetSessionID) return;
-      if (allowed) resumeExecution('授权已完成，正在继续处理');
+      if (decision !== 'deny') resumeExecution('授权已完成，正在继续处理');
       await refreshSession();
       void refreshPendingSessions();
     } catch (error) {
@@ -2020,6 +2228,15 @@ get processLogView() { return processState.processLogView; }, set processLogView
 get stoppingDesktopProcessKey() { return processState.stoppingDesktopProcessKey; }, set stoppingDesktopProcessKey(value: string) { processState.stoppingDesktopProcessKey = value; },
 get messages() { return messages; }, set messages(value: typeof messages) { messages = value; },
 get activities() { return activities; }, set activities(value: typeof activities) { activities = value; },
+get sessionUsage() { return sessionUsage; },
+get effectiveContextBudget() { return effectiveContextBudget; },
+get contextUsagePercent() { return contextUsagePercent; },
+get usagePopoverOpen() { return usagePopoverOpen; }, set usagePopoverOpen(value: boolean) { usagePopoverOpen = value; },
+get compactingSession() { return compactingSession; },
+get compactionNotice() { return compactionNotice; }, set compactionNotice(value: CompactionNotice | null) { compactionNotice = value; },
+get exportingSession() { return exportingSession; },
+get exportNotice() { return exportNotice; }, set exportNotice(value: string) { exportNotice = value; },
+get forkingSession() { return forkingSession; },
 get running() { return running; }, set running(value: typeof running) { running = value; },
 get executionID() { return executionID; }, set executionID(value: typeof executionID) { executionID = value; },
 get elapsedSeconds() { return elapsedSeconds; }, set elapsedSeconds(value: typeof elapsedSeconds) { elapsedSeconds = value; },
@@ -2118,7 +2335,11 @@ setMCPServerEnabled: settingsState.setMCPServerEnabled,
 authenticateMCPServer: settingsState.authenticateMCPServer,
 setPermission,
 setSessionModel,
+setSessionEffort,
 setPlanMode,
+compactSession,
+forkCurrentSession,
+exportCurrentSession,
 sendMessage,
 startEditingMessage,
 cancelEditingMessage,

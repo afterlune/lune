@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -134,6 +135,7 @@ func (s *DesktopService) DeleteSession(sessionID string) error {
 	}
 	s.mu.Lock()
 	delete(s.sessionContexts, sessionID)
+	s.clearSessionReasoningLocked(sessionID)
 	store := s.activityStore
 	s.mu.Unlock()
 	if store != nil {
@@ -142,4 +144,87 @@ func (s *DesktopService) DeleteSession(sessionID string) error {
 		}
 	}
 	return nil
+}
+
+type CompactionResultView struct {
+	Before    int64  `json:"before"`
+	After     int64  `json:"after"`
+	Threshold int64  `json:"threshold"`
+	Mode      string `json:"mode"`
+	Backend   string `json:"backend,omitempty"`
+	Fallback  bool   `json:"fallback,omitempty"`
+	Compacted bool   `json:"compacted"`
+	Turns     int    `json:"turns"`
+}
+
+func (s *DesktopService) CompactSession(sessionID string) (CompactionResultView, error) {
+	sessionContext, release, err := s.sessionOperation(sessionID)
+	if err != nil {
+		return CompactionResultView{}, err
+	}
+	defer release()
+	if sessionContext.core == nil || sessionContext.sessionID == "" {
+		return CompactionResultView{}, errors.New("没有打开会话")
+	}
+	result, err := sessionContext.core.Compact(context.Background(), sessionContext.sessionID)
+	if err != nil {
+		return CompactionResultView{}, err
+	}
+	return CompactionResultView{
+		Before:    result.Before,
+		After:     result.After,
+		Threshold: result.Threshold,
+		Mode:      result.Mode,
+		Backend:   result.Backend,
+		Fallback:  result.Fallback,
+		Compacted: result.Compacted,
+		Turns:     result.Turns,
+	}, nil
+}
+
+func (s *DesktopService) ForkSession(sessionID string) (WorkspaceState, error) {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	sessionID = strings.TrimSpace(sessionID)
+	s.mu.Lock()
+	if s.reconfiguring {
+		s.mu.Unlock()
+		return WorkspaceState{}, errors.New("项目设置正在应用")
+	}
+	localCore := s.localCore
+	if localCore == nil {
+		localCore = s.activeCoreLocked()
+	}
+	if localCore == nil {
+		s.mu.Unlock()
+		return WorkspaceState{}, errors.New("请先打开工作区")
+	}
+	if sessionID == "" {
+		sessionID = s.activeSessionIDLocked()
+	}
+	workspace := s.workspace
+	s.mu.Unlock()
+	if sessionID == "" {
+		return WorkspaceState{}, errors.New("没有可分支的会话")
+	}
+	forked, err := localCore.ForkSession(context.Background(), sessionID)
+	if err != nil {
+		return WorkspaceState{}, fmt.Errorf("分支会话失败: %w", err)
+	}
+	forkedContext := &desktopSessionContext{
+		permissionMode: core.PermissionWorkspace,
+		core:           localCore,
+		sessionID:      forked.ID,
+		workspace:      workspace,
+	}
+	s.mu.Lock()
+	if s.sessionContexts == nil {
+		s.sessionContexts = make(map[string]*desktopSessionContext)
+	}
+	s.sessionContexts[forked.ID] = forkedContext
+	s.mu.Unlock()
+	if err := s.attachSessionRuntime(forkedContext); err != nil {
+		return WorkspaceState{}, err
+	}
+	return s.openSession(forked.ID, false)
 }

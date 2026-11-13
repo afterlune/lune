@@ -32,6 +32,18 @@ let { desktop }: { desktop: DesktopState } = $props();
             {#each desktop.models.profiles as profile}<option value={profile.name}>模型 · {profile.name}</option>{/each}
           </select>
         {:else}<span class="model-label">未配置模型</span>{/if}
+        {#if desktop.models.configured && desktop.session}
+          <select class="effort-profile-select" value={desktop.session.settings.reasoning_effort || 'default'} disabled={desktop.switchingSession || desktop.controlsPending || desktop.workOutstanding} aria-label="思考强度" onchange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = desktop.session?.settings.reasoning_effort || 'default'; void desktop.setSessionEffort(value); }}>
+            <option value="default">思考 · 默认</option>
+            <option value="none">思考 · 关闭</option>
+            <option value="minimal">思考 · 极简</option>
+            <option value="low">思考 · 低</option>
+            <option value="medium">思考 · 中</option>
+            <option value="high">思考 · 高</option>
+            <option value="xhigh">思考 · 极高</option>
+            <option value="max">思考 · 最大</option>
+          </select>
+        {/if}
         {#if desktop.running}<button class="stop-button" aria-label="中断任务" onclick={() => void desktop.interruptTask()} disabled={desktop.interrupting} title="中断任务">{#if !desktop.interrupting}<Icon name="stop" size={11} />{/if}{desktop.interrupting ? '正在中断…' : '中断'}</button>{/if}
         {#if desktop.editDraft}
           <button class="quiet-button" onclick={desktop.cancelEditingMessage} disabled={desktop.busy}>取消</button>

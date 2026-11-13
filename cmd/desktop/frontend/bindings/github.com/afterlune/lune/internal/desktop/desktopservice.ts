@@ -33,6 +33,10 @@ export function CloseWorkspace(interrupt: boolean): $CancellablePromise<void> {
     return $Call.ByID(4281136060, interrupt);
 }
 
+export function CompactSession(sessionID: string): $CancellablePromise<$models.CompactionResultView> {
+    return $Call.ByID(3929330094, sessionID);
+}
+
 export function CreateSession(): $CancellablePromise<$models.WorkspaceState> {
     return $Call.ByID(498841211);
 }
@@ -53,12 +57,20 @@ export function EditUserMessage(sessionID: string, messageID: string, input: $mo
     return $Call.ByID(376143777, sessionID, messageID, input);
 }
 
+export function ExportSession(sessionID: string, format: string): $CancellablePromise<$models.ExportResultView> {
+    return $Call.ByID(4111412713, sessionID, format);
+}
+
 /**
  * ForgetDesktopLocation clears a stale workspace/session pair so the next
  * launch starts from the welcome screen instead of retrying it forever.
  */
 export function ForgetDesktopLocation(): $CancellablePromise<void> {
     return $Call.ByID(1943943799);
+}
+
+export function ForkSession(sessionID: string): $CancellablePromise<$models.WorkspaceState> {
+    return $Call.ByID(1190366615, sessionID);
 }
 
 export function GetWorkspaceConfig(): $CancellablePromise<$models.WorkspaceConfigView> {
@@ -134,8 +146,8 @@ export function RefreshSession(sessionID: string): $CancellablePromise<$models.W
     return $Call.ByID(3230290916, sessionID);
 }
 
-export function ResolveApproval(sessionID: string, id: string, allowed: boolean): $CancellablePromise<void> {
-    return $Call.ByID(2863008260, sessionID, id, allowed);
+export function ResolveApproval(sessionID: string, id: string, decision: string): $CancellablePromise<void> {
+    return $Call.ByID(2863008260, sessionID, id, decision);
 }
 
 export function ResolveToolRecovery(sessionID: string, invocationID: string, decision: string): $CancellablePromise<void> {
@@ -187,6 +199,10 @@ export function SetPermissionMode(sessionID: string, mode: string): $Cancellable
 
 export function SetPlanMode(sessionID: string, enabled: boolean): $CancellablePromise<$models.SessionControlsView> {
     return $Call.ByID(1612406795, sessionID, enabled);
+}
+
+export function SetSessionEffort(sessionID: string, effort: string): $CancellablePromise<void> {
+    return $Call.ByID(1638265579, sessionID, effort);
 }
 
 export function SetSessionModel(sessionID: string, profile: string): $CancellablePromise<void> {

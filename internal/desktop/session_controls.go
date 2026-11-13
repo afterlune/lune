@@ -3,9 +3,12 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/afterlune/lune/internal/slashcmd"
 	core "github.com/afterlune/luneCore"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 type SessionControlsView struct {
@@ -129,7 +132,7 @@ func (s *DesktopService) setActiveSessionContextLocked(sessionContext *desktopSe
 	s.activeContext = sessionContext
 }
 
-func (s *DesktopService) SetSessionModel(sessionID, profile string) error {
+func (s *DesktopService) updateSessionSettings(sessionID string, mutate func(*core.SessionSettings) error) error {
 	sessionContext, release, err := s.sessionOperation(sessionID)
 	if err != nil {
 		return err
@@ -142,8 +145,46 @@ func (s *DesktopService) SetSessionModel(sessionID, profile string) error {
 	if err != nil {
 		return err
 	}
-	saved.Settings.ModelProfile = profile
+	if err := mutate(&saved.Settings); err != nil {
+		return err
+	}
 	return sessionContext.core.SetSessionSettings(context.Background(), sessionContext.sessionID, saved.Settings)
+}
+
+func (s *DesktopService) SetSessionModel(sessionID, profile string) error {
+	return s.updateSessionSettings(sessionID, func(settings *core.SessionSettings) error {
+		settings.ModelProfile = profile
+		return nil
+	})
+}
+
+func (s *DesktopService) SetSessionEffort(sessionID, effort string) error {
+	normalized, err := normalizeReasoningEffort(effort)
+	if err != nil {
+		return err
+	}
+	return s.updateSessionSettings(sessionID, func(settings *core.SessionSettings) error {
+		settings.ReasoningEffort = normalized
+		return nil
+	})
+}
+
+func normalizeReasoningEffort(raw string) (string, error) {
+	effort := strings.ToLower(strings.TrimSpace(raw))
+	switch effort {
+	case "", "default":
+		return "", nil
+	case publicmodel.ReasoningEffortNone,
+		publicmodel.ReasoningEffortMinimal,
+		publicmodel.ReasoningEffortLow,
+		publicmodel.ReasoningEffortMedium,
+		publicmodel.ReasoningEffortHigh,
+		publicmodel.ReasoningEffortXHigh,
+		publicmodel.ReasoningEffortMax:
+		return effort, nil
+	default:
+		return "", fmt.Errorf("不支持的思考强度: %s", raw)
+	}
 }
 
 func (s *DesktopService) SetPermissionMode(sessionID, mode string) (SessionControlsView, error) {

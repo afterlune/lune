@@ -1843,3 +1843,43 @@ body { font-family: var(--font-sans); color: var(--text); background: var(--page
 @media (prefers-reduced-motion: reduce) {
   .welcome-art, .welcome-mark, .message-row, .conversation-empty, .topbar-state-dot.active { animation: none !important; }
 }
+
+/* ── completion additions: usage, reasoning, approval/recovery details ── */
+.topbar-menu-separator { height: 1px; margin: 4px 2px; background: var(--line); }
+.effort-profile-select { height: 30px; max-width: 124px; border: 0; border-radius: 8px; padding: 0 7px; color: var(--muted-strong); background: transparent; font-size: 11.5px; }
+.effort-profile-select:hover { background: var(--hover); color: var(--text); }
+
+.usage-popover { width: min(360px, calc(100% - 32px)); }
+.usage-popover-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.usage-meter-section { display: flex; flex-direction: column; gap: 6px; }
+.usage-meter-bar { height: 6px; border-radius: 999px; overflow: hidden; background: var(--surface-soft); border: 1px solid var(--line); }
+.usage-meter-fill { height: 100%; border-radius: 999px; background: var(--blue); transition: width .2s ease; }
+.usage-meter-fill.high { background: var(--warning); }
+.usage-meter-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+.usage-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.usage-stats-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.usage-stats-grid dt { color: var(--muted); font-size: 10.5px; }
+.usage-stats-grid dd { margin: 0; color: var(--text); font-size: 12px; font-weight: 600; font-family: var(--font-mono); }
+.usage-compaction-note { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--muted-strong); font-size: 11.5px; line-height: 1.5; }
+.usage-compaction-note.error { border-color: var(--red-line); color: var(--red); background: var(--red-soft); }
+.usage-popover-footer { display: flex; justify-content: flex-end; }
+
+.reasoning-panel { margin: 8px 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); overflow: hidden; }
+.reasoning-panel summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; cursor: pointer; list-style: none; user-select: none; color: var(--muted-strong); font-size: 11.5px; font-weight: 550; }
+.reasoning-panel summary::-webkit-details-marker { display: none; }
+.reasoning-panel summary:hover { background: var(--hover); color: var(--text); }
+.reasoning-meta { color: var(--muted); font-size: 10.5px; font-weight: 400; }
+.reasoning-body { padding: 10px 12px 12px; border-top: 1px solid var(--line); color: var(--muted-strong); font-size: 13px; line-height: 1.65; }
+
+.approval-review-reason { margin: 8px 0 4px; padding: 6px 10px; border-radius: 8px; background: var(--warning-bg); border: 1px solid var(--warning-line); color: var(--warning); font-size: 12px; line-height: 1.5; }
+.approval-fingerprint { display: flex; align-items: center; gap: 6px; margin: 6px 0; color: var(--muted); font-size: 11px; }
+.approval-fingerprint code { font-family: var(--font-mono); font-size: 11px; color: var(--muted-strong); overflow-wrap: anywhere; }
+.recovery-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.recovery-meta span, .recovery-meta code { padding: 2px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); color: var(--muted-strong); font-size: 11px; font-family: var(--font-mono); }
+
+.toast-info { position: fixed; z-index: 20; right: 22px; bottom: 20px; max-width: min(460px, calc(100vw - 40px)); display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--blue-line); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 5px 20px rgba(0, 0, 0, .12); font-size: 11.5px; }
+.toast-info button { border: 0; color: var(--muted); background: transparent; }
+
+@media (max-width: 760px) {
+  .effort-profile-select { max-width: min(34vw, 124px); }
+}

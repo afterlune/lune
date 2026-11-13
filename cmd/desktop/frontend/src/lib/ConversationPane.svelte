@@ -7,6 +7,35 @@ import MCPInteractionCard from './MCPInteractionCard.svelte';
 import Composer from './Composer.svelte';
 import EmptyConversation from './EmptyConversation.svelte';
 let { desktop }: { desktop: DesktopState } = $props();
+let nowTick = $state(Date.now());
+
+$effect(() => {
+  const hasCountdown = desktop.pending.some(
+    (item) => item.kind === 'model_recovery' && item.modelFailure?.retryNotBefore && Date.parse(item.modelFailure.retryNotBefore) > nowTick,
+  );
+  if (!hasCountdown) return;
+  const timer = window.setInterval(() => { nowTick = Date.now(); }, 1000);
+  return () => window.clearInterval(timer);
+});
+
+function failureCategoryLabel(category: string | undefined): string {
+  switch (category) {
+    case 'rate_limit': return '触发限流 (rate_limit)';
+    case 'network': return '网络异常 (network)';
+    case 'server': return '服务端错误 (server)';
+    case 'auth': return '鉴权失败 (auth)';
+    case 'bad_request': return '请求参数错误 (bad_request)';
+    case 'stream_interrupted': return '流式传输中断';
+    default: return category || '模型请求未完成';
+  }
+}
+
+function retryCountdownSeconds(retryNotBefore: string | undefined): number {
+  if (!retryNotBefore) return 0;
+  const target = Date.parse(retryNotBefore);
+  if (!Number.isFinite(target)) return 0;
+  return Math.max(0, Math.ceil((target - nowTick) / 1000));
+}
 </script>
 {#if desktop.session}
 
@@ -60,6 +89,16 @@ let { desktop }: { desktop: DesktopState } = $props();
                   <ExecutionActivity {run} active={run.executionId === desktop.executionID && desktop.running} elapsedSeconds={run.executionId === desktop.executionID ? desktop.elapsedSeconds : run.elapsedSeconds ?? 0} onToggle={() => desktop.toggleActivityRun(run.key)} />
                 {/each}
 
+                {#if block.reasoningText}
+                  <details class="reasoning-panel">
+                    <summary>
+                      <span class="reasoning-title">思考过程</span>
+                      <span class="reasoning-meta">{block.executionId === desktop.executionID && desktop.running ? '思考中…' : `${block.reasoningText.length} 字`}</span>
+                    </summary>
+                    <div class="reasoning-body markdown-body"><Markdown source={block.reasoningText} live={block.executionId === desktop.executionID && desktop.running} /></div>
+                  </details>
+                {/if}
+
                 {#if block.streamText}
                   <article class="message-row execution-stream-row"><div class="message-body"><div class="message-text"><Markdown source={block.streamText} live /><span class="stream-caret"></span></div></div></article>
                 {/if}
@@ -84,8 +123,14 @@ let { desktop }: { desktop: DesktopState } = $props();
                   <section class="request-card approval-card execution-action-card">
                     <div class="request-heading"><span class="request-icon">!</span><div><strong>需要授权</strong><p>Agent 想要运行工具 <code>{approval.tool}</code></p></div></div>
                     {#if approval.pathGrant}<p class="permission-grant-scope">授权目录：<code>{approval.pathGrant.path}</code>（{approval.pathGrant.access === 'read_write' ? '读写' : '只读'}，包含其子目录；保存到当前 session）</p>{/if}
+                    {#if approval.autoReviewReason}<p class="approval-review-reason">自动审查提示：{approval.autoReviewReason}</p>{/if}
+                    {#if approval.fingerprint}<div class="approval-fingerprint"><span>操作指纹</span><code>{approval.fingerprint}</code></div>{/if}
                     {#if approval.arguments}<pre>{desktop.formatArguments(approval.arguments)}</pre>{/if}
-                    <div class="request-actions"><button class="quiet-button" onclick={() => void desktop.resolveApproval(approval, false)}>拒绝</button><button class="primary-button" onclick={() => void desktop.resolveApproval(approval, true)}>{approval.pathGrant ? '授权此目录到本 session' : '允许本次操作'}</button></div>
+                    <div class="request-actions">
+                      <button class="quiet-button" onclick={() => void desktop.resolveApproval(approval, 'deny')}>拒绝</button>
+                      {#if !approval.pathGrant}<button class="quiet-button" onclick={() => void desktop.resolveApproval(approval, 'allow_session')}>本会话允许相同操作</button>{/if}
+                      <button class="primary-button" onclick={() => void desktop.resolveApproval(approval, approval.pathGrant ? 'allow_session' : 'allow_once')}>{approval.pathGrant ? '授权此目录到本 session' : '允许本次操作'}</button>
+                    </div>
                   </section>
                 {/each}
 
@@ -110,7 +155,23 @@ let { desktop }: { desktop: DesktopState } = $props();
                 {/each}
 
                 {#each block.pendingRequests.filter((request) => request.kind === 'tool_recovery' || request.kind === 'model_recovery' || request.kind === 'execution_blocker') as request (request.id)}
-                  <section class="request-card recovery-card execution-action-card"><strong>{request.kind === 'model_recovery' ? '模型请求未完成' : request.kind === 'execution_blocker' ? '执行受阻' : '工具执行暂停'}</strong><p>{request.reason || request.tool || '此操作需要恢复。'}</p><div class="request-actions"><button class="quiet-button" onclick={() => void desktop.dismissRecovery(request)}>{request.kind === 'tool_recovery' ? '跳过失败步骤' : '丢弃本轮'}</button><button class="primary-button" onclick={() => void desktop.recover(request)}>{request.kind === 'execution_blocker' ? '恢复执行' : '重试'}</button></div></section>
+                  <section class="request-card recovery-card execution-action-card">
+                    <strong>{request.kind === 'model_recovery' ? '模型请求未完成' : request.kind === 'execution_blocker' ? '执行受阻' : '工具执行暂停'}</strong>
+                    {#if request.kind === 'model_recovery' && request.modelFailure}
+                      <p>{failureCategoryLabel(request.modelFailure.category)}{#if retryCountdownSeconds(request.modelFailure.retryNotBefore) > 0} · 建议 {retryCountdownSeconds(request.modelFailure.retryNotBefore)}s 后重试{/if}</p>
+                      <div class="recovery-meta">
+                        {#if request.modelFailure.statusCode}<span>HTTP {request.modelFailure.statusCode}</span>{/if}
+                        {#if request.modelFailure.code}<code>{request.modelFailure.code}</code>{/if}
+                        {#if request.modelFailure.attempts}<span>已尝试 {request.modelFailure.attempts} 次</span>{/if}
+                        {#if request.modelFailure.streamStarted}<span>流式响应已开始</span>{/if}
+                        {#if request.modelFailure.requestId}<code>ID: {request.modelFailure.requestId}</code>{/if}
+                      </div>
+                    {:else}
+                      <p>{request.reason || request.tool || '此操作需要恢复。'}</p>
+                      {#if request.kind === 'tool_recovery' && request.arguments}<pre>{desktop.formatArguments(request.arguments)}</pre>{/if}
+                    {/if}
+                    <div class="request-actions"><button class="quiet-button" onclick={() => void desktop.dismissRecovery(request)}>{request.kind === 'tool_recovery' ? '跳过失败步骤' : '丢弃本轮'}</button><button class="primary-button" onclick={() => void desktop.recover(request)}>{request.kind === 'execution_blocker' ? '恢复执行' : '重试'}</button></div>
+                  </section>
                 {/each}
 
                 {#each block.pendingRequests.filter((request) => request.kind === 'user_interaction') as request (request.id)}

@@ -3,13 +3,16 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"time"
 
 	core "github.com/afterlune/luneCore"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func (s *DesktopService) ResolveApproval(sessionID string, id string, allowed bool) error {
+func (s *DesktopService) ResolveApproval(sessionID string, id string, decision string) error {
 	sessionContext, release, err := s.sessionOperation(sessionID)
 	if err != nil {
 		return err
@@ -19,11 +22,24 @@ func (s *DesktopService) ResolveApproval(sessionID string, id string, allowed bo
 	if runtime == nil {
 		return errors.New("会话已关闭")
 	}
-	decision := publictool.ApprovalDeny
-	if allowed {
-		decision = publictool.ApprovalAllowOnce
+	parsedDecision, err := parseApprovalDecision(decision)
+	if err != nil {
+		return err
 	}
-	return runtime.ResolveApprovalDecision(context.Background(), id, decision)
+	return runtime.ResolveApprovalDecision(context.Background(), id, parsedDecision)
+}
+
+func parseApprovalDecision(raw string) (publictool.ApprovalDecision, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(publictool.ApprovalAllowOnce), "once", "true":
+		return publictool.ApprovalAllowOnce, nil
+	case string(publictool.ApprovalAllowSession), "session":
+		return publictool.ApprovalAllowSession, nil
+	case string(publictool.ApprovalDeny), "false", "":
+		return publictool.ApprovalDeny, nil
+	default:
+		return "", fmt.Errorf("不支持的授权决定: %s", raw)
+	}
 }
 
 type QuestionAnswerInput struct {
@@ -143,7 +159,15 @@ func pendingRequestView(request core.PendingRequest) PendingRequestView {
 		if request.Approval == nil {
 			break
 		}
-		return PendingRequestView{Kind: string(request.Kind), ID: request.Approval.ID, Tool: request.Approval.Tool, Arguments: request.Approval.Arguments, PathGrant: request.Approval.PathGrant}
+		return PendingRequestView{
+			Kind:             string(request.Kind),
+			ID:               request.Approval.ID,
+			Tool:             request.Approval.Tool,
+			Arguments:        request.Approval.Arguments,
+			PathGrant:        request.Approval.PathGrant,
+			AutoReviewReason: request.Approval.AutoReviewReason,
+			Fingerprint:      request.Approval.Fingerprint,
+		}
 	case core.PendingUserQuestion:
 		if request.UserQuestion == nil {
 			break
@@ -161,7 +185,27 @@ func pendingRequestView(request core.PendingRequest) PendingRequestView {
 			break
 		}
 		r := request.ModelRecovery
-		return PendingRequestView{Kind: string(request.Kind), ID: r.CallID, CallID: r.CallID, ExecutionID: r.ExecutionID, InvocationID: r.InvocationID, RunID: r.RunID, Reason: string(r.Failure.Category)}
+		failure := &ModelFailureView{
+			Category:      string(r.Failure.Category),
+			StatusCode:    r.Failure.StatusCode,
+			Code:          r.Failure.Code,
+			RequestID:     r.Failure.RequestID,
+			Attempts:      r.Failure.Attempts,
+			StreamStarted: r.Failure.StreamStarted,
+		}
+		if !r.Failure.RetryNotBefore.IsZero() {
+			failure.RetryNotBefore = r.Failure.RetryNotBefore.UTC().Format(time.RFC3339)
+		}
+		return PendingRequestView{
+			Kind:         string(request.Kind),
+			ID:           r.CallID,
+			CallID:       r.CallID,
+			ExecutionID:  r.ExecutionID,
+			InvocationID: r.InvocationID,
+			RunID:        r.RunID,
+			Reason:       string(r.Failure.Category),
+			ModelFailure: failure,
+		}
 	case core.PendingExecutionBlocker:
 		if request.Blocker == nil {
 			break

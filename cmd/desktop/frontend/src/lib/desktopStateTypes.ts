@@ -50,6 +50,7 @@ export type ActivityRun = {
   queuePosition?: number;
   messageText?: string;
   messageImages?: string[];
+  reasoningText?: string;
 };
 
 export type ExecutionTimelineBlock = {
@@ -62,6 +63,34 @@ export type ExecutionTimelineBlock = {
   pendingRequests: PendingRequestView[];
   planReview?: { executionID: string; text: string };
   streamText: string;
+  reasoningText: string;
+};
+
+export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
+
+export type UsageEventView = {
+  agentId?: string;
+  purpose?: string;
+  inputTokens?: number;
+  estimatedInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+  cachedTokens?: number;
+  cacheCreationTokens?: number;
+  contextWindow?: number;
+};
+
+export type CompactionNotice = {
+  stage: string;
+  mode?: string;
+  reason?: string;
+  strategy?: string;
+  beforeTokens?: number;
+  afterTokens?: number;
+  threshold?: number;
+  turns?: number;
+  error?: string;
 };
 
 export type StoredActivityRun = NonNullable<WorkspaceState['executionHistory']>[number];

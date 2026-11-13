@@ -13,18 +13,45 @@ import (
 )
 
 type AgentEvent struct {
-	Kind            string       `json:"kind"`
-	SessionID       string       `json:"sessionId"`
-	TaskID          string       `json:"taskId"`
-	ExecutionID     string       `json:"executionId"`
-	Status          string       `json:"status"`
-	Err             string       `json:"error,omitempty"`
-	CommandID       string       `json:"commandId,omitempty"`
-	CommandStatus   string       `json:"commandStatus,omitempty"`
-	CommandExitCode *int         `json:"commandExitCode,omitempty"`
-	Tool            ToolEvent    `json:"tool"`
-	Stream          *StreamEvent `json:"stream,omitempty"`
-	ApprovalID      string       `json:"approvalId,omitempty"`
+	Kind            string               `json:"kind"`
+	SessionID       string               `json:"sessionId"`
+	TaskID          string               `json:"taskId"`
+	ExecutionID     string               `json:"executionId"`
+	Status          string               `json:"status"`
+	Err             string               `json:"error,omitempty"`
+	CommandID       string               `json:"commandId,omitempty"`
+	CommandStatus   string               `json:"commandStatus,omitempty"`
+	CommandExitCode *int                 `json:"commandExitCode,omitempty"`
+	Tool            ToolEvent            `json:"tool"`
+	Stream          *StreamEvent         `json:"stream,omitempty"`
+	Usage           *UsageEventView      `json:"usage,omitempty"`
+	Compaction      *CompactionEventView `json:"compaction,omitempty"`
+	ApprovalID      string               `json:"approvalId,omitempty"`
+}
+
+type UsageEventView struct {
+	AgentID              string `json:"agentId,omitempty"`
+	Purpose              string `json:"purpose,omitempty"`
+	InputTokens          int64  `json:"inputTokens,omitempty"`
+	EstimatedInputTokens int64  `json:"estimatedInputTokens,omitempty"`
+	OutputTokens         int64  `json:"outputTokens,omitempty"`
+	ReasoningTokens      int64  `json:"reasoningTokens,omitempty"`
+	TotalTokens          int64  `json:"totalTokens,omitempty"`
+	CachedTokens         int64  `json:"cachedTokens,omitempty"`
+	CacheCreationTokens  int64  `json:"cacheCreationTokens,omitempty"`
+	ContextWindow        int64  `json:"contextWindow,omitempty"`
+}
+
+type CompactionEventView struct {
+	Stage        string `json:"stage,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Strategy     string `json:"strategy,omitempty"`
+	BeforeTokens int64  `json:"beforeTokens,omitempty"`
+	AfterTokens  int64  `json:"afterTokens,omitempty"`
+	Threshold    int64  `json:"threshold,omitempty"`
+	Turns        int    `json:"turns,omitempty"`
+	Err          string `json:"error,omitempty"`
 }
 
 type ToolEvent struct {
@@ -42,8 +69,9 @@ type ToolEvent struct {
 }
 
 type StreamEvent struct {
-	Type  string `json:"type"`
-	Delta string `json:"delta"`
+	Type    string `json:"type"`
+	Delta   string `json:"delta"`
+	Purpose string `json:"purpose,omitempty"`
 }
 
 func (s *DesktopService) subscribeEventsLocked(sessionContext *desktopSessionContext, replayFromStart bool) {
@@ -103,6 +131,17 @@ func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 	}
 	ctx := context.Background()
 	switch event.Kind {
+	case core.EventModelStream:
+		if event.Stream == nil {
+			return false
+		}
+		if event.Stream.Type == "reasoning_delta" {
+			if (event.Stream.Purpose == "" || event.Stream.Purpose == "agent") && event.Stream.Delta != "" {
+				s.bufferReasoningDelta(event.SessionID, event.ExecutionID, event.Stream.Delta)
+			}
+		} else {
+			s.flushExecutionReasoning(event.SessionID, event.ExecutionID)
+		}
 	case core.EventTaskQueued:
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "queued"); err != nil {
 			slog.Warn("save queued desktop execution activity", "error", err)
@@ -117,7 +156,14 @@ func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 		if err := store.UpdateExecutionMessageStatus(ctx, event.SessionID, event.ExecutionID, "running", 0); err != nil {
 			slog.Warn("save running desktop message status", "error", err)
 		}
+	case core.EventModelRecoveryRequired,
+		core.EventApprovalRequired,
+		core.EventUserQuestionRequired,
+		core.EventExecutionBlocked,
+		core.EventToolRecoveryRequired:
+		s.flushExecutionReasoning(event.SessionID, event.ExecutionID)
 	case core.EventTaskFinished:
+		s.flushExecutionReasoning(event.SessionID, event.ExecutionID)
 		status := activityStatus(string(event.Status))
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, status); err != nil {
 			slog.Warn("save desktop execution activity status", "error", err)
@@ -126,6 +172,7 @@ func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 			slog.Warn("save finished desktop message status", "error", err)
 		}
 	case core.EventTaskDiscarded:
+		s.flushExecutionReasoning(event.SessionID, event.ExecutionID)
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "interrupted"); err != nil {
 			slog.Warn("save interrupted execution activity", "error", err)
 		}
@@ -133,6 +180,7 @@ func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 			slog.Warn("remove discarded desktop message receipt", "error", err)
 		}
 	case core.EventToolDetails:
+		s.flushExecutionReasoning(event.SessionID, event.ExecutionID)
 		if err := store.UpsertExecution(ctx, event.SessionID, event.ExecutionID, nil, "running"); err != nil {
 			slog.Warn("save desktop execution activity", "error", err)
 		}
@@ -142,6 +190,89 @@ func (s *DesktopService) persistActivityEvent(event core.Event) bool {
 		}
 	}
 	return false
+}
+
+func reasoningBufferKey(sessionID, executionID string) string {
+	return sessionID + "\x00" + executionID
+}
+
+func (s *DesktopService) bufferReasoningDelta(sessionID, executionID, delta string) {
+	if sessionID == "" || executionID == "" || delta == "" {
+		return
+	}
+	key := reasoningBufferKey(sessionID, executionID)
+	s.mu.Lock()
+	if s.reasoningBuffers == nil {
+		s.reasoningBuffers = make(map[string]string)
+	}
+	s.reasoningBuffers[key] += delta
+	s.mu.Unlock()
+}
+
+func (s *DesktopService) flushExecutionReasoning(sessionID, executionID string) {
+	if sessionID == "" || executionID == "" {
+		return
+	}
+	key := reasoningBufferKey(sessionID, executionID)
+	s.mu.Lock()
+	buffered := s.reasoningBuffers[key]
+	if buffered != "" {
+		delete(s.reasoningBuffers, key)
+	}
+	store := s.activityStore
+	s.mu.Unlock()
+	if buffered == "" || store == nil {
+		return
+	}
+	if err := store.AppendExecutionReasoning(context.Background(), sessionID, executionID, buffered); err != nil {
+		slog.Warn("save desktop reasoning text", "error", err)
+	}
+}
+
+func (s *DesktopService) flushSessionReasoning(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	prefix := sessionID + "\x00"
+	var pending []struct {
+		executionID string
+		text        string
+	}
+	s.mu.Lock()
+	for key, text := range s.reasoningBuffers {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.reasoningBuffers, key)
+			if text != "" {
+				pending = append(pending, struct {
+					executionID string
+					text        string
+				}{executionID: strings.TrimPrefix(key, prefix), text: text})
+			}
+		}
+	}
+	store := s.activityStore
+	s.mu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, item := range pending {
+		if err := store.AppendExecutionReasoning(ctx, sessionID, item.executionID, item.text); err != nil {
+			slog.Warn("flush desktop reasoning text", "error", err)
+		}
+	}
+}
+
+func (s *DesktopService) clearSessionReasoningLocked(sessionID string) {
+	if sessionID == "" || len(s.reasoningBuffers) == 0 {
+		return
+	}
+	prefix := sessionID + "\x00"
+	for key := range s.reasoningBuffers {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.reasoningBuffers, key)
+		}
+	}
 }
 
 func (s *DesktopService) suppressExecutionActivity(executionIDs []string) {
@@ -277,7 +408,38 @@ func toAgentEvent(event core.Event) AgentEvent {
 			Duration: event.Tool.Duration.Milliseconds(), Truncated: tool.Truncated},
 	}
 	if event.Stream != nil {
-		result.Stream = &StreamEvent{Type: event.Stream.Type, Delta: event.Stream.Delta}
+		result.Stream = &StreamEvent{
+			Type:    event.Stream.Type,
+			Delta:   event.Stream.Delta,
+			Purpose: event.Stream.Purpose,
+		}
+	}
+	if event.Kind == core.EventUsage {
+		result.Usage = &UsageEventView{
+			AgentID:              event.AgentID,
+			Purpose:              string(event.UsagePurpose),
+			InputTokens:          event.Usage.InputTokens,
+			EstimatedInputTokens: event.EstimatedInputTokens,
+			OutputTokens:         event.Usage.OutputTokens,
+			ReasoningTokens:      event.Usage.OutputTokensDetails.ReasoningTokens,
+			TotalTokens:          event.Usage.TotalTokens,
+			CachedTokens:         event.Usage.InputTokensDetails.CachedTokens,
+			CacheCreationTokens:  event.Usage.InputTokensDetails.CacheCreationTokens,
+			ContextWindow:        event.ContextWindow,
+		}
+	}
+	if event.Kind == core.EventContextCompaction && event.Compaction != nil {
+		result.Compaction = &CompactionEventView{
+			Stage:        event.Compaction.Stage,
+			Mode:         event.Compaction.Mode,
+			Reason:       event.Compaction.Reason,
+			Strategy:     event.Compaction.Strategy,
+			BeforeTokens: event.Compaction.BeforeTokens,
+			AfterTokens:  event.Compaction.AfterTokens,
+			Threshold:    event.Compaction.Threshold,
+			Turns:        event.Compaction.Turns,
+			Err:          event.Compaction.Err,
+		}
 	}
 	return result
 }

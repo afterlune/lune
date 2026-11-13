@@ -23,6 +23,22 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
     },
     sessions: [{ id: 'session-preview', title: '重构桌面端提问流程', updatedAt: '2026-10-16T10:36:00+08:00', workingDirectory: 'D:\\Git\\luneAgent', status: 'idle' }],
     runtimeState: { Goal: null, Task: { Status: TaskStatus.TaskIdle, SessionID: 'session-preview', TaskID: '', ExecutionID: '', QueueID: '', GoalID: '', GoalRevision: 0, AutomaticGoal: false, ContextWindow: 0, ReserveOutputTokens: 0, AutoCompact: false, AutoCompactThreshold: 0, Goal: '', MaxToolRounds: 0, ModelOverride: '', ModelProfile: '工作模型', Provider: 'deepseek', Model: 'deepseek-chat', ReasoningEffort: '', Execution: {} }, Queue: [] },
+    usage: {
+      requests: 2,
+      measured: 2,
+      input: 12400,
+      output: 1850,
+      reasoning: 420,
+      total: 14250,
+      cached: 3200,
+      contextWindow: 128000,
+      reserveOutputTokens: 16384,
+      autoCompact: true,
+      autoCompactThreshold: 0.85,
+      lastInputTokens: 6800,
+      lastOutputTokens: 980,
+      lastTotalTokens: 7780,
+    },
     pending: [],
     executionHistory: [],
   };
@@ -46,9 +62,25 @@ export function createDesktopPreview(_previewVariant:string, defaultAppearance:A
   ];
   const previewPendingRequests: Record<string, PendingRequestView[]> = {
     'session-background': [
-      previewPendingRequest('approval', 'approval-preview', { tool: 'exec_command', arguments: { command: 'git status --short' } }),
+      previewPendingRequest('approval', 'approval-preview', {
+        tool: 'exec_command',
+        arguments: { command: 'git status --short' },
+        autoReviewReason: '自动审查建议由你确认工作区命令执行',
+        fingerprint: 'fp-exec-git-status',
+      }),
       previewPendingRequest('user_question', 'question-background', { questions: [{ id: 'next-step', question: '接下来优先检查哪一部分？', options: [{ label: '测试', description: '先确认当前改动的行为。', recommended: true }, { label: '实现', description: '继续完成主要功能。', recommended: false }] }] }),
-      previewPendingRequest('model_recovery', 'model-background', { reason: 'rate_limit' }),
+      previewPendingRequest('model_recovery', 'model-background', {
+        reason: 'rate_limit',
+        modelFailure: {
+          category: 'rate_limit',
+          statusCode: 429,
+          code: 'rate_limit_exceeded',
+          requestId: 'req-preview-429',
+          attempts: 2,
+          streamStarted: true,
+          retryNotBefore: '2026-10-17T08:16:00Z',
+        },
+      }),
       previewPendingRequest('tool_recovery', 'tool-background', { tool: 'write_file', arguments: { path: 'docs/desktop.md' } }),
       previewPendingRequest('user_interaction', 'interaction-form', {
         tool: 'docs', arguments: { method: 'elicitation/create', params: { mode: 'form', message: '请输入文档服务的一次性验证码。', requestedSchema: { type: 'object', properties: { code: { type: 'string', title: '验证码', minLength: 4 }, remember: { type: 'boolean', title: '记住此设备' }, retries: { type: 'integer', title: '重试次数', minimum: 1, maximum: 5 }, account: { type: 'string', title: '账户类型', enum: ['个人', '工作'] } }, required: ['code'] } } },

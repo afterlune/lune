@@ -524,3 +524,71 @@ test('failed submission stays in the transcript and retries without duplicating 
   await expect(page.getByText('任务已完成')).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText('可以重试的消息', { exact: true })).toHaveCount(1);
 });
+
+test('approval card supports three-way decisions, auto-review reason, and model failure details', async ({ page }) => {
+  await page.goto('/?preview=pending-center');
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: /待处理/ }).click();
+  await page.getByRole('button', { name: /后台会话需要你处理，6 项待处理/ }).click();
+
+  const approvalCard = page.locator('.approval-card').first();
+  await expect(approvalCard).toContainText('自动审查建议由你确认工作区外或命令操作'.slice(0, 8));
+  await expect(approvalCard).toContainText('fp-exec-git-status');
+  await expect(approvalCard.getByRole('button', { name: '拒绝' })).toBeVisible();
+  await expect(approvalCard.getByRole('button', { name: '本会话允许相同操作' })).toBeVisible();
+  await expect(approvalCard.getByRole('button', { name: '允许本次操作' })).toBeVisible();
+
+  const modelRecovery = page.locator('.recovery-card').filter({ hasText: '模型请求未完成' });
+  await expect(modelRecovery).toContainText('触发限流 (rate_limit)');
+  await expect(modelRecovery).toContainText('HTTP 429');
+  await expect(modelRecovery).toContainText('rate_limit_exceeded');
+  await expect(modelRecovery).toContainText('已尝试 2 次');
+  await expect(modelRecovery).toContainText('ID: req-preview-429');
+
+  const toolRecovery = page.locator('.recovery-card').filter({ hasText: '工具执行暂停' });
+  await expect(toolRecovery).toContainText('docs/desktop.md');
+
+  await approvalCard.getByRole('button', { name: '本会话允许相同操作' }).click();
+  await expect(page.locator('.approval-card')).toHaveCount(0);
+});
+
+test('usage popover displays session metrics and performs manual compaction', async ({ page }) => {
+  await page.goto('/?preview=1');
+  const chip = page.getByRole('button', { name: '上下文与用量' });
+  await expect(chip).toContainText('上下文');
+  await chip.click();
+
+  const popover = page.getByRole('dialog', { name: '上下文与用量' });
+  await expect(popover).toBeVisible();
+  await expect(popover).toContainText('请求次数');
+  await expect(popover).toContainText('14.3k');
+
+  await popover.getByRole('button', { name: '压缩上下文' }).click();
+  await expect(popover.locator('.usage-compaction-note')).toContainText('已压缩上下文');
+  await page.keyboard.press('Escape');
+  await expect(popover).toHaveCount(0);
+});
+
+test('reasoning panel expands streamed thought, effort selector updates, and fork/export work', async ({ page }) => {
+  await page.goto('/?preview=send');
+  const effortSelect = page.locator('.composer').getByRole('combobox', { name: '思考强度' });
+  await expect(effortSelect).toHaveValue('default');
+  await effortSelect.selectOption('high');
+  await expect(effortSelect).toHaveValue('high');
+
+  await page.getByRole('textbox', { name: '消息输入' }).fill('测试思考过程展示');
+  await page.getByRole('button', { name: '发送' }).click();
+  const reasoningPanel = page.locator('.reasoning-panel');
+  await expect(reasoningPanel).toBeVisible({ timeout: 5_000 });
+  await expect(reasoningPanel).not.toHaveAttribute('open', '');
+  await reasoningPanel.locator('summary').click();
+  await expect(reasoningPanel).toHaveAttribute('open', '');
+  await expect(reasoningPanel.locator('.reasoning-body')).toContainText('先梳理服务状态事件');
+
+  await page.getByRole('button', { name: '更多工作区操作' }).click();
+  await page.getByRole('menuitem', { name: '导出 Markdown (.md)' }).click();
+  await expect(page.locator('.toast-info')).toContainText('MD');
+
+  await page.getByRole('button', { name: '更多工作区操作' }).click();
+  await page.getByRole('menuitem', { name: '创建分支会话' }).click();
+  await expect(page.locator('.topbar-title')).toContainText('(分支)');
+});

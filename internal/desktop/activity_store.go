@@ -26,6 +26,7 @@ type ExecutionActivityView struct {
 	QueuePosition    int64              `json:"queuePosition,omitempty"`
 	MessageText      string             `json:"messageText,omitempty"`
 	MessageImages    []string           `json:"messageImages,omitempty"`
+	ReasoningText    string             `json:"reasoningText,omitempty"`
 	StartedAt        time.Time          `json:"startedAt"`
 	FinishedAt       *time.Time         `json:"finishedAt,omitempty"`
 	Tools            []ToolActivityView `json:"tools"`
@@ -103,6 +104,7 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 			execution_id TEXT NOT NULL,
 			user_message_index INTEGER NOT NULL DEFAULT -1,
 			status TEXT NOT NULL,
+			reasoning_text TEXT NOT NULL DEFAULT '',
 			started_at INTEGER NOT NULL,
 			finished_at INTEGER,
 			PRIMARY KEY(session_id, execution_id)
@@ -134,7 +136,37 @@ func OpenActivityStore(stateDir string) (*ActivityStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize desktop activity database: %w", err)
 	}
+	if err := ensureActivityColumn(db, "execution_activity_runs", "reasoning_text", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate desktop activity database: %w", err)
+	}
 	return &ActivityStore{db: db}, nil
+}
+
+func ensureActivityColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
+	return err
 }
 
 func (s *ActivityStore) SaveExecutionMessage(ctx context.Context, sessionID, executionID, text string, images []string, status string, queuePosition int64) error {
@@ -216,6 +248,23 @@ func (s *ActivityStore) UpsertExecution(ctx context.Context, sessionID, executio
 	`, sessionID, executionID, index, status, now.UnixNano(), finishedAt)
 	if err != nil {
 		return fmt.Errorf("save execution activity status: %w", err)
+	}
+	return nil
+}
+
+func (s *ActivityStore) AppendExecutionReasoning(ctx context.Context, sessionID, executionID, delta string) error {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" || delta == "" {
+		return nil
+	}
+	now := time.Now().UTC().UnixNano()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO execution_activity_runs(session_id, execution_id, user_message_index, status, reasoning_text, started_at)
+		VALUES(?, ?, -1, 'running', ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET
+			reasoning_text = execution_activity_runs.reasoning_text || excluded.reasoning_text
+	`, sessionID, executionID, delta, now)
+	if err != nil {
+		return fmt.Errorf("append execution reasoning: %w", err)
 	}
 	return nil
 }
@@ -311,7 +360,7 @@ func (s *ActivityStore) ListSession(ctx context.Context, sessionID string) ([]Ex
 		return nil, errors.New("activity store and session are required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT execution_id, user_message_index, status, started_at, finished_at
+		SELECT execution_id, user_message_index, status, reasoning_text, started_at, finished_at
 		FROM execution_activity_runs WHERE session_id = ? ORDER BY started_at, execution_id
 	`, sessionID)
 	if err != nil {
@@ -324,7 +373,7 @@ func (s *ActivityStore) ListSession(ctx context.Context, sessionID string) ([]Ex
 		var run ExecutionActivityView
 		var startedAt int64
 		var finishedAt sql.NullInt64
-		if err := rows.Scan(&run.ExecutionID, &run.UserMessageIndex, &run.Status, &startedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&run.ExecutionID, &run.UserMessageIndex, &run.Status, &run.ReasoningText, &startedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("read execution activity: %w", err)
 		}
 		run.StartedAt = time.Unix(0, startedAt).UTC()

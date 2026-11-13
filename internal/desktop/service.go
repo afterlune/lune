@@ -31,6 +31,7 @@ type DesktopService struct {
 	mcpOperations         int
 	waiting               map[string]bool
 	suppressedActivity    map[string]struct{}
+	reasoningBuffers      map[string]string
 }
 
 type desktopSessionContext struct {
