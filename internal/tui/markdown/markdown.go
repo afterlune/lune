@@ -671,7 +671,7 @@ func isTableDelimiterRow(line string) bool {
 	return true
 }
 
-// renderMarkdownTable renders a clean, borderless horizontal-divider table (Codex style).
+// renderMarkdownTable renders a clean, borderless horizontal-divider table.
 func renderMarkdownTable(headerLine string, rowLines []string, width int, th Palette) []string {
 	headers := splitTableRow(headerLine)
 	numCols := len(headers)

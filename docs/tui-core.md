@@ -83,8 +83,6 @@ go test -trimpath ./...
 
 ## Cache diagnostics
 
-The footer's `Cache: … session` is the weighted cumulative cache rate for all usage in the session. `/context` shows the latest main-agent request's cached and uncached input, request ID, attempt and locally observed prompt changes. Local changes describe request mutations, not provider cache eviction reasons.
+The footer's `Cache: … session` is the weighted cumulative cache rate for all usage in the session, while tool categories accumulate across turns and restarts. `/context` shows the latest main-agent request's cached and uncached input, request ID, attempt and locally observed prompt changes. Local changes describe request mutations, not provider cache eviction reasons. Plan and permission toggles still filter visible tools by metadata and may change the tool declarations sent to the provider.
 
-工具类别在会话内累计发现，跨任务及重启保留。页脚为全部会话用量的累计缓存率；`/context` 显示最近主 agent 请求的输入缓存明细、请求身份和本地变化。Plan 与权限切换仍按工具元数据过滤能力，因此可能引起必要的工具声明变化。
-
-Core keeps fixed rules in Instructions and appends changing runtime guidance as model-only history snapshots. These snapshots never appear as user messages in the transcript. Permissions and approvals remain enforced by Core. The sibling luneCore README documents the bounded opt-in API smoke test; it uses an isolated workspace and never copies credentials into reports.
+Core keeps fixed rules in Instructions and appends changing runtime guidance as model-only history snapshots. These snapshots never appear as user messages in the transcript. Permissions and approvals remain enforced by Core. The sibling `luneCore` repository includes an opt-in API smoke test (`internal/runtime/cache_api_smoke_test.go`) that runs in an isolated workspace and never copies credentials into reports.

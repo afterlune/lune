@@ -17,8 +17,8 @@ func testPalette() Palette {
 }
 
 func TestSplitCodeComment(t *testing.T) {
-	code, comment := splitCodeComment("gofmt -l internal/desktop # 期望无输出")
-	if code != "gofmt -l internal/desktop " || comment != "# 期望无输出" {
+	code, comment := splitCodeComment("gofmt -l internal/tui # 期望无输出")
+	if code != "gofmt -l internal/tui " || comment != "# 期望无输出" {
 		t.Fatalf("unexpected splitCodeComment result: code=%q, comment=%q", code, comment)
 	}
 	quotedCode, quotedComment := splitCodeComment(`git commit -m "fix #123 issue" # trailing comment`)

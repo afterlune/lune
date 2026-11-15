@@ -17,7 +17,7 @@ go test -trimpath ./...
 
 Windows 上的 vet 仅关闭 `unsafeptr` 分析器：ConPTY 测试按 Win32 API 契约将不透明 `HPCON` 句柄作为 `lpValue` 传入；其余分析器仍会检查全部 Go 包。
 
-提交前运行 `gofmt -l $(git ls-files '*.go')` 确认输出为空，需要格式化时运行 `gofmt -w`。若本机同时检出 `luneCore`，可单独运行其测试：
+提交前运行 `gofmt -l .` 确认输出为空，需要格式化时运行 `gofmt -w .`。若本机同时检出 `luneCore`，可单独运行其测试：
 
 ```powershell
 go -C ..\luneCore test -trimpath -count=1 -p 1 ./...
@@ -93,9 +93,9 @@ exec /opt/lune/bin/lune "$@"
 
 按职责、状态所有权和变化原因拆文件，不设机械行数上限。拆分时保持外部命令、Go API 与运行行为不变；测试跟随清晰的功能边界移动，职责集中的测试无需仅为缩短文件而拆分。
 
-`internal/tui` 的状态所有权边界：`usage.go` 管会话用量与上下文窗口，`view_cache.go` 管转录渲染缓存与脏标记，`modal_state.go` 管互斥的模态浮层与优先级，`composer_state.go` 管输入框、补全、历史、选区与复制反馈，`run_state.go` 管任务运行态（运行标志、Core 任务快照、队列、流式缓冲与载入冻结）；`tuiModel` 只保留跨域状态（会话身份、任务交互卡片、注意力提醒与主题设置）。新增字段先决定归属，再决定放哪个文件。斜杠命令的名称、帮助文案、目标前端、是否需要会话与运行中可用性统一放在无 UI 依赖的 `internal/slashcmd`，两个前端只保留命令派发与子命令特例。
+`internal/tui` 的状态所有权边界：`usage.go` 管会话用量与上下文窗口，`view_cache.go` 管转录渲染缓存与脏标记，`modal_state.go` 管互斥的模态浮层与优先级，`composer_state.go` 管输入框、补全、历史、选区与复制反馈，`run_state.go` 管任务运行态（运行标志、Core 任务快照、队列、流式缓冲与载入冻结）；`tuiModel` 只保留跨域状态（会话身份、任务交互卡片、注意力提醒与主题设置）。新增字段先决定归属，再决定放哪个文件。斜杠命令的名称、帮助文案、目标前端、是否需要会话与运行中可用性统一放在无 UI 依赖的 `internal/slashcmd`，CLI 与 TUI 两个前端只保留命令派发与子命令特例。
 
-当前边界如下：`internal/cli/core_cli.go` 保留 CLI/TUI 协调与分发；CLI 执行、授权、状态查询、进程操作、会话操作和项目集成各有独立文件。`internal/settings/store.go` 负责 SQLite 初始化，保存 TUI 主题与 `/toolchains` 宿主工具链设置。`internal/tui` 保留共享 `tuiModel` 的交互协调；工作区文件提及和 Markdown／计划标签处理分别位于独立子包，渲染主题通过调色板参数传入。新增职责优先归入对应模块；若需要跨模块传递大量可变状态，应先收敛状态所有权，而不是只移动函数。
+当前边界如下：`internal/app/app.go` 负责初始化 Core 并按运行模式分发至行式 CLI（`internal/cli`）、全屏 TUI（`internal/tui`）或 A2A 服务端（`internal/a2a`）；`internal/cli/core_cli.go` 保留行式 CLI 的主循环与交互协调，CLI 执行、授权、状态查询、进程操作、会话操作和项目集成各有独立文件。`internal/settings/store.go` 负责 SQLite 初始化，保存 TUI 主题与 `/toolchains` 宿主工具链设置。`internal/tui` 保留共享 `tuiModel` 的交互协调；工作区文件提及和 Markdown／计划标签处理分别位于独立子包，渲染主题通过调色板参数传入。新增职责优先归入对应模块；若需要跨模块传递大量可变状态，应先收敛状态所有权，而不是只移动函数。
 
 ## 安全检查与命令测试
 

@@ -33,7 +33,7 @@ func PermissionModeNames() []string {
 }
 
 // ParsePermissionMode resolves a user-supplied permission mode. Callers share it
-// so flags, the TUI, the CLI and the desktop accept exactly the same modes.
+// so flags, the TUI and the CLI accept exactly the same modes.
 func ParsePermissionMode(raw string) (core.PermissionMode, error) {
 	mode := core.PermissionMode(strings.ToLower(strings.TrimSpace(raw)))
 	for _, known := range permissionModes {

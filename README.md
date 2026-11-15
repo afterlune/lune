@@ -1,6 +1,6 @@
 # Lune
 
-`Lune` 是 Agent 引擎 `luneCore` 的宿主前端：全屏 TUI、行式 CLI 与 A2A 1.0 JSON-RPC 服务端。前端只负责展示、输入与本地设置；Agent 图编排、模型调用、工具执行、会话持久化与权限沙箱都在 `luneCore` 中完成。
+`Lune` 是 Agent 引擎 [`luneCore`](https://github.com/afterlune/luneCore) 的宿主前端：全屏 TUI、行式 CLI 与 A2A 1.0 JSON-RPC 服务端。前端只负责展示、输入与本地设置；Agent 图编排、模型调用、工具执行、会话持久化与权限沙箱都在 `luneCore` 中完成。
 
 ## 前端与数据位置
 

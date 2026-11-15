@@ -277,26 +277,26 @@ func TestMultiAgentStreamIsolation(t *testing.T) {
 	}
 }
 
-func TestCodexExecutionTimelineAlignment(t *testing.T) {
-	// 1. File change card: "• Added .desktop_rework.py (+3 -0)" with line-numbered diff preview and "+ Show details"
+func TestExecutionTimelineAlignment(t *testing.T) {
+	// 1. File change card: "• Added script_helper.py (+3 -0)" with line-numbered diff preview and "+ Show details"
 	addedEntry := TranscriptEntry{
 		Kind:     KindTool,
 		ToolName: "write_file",
 		ToolChanges: []publictool.FileChange{
 			{
-				Path:  ".desktop_rework.py",
+				Path:  "script_helper.py",
 				Added: 3,
 				Lines: []publictool.DiffLine{
 					{Kind: "add", NewLine: 1, Text: "from pathlib import Path"},
 					{Kind: "add", NewLine: 2, Text: "import re"},
-					{Kind: "add", NewLine: 3, Text: "p=Path('internal/desktop/service.go')"},
+					{Kind: "add", NewLine: 3, Text: "p=Path('internal/tui/view.go')"},
 				},
 			},
 		},
 	}
 	renderedAdded := ansi.Strip(renderEntry(addedEntry, 100))
-	if !strings.Contains(renderedAdded, "• Added .desktop_rework.py (+3 -0)") {
-		t.Fatalf("expected Codex Added file header, got:\n%s", renderedAdded)
+	if !strings.Contains(renderedAdded, "• Added script_helper.py (+3 -0)") {
+		t.Fatalf("expected Added file header, got:\n%s", renderedAdded)
 	}
 	if !strings.Contains(renderedAdded, "1 +from pathlib import Path") || !strings.Contains(renderedAdded, "+ Show details") {
 		t.Fatalf("expected inline diff preview and + Show details, got:\n%s", renderedAdded)
@@ -307,8 +307,8 @@ func TestCodexExecutionTimelineAlignment(t *testing.T) {
 	failedEntry := TranscriptEntry{
 		Kind:         KindTool,
 		ToolName:     "run_command",
-		ToolCommand:  "go test ./internal/desktop",
-		ToolOutput:   "line 1 setup\nline 2 compile\nline 3 check\ninternal\\desktop\\service.go:83:6: too many errors\nFAIL\tgithub.com/afterlune/lune/internal/desktop [build failed]\nFAIL",
+		ToolCommand:  "go test ./internal/tui",
+		ToolOutput:   "line 1 setup\nline 2 compile\nline 3 check\ninternal\\tui\\view.go:83:6: too many errors\nFAIL\tgithub.com/afterlune/lune/internal/tui [build failed]\nFAIL",
 		ToolExitCode: &exitOne,
 	}
 	renderedFailed := ansi.Strip(renderEntry(failedEntry, 100))

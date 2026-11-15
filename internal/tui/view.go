@@ -418,7 +418,7 @@ func renderFileChangeRows(ch publictool.FileChange, rowWidth, limit int) []strin
 	return rows
 }
 
-// renderFileChangesCard renders Codex-style Added/Edited/Deleted cards with inline diff line previews.
+// renderFileChangesCard renders compact Added/Edited/Deleted cards with inline diff line previews.
 func renderFileChangesCard(entry TranscriptEntry, width int) string {
 	th := activeTheme()
 	var blocks []string

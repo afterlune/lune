@@ -24,7 +24,7 @@ stdio 命令直接执行，不经过 shell。服务器继承 Lune 当前进程�
 
 ## 管理
 
-Core、TUI 与 CLI 均提供 MCP 管理和交互。TUI 支持深浅主题、窄屏和错误状态；相关回归快照位于 `internal/tui/testdata/verification`。命令为：
+Core、TUI 与 CLI 均提供 MCP 管理和交互；TUI 支持深浅主题、窄屏与错误状态展示，并由 `internal/tui` 回归测试覆盖。命令为：
 
 - `/mcp list` 查看配置服务器、启用状态、连接状态和工具数。
 - `/mcp enable <name>` 连接服务器并发现工具。
