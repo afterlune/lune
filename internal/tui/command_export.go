@@ -23,8 +23,8 @@ type exportResultMsg struct {
 }
 
 // exportDirectory is where an export without an explicit path lands. Keeping it
-// under .luneagent/ keeps the repository clean and out of @ mentions and reviews.
-const exportDirectory = ".luneagent/exports"
+// under .lune/ keeps the repository clean and out of @ mentions and reviews.
+const exportDirectory = ".lune/exports"
 
 func determineExportFormatAndPath(raw string, sessionID string, workspace string) (ExportFormat, string) {
 	raw = strings.TrimSpace(raw)

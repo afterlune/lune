@@ -697,7 +697,7 @@ func TestEscKeepsQueueCancellationSeparateFromRunningTaskInterrupt(t *testing.T)
 	}
 	provider := &interruptibleTUIProvider{started: make(chan struct{}, 1)}
 	client, err := core.New(core.Config{
-		Workspace: workspace, StateDir: filepath.Join(workspace, ".luneagent"), ModelProviders: map[string]publicmodel.Provider{"host": provider},
+		Workspace: workspace, StateDir: filepath.Join(workspace, ".lune"), ModelProviders: map[string]publicmodel.Provider{"host": provider},
 	})
 	if err != nil {
 		t.Fatal(err)

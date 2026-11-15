@@ -824,34 +824,34 @@ index 3333333..4444444 100644
 
 func TestTerminalTitleUpdates(t *testing.T) {
 	m := newTUIModel(nil, nil, "sess-1")
-	m.workspace = filepath.Join(`D:\Git`, "luneAgent") + string(os.PathSeparator)
+	m.workspace = filepath.Join(`D:\Git`, "lune") + string(os.PathSeparator)
 	m.width = 120
 	m.height = 36
 	m.updateLayout()
 
 	// 1. Initial untitled session includes the workspace directory.
-	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
-		t.Fatalf("expected initial title 'lune | luneAgent', got: %q", got)
+	if got := m.desiredTerminalTitle(); got != "lune | lune" {
+		t.Fatalf("expected initial title 'lune | lune', got: %q", got)
 	}
 
 	// 2. Set title: it replaces "lune" while preserving the workspace suffix.
 	m.sessionTitle = "Refactor Architecture"
-	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | luneAgent" {
-		t.Fatalf("expected title 'Refactor Architecture | luneAgent', got: %q", got)
+	if got := m.desiredTerminalTitle(); got != "Refactor Architecture | lune" {
+		t.Fatalf("expected title 'Refactor Architecture | lune', got: %q", got)
 	}
 
 	// A title derived from the conversation uses the same directory suffix.
 	m.sessionTitle = ""
 	m.entries = []TranscriptEntry{{Kind: KindUser, Text: "Review the latest commit"}}
-	if got := m.desiredTerminalTitle(); got != "Review the latest commit | luneAgent" {
+	if got := m.desiredTerminalTitle(); got != "Review the latest commit | lune" {
 		t.Fatalf("expected derived title with workspace suffix, got: %q", got)
 	}
 
 	// 3. An explicit untitled marker uses the app name as the session title.
 	m.entries = nil
 	m.sessionTitle = "<untitled>"
-	if got := m.desiredTerminalTitle(); got != "lune | luneAgent" {
-		t.Fatalf("expected untitled fallback 'lune | luneAgent', got: %q", got)
+	if got := m.desiredTerminalTitle(); got != "lune | lune" {
+		t.Fatalf("expected untitled fallback 'lune | lune', got: %q", got)
 	}
 
 	// 4. Without a usable workspace, keep the prior title behavior.

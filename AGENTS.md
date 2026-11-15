@@ -52,8 +52,8 @@ The tool permission setting has four modes:
 - `full-access`: registered tools run without approval and may use current-user filesystem access; known extremely dangerous command patterns are blocked as an additional safeguard.
   `full-access`：已注册工具均无需授权，可访问当前用户有权访问的文件；已知极度危险命令模式会被额外拦截。
 
-Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. CLI/TUI sessions start in `full-access` unless `--permission <mode>` is provided; Desktop explicitly uses `workspace`. In the TUI, `/permissions` opens the permission selector and `/permissions <mode>` selects a mode directly; `Shift+Tab` toggles Plan mode instead of cycling permissions.
-自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。CLI/TUI 会话默认以 `full-access` 启动，可通过 `--permission <mode>` 指定档位；Desktop 显式使用 `workspace`。TUI 中 `/permissions` 打开权限选择器，`/permissions <mode>` 可直接选择权限档位；`Shift+Tab` 用于切换 Plan 模式，不再循环权限档位。
+Custom registries default to `read-only`; the built-in registry explicitly uses `workspace`. CLI/TUI sessions start in `full-access` unless `--permission <mode>` is provided. In the TUI, `/permissions` opens the permission selector and `/permissions <mode>` selects a mode directly; `Shift+Tab` toggles Plan mode instead of cycling permissions.
+自定义 Registry 默认使用 `read-only`；内置 Registry 显式使用 `workspace`。CLI/TUI 会话默认以 `full-access` 启动，可通过 `--permission <mode>` 指定档位。TUI 中 `/permissions` 打开权限选择器，`/permissions <mode>` 可直接选择权限档位；`Shift+Tab` 用于切换 Plan 模式，不再循环权限档位。
 
 Plan mode limits tools to read-only operations independently of the active permission mode. The active permission mode determines whether those reads are allowed, reviewed automatically, or require approval. `/permissions` can change the permission mode while planning. `Shift+Tab`, `/plan`, or choosing an implementation option exits Plan mode without changing the selected permission mode.
 Plan 模式独立于当前权限档位，将工具限制为只读操作。当前权限档位决定这些读取是直接允许、自动审查还是需要授权。规划期间可通过 `/permissions` 更改权限档位。按 `Shift+Tab`、执行 `/plan` 或在计划审查中选择实施会退出 Plan 模式，同时保留当前权限档位。

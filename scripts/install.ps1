@@ -18,9 +18,10 @@ if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
 	throw 'APPDATA is not set; cannot choose a per-user config directory.'
 }
 
-$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\luneAgent\bin'
-$configDirectory = Join-Path $env:APPDATA 'luneAgent'
+$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\lune\bin'
+$configDirectory = Join-Path $env:APPDATA 'lune'
 $configPath = Join-Path $configDirectory 'config.json'
+$legacyConfigPath = Join-Path (Join-Path $env:APPDATA 'luneAgent') 'config.json'
 
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
@@ -62,6 +63,8 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
 	$workspaceConfig = Join-Path $workspaceRoot 'config.json'
 	if (Test-Path -LiteralPath $workspaceConfig -PathType Leaf) {
 		Copy-Item -LiteralPath $workspaceConfig -Destination $configPath
+	} elseif (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
+		Copy-Item -LiteralPath $legacyConfigPath -Destination $configPath
 	} else {
 		$exampleConfig = Join-Path $workspaceRoot 'config.example.json'
 		if (-not (Test-Path -LiteralPath $exampleConfig -PathType Leaf)) {

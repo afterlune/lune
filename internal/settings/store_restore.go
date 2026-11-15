@@ -1,12 +1,9 @@
 package settings
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -29,77 +26,8 @@ func (s *Store) RecentWorkspaces() ([]RecentWorkspace, error) {
 	return result, rows.Err()
 }
 
-func (s *Store) DesktopRestore() (DesktopRestore, error) {
-	var restore DesktopRestore
-	workspace, found, err := s.setting(desktopLastWorkspaceKey)
-	if err != nil {
-		return DesktopRestore{}, err
-	}
-	if found {
-		restore.Workspace = workspace
-	}
-	sessionID, found, err := s.setting(desktopLastSessionKey)
-	if err != nil {
-		return DesktopRestore{}, err
-	}
-	if found {
-		restore.SessionID = sessionID
-	}
-	width, found, err := s.setting(desktopWindowWidthKey)
-	if err != nil {
-		return DesktopRestore{}, err
-	}
-	if found {
-		restore.WindowWidth, _ = strconv.Atoi(width)
-	}
-	height, found, err := s.setting(desktopWindowHeightKey)
-	if err != nil {
-		return DesktopRestore{}, err
-	}
-	if found {
-		restore.WindowHeight, _ = strconv.Atoi(height)
-	}
-	return restore, nil
-}
-
-func (s *Store) SaveLastWorkspace(workspace string) error {
-	return s.saveSetting(desktopLastWorkspaceKey, strings.TrimSpace(workspace))
-}
-
-func (s *Store) SaveLastSession(sessionID string) error {
-	return s.saveSetting(desktopLastSessionKey, strings.TrimSpace(sessionID))
-}
-
-func (s *Store) SaveWindowSize(width, height int) error {
-	if width <= 0 || height <= 0 {
-		return errors.New("window size must be positive")
-	}
-	if err := s.saveSetting(desktopWindowWidthKey, strconv.Itoa(width)); err != nil {
-		return err
-	}
-	return s.saveSetting(desktopWindowHeightKey, strconv.Itoa(height))
-}
-
-func (s *Store) ClearDesktopLocation() error {
-	_, err := s.db.Exec(`DELETE FROM app_settings WHERE key IN (?, ?)`,
-		desktopLastWorkspaceKey, desktopLastSessionKey)
-	if err != nil {
-		return fmt.Errorf("clear desktop location state: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) ClearDesktopRestore() error {
-	_, err := s.db.Exec(`DELETE FROM app_settings WHERE key IN (?, ?, ?, ?)`,
-		desktopLastWorkspaceKey, desktopLastSessionKey, desktopWindowWidthKey, desktopWindowHeightKey)
-	if err != nil {
-		return fmt.Errorf("clear desktop restore state: %w", err)
-	}
-	return nil
-}
-
 // TUITheme returns the saved TUI theme mode. The boolean is false when no
-// preference has been saved; Desktop appearance settings use a separate key.
+// preference has been saved.
 func (s *Store) TUITheme() (string, bool, error) {
 	value, ok, err := s.setting(tuiThemeKey)
 	if err != nil || !ok {
@@ -113,7 +41,7 @@ func (s *Store) TUITheme() (string, bool, error) {
 	}
 }
 
-// SaveTUITheme persists the TUI-only theme preference independently of Desktop.
+// SaveTUITheme persists the TUI theme preference.
 func (s *Store) SaveTUITheme(mode string) error {
 	switch mode {
 	case "auto", "dark", "light":

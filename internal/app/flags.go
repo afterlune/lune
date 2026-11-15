@@ -210,7 +210,7 @@ func ParseFlags(args []string) (CLIFlags, error) {
 
 // PrintHelp outputs the full command-line usage guide to w.
 func PrintHelp(w io.Writer) {
-	fmt.Fprintf(w, `LuneAgent - Autonomous AI coding agent (%s)
+	fmt.Fprintf(w, `Lune - Autonomous AI coding agent (%s)
 
 Usage:
   lune [flags] [prompt]
@@ -251,5 +251,5 @@ Execution Modes:
 
 // PrintVersion outputs the application version and architecture to w.
 func PrintVersion(w io.Writer) {
-	fmt.Fprintf(w, "LuneAgent %s (%s/%s)\n", AppVersion, runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(w, "lune %s (%s/%s)\n", AppVersion, runtime.GOOS, runtime.GOARCH)
 }

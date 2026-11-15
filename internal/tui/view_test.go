@@ -1432,7 +1432,7 @@ func TestGrokToolRoundCollapseAndTwoLevelClickExpand(t *testing.T) {
 		{
 			Kind:        KindTool,
 			ToolName:    "list_dir",
-			ToolCommand: "List D:\\Git\\luneAgent",
+			ToolCommand: "List D:\\Git\\lune",
 			ToolOutput:  "cmd/\ninternal/\ngo.mod",
 		},
 		{
@@ -1819,7 +1819,7 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 	// KindPlan preserves heading levels and code blocks in the response flow.
 	planEntry := TranscriptEntry{
 		Kind: KindPlan,
-		Text: "# 验证\n\n1. **运行测试**\n\n```powershell\ngofmt -l internal/desktop # 期望无输出\n```",
+		Text: "# 验证\n\n1. **运行测试**\n\n```powershell\ngofmt -l internal/tui # 期望无输出\n```",
 	}
 	rawRenderedPlan := renderEntry(planEntry, 160)
 	renderedPlan := ansi.Strip(rawRenderedPlan)
@@ -1836,7 +1836,7 @@ func TestVisualComfortMarkdownAndPlanTypography(t *testing.T) {
 	if !strings.Contains(renderedPlan, "  # 验证") {
 		t.Fatalf("plan body should align with assistant prose, got:\n%s", renderedPlan)
 	}
-	if !strings.Contains(renderedPlan, "gofmt -l internal/desktop # 期望无输出") {
+	if !strings.Contains(renderedPlan, "gofmt -l internal/tui # 期望无输出") {
 		t.Fatalf("expected code block text in KindPlan, got:\n%s", renderedPlan)
 	}
 	for _, line := range strings.Split(renderedPlan, "\n") {

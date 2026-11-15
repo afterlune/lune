@@ -9,7 +9,7 @@ import (
 
 const AppName = "lune"
 
-// Theme defines the color palette for the LuneAgent TUI.
+// Theme defines the color palette for the Lune TUI.
 type Theme struct {
 	// Canvas background
 	Canvas string

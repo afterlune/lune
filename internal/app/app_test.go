@@ -53,7 +53,7 @@ func TestRunWithStreamsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "LuneAgent") {
+	if !strings.Contains(stdout.String(), "lune v") {
 		t.Errorf("expected version output in stdout, got: %q", stdout.String())
 	}
 }

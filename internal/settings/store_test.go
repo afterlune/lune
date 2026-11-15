@@ -1,13 +1,9 @@
 package settings
 
 import (
-	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
+	"reflect"
 	"testing"
-
-	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 func TestOpenConfiguresConcurrentAccessPragmas(t *testing.T) {
@@ -29,13 +25,13 @@ func TestOpenConfiguresConcurrentAccessPragmas(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
 		t.Fatalf("read journal_mode: %v", err)
 	}
-	if !strings.EqualFold(journalMode, "wal") {
+	if journalMode != "wal" && journalMode != "WAL" {
 		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 }
 
-// TestTwoStoresWriteTheSameDatabase keeps the TUI and the desktop from failing
-// when both processes hold settings.db open.
+// TestTwoStoresWriteTheSameDatabase keeps multiple TUI/CLI processes from
+// failing when sharing settings.db concurrently.
 func TestTwoStoresWriteTheSameDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.db")
 	first, err := Open(path)
@@ -62,19 +58,13 @@ func TestTwoStoresWriteTheSameDatabase(t *testing.T) {
 	}
 }
 
-func TestStorePersistsThemeAndRecentWorkspace(t *testing.T) {
+func TestStorePersistsRecentWorkspace(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.SetTheme("dark"); err != nil {
-		t.Fatal(err)
-	}
-	theme, err := store.Theme()
-	if err != nil || theme != "dark" {
-		t.Fatalf("Theme() = %q, %v", theme, err)
-	}
+
 	workspace := t.TempDir()
 	if err := store.TouchWorkspace(workspace); err != nil {
 		t.Fatal(err)
@@ -88,117 +78,7 @@ func TestStorePersistsThemeAndRecentWorkspace(t *testing.T) {
 	}
 }
 
-func TestStorePersistsDesktopRestoreState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveLastWorkspace(`D:\project`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveLastSession("session-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveWindowSize(1280, 800); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	restore, err := store.DesktopRestore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restore.Workspace != `D:\project` || restore.SessionID != "session-1" || restore.WindowWidth != 1280 || restore.WindowHeight != 800 {
-		t.Fatalf("DesktopRestore() = %#v", restore)
-	}
-	if err := store.ClearDesktopLocation(); err != nil {
-		t.Fatal(err)
-	}
-	restore, err = store.DesktopRestore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restore.Workspace != "" || restore.SessionID != "" || restore.WindowWidth != 1280 || restore.WindowHeight != 800 {
-		t.Fatalf("after ClearDesktopLocation() = %#v", restore)
-	}
-	if err := store.ClearDesktopRestore(); err != nil {
-		t.Fatal(err)
-	}
-	restore, err = store.DesktopRestore()
-	if err != nil || restore != (DesktopRestore{}) {
-		t.Fatalf("after ClearDesktopRestore() = %#v, %v", restore, err)
-	}
-	if err := store.SaveWindowSize(0, 800); err == nil {
-		t.Fatal("SaveWindowSize accepted an invalid width")
-	}
-}
-
-func TestStoreDesktopRestoreDefaultsToZero(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	restore, err := store.DesktopRestore()
-	if err != nil || restore != (DesktopRestore{}) {
-		t.Fatalf("DesktopRestore() = %#v, %v", restore, err)
-	}
-}
-
-func TestStorePersistsAppearance(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.SetTheme("dark"); err != nil {
-		t.Fatal(err)
-	}
-	appearance, err := store.Appearance()
-	if err != nil || appearance.Theme != "dark" || appearance.PanelOpacity != defaultPanelOpacity {
-		t.Fatalf("Appearance() = %#v, %v", appearance, err)
-	}
-	appearance.Theme = "anime"
-	appearance.WallpaperType = "dynamic"
-	appearance.WallpaperFile = "wallpaper-123.webm"
-	appearance.PanelOpacity = 82
-	if err := store.SaveAppearance(appearance); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := store.Appearance()
-	if err != nil || loaded != appearance {
-		t.Fatalf("Appearance() = %#v, %v; want %#v", loaded, err, appearance)
-	}
-	theme, err := store.Theme()
-	if err != nil || theme != "anime" {
-		t.Fatalf("Theme() = %q, %v; want anime", theme, err)
-	}
-}
-
-func TestStoreAppearanceIgnoresLegacyTheme(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.db.Exec(`INSERT INTO app_settings(key, value) VALUES ('theme', 'light')`); err != nil {
-		t.Fatal(err)
-	}
-	appearance, err := store.Appearance()
-	if err != nil || appearance.Theme != defaultTheme || appearance.WallpaperType != "static" || appearance.PanelOpacity != defaultPanelOpacity {
-		t.Fatalf("Appearance() = %#v, %v; want current defaults", appearance, err)
-	}
-}
-
-func TestStoreTUIThemeIsIndependentAndPersistent(t *testing.T) {
+func TestStoreTUIThemeIsPersistent(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -214,79 +94,28 @@ func TestStoreTUIThemeIsIndependentAndPersistent(t *testing.T) {
 	if mode, found, err := store.TUITheme(); err != nil || !found || mode != "light" {
 		t.Fatalf("TUITheme() = %q, found %v, err %v; want light", mode, found, err)
 	}
-	appearance, err := store.Appearance()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if appearance.Theme != defaultTheme {
-		t.Fatalf("TUI preference changed Desktop theme: got %q, want %q", appearance.Theme, defaultTheme)
-	}
 	if err := store.SaveTUITheme("sepia"); err == nil {
 		t.Fatal("SaveTUITheme accepted an invalid mode")
 	}
 }
 
-func TestStoreRejectsInvalidAppearance(t *testing.T) {
+func TestStorePersistsCommandToolchains(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	for _, appearance := range []Appearance{
-		{Theme: "anime", WallpaperType: "video", PanelOpacity: 80},
-		{Theme: "anime", WallpaperType: "static", PanelOpacity: 99},
-		{Theme: "anime", WallpaperType: "static", WallpaperFile: `..\\secrets.png`, PanelOpacity: 80},
-	} {
-		if err := store.SaveAppearance(appearance); err == nil {
-			t.Errorf("SaveAppearance(%#v) succeeded, want validation error", appearance)
-		}
-	}
-}
 
-func TestStoreEncryptsAndRestoresProviderKeys(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("DPAPI is Windows-only")
+	workspace := t.TempDir()
+	if _, found, err := store.LoadWorkspaceCommandToolchainPaths(workspace); err != nil || found {
+		t.Fatalf("LoadWorkspaceCommandToolchainPaths() = found %v, err %v; want false", found, err)
 	}
-	path := filepath.Join(t.TempDir(), "settings.db")
-	store, err := Open(path)
-	if err != nil {
+	want := []string{filepath.Join(workspace, "go"), filepath.Join(workspace, "git")}
+	if err := store.SaveWorkspaceCommandToolchainPaths(workspace, want); err != nil {
 		t.Fatal(err)
 	}
-	settings := SharedModelSettings{Catalog: publicmodel.Config{
-		Providers: map[string]publicmodel.ProviderConfig{
-			"test": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://model.example.test/v1", APIKey: "test-secret-value"},
-		},
-		Profiles:       map[string]publicmodel.ModelProfile{"test-model": {Provider: "test", Model: "unit-model"}},
-		DefaultProfile: "test-model",
-	}, MaxParallelAgents: 3}
-	if err := store.SaveModelSettings(settings); err != nil {
-		t.Fatal(err)
-	}
-	var encrypted []byte
-	if err := store.db.QueryRow(`SELECT encrypted_api_key FROM providers WHERE name = 'test'`).Scan(&encrypted); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encrypted), settings.Catalog.Providers["test"].APIKey) {
-		t.Fatal("API key appears in plaintext in the settings database")
-	}
-	loaded, err := store.LoadModelSettings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Catalog.Providers["test"].APIKey; got != settings.Catalog.Providers["test"].APIKey {
-		t.Fatalf("API key round trip = %q", got)
-	}
-	if loaded.Catalog.DefaultProfile != settings.Catalog.DefaultProfile || loaded.MaxParallelAgents != settings.MaxParallelAgents {
-		t.Fatalf("model settings round trip = %#v", loaded)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	bytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(bytes), settings.Catalog.Providers["test"].APIKey) {
-		t.Fatal("API key appears in the SQLite file")
+	got, found, err := store.LoadWorkspaceCommandToolchainPaths(workspace)
+	if err != nil || !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("LoadWorkspaceCommandToolchainPaths() = (%#v, %v, %v); want (%#v, true, nil)", got, found, err, want)
 	}
 }

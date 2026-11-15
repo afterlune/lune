@@ -717,7 +717,7 @@ func (m *tuiModel) finishTurn(msg turnFinishedMsg) tea.Cmd {
 		} else if msg.result.BudgetReason != "" {
 			m.addSystemEntry(fmt.Sprintf("Task stopped: execution budget limit reached (`%s`).", msg.result.BudgetReason))
 		} else {
-			m.addSystemEntry("Task failed: model request completed without a response. Check .luneagent/agent.log for details.")
+			m.addSystemEntry("Task failed: model request completed without a response. Check .lune/agent.log for details.")
 		}
 	}
 	if m.run.runningExecution == executionID {

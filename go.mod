@@ -6,39 +6,33 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/afterlune/luneCore v0.1.1-0.20261110081710-3e34eb082a0d
+	github.com/afterlune/luneCore v0.1.1-0.20261115041639-9aa060d23a2c
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/go-keyring/keyring v0.4.0
-	github.com/wailsapp/wails/v3 v3.0.0-beta.34
-	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.60.1
 )
 
 require (
-	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/afterlune/luneGraph v0.0.0-20261110064643-f949370056cc // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.2 // indirect
 	github.com/go-freedesktop/secretservice v0.2.0 // indirect
 	github.com/go-macos/keychain v0.3.0 // indirect
 	github.com/go-macos/objc v0.11.2 // indirect
-	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
-	github.com/mattn/go-colorable v0.1.16 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect

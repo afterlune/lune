@@ -17,7 +17,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 lune \
     && useradd --uid 10001 --gid lune --create-home --home-dir /var/lib/lune --shell /usr/sbin/nologin lune \
-    && mkdir -p /var/lib/lune/.config/luneAgent /workspace /run/lune-runtime \
+    && mkdir -p /var/lib/lune/.config/lune /workspace /run/lune-runtime \
     && chown -R lune:lune /var/lib/lune /workspace
 
 COPY --from=build /out/lune /usr/local/bin/lune

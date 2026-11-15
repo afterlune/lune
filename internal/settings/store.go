@@ -9,46 +9,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	publicmodel "github.com/afterlune/luneCore/model"
 	_ "modernc.org/sqlite"
 )
 
-const defaultTheme = "system"
-const defaultPanelOpacity = 80
-
-type Appearance struct {
-	Theme         string `json:"theme"`
-	WallpaperType string `json:"wallpaperType"`
-	WallpaperFile string `json:"wallpaperFile,omitempty"`
-	WallpaperName string `json:"wallpaperName,omitempty"`
-	PanelOpacity  int    `json:"panelOpacity"`
-}
-
 type Store struct{ db *sql.DB }
 
-const (
-	desktopLastWorkspaceKey = "desktop.lastWorkspace"
-	desktopLastSessionKey   = "desktop.lastSession"
-	desktopWindowWidthKey   = "desktop.windowWidth"
-	desktopWindowHeightKey  = "desktop.windowHeight"
-	tuiThemeKey             = "tui.theme"
-)
-
-// DesktopRestore is the small amount of UI state needed to make the next
-// launch continue where the previous one stopped.
-type DesktopRestore struct {
-	Workspace    string
-	SessionID    string
-	WindowWidth  int
-	WindowHeight int
-}
+const tuiThemeKey = "tui.theme"
 
 func UserSettingsPath() (string, error) {
 	root, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("find user config directory: %w", err)
 	}
-	return filepath.Join(root, "luneAgent", "settings.db"), nil
+	return filepath.Join(root, "lune", "settings.db"), nil
 }
 
 func UserSettingsDirectory() (string, error) {
@@ -84,9 +57,8 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to settings database: %w", err)
 	}
-	// The desktop app and the TUI/CLI can keep this database open at the same
-	// time. These pragmas match the desktop activity store so a concurrent writer
-	// waits instead of failing with "database is locked".
+	// Allow concurrent TUI/CLI processes to wait rather than fail with
+	// "database is locked" on shared settings updates.
 	const pragmas = `
 PRAGMA busy_timeout = 5000;
 PRAGMA journal_mode = WAL;`
@@ -99,30 +71,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS providers (
-  name TEXT PRIMARY KEY,
-  protocol TEXT NOT NULL,
-  base_url TEXT NOT NULL,
-  encrypted_api_key BLOB NOT NULL,
-  server_compaction INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS models (
-  name TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  max_output_tokens INTEGER NOT NULL DEFAULT 0,
-  supports_input_audio INTEGER NOT NULL DEFAULT 0
-);
 CREATE TABLE IF NOT EXISTS recent_workspaces (
   path TEXT PRIMARY KEY,
   last_used TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS desktop_project_configs (
-  workspace_key TEXT PRIMARY KEY,
-  encrypted_config BLOB NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS desktop_command_toolchains (
+CREATE TABLE IF NOT EXISTS command_toolchains (
   workspace_key TEXT PRIMARY KEY,
   paths_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
@@ -139,11 +92,6 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
-}
-
-type SharedModelSettings struct {
-	Catalog           publicmodel.Config
-	MaxParallelAgents int
 }
 
 type RecentWorkspace struct {

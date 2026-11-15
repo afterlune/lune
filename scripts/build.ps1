@@ -22,10 +22,10 @@ Push-Location $workspaceRoot
 try {
 	if ([string]::IsNullOrWhiteSpace($env:GOWORK)) { $env:GOWORK = 'off' }
 	$ldflags = '-s -w'
-	& go build -trimpath -ldflags=$ldflags -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
+	& go build -trimpath -ldflags $ldflags -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune-sandbox.' }
 
-	& go build -trimpath -ldflags=$ldflags -o $appPath ./cmd
+	& go build -trimpath -ldflags $ldflags -o $appPath ./cmd
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune.' }
 
 	$env:CGO_ENABLED = '0'
@@ -35,10 +35,10 @@ try {
 		$targetDirectory = Join-Path $linuxOutputDirectory "linux-$linuxArchitecture"
 		New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
 
-		& go build -trimpath -ldflags=$ldflags -o (Join-Path $targetDirectory 'lune-sandbox') github.com/afterlune/luneCore/cmd/lune-sandbox
+		& go build -trimpath -ldflags $ldflags -o (Join-Path $targetDirectory 'lune-sandbox') github.com/afterlune/luneCore/cmd/lune-sandbox
 		if ($LASTEXITCODE -ne 0) { throw "Could not build Linux lune-sandbox ($linuxArchitecture)." }
 
-		& go build -trimpath -ldflags=$ldflags -o (Join-Path $targetDirectory 'lune') ./cmd
+		& go build -trimpath -ldflags $ldflags -o (Join-Path $targetDirectory 'lune') ./cmd
 		if ($LASTEXITCODE -ne 0) { throw "Could not build Linux lune ($linuxArchitecture)." }
 	}
 

@@ -4,15 +4,13 @@
 /config.json
 /.env
 /deploy/lune-runtime.config.json
+.lune/
 .luneagent/
 /agent.log
 /sessions.db
 /bin/
-/frontend/
-/cmd/desktop/frontend/.desktop-pre-extract.svelte
 /go.work
 /go.work.sum
 /go.pinned.mod
 /go.pinned.sum
-/.screenshots
 /diag

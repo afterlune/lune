@@ -23,12 +23,12 @@ type LaunchOptions struct {
 	Output         io.Writer
 }
 
-// Run starts the LuneAgent Bubble Tea TUI with default options.
+// Run starts the Lune Bubble Tea TUI with default options.
 func Run(client *core.Core) error {
 	return RunWithOptions(client, LaunchOptions{})
 }
 
-// RunWithOptions starts the LuneAgent Bubble Tea TUI with custom launch options.
+// RunWithOptions starts the Lune Bubble Tea TUI with custom launch options.
 func RunWithOptions(client *core.Core, opts LaunchOptions) error {
 	ctx := context.Background()
 	userSettings, settingsErr := settings.OpenUser()

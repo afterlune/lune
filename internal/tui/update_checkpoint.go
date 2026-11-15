@@ -118,12 +118,12 @@ func (m *tuiModel) formatCheckpointCard(cp *PausedCheckpoint, lastToolCmd string
 }
 
 // archivePlan persists the raw markdown content of an approved plan to
-// .luneagent/plans/ and returns the archived path.
+// .lune/plans/ and returns the archived path.
 func archivePlan(workspace, planText string) (string, error) {
 	if workspace == "" || planText == "" {
 		return "", nil
 	}
-	plansDir := filepath.Join(workspace, ".luneagent", "plans")
+	plansDir := filepath.Join(workspace, ".lune", "plans")
 	if err := os.MkdirAll(plansDir, 0755); err != nil {
 		return "", err
 	}

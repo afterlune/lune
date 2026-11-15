@@ -12,7 +12,7 @@ services:
     env_file:
       - ../.env
     environment:
-      LUNE_A2A_TOKEN: ${LUNE_A2A_TOKEN:?Set LUNE_A2A_TOKEN in lune-agent/.env}
+      LUNE_A2A_TOKEN: ${LUNE_A2A_TOKEN:?Set LUNE_A2A_TOKEN in lune/.env}
       LUNE_DEEPSEEK_API_KEY: ${LUNE_DEEPSEEK_API_KEY:-}
       LUNE_A2A_PROXY_ADDR: :18091
       LUNE_A2A_WORKER_ADDR: 127.0.0.1:18092

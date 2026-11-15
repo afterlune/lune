@@ -587,7 +587,7 @@ func TestPlanImplementationUsesRuntimeStatus(t *testing.T) {
 			t.Fatalf("task completion must not claim inferred step completion: %s", entry.Text)
 		}
 	}
-	files, err := os.ReadDir(filepath.Join(m.workspace, ".luneagent", "plans"))
+	files, err := os.ReadDir(filepath.Join(m.workspace, ".lune", "plans"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("approved plan must remain archived: %v", err)
 	}

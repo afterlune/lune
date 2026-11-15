@@ -171,7 +171,7 @@ func TestPrintHelpAndVersion(t *testing.T) {
 	var bufHelp bytes.Buffer
 	PrintHelp(&bufHelp)
 	helpStr := bufHelp.String()
-	if !strings.Contains(helpStr, "LuneAgent - Autonomous AI coding agent") || !strings.Contains(helpStr, "--workspace") {
+	if !strings.Contains(helpStr, "Lune - Autonomous AI coding agent") || !strings.Contains(helpStr, "--workspace") {
 		t.Errorf("expected help output, got: %s", helpStr)
 	}
 	if !strings.Contains(helpStr, "Pipeline / Stdin Stream") || !strings.Contains(helpStr, "--prompt") {
@@ -181,7 +181,7 @@ func TestPrintHelpAndVersion(t *testing.T) {
 	var bufVer bytes.Buffer
 	PrintVersion(&bufVer)
 	verStr := bufVer.String()
-	if !strings.Contains(verStr, "LuneAgent v0.1.0") {
+	if !strings.Contains(verStr, "lune v0.1.0") {
 		t.Errorf("expected version output, got: %s", verStr)
 	}
 }

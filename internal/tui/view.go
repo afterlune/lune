@@ -30,7 +30,7 @@ func assistantMarkerStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(activeTheme().TextPrimary)).Bold(true)
 }
 
-// renderEntry renders a single transcript item according to LuneAgent visual patterns.
+// renderEntry renders a single transcript item according to Lune visual patterns.
 func renderEntry(entry TranscriptEntry, width int) string {
 	return renderEntryMode(entry, width, false)
 }

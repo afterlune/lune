@@ -17,15 +17,14 @@ import (
 )
 
 // Provider keys live under models.providers.<name>.apiKey or are referenced by
-// apiKeyEnv. The desktop app keeps keys in settings.db encrypted with DPAPI.
-// The TUI/CLI migrate keys into the platform credential store when available
-// and resolve credentials only in memory for Core.
+// apiKeyEnv. The TUI/CLI migrate keys into the platform credential store when
+// available and resolve credentials only in memory for Core.
 const (
 	configAPIKeyField           = "apiKey"
 	configAPIKeyEnvField        = "apiKeyEnv"
 	configAPIKeyEncryptedField  = "apiKeyEncrypted"
 	configAPIKeyKeyringRefField = "apiKeyKeyringRef"
-	configKeyringService        = "luneAgent"
+	configKeyringService        = "lune"
 	configDocumentIndent        = "  "
 )
 

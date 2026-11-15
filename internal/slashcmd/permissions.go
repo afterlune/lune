@@ -9,7 +9,7 @@ import (
 
 // permissionModes lists the accepted permission modes in display order. The
 // legacy "ask" mode is deliberately absent: "auto" replaced it, and keeping the
-// alias alive would keep the four frontends parsing modes themselves.
+// alias alive would keep the frontends parsing modes themselves.
 var permissionModes = []core.PermissionMode{
 	core.PermissionReadOnly,
 	core.PermissionWorkspace,

@@ -100,7 +100,7 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 	}
 
 	if interactive {
-		logPath := filepath.Join(workspace, ".luneagent", "agent.log")
+		logPath := filepath.Join(workspace, ".lune", "agent.log")
 		logFile, err := newRotatingLogWriter(logPath, tuiLogMaxBytes, tuiLogBackupCount)
 		if err != nil {
 			return fmt.Errorf("open TUI log: %w", err)
@@ -258,6 +258,7 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 
 	baseCfg := core.Config{
 		Workspace:             workspace,
+		StateDir:              filepath.Join(workspace, ".lune"),
 		Logger:                slog.Default(),
 		PersonalInstructions:  engram.Instructions(projectConfig.MCPServers),
 		SandboxHelperPath:     helperPath,

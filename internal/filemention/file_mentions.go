@@ -111,7 +111,7 @@ func (s *Scanner) Search(query string, limit int) []File {
 // isIgnoredDirectory checks if a directory should be skipped during scanning.
 func isIgnoredDirectory(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", ".hg", ".svn", "node_modules", "bin", "dist", "build", ".luneagent",
+	case ".git", ".hg", ".svn", "node_modules", "bin", "dist", "build", ".lune", ".luneagent",
 		".cache", ".vite", ".next", ".turbo", ".nuxt", ".output", "out",
 		"coverage", "tmp", ".idea", ".vscode", "target", "vendor", "__pycache__", ".gradle", ".terraform":
 		return true

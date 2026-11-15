@@ -23,8 +23,9 @@ done
 
 install_directory="${HOME}/.local/bin"
 config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
-config_directory="${config_root}/luneAgent"
+config_directory="${config_root}/lune"
 config_path="${config_directory}/config.json"
+legacy_config_path="${config_root}/luneAgent/config.json"
 
 install -d -m 0755 "${install_directory}"
 install -d -m 0700 "${config_directory}"
@@ -62,6 +63,8 @@ created_config=false
 if [[ ! -f "${config_path}" ]]; then
 	if [[ -f "${workspace_root}/config.json" ]]; then
 		config_source="${workspace_root}/config.json"
+	elif [[ -f "${legacy_config_path}" ]]; then
+		config_source="${legacy_config_path}"
 	elif [[ -f "${workspace_root}/config.example.json" ]]; then
 		config_source="${workspace_root}/config.example.json"
 	else

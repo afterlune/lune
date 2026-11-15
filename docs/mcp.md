@@ -14,7 +14,7 @@
     "remote-docs": {
       "transport": "streamable-http",
       "url": "https://mcp.example.test/v1/mcp",
-      "clientMetadataURL": "https://client.example.test/oauth/lune-agent.json"
+      "clientMetadataURL": "https://client.example.test/oauth/lune.json"
     }
   }
 }
@@ -33,9 +33,9 @@ Core、TUI 与 CLI 均提供 MCP 管理和交互。TUI 支持深浅主题、窄�
 
 重复运行 `/mcp enable <name>` 会重新连接并刷新服务器工具；列表会展示连接错误、工具数及脱敏后的 endpoint。
 
-CLI、TUI、A2A 服务端和 Desktop 打开 Core 时都会自动启用配置中的 `engram`；其它 MCP 服务器沿用各前端现有的显式启用方式。启用后，Agent 会在新对话开始时恢复相关项目上下文，并在重要任务完成后选择性保存持久决策、发现和待办，不保存整段对话。记忆读写仍遵循当前权限与 Plan 模式。
+CLI、TUI 与 A2A 服务端打开 Core 时都会自动启用配置中的 `engram`；其它 MCP 服务器沿用既有显式启用方式（`/mcp enable <name>`）。启用后，Agent 会在新对话开始时恢复相关项目上下文，并在重要任务完成后选择性保存持久决策、发现和待办，不保存整段对话。记忆读写仍遵循当前权限与 Plan 模式。
 
-`/mcp disable engram` 只停止当前 Core 实例中的连接；只要 `mcpServers.engram` 仍在配置中，下一次启动就会重新连接。要持续关闭自动记忆，请从对应的用户配置或 Desktop 工作区配置中移除该项。Desktop 仍按工作区恢复其它 MCP 的启用状态。无界面客户端不能处理 elicitation，遇到这类请求会立即返回明确错误。
+`/mcp disable engram` 只停止当前 Core 实例中的连接；只要 `mcpServers.engram` 仍在配置中，下一次启动就会重新连接。要持续关闭自动记忆，请从用户或项目配置中移除该项。无界面客户端不能处理 elicitation，遇到这类请求会立即返回明确错误。
 
 所有 MCP 工具归入 `mcp` 按需发现类别，并使用 `Network` 权限类别，因此仍遵循当前 `/permissions` 档位。Plan mode 只公开服务器标注 `readOnlyHint: true` 的工具；该注释不影响实际权限批准。
 

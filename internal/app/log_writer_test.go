@@ -9,7 +9,7 @@ import (
 )
 
 func TestRotatingLogWriterCreatesFirstRunDirectory(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".luneagent", "agent.log")
+	path := filepath.Join(t.TempDir(), ".lune", "agent.log")
 	writer, err := newRotatingLogWriter(path, 1024, 1)
 	if err != nil {
 		t.Fatal(err)
