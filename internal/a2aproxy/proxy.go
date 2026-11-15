@@ -98,7 +98,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) writeAgentCard(w http.ResponseWriter) {
 	baseURL := strings.TrimRight(m.cfg.PublicURL, "/")
 	card := map[string]any{
-		"name":               "Lune Agent",
+		"name":               "Lune",
 		"description":        "Autonomous AI coding and workspace execution agent",
 		"version":            "0.1.0",
 		"protocolVersion":    "1.0",

@@ -5,7 +5,6 @@
 /.env
 /deploy/lune-runtime.config.json
 .lune/
-.luneagent/
 /agent.log
 /sessions.db
 /bin/

@@ -9,8 +9,6 @@ go.pinned.sum
 bin
 .lune
 **/.lune
-.luneagent
-**/.luneagent
 .tmp-go-cache
 .idea
 .codex

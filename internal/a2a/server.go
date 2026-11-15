@@ -162,7 +162,7 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	}
 	baseURL := fmt.Sprintf("%s://%s", scheme, host)
 	card := map[string]any{
-		"name":               "Lune Agent",
+		"name":               "Lune",
 		"description":        "Autonomous AI coding and workspace execution agent",
 		"version":            "0.1.0",
 		"protocolVersion":    "1.0",
