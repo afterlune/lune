@@ -73,4 +73,4 @@ Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。Moon
 
 ## 开源协议
 
-本项目采用 [MIT 许可证](LICENSE)。
+本项目采用 [Apache-2.0 许可证](LICENSE)。
