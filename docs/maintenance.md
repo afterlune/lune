@@ -123,7 +123,7 @@ Core 的 `Close(ctx)`、`SessionRuntime.Close(ctx)`、`Interrupt(ctx, id)` 和
 `ResolveApprovalDecision(ctx, id, decision)` 均接收调用上下文。`Interrupt` 返回 `(accepted, error)`；
 布尔授权接口已删除，调用方明确选择本次允许、会话允许或拒绝。进入资源关闭阶段后，超时只结束调用方等待，单一清理过程继续运行；MCP 操作和 transport 退出前保持存储打开，完成后自动关闭存储。可再次调用 Close 等待同一清理结果。关闭期间禁止接受新工作。自定义 provider/tool 仍须配合 context 取消。
 
-发布此跨仓库改动时，先发布 luneCore，再更新 Agent 的固定依赖版本并运行 `GOWORK=off` 检查。
+发布此跨仓库改动时，先发布 luneCore，再更新 Lune 的固定依赖版本并运行 `GOWORK=off` 检查。
 本地联调允许使用未跟踪的 go.work；不要提交指向本地目录的 replace，也不要伪造未发布的 pseudo-version。
 
 队列协调或结果提交失败时会停止 drain，并通过 WaitTurn 返回临时错误；队列和 checkpoint 保留，
