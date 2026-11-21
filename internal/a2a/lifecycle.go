@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func (s *Server) pruneLocked() {
 		t.mu.Unlock()
 		if !at.IsZero() {
 			if now.Sub(at) >= taskRetention {
-				delete(s.tasks, id)
+				s.removeTaskLocked(id)
 			} else {
 				retained = append(retained, completed{id, at})
 			}
@@ -49,7 +50,7 @@ func (s *Server) pruneLocked() {
 				oldest = i
 			}
 		}
-		delete(s.tasks, retained[oldest].id)
+		s.removeTaskLocked(retained[oldest].id)
 		retained = append(retained[:oldest], retained[oldest+1:]...)
 	}
 }
@@ -61,6 +62,10 @@ func (s *Server) findTask(id string) *managedTask {
 }
 
 func (s *Server) submitTask(ctx context.Context, contextID string, input core.TaskInput) (*managedTask, error) {
+	return s.submitMessage(ctx, contextID, "", input)
+}
+
+func (s *Server) submitMessage(ctx context.Context, contextID, messageID string, input core.TaskInput) (*managedTask, error) {
 	select {
 	case <-s.admission:
 		defer func() { s.admission <- struct{}{} }()
@@ -75,6 +80,20 @@ func (s *Server) submitTask(ctx context.Context, contextID string, input core.Ta
 	defer cancel()
 	// Capacity and context reuse checks are serialized by admission. The task
 	// table mutex protects only in-memory state, never backend calls.
+	inputHash := fmt.Sprintf("%x", sha256.Sum256(input.Raw))
+	if messageID != "" {
+		s.mu.RLock()
+		for _, task := range s.tasks {
+			if task.messageID == messageID {
+				s.mu.RUnlock()
+				if task.inputHash != inputHash || (contextID != "" && task.contextID != contextID) {
+					return nil, errors.New("messageId has already been used for different input")
+				}
+				return task, nil
+			}
+		}
+		s.mu.RUnlock()
+	}
 	if err := s.checkAdmission(contextID); err != nil {
 		return nil, err
 	}
@@ -95,21 +114,40 @@ func (s *Server) submitTask(ctx context.Context, contextID string, input core.Ta
 	if err != nil {
 		return nil, err
 	}
+	task := &managedTask{id: "lune-task-" + rand.Text(), contextID: sess.ID, sessionID: sess.ID,
+		messageID: messageID, inputHash: inputHash, state: "TASK_STATE_WORKING", runtime: rt, changed: make(chan struct{})}
+	cleanup := func() {
+		rt.SetUserInteractionAvailable(false)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = rt.Close(cleanupCtx)
+	}
+	if err := s.saveTask(task); err != nil {
+		cleanup()
+		return nil, err
+	}
 	rt.SetUserInteractionAvailable(true)
 	sub, err := rt.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)
 	if err != nil {
-		rt.SetUserInteractionAvailable(false)
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = rt.Close(cleanupCtx)
-		cancel()
-		return nil, err
+		cleanup()
+		if s.stateDir == "" {
+			return nil, err
+		}
+		task.runtime = nil
+		task.state, task.statusText, task.finishedAt = "TASK_STATE_FAILED", "Core submission was not confirmed; inspect the session before retrying", s.now()
+	} else {
+		task.executionID = sub.ExecutionID
 	}
-	task := &managedTask{id: "lune-task-" + rand.Text(), contextID: sess.ID, sessionID: sess.ID, executionID: sub.ExecutionID, state: "TASK_STATE_WORKING", runtime: rt, changed: make(chan struct{})}
+	if err := s.saveTask(task); err != nil {
+		slog.Error("persist A2A submission outcome", "task_id", task.id, "error", err)
+	}
 	s.mu.Lock()
 	s.tasks[task.id] = task
-	s.wg.Add(1)
+	if task.runtime != nil {
+		s.wg.Add(1)
+		go s.observeTask(task)
+	}
 	s.mu.Unlock()
-	go s.observeTask(task)
 	return task, nil
 }
 
@@ -162,6 +200,9 @@ func (s *Server) finishTask(t *managedTask, state, message string, data map[stri
 	t.outputText = output
 	t.pending = nil
 	t.finishedAt = s.now()
+	if err := s.saveTask(t); err != nil {
+		slog.Error("persist A2A terminal outcome", "task_id", t.id, "error", err)
+	}
 	t.notifyLocked()
 	t.mu.Unlock()
 	s.mu.Lock()
@@ -177,7 +218,7 @@ func (s *Server) observeTask(t *managedTask) {
 		if err := acquireTaskOperation(s.ctx, t); err != nil {
 			return
 		}
-		done := s.refreshTask(t)
+		done := t.detached || s.refreshTask(t)
 		t.opMu.Unlock()
 		if done {
 			return
@@ -513,6 +554,28 @@ func (s *Server) Close(ctx context.Context) error {
 	s.mu.Unlock()
 	var closeErr error
 	for _, t := range tasks {
+		if s.stateDir != "" && t.runtime != nil {
+			if err := acquireTaskOperation(ctx, t); err != nil {
+				closeErr = errors.Join(closeErr, err)
+				continue
+			}
+			t.mu.Lock()
+			done := terminal(t.state)
+			t.mu.Unlock()
+			if done || t.detached {
+				t.opMu.Unlock()
+				continue
+			}
+			state, err := t.runtime.State(ctx)
+			if err == nil && state.Task.Status == core.TaskPaused {
+				t.detached = true
+				t.runtime.SetUserInteractionAvailable(false)
+				closeErr = errors.Join(closeErr, t.runtime.Close(ctx))
+				t.opMu.Unlock()
+				continue
+			}
+			t.opMu.Unlock()
+		}
 		closeErr = errors.Join(closeErr, s.cancelTask(ctx, t))
 	}
 	done := make(chan struct{})

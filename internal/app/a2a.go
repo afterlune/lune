@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -39,7 +40,11 @@ func serveA2AContext(ctx context.Context, client *core.Core, address, token stri
 	if err != nil {
 		return err
 	}
-	handler := a2a.NewServer(a2a.NewCoreBackend(client), token)
+	handler, err := a2a.OpenServer(ctx, a2a.NewCoreBackend(client), token, filepath.Join(client.Workspace(), ".lune", "a2a"))
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	result := make(chan error, 1)
 	go func() { result <- server.Serve(listener) }()

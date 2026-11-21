@@ -16,13 +16,14 @@ import (
 )
 
 type integrationProvider struct {
-	mu      sync.Mutex
-	calls   int
-	input   string
-	block   bool
-	entered chan struct{}
-	release chan struct{}
-	once    sync.Once
+	mu       sync.Mutex
+	calls    int
+	input    string
+	block    bool
+	question bool
+	entered  chan struct{}
+	release  chan struct{}
+	once     sync.Once
 }
 
 func (p *integrationProvider) Name() string { return "host" }
@@ -42,9 +43,92 @@ func (p *integrationProvider) CreateResponse(ctx context.Context, r publicmodel.
 		}
 	}
 	if n == 1 {
+		if p.question {
+			return &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{publicmodel.OutputFunctionCall{
+				CallID: "ask", Name: "ask_user", Arguments: `{"questions":[{"id":"target","question":"Which target?","options":[{"label":"staging"},{"label":"local"}]}]}`,
+			}}}, nil
+		}
 		return &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{publicmodel.OutputFunctionCall{CallID: "write", Name: "write_file", Arguments: `{"path":"forbidden.txt","content":"not allowed"}`}}}, nil
 	}
 	return &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{publicmodel.OutputMessage{Role: publicmodel.RoleAssistant, Content: []publicmodel.OutputContentPart{publicmodel.OutputText{Text: "done"}}}}}, nil
+}
+
+func TestDurableTaskResumesQuestionAfterCoreRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	provider := &integrationProvider{question: true}
+	cfg := core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), ModelConfig: &publicmodel.Config{
+		Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+		Profiles:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test"}},
+		DefaultProfile: "host",
+	}, ModelProviders: map[string]publicmodel.Provider{"host": provider}}
+	dir := filepath.Join(cfg.StateDir, "a2a")
+	open := func() (*core.Core, *Server) {
+		t.Helper()
+		client, err := core.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := OpenServer(ctx, NewCoreBackend(client), "", dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			if err := server.Close(cleanup); err != nil {
+				t.Error(err)
+			}
+			if err := client.Close(cleanup); err != nil {
+				t.Error(err)
+			}
+		})
+		return client, server
+	}
+	client, server := open()
+	input, _ := core.ParseTaskInput("pick a target")
+	task, err := server.submitMessage(ctx, "", "message-1", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventuallyTask(t, server, task, "TASK_STATE_INPUT_REQUIRED")
+	if err := server.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	client, restored := open()
+	found, err := restored.submitMessage(ctx, "", "message-1", input)
+	if err != nil || found.id != task.id {
+		t.Fatalf("restored task = %v, error = %v", found, err)
+	}
+	eventuallyTask(t, restored, found, "TASK_STATE_INPUT_REQUIRED")
+	found.mu.Lock()
+	requestID := pendingID(*found.pending)
+	found.mu.Unlock()
+	if err := restored.resumeTaskInput(ctx, found, "", map[string]any{"request_id": "stale", "answers": map[string]any{"target": "staging"}}); err == nil {
+		t.Fatal("accepted a stale request ID")
+	}
+	if err := restored.resumeTaskInput(ctx, found, "", map[string]any{"request_id": requestID, "answers": map[string]any{"target": "staging"}}); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyTask(t, restored, found, "TASK_STATE_COMPLETED")
+	if err := restored.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, restored = open()
+	final := restored.findTask(task.id)
+	if final == nil {
+		t.Fatal("completed task was lost after restart")
+	}
+	if final.state != "TASK_STATE_COMPLETED" || final.outputText != "done" {
+		t.Fatalf("restored completed task = %s, %q", final.state, final.outputText)
+	}
 }
 func (p *integrationProvider) StreamResponse(ctx context.Context, r publicmodel.ModelRequest, m publicmodel.ModelProfile, _ func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
 	return p.CreateResponse(ctx, r, m)
