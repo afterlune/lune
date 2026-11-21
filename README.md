@@ -14,7 +14,7 @@
 
 ## 快速开始
 
-需要 Go 1.27.3。
+需要 Go 1.27.4。
 
 ```powershell
 # 生成 bin/lune.exe 与 bin/lune-sandbox.exe
@@ -54,7 +54,7 @@ docker compose --env-file .env -f deploy/docker-compose.a2a.yml up -d --build
 docker compose -f deploy/docker-compose.a2a.yml ps
 ```
 
-Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。MoonFei 通过该网络连接 `http://lune-a2a:18091`；需在 MoonFei `.env` 设置 `MOONFEI_A2A_INTERNAL_HTTP_ORIGINS=http://lune-a2a:18091`，再在网页「设置 → 外部协议扩展」添加 Lune 节点并保存同一 Bearer 令牌。容器带 Git、Bash、Go 1.27.3、Python 3 和 Java 17/Maven；Flutter/Android SDK 未包含。
+Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。MoonFei 通过该网络连接 `http://lune-a2a:18091`；需在 MoonFei `.env` 设置 `MOONFEI_A2A_INTERNAL_HTTP_ORIGINS=http://lune-a2a:18091`，再在网页「设置 → 外部协议扩展」添加 Lune 节点并保存同一 Bearer 令牌。容器带 Git、Bash、Go 1.27.4、Python 3 和 Java 17/Maven；Flutter/Android SDK 未包含。
 
 ## 文档
 
