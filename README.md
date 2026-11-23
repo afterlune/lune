@@ -14,7 +14,7 @@
 
 ## 快速开始
 
-需要 Go 1.27.3。
+需要 Go 1.27.4。
 
 ```powershell
 # 生成 bin/lune.exe 与 bin/lune-sandbox.exe
@@ -54,12 +54,13 @@ docker compose --env-file .env -f deploy/docker-compose.a2a.yml up -d --build
 docker compose -f deploy/docker-compose.a2a.yml ps
 ```
 
-Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。MoonFei 通过该网络连接 `http://lune-a2a:18091`；需在 MoonFei `.env` 设置 `MOONFEI_A2A_INTERNAL_HTTP_ORIGINS=http://lune-a2a:18091`，再在网页「设置 → 外部协议扩展」添加 Lune 节点并保存同一 Bearer 令牌。容器带 Git、Bash、Go 1.27.3、Python 3 和 Java 17/Maven；Flutter/Android SDK 未包含。
+Compose 创建 `moonfei-lune-a2a` 内部网络，不发布宿主机端口。MoonFei 通过该网络连接 `http://lune-a2a:18091`；需在 MoonFei `.env` 设置 `MOONFEI_A2A_INTERNAL_HTTP_ORIGINS=http://lune-a2a:18091`，再在网页「设置 → 外部协议扩展」添加 Lune 节点并保存同一 Bearer 令牌。容器带 Git、Bash、Go 1.27.4、Python 3 和 Java 17/Maven；Flutter/Android SDK 未包含。
 
 ## 文档
 
 - [`TUI.md`](TUI.md)：TUI 界面、快捷键与交互规范
 - [`docs/tui-core.md`](docs/tui-core.md)：TUI 与 Core 的边界、状态所有权
+- [`docs/desktop-web.md`](docs/desktop-web.md)：Web 与 Electron 前端、Core 连接与打包
 - [`docs/maintenance.md`](docs/maintenance.md)：依赖更新、验证命令、生成文件与发布
 - [`docs/a2a.md`](docs/a2a.md)：A2A 权限、认证、任务生命周期与交互合同
 - [`docs/mcp.md`](docs/mcp.md)：外部 MCP 服务器配置

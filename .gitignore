@@ -8,6 +8,12 @@
 /agent.log
 /sessions.db
 /bin/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/out/
+/desktop/out-electron/
+/desktop/release/
+/desktop/resources/bin/
 /go.work
 /go.work.sum
 /go.pinned.mod
