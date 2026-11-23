@@ -48,6 +48,15 @@ type Activity = { id: string; label: string; detail?: string; failed?: boolean }
 
 const emptyRuntime: RuntimeState = { task: { status: 'idle' }, queue: [] }
 
+function normalizeRuntimeState(value: RuntimeState | null | undefined): RuntimeState {
+  if (!value) return emptyRuntime
+  return {
+    ...value,
+    task: value.task ?? emptyRuntime.task,
+    queue: Array.isArray(value.queue) ? value.queue : [],
+  }
+}
+
 function object(value: unknown): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
 }
@@ -271,7 +280,7 @@ export default function App() {
         return count <= item.baselineCount + alreadySeen
       })
     })
-    setRuntime(nextRuntime ?? emptyRuntime)
+    setRuntime(normalizeRuntimeState(nextRuntime))
     setPending(nextPending ?? [])
     setSessions((items) => items.map((item) => item.id === summary.id ? summary : item))
   }, [])
@@ -281,7 +290,7 @@ export default function App() {
       targetClient.request<RuntimeState>('runtime.state', { sessionId }),
       targetClient.request<Pending[]>('runtime.pending', { sessionId }),
     ])
-    setRuntime(nextRuntime ?? emptyRuntime)
+    setRuntime(normalizeRuntimeState(nextRuntime))
     setPending(nextPending ?? [])
   }, [])
 

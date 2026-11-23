@@ -20,17 +20,35 @@ const siblingDirty = existsSync(resolve(siblingCore, 'go.mod'))
   ? spawnSync('git', ['status', '--porcelain'], { cwd: siblingCore, encoding: 'utf8' }).stdout?.trim()
   : 'missing'
 const useSiblingCore = Boolean(process.env.LUNE_CORE_DIR || (pinnedRevision && siblingHead?.startsWith(pinnedRevision) && !siblingDirty))
-const buildDirectory = useSiblingCore ? siblingCore : repositoryRoot
+let buildDirectory = useSiblingCore ? siblingCore : ''
 
 if (!['win32', 'linux'].includes(target)) {
   throw new Error('Desktop Core builds currently support Windows x64 and Linux x64.')
 }
 
+if (!pinnedModule) throw new Error('Could not find the pinned luneCore version in the root go.mod.')
+
+if (!buildDirectory) {
+  const result = spawnSync(process.env.GO || 'go', ['mod', 'download', '-json', `github.com/afterlune/luneCore@${pinnedModule}`], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    env: { ...process.env, GOWORK: 'off' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error('Could not download the pinned luneCore source.')
+  try {
+    buildDirectory = JSON.parse(result.stdout).Dir
+  } catch {
+    throw new Error('Go returned an invalid luneCore module download result.')
+  }
+}
+
 mkdirSync(outputDirectory, { recursive: true })
 
 for (const [packagePath, filename] of [
-  ['github.com/afterlune/luneCore/cmd/lune-core', `lune-core${suffix}`],
-  ['github.com/afterlune/luneCore/cmd/lune-sandbox', `lune-sandbox${suffix}`],
+  ['./cmd/lune-core', `lune-core${suffix}`],
+  ['./cmd/lune-sandbox', `lune-sandbox${suffix}`],
 ]) {
   const outputPath = resolve(outputDirectory, filename)
   const result = spawnSync(process.env.GO || 'go', ['build', '-trimpath', '-o', outputPath, packagePath], {
@@ -42,4 +60,4 @@ for (const [packagePath, filename] of [
   if (result.status !== 0) throw new Error(`Could not build ${packagePath}.`)
 }
 
-console.log(`Built lune-core and lune-sandbox for ${target} x64 in ${outputDirectory}${useSiblingCore ? ' from the pinned sibling Core checkout' : ''}`)
+console.log(`Built lune-core and lune-sandbox for ${target} x64 in ${outputDirectory}${useSiblingCore ? ' from the pinned sibling Core checkout' : ' from the pinned Go module source'}`)

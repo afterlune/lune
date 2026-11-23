@@ -68,7 +68,17 @@ Electron 主进程持有远程令牌，并通过 context-isolated preload 暴露
 
 ## Core 版本
 
-桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。当前工作区根目录 `go.mod` 暂时固定到实现 Runtime Protocol v1 的 `luneCore` revision `a326fa3`；该 revision 尚未出现在 GitHub 远端，干净环境不能从 GitHub 直连下载。发布 Lune 前，必须先发布/推送此 Core revision 到可用的 Go module source，再验证干净环境能够下载，然后才发布 Lune。与尚未发布的兄弟仓库联调时，可以用未跟踪的 `go.work`；不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
+桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。当前工作区根目录 `go.mod` 固定到实现 Runtime Protocol v1 的 `luneCore` revision `a326fa3`，该 revision 已包含在 GitHub 远端主分支历史中。独立检出此仓库时可通过 `GOWORK=off` 下载并构建，不需要兄弟目录。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
+
+## 本地验收记录
+
+2026-11-23 在 Lune `da7fd49` 与 Core `f9bd12e` 上进行本地验收。临时工作区、TLS 证书、令牌和模拟 Responses API 都保存在 `/tmp`。
+
+- 在未注入 Electron preload 的 Chromium 页面运行环境中，页面使用原生 WebSocket 子协议认证连接 WSS Core；打包的 Electron 应用使用 Bearer 认证连接同一 Core。两个客户端各自创建会话，也能读取同一个显式指定的会话。
+- Core 验收通过独立会话隔离、流式回复、无效令牌和未允许来源拒绝、断线后事件重放，以及重复提交 ID 不重复执行。
+- Linux AppImage 中的 Electron 分别通过远程 WSS 与本机 stdio Core 完成一轮模拟模型请求。打包的 Core/helper 来自固定的 `a326fa3` 模块源码。
+- `GOWORK=off` 独立检出下载与 Go 构建、前端 TypeScript 检查、Web 构建、Linux x64 AppImage 打包、Windows x64 Core/helper 交叉编译均通过。
+- Windows NSIS 安装包未在此环境中构建或运行；没有可用的 Windows 构建环境或 Wine。
 
 前端类型检查和构建：
 
