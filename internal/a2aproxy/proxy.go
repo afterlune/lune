@@ -109,7 +109,7 @@ func (m *Manager) writeAgentCard(w http.ResponseWriter) {
 		}},
 		"capabilities": map[string]any{
 			"streaming": false, "pushNotifications": false,
-			"stateTransitionHistory": false, "cancellation": true,
+			"stateTransitionHistory": false, "extensions": []map[string]any{{"uri": "urn:afterlune:a2a:cancel-task"}},
 		},
 		"defaultInputModes":  []string{"text/plain", "application/json"},
 		"defaultOutputModes": []string{"text/plain", "application/json"},

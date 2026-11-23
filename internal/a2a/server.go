@@ -66,6 +66,8 @@ type managedTask struct {
 	contextID       string
 	sessionID       string
 	executionID     string
+	messageID       string
+	inputHash       string
 	state           string
 	runtime         SessionRuntime
 	pending         *core.PendingRequest
@@ -76,11 +78,13 @@ type managedTask struct {
 	finishedAt      time.Time
 	toolDecision    string
 	cancelRequested bool
+	detached        bool
 }
 
 // Server exposes Lune SessionRuntime over the A2A 1.0 JSON-RPC + Agent Card HTTP endpoints.
 type Server struct {
 	backend      Backend
+	stateDir     string
 	token        string
 	mu           sync.RWMutex
 	tasks        map[string]*managedTask
@@ -179,7 +183,7 @@ func (s *Server) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 			"streaming":              false,
 			"pushNotifications":      false,
 			"stateTransitionHistory": false,
-			"cancellation":           true,
+			"extensions":             []map[string]any{{"uri": "urn:afterlune:a2a:cancel-task"}},
 		},
 		"defaultInputModes":  []string{"text/plain", "application/json"},
 		"defaultOutputModes": []string{"text/plain", "application/json"},
@@ -331,7 +335,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, ctx context.Context, r
 		writeRPCError(w, req.ID, -32602, err.Error())
 		return
 	}
-	task, err := s.submitTask(ctx, params.Message.effectiveContextID(), input)
+	task, err := s.submitMessage(ctx, params.Message.effectiveContextID(), params.Message.MessageID, input)
 	if err != nil {
 		writeRPCError(w, req.ID, -32002, err.Error())
 		return
