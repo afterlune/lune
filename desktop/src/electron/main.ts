@@ -1,12 +1,13 @@
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import WebSocket from 'ws'
 import { JsonRpcPeer, type JsonRpcNotification } from '../shared/jsonrpc.js'
+import { isThemePreference, windowColors } from '../shared/theme.js'
 import type { DesktopConnectionOptions } from './preload.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -116,6 +117,32 @@ async function disconnectRuntime(): Promise<void> {
   }
 }
 
+function themeFile(): string {
+  return join(app.getPath('userData'), 'appearance.txt')
+}
+
+function nativeBackground(): string {
+  return nativeTheme.shouldUseDarkColors ? windowColors.dark : windowColors.light
+}
+
+nativeTheme.on('updated', () => mainWindow?.setBackgroundColor(nativeBackground()))
+
+ipcMain.handle('desktop:get-theme', (event) => {
+  assertMainWindow(event)
+  return nativeTheme.themeSource
+})
+
+ipcMain.handle('desktop:set-theme', (event, preference: unknown) => {
+  assertMainWindow(event)
+  if (!isThemePreference(preference)) throw new Error('Invalid appearance preference.')
+  if (preference === nativeTheme.themeSource) return
+  const pending = `${themeFile()}.${process.pid}.tmp`
+  writeFileSync(pending, preference, { mode: 0o600 })
+  renameSync(pending, themeFile())
+  nativeTheme.themeSource = preference
+  mainWindow?.setBackgroundColor(nativeBackground())
+})
+
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -123,7 +150,7 @@ function createMainWindow(): void {
     minWidth: 980,
     minHeight: 680,
     title: 'Lune',
-    backgroundColor: '#f6f5f2',
+    backgroundColor: nativeBackground(),
     webPreferences: {
       preload: join(currentDirectory, '../preload/preload.js'),
       contextIsolation: true,
@@ -304,6 +331,10 @@ ipcMain.handle('runtime:close', async (event, forget = false) => {
 })
 
 app.whenReady().then(() => {
+  try {
+    const theme = readFileSync(themeFile(), 'utf8').trim()
+    if (isThemePreference(theme)) nativeTheme.themeSource = theme
+  } catch { /* default to the system appearance */ }
   try { quickShortcut = readFileSync(shortcutFile(), 'utf8').trim() || defaultShortcut } catch { /* first launch */ }
   registerQuickShortcut(quickShortcut)
   createMainWindow()

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ThemePicker } from './theme'
+import type { ThemePreference } from '../shared/theme'
 import ReactMarkdown from 'react-markdown'
 import {
   ArrowDown, ArrowUp, Check, ChevronDown, CircleHelp, CircleStop, Code2, Command,
@@ -177,7 +179,8 @@ function describeSession(session: SessionSummary, messages: HistoryMessage[]): s
   return session.title || messages.find((message) => message.role === 'user')?.text.slice(0, 56) || 'New conversation'
 }
 
-export default function App() {
+export default function App({ initialTheme }: { initialTheme: ThemePreference }) {
+  const [theme, setTheme] = useState(initialTheme)
   const desktop = Boolean(window.luneDesktop)
   const [client, setClient] = useState<RuntimeClient | null>(null)
   const [connection, setConnection] = useState<RuntimeConnection | null>(null)
@@ -809,6 +812,7 @@ export default function App() {
       <div className="connect-page">
         <div className="connect-orb orb-one" /><div className="connect-orb orb-two" />
         <div className="connect-top"><div className="brand-mark"><Sparkles size={18} /></div><span>Lune</span><span className="build-label">CORE CLIENT</span></div>
+        <div className="connect-appearance"><ThemePicker value={theme} onChange={setTheme} /></div>
         <main className="connect-card">
           <div className="eyebrow"><span className="eyebrow-dot" /> YOUR WORKSPACE, YOUR CORE</div>
           <h1>A quiet place<br />to think with AI.</h1>
@@ -875,6 +879,7 @@ export default function App() {
         <header className="chat-header">
           <div className="header-title"><div className="mobile-brand"><div className="brand-mark small"><Sparkles size={16} /></div>Lune</div><span>{activeSession ? describeSession(activeSession, history) : 'Loading conversation…'}</span></div>
           <div className="header-actions">
+            <ThemePicker value={theme} onChange={setTheme} />
             {quick && <button className="plain-button" onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
             {activeSession && <details className="conversation-menu">
               <summary>Conversation</summary>

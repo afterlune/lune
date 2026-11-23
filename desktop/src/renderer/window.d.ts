@@ -1,9 +1,12 @@
+import type { ThemePreference } from '../shared/theme'
 import type { Attachment } from './attachments'
 import type { DesktopConnectionOptions } from '../electron/preload'
 
 declare global {
   interface Window {
     luneDesktop?: {
+      getTheme(): Promise<ThemePreference>
+      setTheme(theme: ThemePreference): Promise<void>
       shortcut(): Promise<string>
       setShortcut(accelerator: string): Promise<string>
       toggleQuick(): Promise<void>

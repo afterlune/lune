@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ThemePreference } from '../shared/theme.js'
 
 export interface LocalConnectionOptions {
   mode: 'local'
@@ -14,6 +15,8 @@ export interface RemoteConnectionOptions {
 export type DesktopConnectionOptions = LocalConnectionOptions | RemoteConnectionOptions
 
 contextBridge.exposeInMainWorld('luneDesktop', {
+  getTheme: (): Promise<ThemePreference> => ipcRenderer.invoke('desktop:get-theme'),
+  setTheme: (theme: ThemePreference): Promise<void> => ipcRenderer.invoke('desktop:set-theme', theme),
   shortcut: (): Promise<string> => ipcRenderer.invoke('desktop:shortcut'),
   setShortcut: (accelerator: string): Promise<string> => ipcRenderer.invoke('desktop:set-shortcut', accelerator),
   toggleQuick: (): Promise<void> => ipcRenderer.invoke('desktop:quick-toggle'),
