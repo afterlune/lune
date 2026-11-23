@@ -1,14 +1,15 @@
 import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { constants, existsSync } from 'node:fs'
+import { open, writeFile } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import WebSocket from 'ws'
 import { JsonRpcPeer, type JsonRpcNotification } from '../shared/jsonrpc.js'
 import { isThemePreference, windowColors } from '../shared/theme.js'
-import type { DesktopConnectionOptions } from './preload.js'
+import type { ConfigDocument, DesktopConnectionOptions } from '../shared/desktop-settings.js'
+import { configFrame, DesktopSettings, remoteAddress, startupConfigLimit, workspacePath } from './settings.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const developmentServer = process.env.ELECTRON_RENDERER_URL
@@ -28,6 +29,16 @@ let coreProcess: ChildProcessWithoutNullStreams | null = null
 let coreExit: Promise<void> | null = null
 let lastConnection: DesktopConnectionOptions | null = null
 let quitting = false
+let settings: DesktopSettings
+let connectionNotice = ''
+let settingsWrite = Promise.resolve()
+let runtimeChange = Promise.resolve()
+
+function serial<T>(task: Promise<unknown>, work: () => Promise<T>, setPending: (pending: Promise<void>) => void): Promise<T> {
+  const result = task.then(work)
+  setPending(result.then(() => undefined, () => undefined))
+  return result
+}
 const defaultShortcut = 'CommandOrControl+Shift+Space'
 let quickShortcut = defaultShortcut
 let expandedWindow: { bounds: Electron.Rectangle; maximized: boolean } | null = null
@@ -54,10 +65,6 @@ function toggleQuickWindow(): void {
   window.show()
   window.focus()
   window.webContents.send('desktop:quick-mode', Boolean(expandedWindow))
-}
-
-function shortcutFile(): string {
-  return join(app.getPath('userData'), 'quick-shortcut.txt')
 }
 
 function registerQuickShortcut(accelerator: string): boolean {
@@ -91,7 +98,9 @@ function sandboxExecutable(): string {
 
 function attachPeer(nextPeer: JsonRpcPeer): void {
   peer = nextPeer
-  peer.onNotification(sendNotification)
+  nextPeer.onNotification((notification) => {
+    if (peer === nextPeer) sendNotification(notification)
+  })
 }
 
 async function disconnectRuntime(): Promise<void> {
@@ -117,10 +126,6 @@ async function disconnectRuntime(): Promise<void> {
   }
 }
 
-function themeFile(): string {
-  return join(app.getPath('userData'), 'appearance.txt')
-}
-
 function nativeBackground(): string {
   return nativeTheme.shouldUseDarkColors ? windowColors.dark : windowColors.light
 }
@@ -136,9 +141,7 @@ ipcMain.handle('desktop:set-theme', (event, preference: unknown) => {
   assertMainWindow(event)
   if (!isThemePreference(preference)) throw new Error('Invalid appearance preference.')
   if (preference === nativeTheme.themeSource) return
-  const pending = `${themeFile()}.${process.pid}.tmp`
-  writeFileSync(pending, preference, { mode: 0o600 })
-  renameSync(pending, themeFile())
+  settings.setPreference('theme', preference)
   nativeTheme.themeSource = preference
   mainWindow?.setBackgroundColor(nativeBackground())
 })
@@ -203,7 +206,7 @@ ipcMain.handle('desktop:set-shortcut', (event, value: unknown) => {
   if (!accelerator || accelerator.length > 100) throw new Error('Enter an Electron shortcut such as Control+Alt+Space.')
   if (accelerator === quickShortcut && globalShortcut.isRegistered(quickShortcut)) return quickShortcut
   if (!registerQuickShortcut(accelerator)) throw new Error('This shortcut is invalid or already in use.')
-  try { writeFileSync(shortcutFile(), accelerator, { mode: 0o600 }) }
+  try { settings.setPreference('shortcut', accelerator) }
   catch (error) { globalShortcut.unregister(accelerator); throw error }
   globalShortcut.unregister(quickShortcut)
   quickShortcut = accelerator
@@ -234,28 +237,164 @@ ipcMain.handle('desktop:screenshot', async (event) => {
   return { name: 'screenshot.jpg', mediaType: 'image/jpeg', data: data.toString('base64'), size: data.length }
 })
 
+function configSecrets(config: ConfigDocument): string[] {
+  const models = config.models as { providers?: Record<string, { apiKey?: string }> } | undefined
+  const values: unknown[] = Object.values(models?.providers ?? {}).map((provider) => provider?.apiKey)
+  const servers = config.mcpServers as Record<string, { env?: Record<string, string>; args?: string[]; url?: string }> | undefined
+  for (const server of Object.values(servers ?? {})) {
+    if (!server || typeof server !== 'object') continue
+    if (server.env && typeof server.env === 'object') values.push(...Object.values(server.env))
+    if (Array.isArray(server.args)) values.push(...server.args)
+    values.push(server.url)
+  }
+  const secrets = values.filter((value): value is string => typeof value === 'string' && value.length > 0)
+  return [...new Set(secrets)].sort((a, b) => b.length - a.length)
+}
+
+function redact(text: string, credentials: string[]): string {
+  for (const credential of credentials) text = text.replaceAll(credential, '[redacted]')
+  return text
+}
+
+function validateCoreConfig(config: ConfigDocument): Promise<void> {
+  const frame = configFrame(config)
+  const child = spawn(coreExecutable(), ['validate-config'], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true })
+  return new Promise((resolve, reject) => {
+    let diagnostics = ''
+    child.stderr.setEncoding('utf8').on('data', (part: string) => { if (diagnostics.length < 8192) diagnostics += part })
+    const deadline = setTimeout(() => {
+      child.kill()
+      reject(new Error('Core configuration validation timed out.'))
+    }, 15_000)
+    child.once('error', () => {
+      clearTimeout(deadline)
+      reject(new Error('Could not start Core to validate the configuration.'))
+    })
+    child.once('close', (code) => {
+      clearTimeout(deadline)
+      if (code === 0) resolve()
+      else reject(new Error(redact(diagnostics.trim(), configSecrets(config)) ||
+        'Core rejected the configuration. Make sure the bundled Core supports Electron configuration.'))
+    })
+    child.stdin.on('error', () => { /* exit status supplies the validation error */ })
+    child.stdin.end(frame)
+  })
+}
+
+function configScope(workspace: unknown) { return workspace === '' ? '' : workspacePath(workspace) }
+
+ipcMain.handle('settings:config', (event, scope: unknown) => {
+  assertMainWindow(event)
+  return settings.config(configScope(scope))
+})
+
+ipcMain.handle('settings:import', async (event) => {
+  assertMainWindow(event)
+  const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], filters: [{ name: 'Core configuration', extensions: ['json'] }] })
+  if (result.canceled || !result.filePaths[0]) return null
+  const flags = process.platform === 'linux' ? constants.O_RDONLY | constants.O_NONBLOCK : constants.O_RDONLY
+  const file = await open(result.filePaths[0], flags)
+  try {
+    const info = await file.stat()
+    if (!info.isFile() || info.size > startupConfigLimit) throw new Error('Select a JSON file of at most 1 MiB.')
+    const buffer = Buffer.alloc(startupConfigLimit + 1)
+    let size = 0
+    while (size < buffer.length) {
+      const { bytesRead } = await file.read(buffer, size, buffer.length - size, null)
+      if (!bytesRead) break
+      size += bytesRead
+    }
+    if (size > startupConfigLimit) throw new Error('The configuration file exceeds 1 MiB.')
+    return settings.prepareImport(buffer.toString('utf8', 0, size))
+  } finally { await file.close() }
+})
+
+ipcMain.handle('settings:save-config', (event, scope: unknown, document: unknown, importId?: string) => {
+  assertMainWindow(event)
+  return serial(settingsWrite, () => settings.saveConfig(configScope(scope), document, importId, validateCoreConfig), (pending) => { settingsWrite = pending })
+})
+
+ipcMain.handle('settings:reset-workspace', (event, workspace: unknown) => {
+  assertMainWindow(event)
+  return serial(settingsWrite, () => settings.resetWorkspace(workspacePath(workspace), validateCoreConfig), (pending) => { settingsWrite = pending })
+})
+
+function connectionAddress(connection: DesktopConnectionOptions) {
+  return connection.mode === 'local' ? connection.workspace : connection.url
+}
+
+ipcMain.handle('settings:connections', (event) => {
+  assertMainWindow(event)
+  return { items: settings.connections(), notice: connectionNotice }
+})
+
+ipcMain.handle('settings:forget-connection', async (event, mode: unknown, address: unknown) => {
+  assertMainWindow(event)
+  if (mode !== 'local' && mode !== 'remote') throw new Error('Invalid connection type.')
+  if (typeof address !== 'string' || address.length > 4096) throw new Error('Invalid connection address.')
+  const answer = await dialog.showMessageBox(mainWindow!, {
+    type: 'question', message: 'Remove this saved connection?',
+    detail: 'Workspace configuration and conversations will remain available.',
+    buttons: ['Cancel', 'Remove'], cancelId: 0, defaultId: 0,
+  })
+  if (answer.response !== 1) return
+  settings.forgetConnection(mode, address)
+  if (lastConnection?.mode === mode && connectionAddress(lastConnection) === address) lastConnection = null
+})
+
+ipcMain.handle('settings:last-session', (event) => {
+  assertMainWindow(event)
+  return lastConnection ? settings.lastSession(lastConnection.mode, connectionAddress(lastConnection)) ?? null : null
+})
+
+ipcMain.handle('settings:remember-session', (event, mode: unknown, address: unknown, session: unknown) => {
+  assertMainWindow(event)
+  if (!peer || !lastConnection || mode !== lastConnection.mode || typeof session !== 'string' || !session || session.length > 160) return
+  const normalized = mode === 'local' ? workspacePath(address) : remoteAddress(address)
+  if (normalized !== connectionAddress(lastConnection)) return
+  settings.rememberSession(lastConnection.mode, normalized, session)
+})
+
 async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> {
   if (!options || (options.mode !== 'local' && options.mode !== 'remote')) throw new Error('Choose a valid connection type.')
+  let frame: string | undefined
+  let credentials: string[] = []
+  let suppliedToken = ''
+  if (options.mode === 'local') {
+    options = { mode: 'local', workspace: workspacePath(options.workspace) }
+    const config = await settings.effectiveConfig(options.workspace)
+    frame = configFrame(config)
+    credentials = configSecrets(config)
+  } else {
+    const url = remoteAddress(options.url)
+    if (typeof options.token !== 'string' || options.token.trim() !== options.token) throw new Error('Enter a token without surrounding whitespace.')
+    suppliedToken = options.token
+    const token = suppliedToken || (lastConnection?.mode === 'remote' && lastConnection.url === url ? lastConnection.token : '') || await settings.remoteToken(url)
+    if (!token) throw new Error('Enter the Core access token.')
+    const name = typeof options.name === 'string' ? options.name.trim().slice(0, 120) || undefined : undefined
+    options = { ...options, url, token, name }
+  }
   await disconnectRuntime()
 
   let nextPeer: JsonRpcPeer
+  let finishLocalStartup: (() => void) | undefined
   if (options.mode === 'local') {
-    if (typeof options.workspace !== 'string' || !isAbsolute(options.workspace) || !statSync(options.workspace, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new Error('Choose an existing workspace folder.')
-    }
-    if (!existsSync(join(options.workspace, 'config.json'))) {
-      throw new Error('This workspace needs a config.json with at least one model provider. Use config.example.json as a starting point.')
-    }
     const binary = coreExecutable()
     const helper = sandboxExecutable()
     const child = spawn(binary, [
-      'stdio', '--workspace', options.workspace,
+      'stdio', '--config-stdin', '--workspace', options.workspace,
       '--state-dir', join(options.workspace, '.lune'),
       '--sandbox-helper', helper,
     ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env } })
     coreProcess = child
-    coreExit = new Promise((resolveExit) => child.once('exit', () => resolveExit()))
-    child.stderr.on('data', (chunk: Buffer) => console.error('[lune-core]', chunk.toString().trimEnd()))
+    coreExit = new Promise((resolveExit) => child.once('close', () => resolveExit()))
+    // Keep provider diagnostics off Electron's console. Core startup errors
+    // are reported through the connection result with credentials redacted.
+    let diagnostics = ''
+    let connecting = true
+    child.stderr.setEncoding('utf8').on('data', (part: string) => {
+      if (connecting && diagnostics.length < 8192) diagnostics += part
+    })
     nextPeer = new JsonRpcPeer((message) => {
       if (!child.stdin.writable) throw new Error('lune-core input is closed')
       child.stdin.write(`${message}\n`)
@@ -273,14 +412,18 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
       }
     })
     child.once('error', (error) => nextPeer.fail(error))
-    child.once('exit', (code, signal) => nextPeer.fail(new Error(`lune-core exited (${code ?? signal ?? 'unknown'})`)))
+    child.once('close', (code, signal) => {
+      const detail = connecting && diagnostics ? redact(diagnostics.trim(), credentials) : ''
+      nextPeer.fail(new Error(detail || `lune-core exited (${code ?? signal ?? 'unknown'})`))
+    })
+    child.stdin.on('error', () => { /* let close report the startup error */ })
+    child.stdin.write(frame!)
+    finishLocalStartup = () => {
+      connecting = false
+      diagnostics = ''
+    }
   } else {
-    if (typeof options.url !== 'string' || typeof options.token !== 'string') throw new Error('Enter the Core URL and access token.')
-    const remoteURL = new URL(options.url)
-    if (remoteURL.protocol !== 'wss:' || remoteURL.username || remoteURL.password || remoteURL.search || remoteURL.hash) throw new Error('Use a wss:// Core URL without credentials, query, or fragment.')
-    if (!options.token.trim()) throw new Error('Enter the Core access token.')
-    if (options.token !== options.token.trim()) throw new Error('The Core access token must not contain surrounding whitespace.')
-    const nextSocket = new WebSocket(remoteURL, { headers: { Authorization: `Bearer ${options.token}` } })
+    const nextSocket = new WebSocket(options.url, { headers: { Authorization: `Bearer ${options.token}` } })
     socket = nextSocket
     nextPeer = new JsonRpcPeer((message) => {
       if (nextSocket.readyState !== WebSocket.OPEN) throw new Error('Remote Core is disconnected')
@@ -299,6 +442,16 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
   attachPeer(nextPeer)
   try {
     const hello = await nextPeer.request('runtime.hello', { clientName: 'Lune Desktop', clientVersion: app.getVersion() })
+    finishLocalStartup?.()
+    connectionNotice = ''
+    const remember = options.mode === 'remote' && suppliedToken && typeof options.rememberToken === 'boolean'
+      ? { token: options.token, save: options.rememberToken } : undefined
+    try {
+      const transient = await settings.recordConnection(options.mode, connectionAddress(options), options.mode === 'remote' ? options.name : undefined, remember)
+      if (transient) connectionNotice = 'The system credential store is unavailable. This token is remembered only until the app closes.'
+    } catch {
+      connectionNotice = 'The connection is active, but its settings could not be saved.'
+    }
     lastConnection = options
     return hello
   } catch (error) {
@@ -309,14 +462,16 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
 
 ipcMain.handle('runtime:connect', async (event, options: DesktopConnectionOptions) => {
   assertMainWindow(event)
-  lastConnection = null
-  return openRuntime(options)
+  return serial(runtimeChange, () => openRuntime(options), (pending) => { runtimeChange = pending })
 })
 
 ipcMain.handle('runtime:reconnect', async (event) => {
   assertMainWindow(event)
-  if (!lastConnection) throw new Error('Connect to a Core before reconnecting.')
-  return openRuntime(lastConnection)
+  return serial(runtimeChange, async () => {
+    if (!lastConnection) throw new Error('Connect to a Core before reconnecting.')
+    const options = lastConnection.mode === 'remote' ? { ...lastConnection, rememberToken: undefined } : lastConnection
+    return openRuntime(options)
+  }, (pending) => { runtimeChange = pending })
 })
 
 ipcMain.handle('runtime:request', (event, message: { method?: unknown; params?: unknown }) => {
@@ -328,25 +483,32 @@ ipcMain.handle('runtime:request', (event, message: { method?: unknown; params?: 
 
 ipcMain.handle('runtime:close', async (event, forget = false) => {
   assertMainWindow(event)
-  await disconnectRuntime()
-  if (forget) lastConnection = null
+  return serial(runtimeChange, async () => {
+    await disconnectRuntime()
+    if (forget) lastConnection = null
+  }, (pending) => { runtimeChange = pending })
 })
 
 app.whenReady().then(() => {
-  try {
-    const theme = readFileSync(themeFile(), 'utf8').trim()
-    if (isThemePreference(theme)) nativeTheme.themeSource = theme
-  } catch { /* default to the system appearance */ }
-  try { quickShortcut = readFileSync(shortcutFile(), 'utf8').trim() || defaultShortcut } catch { /* first launch */ }
+  settings = new DesktopSettings()
+  const theme = settings.preference('theme')
+  if (isThemePreference(theme)) nativeTheme.themeSource = theme
+  quickShortcut = settings.preference('shortcut') || defaultShortcut
   registerQuickShortcut(quickShortcut)
   createMainWindow()
+}).catch(() => {
+  dialog.showErrorBox('Lune settings are unavailable', 'The settings database could not be opened or upgraded. The original settings have been left in place.')
+  app.quit()
 })
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  settings?.close()
+})
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 app.on('before-quit', (event) => {
   if (quitting) return
   event.preventDefault()
   quitting = true
-  void disconnectRuntime().finally(() => app.quit())
+  void Promise.all([settingsWrite, runtimeChange]).then(disconnectRuntime).finally(() => app.quit())
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

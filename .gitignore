@@ -19,3 +19,5 @@
 /go.pinned.mod
 /go.pinned.sum
 /diag
+
+/internal/app/webdist/

@@ -393,3 +393,27 @@ kbd { padding: 2px 4px; color: light-dark(#9297a0, var(--dark-muted)); border: 1
 .drawer-panel .session-list { min-height: 0; overscroll-behavior: contain; }
 .drawer-panel .sidebar-bottom { flex: 0 0 auto; }
 .drawer-panel .action-error { margin: 8px 0; }
+
+.desktop-config {
+  width: min(620px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--paper);
+}
+.desktop-config::backdrop { background: rgb(14 15 22 / .46); }
+.desktop-config .connection-tabs { margin-top: 10px; }
+.desktop-config textarea, .desktop-config select {
+  max-width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink);
+}
+.desktop-config textarea { resize: vertical; font-family: monospace; }
+.config-actions, .recent-connections { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 12px; }
+.recent-connections { max-height: 102px; overflow: auto; }
+.recent-connections .secondary-button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.form-field .remember-token { display: flex; align-items: center; gap: 5px; }
+.form-field .remember-token input { width: auto; height: auto; }
+.recent-connection { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.recent-connection .icon-button { flex: 0 0 auto; width: 24px; }

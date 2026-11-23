@@ -28,16 +28,22 @@ fi
 mkdir -p "${output_directory}"
 cd "${workspace_root}"
 
+web_tags=()
+if [[ "${LUNE_EMBED_WEB:-}" == 1 ]]; then
+  (cd desktop && npm ci && npm run build:web && node scripts/embed-web.mjs)
+  web_tags=(-tags lune_web)
+fi
+
 printf 'Building local Linux lune and lune-sandbox...\n'
 "${go_binary}" build -trimpath -ldflags="-s -w" -o "${output_directory}/lune-sandbox" github.com/afterlune/luneCore/cmd/lune-sandbox
-"${go_binary}" build -trimpath -ldflags="-s -w" -o "${output_directory}/lune" ./cmd
+"${go_binary}" build -trimpath "${web_tags[@]}" -ldflags="-s -w" -o "${output_directory}/lune" ./cmd
 
 for architecture in amd64 arm64; do
 	target_directory="${output_directory}/linux-${architecture}"
 	mkdir -p "${target_directory}"
 	printf 'Building Linux %s lune and lune-sandbox...\n' "${architecture}"
 	GOOS=linux GOARCH="${architecture}" CGO_ENABLED=0 "${go_binary}" build -trimpath -ldflags="-s -w" -o "${target_directory}/lune-sandbox" github.com/afterlune/luneCore/cmd/lune-sandbox
-	GOOS=linux GOARCH="${architecture}" CGO_ENABLED=0 "${go_binary}" build -trimpath -ldflags="-s -w" -o "${target_directory}/lune" ./cmd
+	GOOS=linux GOARCH="${architecture}" CGO_ENABLED=0 "${go_binary}" build -trimpath "${web_tags[@]}" -ldflags="-s -w" -o "${target_directory}/lune" ./cmd
 done
 
 printf 'Built local binaries in %s and Linux amd64/arm64 binaries under %s.\n' "${output_directory}" "${output_directory}"

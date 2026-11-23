@@ -1,20 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ThemePreference } from '../shared/theme.js'
 
-export interface LocalConnectionOptions {
-  mode: 'local'
-  workspace: string
-}
-
-export interface RemoteConnectionOptions {
-  mode: 'remote'
-  url: string
-  token: string
-}
-
-export type DesktopConnectionOptions = LocalConnectionOptions | RemoteConnectionOptions
+import type { ConfigDocument, ConfigImport, ConfigView, DesktopConnectionOptions, SavedConnection } from '../shared/desktop-settings.js'
 
 contextBridge.exposeInMainWorld('luneDesktop', {
+  getConfig: (scope: string): Promise<ConfigView> => ipcRenderer.invoke('settings:config', scope),
+  chooseConfigImport: (): Promise<ConfigImport | null> => ipcRenderer.invoke('settings:import'),
+  saveConfig: (scope: string, document: ConfigDocument, importId?: string): Promise<boolean> => ipcRenderer.invoke('settings:save-config', scope, document, importId),
+  resetWorkspaceConfig: (workspace: string): Promise<void> => ipcRenderer.invoke('settings:reset-workspace', workspace),
+  savedConnections: (): Promise<{ items: SavedConnection[]; notice: string }> => ipcRenderer.invoke('settings:connections'),
+  forgetConnection: (mode: string, address: string): Promise<void> => ipcRenderer.invoke('settings:forget-connection', mode, address),
+  lastSession: (): Promise<string | null> => ipcRenderer.invoke('settings:last-session'),
+  rememberSession: (mode: string, address: string, session: string): Promise<void> => ipcRenderer.invoke('settings:remember-session', mode, address, session),
   getTheme: (): Promise<ThemePreference> => ipcRenderer.invoke('desktop:get-theme'),
   setTheme: (theme: ThemePreference): Promise<void> => ipcRenderer.invoke('desktop:set-theme', theme),
   shortcut: (): Promise<string> => ipcRenderer.invoke('desktop:shortcut'),

@@ -33,6 +33,9 @@ func Run() error {
 
 // RunWithStreams executes the application with custom arguments and streams.
 func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (runErr error) {
+	if len(args) > 0 && args[0] == "web" {
+		return runWeb(args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "migrate" {
 		return runMigration(args[1:], stdout, stderr)
 	}
@@ -229,6 +232,10 @@ func newCore(workspace string, noSandbox ...bool) (*core.Core, error) {
 }
 
 func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox ...bool) (*core.Core, error) {
+	return openCore(workspace, diagnostics, len(noSandbox) > 0 && noSandbox[0], false)
+}
+
+func openCore(workspace string, diagnostics io.Writer, allowLocalCommand, exclusive bool) (*core.Core, error) {
 	projectConfig, configPath, err := loadUserProjectConfigWithDiagnostics(diagnostics)
 	if err != nil {
 		return nil, err
@@ -236,7 +243,6 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 	helperPath := findSandboxHelper(workspace)
 	// Core owns the sandbox decision, including LUNE_SANDBOX/LUNE_NO_SANDBOX, so the
 	// host only forwards the explicit flag.
-	allowLocalCommand := len(noSandbox) > 0 && noSandbox[0]
 	var toolchainRoots []string
 	userStore, storeErr := settings.OpenUser()
 	if storeErr == nil {
@@ -258,6 +264,7 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 
 	baseCfg := core.Config{
 		Workspace:             workspace,
+		ExclusiveState:        exclusive,
 		StateDir:              filepath.Join(workspace, ".lune"),
 		Logger:                slog.Default(),
 		PersonalInstructions:  engram.Instructions(projectConfig.MCPServers),

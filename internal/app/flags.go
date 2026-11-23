@@ -214,6 +214,7 @@ func PrintHelp(w io.Writer) {
 
 Usage:
   lune [flags] [prompt]
+  lune web [--workspace DIR] [--no-open]  Start the embedded local Web interface
   lune migrate --state-dir <directory>  Back up and upgrade old execution storage
 
 Flags:

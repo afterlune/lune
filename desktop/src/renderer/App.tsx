@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ConfigSettings } from './config-settings'
+import type { SavedConnection } from '../shared/desktop-settings'
+import { lastLoopbackSession, loadLoopbackToken, rememberLoopbackSession } from './loopback'
 import { ThemePicker } from './theme'
 import type { ThemePreference } from '../shared/theme'
 import ReactMarkdown from 'react-markdown'
@@ -191,6 +194,12 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const [workspace, setWorkspace] = useState('')
   const [remoteURL, setRemoteURL] = useState('wss://localhost:18092/v1/runtime')
   const [token, setToken] = useState('')
+  const [remoteName, setRemoteName] = useState('')
+  const [rememberToken, setRememberToken] = useState(false)
+  const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([])
+  const [connectionNotice, setConnectionNotice] = useState('')
+  const [configOpen, setConfigOpen] = useState(false)
+  const [localWeb, setLocalWeb] = useState<Extract<RuntimeConnection, { mode: 'loopback' }> | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [activeSessionId, setActiveSessionId] = useState('')
@@ -297,6 +306,14 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     return desktopAPI.onQuickMode(setQuick)
   }, [])
 
+  const reloadSavedConnections = useCallback(async () => {
+    const saved = await window.luneDesktop?.savedConnections()
+    if (saved) { setSavedConnections(saved.items); setConnectionNotice(saved.notice) }
+  }, [])
+  useEffect(() => {
+    void reloadSavedConnections().catch((error) => setConnectionError(errorMessage(error)))
+  }, [reloadSavedConnections])
+
   const scheduleReconnect = useCallback(() => {
     if (!autoReconnect.current || !connectionRef.current) return
     if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current)
@@ -341,12 +358,14 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       clientRef.current = candidate
       const savedOptions = desktop && options.mode === 'remote' ? { ...options, token: '' } : options
       connectionRef.current = savedOptions
+      setActiveSession(null)
       setClient(candidate)
       setConnection(savedOptions)
       setConnectionStatus('connected')
       reconnectCount.current = 0
       autoReconnect.current = true
       if (desktop && options.mode === 'remote') setToken('')
+      if (desktop) void reloadSavedConnections().catch(() => undefined)
     } catch (error) {
       if (candidate) await candidate.close().catch(() => undefined)
       setConnectionError(errorMessage(error))
@@ -354,10 +373,29 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       if (retry && autoReconnect.current) scheduleReconnect()
       else if (!retry) autoReconnect.current = false
     }
-  }, [desktop, scheduleReconnect])
+  }, [desktop, reloadSavedConnections, scheduleReconnect])
 
   useEffect(() => { startConnection.current = activateConnection }, [activateConnection])
+  useEffect(() => {
+    let active = true
+    void loadLoopbackToken().then((token) => {
+      if (!token || !active) return
+      const options = { mode: 'loopback', url: `ws://${location.host}/v1/runtime`, token } as const
+      setLocalWeb(options)
+      void activateConnection(options)
+    }).catch((error) => { if (active) setConnectionError(errorMessage(error)) })
+    return () => { active = false }
+  }, [activateConnection])
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
+  useEffect(() => {
+    if (!connection || !activeSession || activeSession.id !== activeSessionId) return
+    if (connection.mode === 'loopback') {
+      rememberLoopbackSession(activeSessionId)
+      return
+    }
+    const address = connection.mode === 'local' ? connection.workspace : connection.url
+    void window.luneDesktop?.rememberSession(connection.mode, address, activeSessionId).catch(() => undefined)
+  }, [connection, activeSession, activeSessionId])
 
   const disconnect = useCallback(async () => {
     autoReconnect.current = false
@@ -460,7 +498,10 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       if (cancelled) return
       setSessions(nextSessions ?? [])
       setModels(nextModels ?? [])
-      const previousID = activeSessionIdRef.current
+      const previousID = window.luneDesktop
+        ? await window.luneDesktop.lastSession().catch(() => null)
+        : connectionRef.current?.mode === 'loopback' ? lastLoopbackSession() : activeSessionIdRef.current
+      if (cancelled) return
       const existing = (previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]
       if (cancelled) return
       if (existing) setActiveSessionId(existing.id)
@@ -492,7 +533,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     setRuntime(emptyRuntime)
     setStreamingText('')
     setActivity([])
-    cursorKeyRef.current = `lune:cursor:${connection?.mode ?? 'remote'}:${connection?.mode === 'remote' ? connection.url : connection?.workspace ?? 'local'}:${sessionId}`
+    cursorKeyRef.current = `lune:cursor:${connection?.mode ?? 'remote'}:${connection?.mode === 'local' ? connection.workspace : connection?.url ?? 'local'}:${sessionId}`
 
     const refreshAll = () => refreshSessionData(targetClient, sessionId).catch((error: unknown) => setActionError(errorMessage(error)))
     const refreshLiveState = () => refreshRuntime(targetClient, sessionId).catch((error: unknown) => setActionError(errorMessage(error)))
@@ -567,7 +608,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     setConnectionError('')
     const options: RuntimeConnection = mode === 'local'
       ? { mode: 'local', workspace }
-      : { mode: 'remote', url: remoteURL.trim(), token }
+      : { mode: 'remote', url: remoteURL.trim(), token, ...(desktop ? { name: remoteName, rememberToken } : {}) }
     await activateConnection(options)
     setBusy(false)
   }
@@ -849,6 +890,24 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const resolveInteraction = (request: NonNullable<Pending['interaction']>, value: unknown) =>
     resolvePending('interaction.resolve', { sessionId: activeSessionId, id: request.id, response: value })
 
+  const useSavedConnection = async (saved: SavedConnection) => {
+    setMode(saved.mode)
+    setConnectionError('')
+    if (saved.mode === 'remote') {
+      setRemoteURL(saved.address)
+      setRemoteName(saved.name === saved.address ? '' : saved.name)
+      setRememberToken(saved.remembered)
+      setToken('')
+      if (!saved.remembered) return
+    } else setWorkspace(saved.address)
+    setBusy(true)
+    try {
+      await activateConnection(saved.mode === 'local'
+        ? { mode: 'local', workspace: saved.address }
+        : { mode: 'remote', url: saved.address, token: '', name: saved.name })
+    } finally { setBusy(false) }
+  }
+
   const chooseWorkspace = async () => {
     const selected = await window.luneDesktop?.selectWorkspace()
     if (selected) setWorkspace(selected)
@@ -856,7 +915,11 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
 
   const statusLabel = connectionStatus === 'connected' ? 'Connected' : connectionStatus === 'reconnecting' ? 'Reconnecting' : connectionStatus === 'connecting' ? 'Connecting' : 'Not connected'
   const statusIcon = connectionStatus === 'connected' ? <Wifi size={15} /> : connectionStatus === 'reconnecting' || connectionStatus === 'connecting' ? <LoaderCircle className="spin" size={15} /> : <WifiOff size={15} />
-  const canReuseDesktopRemote = desktop && connection?.mode === 'remote' && remoteURL.trim() === connection.url
+  const canReuseDesktopRemote = desktop && (
+    (connection?.mode === 'remote' && remoteURL.trim() === connection.url) ||
+    savedConnections.some((saved) => saved.mode === 'remote' && saved.address === remoteURL.trim() && saved.remembered)
+  )
+  const configSettings = configOpen && desktop && <ConfigSettings workspace={workspace} onClose={() => setConfigOpen(false)} />
   const connectDisabled = busy || (mode === 'local' ? !workspace.trim() : !remoteURL.trim() || (!token.trim() && !canReuseDesktopRemote))
 
   if (!client || showConnection) {
@@ -869,14 +932,24 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
           <div className="eyebrow"><span className="eyebrow-dot" /> YOUR WORKSPACE, YOUR CORE</div>
           <h1>A quiet place<br />to think with AI.</h1>
           <p className="connect-intro">Connect to a Lune Core. Your sessions, tools, and permissions stay with the Core you choose.</p>
+          {localWeb && <button className="secondary-button" onClick={() => void activateConnection(localWeb)} disabled={connectionStatus === 'connecting'}>Connect to this workspace</button>}
           {desktop && <div className="connection-tabs">
             <button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={16} /> This computer</button>
             <button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={16} /> Remote Core</button>
           </div>}
+          {desktop && savedConnections.length > 0 && <div className="recent-connections" aria-label="Saved connections">
+            {savedConnections.filter((saved) => saved.mode === mode).map((saved) =>
+              <div className="recent-connection" key={saved.address}>
+                <button type="button" className="secondary-button" title={saved.address} disabled={busy}
+                  onClick={() => void useSavedConnection(saved)}>{saved.mode === 'local' ? saved.address.split(/[\\/]/).filter(Boolean).at(-1) ?? saved.address : saved.name}</button>
+                <button type="button" className="icon-button" aria-label={`Remove saved connection ${saved.name}`} disabled={busy}
+                  onClick={() => void window.luneDesktop?.forgetConnection(saved.mode, saved.address).then(reloadSavedConnections).catch((error) => setConnectionError(errorMessage(error)))}><X size={13} /></button>
+              </div>)}
+          </div>}
           {mode === 'local' && desktop ? <div className="form-field">
             <label>Workspace folder</label>
-            <div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a folder with config.json" /><button onClick={() => void chooseWorkspace()} aria-label="Browse folders"><FolderOpen size={17} /></button></div>
-            <small>Electron starts a private Core process for this workspace. Sessions are stored in its <code>.lune</code> folder.</small>
+            <div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" /><button onClick={() => void chooseWorkspace()} aria-label="Browse folders"><FolderOpen size={17} /></button></div>
+            <small>Core uses your desktop settings. Sessions are stored in this workspace’s <code>.lune</code> folder.</small>
           </div> : <>
             <div className="form-field">
               <label>Core WebSocket URL</label>
@@ -885,17 +958,22 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
             <div className="form-field">
               <label>Access token</label>
               <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste your Core token" autoComplete="off" />
-              <small><LockKeyhole size={13} /> Kept in memory for this page only. The browser connects over TLS.</small>
+              {!desktop && <small><LockKeyhole size={13} /> Kept in memory for this page only. The browser connects over TLS.</small>}
+              {desktop && <label className="remember-token"><input type="checkbox" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> Remember token with system credentials</label>}
             </div>
+            {desktop && <label className="form-field">Connection name<input value={remoteName} onChange={(event) => setRemoteName(event.target.value)} maxLength={120} /></label>}
           </>}
+          {desktop && mode === 'local' && <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfigOpen(true)}>Configure Core</button>}
+          {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
           {connectionError && <div className="form-error"><ShieldAlert size={16} /> <span>{connectionError}</span></div>}
           {!connectionError && connectionStatus === 'reconnecting' && <div className="form-status"><LoaderCircle size={15} className="spin" /> The connection dropped. Lune is trying again automatically.</div>}
           <button className="primary-button connect-button" disabled={connectDisabled} onClick={() => void connectFromForm()}>
             {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}{busy ? 'Connecting…' : 'Connect to Core'}
           </button>
-          {desktop && connection && <button className="forget-connection" onClick={() => void disconnect()}>Forget saved desktop connection</button>}
+          {desktop && connection && <button className="forget-connection" onClick={() => void disconnect()}>Disconnect</button>}
           <div className="connect-footnote"><span><LockKeyhole size={13} /> End-to-end transport security</span><span>Runtime Protocol v1</span></div>
         </main>
+        {configSettings}
         <div className="connect-bottom"><span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span></div>
       </div>
     )
@@ -918,7 +996,8 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     </div>
     {drawerOpen && actionError && <div className="action-error" role="alert">{actionError}</div>}
     <div className="sidebar-bottom">
-      <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
+      <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' || connection?.mode === 'loopback' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
+      {desktop && <button className="settings-button" onClick={() => { closeDrawer(); setConfigOpen(true) }}><Settings2 size={16} /> Core configuration</button>}
       <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} /> Connection settings <ChevronDown size={14} /></button>
       {desktop && <button className="settings-button" onClick={() => void window.luneDesktop?.toggleQuick()}><Command size={16} /> Quick window</button>}
       <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} /> Disconnect</button>
@@ -1022,6 +1101,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
         </div>
 
         <div className="composer-wrap">
+          {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
           {info && <div className="form-status" role="status">{info}</div>}
           {!drawerOpen && actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label="Dismiss"><X size={14} /></button></div>}
           {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.'}</div>}
@@ -1061,6 +1141,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
         </div>
       </main>
 
+      {configSettings}
       {sessionDialog && <div className="modal-backdrop">
         <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
           <h2 id="session-dialog-title">{sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation'}</h2>
@@ -1083,7 +1164,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
           <div className="modal-top"><div className="brand-mark small"><Settings2 size={15} /></div><button className="icon-button" onClick={() => setShowConnection(false)} aria-label="Close"><X size={17} /></button></div>
           <div className="eyebrow">CONNECTION</div><h2 id="connection-modal-title">Connect to a Core</h2><p className="modal-copy">Change the Core that serves this frontend. Your sessions are stored with that Core.</p>
           {desktop && <div className="connection-tabs compact-tabs"><button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={15} /> This computer</button><button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={15} /> Remote Core</button></div>}
-          {mode === 'local' && desktop ? <div className="form-field"><label>Workspace folder</label><div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a folder with config.json" /><button onClick={() => void chooseWorkspace()}><FolderOpen size={16} /></button></div><small>Requires a workspace config.json with a model provider.</small></div> : <><div className="form-field"><label>Core WebSocket URL</label><input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} autoCapitalize="none" spellCheck={false} /></div><div className="form-field"><label>Access token</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></div></>}
+          {mode === 'local' && desktop ? <div className="form-field"><label>Workspace folder</label><div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" /><button onClick={() => void chooseWorkspace()}><FolderOpen size={16} /></button></div><small>Requires a workspace config.json with a model provider.</small></div> : <><div className="form-field"><label>Core WebSocket URL</label><input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} autoCapitalize="none" spellCheck={false} /></div><div className="form-field"><label>Access token</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></div></>}
           {(connectionError || connectionStatus === 'reconnecting') && <div className="form-error"><ShieldAlert size={15} /><span>{connectionError || 'The connection was interrupted. Reconnect to continue.'}</span></div>}
           {desktop && <div className="form-field"><label htmlFor="quick-shortcut">Quick window shortcut</label>
             <div className="input-with-action"><input id="quick-shortcut" value={shortcut} onChange={(event) => setShortcut(event.target.value)} />

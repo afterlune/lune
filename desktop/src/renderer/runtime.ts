@@ -1,3 +1,5 @@
+import type { DesktopConnectionOptions } from '../shared/desktop-settings'
+import { isLocalBrowser } from './loopback'
 import { JsonRpcPeer, type JsonRpcNotification } from '../shared/jsonrpc'
 
 export interface RuntimeClient {
@@ -7,8 +9,8 @@ export interface RuntimeClient {
 }
 
 export type RuntimeConnection =
-  | { mode: 'local'; workspace: string }
-  | { mode: 'remote'; url: string; token: string }
+  | DesktopConnectionOptions
+  | { mode: 'loopback'; url: string; token: string }
 
 function base64URL(value: string): string {
   const bytes = new TextEncoder().encode(value)
@@ -17,9 +19,12 @@ function base64URL(value: string): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 }
 
-function browserClient(url: string, token: string): Promise<RuntimeClient> {
+function browserClient(url: string, token: string, loopback = false): Promise<RuntimeClient> {
   const endpoint = new URL(url)
-  if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+  const validTransport = loopback
+    ? isLocalBrowser() && endpoint.href === `ws://${location.host}/v1/runtime`
+    : endpoint.protocol === 'wss:'
+  if (!validTransport || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new Error('Use a wss:// Core URL without credentials, query, or fragment.')
   }
   if (!token.trim()) throw new Error('Enter the Core access token.')
@@ -63,8 +68,8 @@ function browserClient(url: string, token: string): Promise<RuntimeClient> {
 
 export async function connectRuntime(options: RuntimeConnection, retry = false): Promise<RuntimeClient> {
   if (window.luneDesktop) {
-    const reconnecting = retry || (options.mode === 'remote' && !options.token)
-    if (reconnecting) await window.luneDesktop.reconnect()
+    if (options.mode === 'loopback') throw new Error('This connection is for the local Web page.')
+    if (retry) await window.luneDesktop.reconnect()
     else await window.luneDesktop.connect(options)
     return {
       request: <T,>(method: string, params?: unknown) => window.luneDesktop!.request<T>(method, params),
@@ -73,6 +78,6 @@ export async function connectRuntime(options: RuntimeConnection, retry = false):
     }
   }
 
-  if (options.mode !== 'remote') throw new Error('Local Core processes are available in the Electron desktop app.')
-  return browserClient(options.url, options.token)
+  if (options.mode === 'local') throw new Error('Local Core processes are available in the Electron desktop app.')
+  return browserClient(options.url, options.token, options.mode === 'loopback')
 }

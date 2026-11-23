@@ -21,11 +21,25 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 Push-Location $workspaceRoot
 try {
 	if ([string]::IsNullOrWhiteSpace($env:GOWORK)) { $env:GOWORK = 'off' }
+	$webTags = @()
+	if ($env:LUNE_EMBED_WEB -eq '1') {
+		Push-Location (Join-Path $workspaceRoot 'desktop')
+		try {
+			& npm ci
+			if ($LASTEXITCODE -ne 0) { throw 'Could not install Web dependencies.' }
+			& npm run build:web
+			if ($LASTEXITCODE -ne 0) { throw 'Could not build Web assets.' }
+			& node scripts/embed-web.mjs
+			if ($LASTEXITCODE -ne 0) { throw 'Could not stage Web assets.' }
+		}
+		finally { Pop-Location }
+		$webTags = @('-tags', 'lune_web')
+	}
 	$ldflags = '-s -w'
 	& go build -trimpath -ldflags $ldflags -o $helperPath github.com/afterlune/luneCore/cmd/lune-sandbox
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune-sandbox.' }
 
-	& go build -trimpath -ldflags $ldflags -o $appPath ./cmd
+	& go build -trimpath @webTags -ldflags $ldflags -o $appPath ./cmd
 	if ($LASTEXITCODE -ne 0) { throw 'Could not build lune.' }
 
 	$env:CGO_ENABLED = '0'
@@ -38,7 +52,7 @@ try {
 		& go build -trimpath -ldflags $ldflags -o (Join-Path $targetDirectory 'lune-sandbox') github.com/afterlune/luneCore/cmd/lune-sandbox
 		if ($LASTEXITCODE -ne 0) { throw "Could not build Linux lune-sandbox ($linuxArchitecture)." }
 
-		& go build -trimpath -ldflags $ldflags -o (Join-Path $targetDirectory 'lune') ./cmd
+		& go build -trimpath @webTags -ldflags $ldflags -o (Join-Path $targetDirectory 'lune') ./cmd
 		if ($LASTEXITCODE -ne 0) { throw "Could not build Linux lune ($linuxArchitecture)." }
 	}
 

@@ -34,7 +34,9 @@ npm run build:core
 npm run dev
 ```
 
-本机 Core 从所选工作区读取 `config.json`，会话状态保存在该工作区的 `.lune/`。远程模式只需要 Electron 应用，不需要随包 Core 二进制。
+Electron 通过 **Configure Core** 配置供应商和模型。默认配置、可选的工作区覆盖、外观、快捷键及最近连接保存在应用用户目录的 `settings.sqlite`。本机 Core 通过私有 stdin 接收配置，会话状态仍保存在工作区的 `.lune/`。远程模式由服务端管理模型配置。
+
+可通过 **Import config.json…** 预览并导入旧配置。用户目录或工作区的原文件保留。供应商 API Key 和选中记住的远程令牌仅以系统保护的密文写入 SQLite。系统凭据存储不可用时，它们可在本次运行使用；也可用 `apiKeyEnv` 引用 Electron 继承的环境变量。修改配置后，下次启动本机 Core 时生效。
 
 单独开发 Web 页面：
 
@@ -44,6 +46,17 @@ npm run dev:web
 ```
 
 浏览器模式只提供远程连接。Core 必须使用受信任的 TLS 证书并允许准确的网页来源；浏览器不会保存访问令牌，页面刷新后需要重新输入。
+
+## 单命令启动本机 Web
+
+构建时设置 `LUNE_EMBED_WEB=1` 可将静态资源嵌入 `lune`。构建机需要 Node.js 和 npm，运行随包的 `lune` 和 `lune-sandbox` 时无需 Node.js 或静态资源目录。
+
+```sh
+LUNE_EMBED_WEB=1 ./scripts/build-linux.sh
+./bin/lune web --workspace /path/to/workspace
+```
+
+PowerShell 构建使用 `$env:LUNE_EMBED_WEB = '1'` 后运行 `./scripts/build.ps1`。默认构建无需 Node.js。Web 版从 Lune 用户配置目录加载模型设置，使用工作区的 `.lune/`，并默认使用 `workspace` 权限。在同一台机器上通过浏览器打开时，无需 TLS 或手工配置令牌。使用 `--no-open` 可在终端获得一步启动链接；配对码只能使用一次，当前标签页刷新可继续使用。按 Ctrl+C 停止。
 
 ## 连接 Web Core
 
@@ -68,7 +81,7 @@ npm run build:web
 
 ## Electron 打包
 
-Electron 本机模式会把 Core 和沙箱 helper 放在应用资源目录中，并从工作区的 `config.json` 读取 provider 配置。构建和打包命令会针对目标平台生成 Core：
+Electron 本机模式随包携带 Core 和沙箱 helper，使用应用设置中的模型供应商配置。构建和打包命令会针对目标平台生成 Core：
 
 ```sh
 npm run package:linux
@@ -81,7 +94,7 @@ Electron 主进程持有远程令牌，并通过 context-isolated preload 暴露
 
 ## Core 版本
 
-桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。根目录 `go.mod` 固定到包含会话、任务和附件协议扩展的 `luneCore` revision `1f3a55d`。默认 Linux 打包会携带这一版本。独立检出此仓库时可通过 `GOWORK=off` 下载并构建，不需要兄弟目录。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
+桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。根目录 `go.mod` 固定到包含 SQLite 配置入口及内嵌 Web 宿主接口的 `luneCore` revision `167fbf5`。默认构建脚本使用该固定版本，可在独立检出中构建。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
 
 同一工作区中开发尚未固定到 `go.mod` 的 Core 功能时，使用 `LUNE_CORE_DIR` 显式指定 checkout：
 
@@ -92,6 +105,7 @@ npm run dev
 ```
 
 本地打包可对 `package:linux` 或 `package:windows` 设置相同的 `LUNE_CORE_DIR`。远程模式需要连接支持扩展的 Core 才会启用扩展入口。
+
 
 ## 本地验收记录
 
@@ -122,3 +136,9 @@ Core 的 WSS 测试检查了过期回退预览、Plan 工具筛选、逐项取�
 在没有兄弟 Core 检出的临时目录，以 `GOWORK=off` 从 `go.mod` 下载固定模块并打包 Linux AppImage。随包 Core 和沙箱辅助程序与构建输出一致。本机 stdio 模式已验证 Plan、附件发送和带附件分叉，另用旧版 Core 验证基础聊天和扩展入口的能力协商。
 
 360px Chromium 页面和 Electron 紧凑窗口均通过会话分页、归档正文搜索、切换和新建、Esc 关闭、焦点返回与深色主题检查。Web 上还验证了列表过期时在抽屉内显示错误，以及抽屉打开时对话继续执行。Electron 重新载入后能恢复紧凑窗口状态并返回宽屏侧栏。Windows 安装包验收挂起。
+
+### SQLite 与内嵌 Web 验收
+
+Linux AppImage 使用配套 Core 源码打包。固定依赖更新后，另在独立检出验证了从 Go module 源码构建 Core 和内嵌 Web 二进制。在两个没有 `config.json` 的目录中验证了首次配置、默认模型继承和工作区覆盖、导入预览与保存、重启后的会话恢复，以及命名 WSS 连接。测试环境没有安全凭据库，环境变量引用可在重启后使用，本次运行的 API Key 和远程令牌未写入 SQLite、数据库日志或应用诊断日志。
+
+内嵌版已在独立目录和不含 Node.js 的 PATH 下启动，浏览器完成一次性配对、流式回复与刷新。Host、Origin 和已有配对码重用均经过拒绝测试。普通版仍可构建，`lune web` 会提示如何开启内嵌资源。
