@@ -172,9 +172,6 @@ function createMainWindow(): void {
 
   if (developmentServer) void mainWindow.loadURL(developmentServer)
   else void mainWindow.loadFile(join(currentDirectory, '../renderer/index.html'))
-  mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow?.webContents.send('desktop:quick-mode', Boolean(expandedWindow))
-  })
   mainWindow.on('closed', () => { mainWindow = null; expandedWindow = null })
 }
 
@@ -182,6 +179,11 @@ ipcMain.handle('desktop:select-workspace', async (event) => {
   assertMainWindow(event)
   const selection = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
   return selection.canceled ? null : selection.filePaths[0] ?? null
+})
+
+ipcMain.handle('desktop:quick-mode', (event) => {
+  assertMainWindow(event)
+  return Boolean(expandedWindow)
 })
 
 ipcMain.handle('desktop:quick-toggle', (event) => {

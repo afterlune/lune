@@ -6,7 +6,7 @@
 
 ## 会话、任务与附件
 
-- 会话侧栏支持分页、归档筛选、标题和正文搜索。会话菜单可改名、归档、删除、分叉、导出 Markdown 和调整推理强度。分叉复制当前会话历史，使用新的会话 ID 和独立队列。
+- 会话侧栏支持分页、归档筛选、标题和正文搜索。窄屏和 Electron 紧凑窗口通过聊天顶部的会话按钮打开同一列表，按 Esc 可关闭。会话菜单可改名、归档、删除、分叉、导出 Markdown 和调整推理强度。分叉复制当前会话历史，使用新的会话 ID 和独立队列。
 - 输入区的 **Plan** 使用 Core 的只读工具筛选。运行中默认排队，使用 **Add to running task** 可向当前任务补充输入。队列中的每条消息可单独取消。手动压缩和回退须等待当前会话空闲，回退先预览待移除的轮次。
 - 附件支持选择和拖放。支持 UTF-8 文本、Markdown、CSV、PNG 和 JPEG，每条消息最多 5 个文件、合计 4 MiB。图片每个最多 2 MiB，文本每个最多 128 KiB。图片入口要求所选模型 profile 配置 `"supportsInputImages": true`。附件随会话保存，其他客户端可以从同一个 Core 读回。
 - Electron 的 **Screenshot** 允许选择显示器，将截图放入草稿预览。**Quick window** 使用当前窗口的紧凑模式，默认全局快捷键是 `Ctrl+Shift+Space`，可在连接设置中更改；返回主窗口时保留当前会话和草稿。
@@ -81,7 +81,7 @@ Electron 主进程持有远程令牌，并通过 context-isolated preload 暴露
 
 ## Core 版本
 
-桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。当前工作区根目录 `go.mod` 固定到实现 Runtime Protocol v1 的 `luneCore` revision `a326fa3`，该 revision 已包含在 GitHub 远端主分支历史中。独立检出此仓库时可通过 `GOWORK=off` 下载并构建，不需要兄弟目录。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
+桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。根目录 `go.mod` 固定到包含会话、任务和附件协议扩展的 `luneCore` revision `1f3a55d`。默认 Linux 打包会携带这一版本。独立检出此仓库时可通过 `GOWORK=off` 下载并构建，不需要兄弟目录。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
 
 同一工作区中开发尚未固定到 `go.mod` 的 Core 功能时，使用 `LUNE_CORE_DIR` 显式指定 checkout：
 
@@ -91,7 +91,7 @@ LUNE_CORE_DIR="$(realpath ../../luneCore)" npm run build:core
 npm run dev
 ```
 
-本地打包可对 `package:linux` 或 `package:windows` 设置相同的 `LUNE_CORE_DIR`。Web 使用这些扩展时，远程 Core 也需要从包含扩展的本地源码构建。
+本地打包可对 `package:linux` 或 `package:windows` 设置相同的 `LUNE_CORE_DIR`。远程模式需要连接支持扩展的 Core 才会启用扩展入口。
 
 ## 本地验收记录
 
@@ -116,3 +116,9 @@ npm run build
 以本地 Core 源码构建，使用临时工作区、TLS 证书和模拟 Responses 服务。Chromium 通过 WSS 完成附件发送、归档正文搜索、分叉和回退。Linux AppImage 使用随包 Core 完成同类对话，在 X11 下实际触发全局快捷键，并从显示器截图到消息草稿。Electron 远程模式读取了浏览器创建的归档会话和附件。
 
 Core 的 WSS 测试检查了过期回退预览、Plan 工具筛选、逐项取消排队、附件限制和重复提交。Windows x64 Core 和沙箱 helper 交叉构建通过。当前 Linux 环境中的 Wine 无法运行 NSIS 生成卸载器所需的程序，未获得可用的 Windows 安装包。
+
+### 默认 Core 与窄屏会话验收
+
+在没有兄弟 Core 检出的临时目录，以 `GOWORK=off` 从 `go.mod` 下载固定模块并打包 Linux AppImage。随包 Core 和沙箱辅助程序与构建输出一致。本机 stdio 模式已验证 Plan、附件发送和带附件分叉，另用旧版 Core 验证基础聊天和扩展入口的能力协商。
+
+360px Chromium 页面和 Electron 紧凑窗口均通过会话分页、归档正文搜索、切换和新建、Esc 关闭、焦点返回与深色主题检查。Web 上还验证了列表过期时在抽屉内显示错误，以及抽屉打开时对话继续执行。Electron 重新载入后能恢复紧凑窗口状态并返回宽屏侧栏。Windows 安装包验收挂起。

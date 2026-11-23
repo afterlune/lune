@@ -23,9 +23,19 @@ contextBridge.exposeInMainWorld('luneDesktop', {
   saveMarkdown: (markdown: string): Promise<void> => ipcRenderer.invoke('desktop:save-markdown', markdown),
   captureScreenshot: () => ipcRenderer.invoke('desktop:screenshot'),
   onQuickMode: (listener: (quick: boolean) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean) => listener(enabled)
+    let needsSnapshot = true
+    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean) => {
+      needsSnapshot = false
+      listener(enabled)
+    }
     ipcRenderer.on('desktop:quick-mode', handler)
-    return () => ipcRenderer.removeListener('desktop:quick-mode', handler)
+    void ipcRenderer.invoke('desktop:quick-mode').then((enabled: boolean) => {
+      if (needsSnapshot) listener(enabled)
+    }).catch(() => undefined)
+    return () => {
+      needsSnapshot = false
+      ipcRenderer.removeListener('desktop:quick-mode', handler)
+    }
   },
   selectWorkspace: (): Promise<string | null> => ipcRenderer.invoke('desktop:select-workspace'),
   connect: (options: DesktopConnectionOptions): Promise<unknown> => ipcRenderer.invoke('runtime:connect', options),

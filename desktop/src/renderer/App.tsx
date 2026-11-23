@@ -206,6 +206,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const [showArchived, setShowArchived] = useState(false)
   const [sessionOffset, setSessionOffset] = useState(0)
   const [moreSessions, setMoreSessions] = useState(false)
+  const [listLoading, setListLoading] = useState(false)
   const [listRevision, setListRevision] = useState(0)
   const [capabilities, setCapabilities] = useState<string[]>([])
   const [record, setRecord] = useState<ToolRecord[]>([])
@@ -213,6 +214,9 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [info, setInfo] = useState('')
   const [quick, setQuick] = useState(false)
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 680px)').matches)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const compactLayout = narrow || quick
   const [shortcut, setShortcut] = useState('CommandOrControl+Shift+Space')
   const [sessionDialog, setSessionDialog] = useState<null | {
     kind: 'rename' | 'delete' | 'rewind'; value: string; digest?: string; removed?: number; excerpts?: string[]
@@ -238,6 +242,16 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const sessionRefreshSequence = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const drawerRef = useRef<HTMLDialogElement>(null)
+  const drawerButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const viewport = window.matchMedia('(max-width: 680px)')
+    const update = () => setNarrow(viewport.matches)
+    viewport.addEventListener('change', update)
+    update()
+    return () => viewport.removeEventListener('change', update)
+  }, [])
 
   const has = (feature: string) => capabilities.includes(feature)
   const serverSearch = has('session.search')
@@ -262,6 +276,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
 
   useEffect(() => {
     if (!client) return
+    setListLoading(true)
     let cancelled = false
     const timer = window.setTimeout(() => {
       void listSessions(client, 0, search.trim(), showArchived).then((page) => {
@@ -270,6 +285,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
         setSessionOffset(page.length)
         setMoreSessions(page.length === sessionPageSize)
       }).catch((error) => { if (!cancelled) setActionError(errorMessage(error)) })
+        .finally(() => { if (!cancelled) setListLoading(false) })
     }, search.trim() && serverSearch ? 250 : 0)
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [client, listSessions, search, showArchived, listRevision, serverSearch])
@@ -556,12 +572,29 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     setBusy(false)
   }
 
+  function openDrawer() {
+    const drawer = drawerRef.current
+    if (!drawer || drawer.open) return
+    setActionError('')
+    drawer.showModal()
+    setDrawerOpen(true)
+  }
+
+  function closeDrawer() {
+    drawerRef.current?.close()
+  }
+
+  useEffect(() => {
+    if (!compactLayout || !client || showConnection) setDrawerOpen(false)
+  }, [compactLayout, client, showConnection])
+
   const createSession = async () => {
     if (!client || working) return
     setWorking(true)
     setActionError('')
     try {
       const created = await client.request<SessionSummary>('session.create')
+      if (clientRef.current !== client) return
       setSearch('')
       setSessions((items) => [created, ...items])
       setActiveSessionId(created.id)
@@ -570,6 +603,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       setOptimistic([])
       setActivity([])
       setStreamingText('')
+      closeDrawer()
     } catch (error) { setActionError(errorMessage(error)) }
     finally { setWorking(false) }
   }
@@ -674,13 +708,31 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     finally { setWorking(false) }
   }
 
-  const loadMoreSessions = () => void sessionAction(async () => {
-    if (!client) return
-    const page = await listSessions(client, sessionOffset, search.trim(), showArchived)
-    setSessions((items) => [...items, ...page.filter((item) => !items.some((old) => old.id === item.id))])
-    setSessionOffset(sessionOffset + page.length)
-    setMoreSessions(page.length === sessionPageSize)
-  })
+  const chooseSession = (id: string) => {
+    if (!client || working) return
+    if (!drawerRef.current?.open || id === activeSessionId) {
+      setActiveSessionId(id)
+      closeDrawer()
+      return
+    }
+    void sessionAction(async () => {
+      await client.request('session.get', { sessionId: id })
+      if (clientRef.current !== client) return
+      setActiveSessionId(id)
+      closeDrawer()
+    })
+  }
+
+  const loadMoreSessions = () => {
+    if (!client || working || listLoading) return
+    void sessionAction(async () => {
+      const page = await listSessions(client, sessionOffset, search.trim(), showArchived)
+      if (clientRef.current !== client) return
+      setSessions((items) => [...items, ...page.filter((item) => !items.some((old) => old.id === item.id))])
+      setSessionOffset(sessionOffset + page.length)
+      setMoreSessions(page.length === sessionPageSize)
+    })
+  }
 
   const changeArchived = () => void sessionAction(async () => {
     if (!client || !activeSession) return
@@ -849,35 +901,53 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
     )
   }
 
+  const sessionNavigation = <>
+    <button className="new-chat-button" disabled={working} onClick={() => void createSession()}><Plus size={16} /> New conversation</button>
+    <div className="sidebar-section-head">{!compactLayout && <span>CONVERSATIONS</span>}<button className="subtle-icon" title="Refresh sessions" aria-label="Refresh sessions" disabled={working || listLoading} onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button></div>
+    <div className="session-search"><Search size={14} /><input aria-label="Search conversations" value={search} disabled={working} onChange={(event) => setSearch(event.target.value)} placeholder={serverSearch ? 'Search titles and messages' : 'Find a conversation'} /></div>
+    <label className="archived-toggle"><input type="checkbox" checked={showArchived} disabled={working} onChange={(event) => setShowArchived(event.target.checked)} /> Include archived</label>
+    <div className="session-list" aria-busy={listLoading}>
+      {filteredSessions.map((session) => {
+        const preview = session.title || `Conversation ${session.id.slice(0, 8)}`
+        return <button key={session.id} className={`session-item ${session.id === activeSessionId ? 'selected' : ''}`} disabled={working} aria-current={session.id === activeSessionId ? 'true' : undefined} onClick={() => chooseSession(session.id)}>
+          <MessageSquare size={15} /><span>{preview}{session.archived ? ' (archived)' : ''}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+        </button>
+      })}
+      {moreSessions && <button className="plain-button" disabled={working || listLoading} onClick={loadMoreSessions}>Load more</button>}
+      {!filteredSessions.length && <div className="empty-sessions">{listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.'}</div>}
+    </div>
+    {drawerOpen && actionError && <div className="action-error" role="alert">{actionError}</div>}
+    <div className="sidebar-bottom">
+      <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
+      <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} /> Connection settings <ChevronDown size={14} /></button>
+      {desktop && <button className="settings-button" onClick={() => void window.luneDesktop?.toggleQuick()}><Command size={16} /> Quick window</button>}
+      <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} /> Disconnect</button>
+    </div>
+  </>
+
   return (
     <div className={`app-shell${quick ? ' quick-mode' : ''}`}>
-      <aside className="sidebar">
-        <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={16} /></div><span>Lune</span><button className="icon-button sidebar-compose" title="New conversation" onClick={() => void createSession()}><SquarePen size={17} /></button></div>
-        <button className="new-chat-button" onClick={() => void createSession()}><Plus size={16} /> New conversation</button>
-        <div className="sidebar-section-head"><span>CONVERSATIONS</span><button className="subtle-icon" title="Refresh sessions" onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button></div>
-        <div className="session-search"><Search size={14} /><input aria-label="Search conversations" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={serverSearch ? 'Search titles and messages' : 'Find a conversation'} /></div>
-        <label className="archived-toggle"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Include archived</label>
-        <div className="session-list">
-          {filteredSessions.map((session) => {
-            const preview = session.title || `Conversation ${session.id.slice(0, 8)}`
-            return <button key={session.id} className={`session-item ${session.id === activeSessionId ? 'selected' : ''}`} disabled={working} onClick={() => setActiveSessionId(session.id)}>
-              <MessageSquare size={15} /><span>{preview}{session.archived ? ' (archived)' : ''}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-            </button>
-          })}
-          {moreSessions && <button className="plain-button" disabled={working} onClick={loadMoreSessions}>Load more</button>}
-          {!filteredSessions.length && <div className="empty-sessions">No conversations yet.<br />Start one when you're ready.</div>}
+      {compactLayout ? <dialog id="session-drawer" className="session-drawer" aria-labelledby="session-drawer-title" ref={drawerRef}
+        onClose={() => {
+          if (drawerRef.current?.open) return
+          setDrawerOpen(false)
+          drawerButtonRef.current?.focus()
+        }}
+        onClick={(event) => { if (event.target === event.currentTarget) closeDrawer() }}>
+        <div className="drawer-panel">
+          <div className="drawer-heading"><h2 id="session-drawer-title">Conversations</h2><button type="button" className="icon-button" aria-label="Close conversations" onClick={closeDrawer}><X size={18} /></button></div>
+          {sessionNavigation}
         </div>
-        <div className="sidebar-bottom">
-          <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
-          <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} /> Connection settings <ChevronDown size={14} /></button>
-          {desktop && <button className="settings-button" onClick={() => void window.luneDesktop?.toggleQuick()}><Command size={16} /> Quick window</button>}
-          <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} /> Disconnect</button>
-        </div>
-      </aside>
+      </dialog> : <aside className="sidebar" aria-label="Conversations">
+        <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={16} /></div><span>Lune</span><button className="icon-button sidebar-compose" title="New conversation" disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button></div>
+        {sessionNavigation}
+      </aside>}
 
       <main className="chat-area">
         <header className="chat-header">
-          <div className="header-title"><div className="mobile-brand"><div className="brand-mark small"><Sparkles size={16} /></div>Lune</div><span>{activeSession ? describeSession(activeSession, history) : 'Loading conversation…'}</span></div>
+          <div className="header-title">
+            {compactLayout && <button type="button" className="icon-button drawer-toggle" title="Conversations" aria-label="Open conversations" aria-haspopup="dialog" aria-controls="session-drawer" aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><MessageSquare size={17} /></button>}
+            <span>{activeSession ? describeSession(activeSession, history) : 'Loading conversation…'}</span></div>
           <div className="header-actions">
             <ThemePicker value={theme} onChange={setTheme} />
             {quick && <button className="plain-button" onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
@@ -953,7 +1023,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
 
         <div className="composer-wrap">
           {info && <div className="form-status" role="status">{info}</div>}
-          {actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label="Dismiss"><X size={14} /></button></div>}
+          {!drawerOpen && actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label="Dismiss"><X size={14} /></button></div>}
           {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.'}</div>}
           <div className="composer" onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }} onDrop={(event) => {
             if (!has('turn.attachments')) return
