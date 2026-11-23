@@ -6,6 +6,7 @@ import {
   Radio, RefreshCw, Search, Settings2, ShieldAlert, Sparkles, SquarePen, Wifi,
   WifiOff, X,
 } from 'lucide-react'
+import { downloadMarkdown, readAttachment, validateAttachments, type Attachment } from './attachments'
 import { connectRuntime, type RuntimeClient, type RuntimeConnection } from './runtime'
 
 type JsonObject = Record<string, unknown>
@@ -14,10 +15,11 @@ type SessionSummary = {
   title: string
   archived: boolean
   updatedAt: string
+  sessionUsage?: { input: number; output: number; estimated_input?: number }
   settings: { modelProfile: string; reasoningEffort?: string }
 }
-type ModelOption = { profile: string; provider: string; model: string; displayName?: string }
-type TaskState = { status: string; executionId?: string; taskId?: string; goal?: string }
+type ModelOption = { profile: string; provider: string; model: string; displayName?: string; contextWindow?: number; supportsInputImages?: boolean }
+type TaskState = { status: string; contextWindow?: number; executionId?: string; taskId?: string; goal?: string }
 type RuntimeState = { task: TaskState; queue: Array<{ queueId: string; executionId: string; position: number; status: string }> }
 type Pending = {
   kind: string
@@ -31,8 +33,8 @@ type Pending = {
   modelRecovery?: unknown
   blocker?: { id: string; tool: string; reason: string }
 }
-type HistoryMessage = { id: string; role: 'user' | 'assistant'; text: string }
-type OptimisticMessage = HistoryMessage & { baselineCount: number; sessionId: string }
+type HistoryMessage = { id: string; role: 'user' | 'assistant'; text: string; attachments?: Array<{ name: string; image?: string; text?: string }> }
+type OptimisticMessage = HistoryMessage & { baselineCount: number; sessionId: string; executionId?: string }
 type RuntimeEvent = {
   kind: string
   cursor?: number
@@ -45,6 +47,57 @@ type RuntimeEvent = {
   agentName?: string
 }
 type Activity = { id: string; label: string; detail?: string; failed?: boolean }
+type ToolRecord = { name: string; arguments: string; output?: string }
+const sessionPageSize = 50
+
+function historyItems(history: unknown): unknown[] {
+  return Array.isArray(history) ? history : Array.isArray(object(history).items) ? object(history).items as unknown[] : []
+}
+
+function toolRecords(history: unknown): ToolRecord[] {
+  const records: ToolRecord[] = []
+  const byCall = new Map<string, ToolRecord>()
+  for (const raw of historyItems(history)) {
+    const item = object(raw)
+    if (typeof item.call_id !== 'string') continue
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      const args = item.arguments ?? item.input
+      const record = { name: String(item.name ?? 'Tool'), arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}, null, 2) }
+      byCall.set(item.call_id, record)
+      records.push(record)
+    } else if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
+      const record = byCall.get(item.call_id)
+      if (record) record.output = contentText(item.output) || (typeof item.output === 'string' ? item.output : '[non-text output]')
+    }
+  }
+  return records
+}
+
+function safeImageURL(value: unknown): string | undefined {
+  return typeof value === 'string' && /^data:image\/(png|jpeg);base64,[a-zA-Z0-9+/=]+$/.test(value) ? value : undefined
+}
+
+async function loadHistory(client: RuntimeClient, sessionId: string, paged: boolean): Promise<unknown> {
+  if (!paged) return client.request('session.history', { sessionId })
+  for (let attempt = 0; ; attempt++) {
+    const items: unknown[] = []
+    let offset = 0
+    let digest = ''
+    try {
+      for (;;) {
+        const page = await client.request<{ items: unknown[] | null; nextOffset: number; digest: string; done: boolean }>('session.historyPage', { sessionId, offset, digest })
+        items.push(...(page.items ?? []))
+        if (page.done) return items
+        if (page.nextOffset <= offset) throw new Error('Core returned an invalid history page.')
+        offset = page.nextOffset
+        digest = page.digest
+      }
+    } catch (error) {
+      if (attempt >= 2 || !errorMessage(error).includes('history changed while loading')) throw error
+    }
+  }
+}
+
 
 const emptyRuntime: RuntimeState = { task: { status: 'idle' }, queue: [] }
 
@@ -76,13 +129,28 @@ function contentText(value: unknown): string {
 }
 
 function historyMessages(history: unknown): HistoryMessage[] {
-  const items = Array.isArray(history) ? history : Array.isArray(object(history).items) ? object(history).items as unknown[] : []
-  return items.flatMap((raw, index) => {
+  return historyItems(history).flatMap((raw, index) => {
     const item = object(raw)
     if (item.type !== 'message' || (item.role !== 'user' && item.role !== 'assistant')) return []
-    const text = contentText(item.content ?? item.parts)
-    if (!text.trim()) return []
-    return [{ id: `${index}-${String(item.role)}`, role: item.role, text }]
+    const parts = item.content ?? item.parts
+    const attachments: NonNullable<HistoryMessage['attachments']> = []
+    const textParts: unknown[] = []
+    if (Array.isArray(parts)) for (const rawPart of parts) {
+      const part = object(rawPart)
+      const match = typeof part.text === 'string' && /^Attachment: ("(?:[^"\\]|\\.)*")(?:\n([\s\S]*))?$/.exec(part.text)
+      if (match && item.role === 'user') {
+        try { attachments.push({ name: JSON.parse(match[1]) as string, text: match[2] }); continue } catch { /* ordinary message */ }
+      }
+      const image = part.type === 'input_image' ? safeImageURL(part.image_url) : undefined
+      if (image) {
+        const last = attachments.at(-1)
+        if (last && last.text === undefined && !last.image) last.image = image
+        else attachments.push({ name: 'Image', image })
+      } else textParts.push(rawPart)
+    }
+    const text = contentText(Array.isArray(parts) ? textParts : parts)
+    if (!text.trim() && !attachments.length) return []
+    return [{ id: `${index}-${String(item.role)}`, role: item.role, text, attachments }]
   })
 }
 
@@ -99,6 +167,10 @@ function writeCursor(key: string, value: number): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function messageIdentity(message: HistoryMessage): string {
+  return JSON.stringify([message.text, message.attachments?.map((item) => item.name) ?? []])
 }
 
 function describeSession(session: SessionSummary, messages: HistoryMessage[]): string {
@@ -128,10 +200,26 @@ export default function App() {
   const [activity, setActivity] = useState<Activity[]>([])
   const [draft, setDraft] = useState('')
   const [search, setSearch] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
+  const [sessionOffset, setSessionOffset] = useState(0)
+  const [moreSessions, setMoreSessions] = useState(false)
+  const [listRevision, setListRevision] = useState(0)
+  const [capabilities, setCapabilities] = useState<string[]>([])
+  const [record, setRecord] = useState<ToolRecord[]>([])
+  const [planMode, setPlanMode] = useState(false)
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [info, setInfo] = useState('')
+  const [quick, setQuick] = useState(false)
+  const [shortcut, setShortcut] = useState('CommandOrControl+Shift+Space')
+  const [sessionDialog, setSessionDialog] = useState<null | {
+    kind: 'rename' | 'delete' | 'rewind'; value: string; digest?: string; removed?: number; excerpts?: string[]
+  }>(null)
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
   const [actionError, setActionError] = useState('')
 
+  const capabilitiesRef = useRef<string[]>([])
+  const submissionRetry = useRef<{ key: string; id: string; mode: string } | null>(null)
   const clientRef = useRef<RuntimeClient | null>(null)
   const connectionRef = useRef<RuntimeConnection | null>(null)
   const autoReconnect = useRef(false)
@@ -143,17 +231,52 @@ export default function App() {
   const eventHandler = useRef<(event: RuntimeEvent) => void>(() => {})
   const initializedClient = useRef<RuntimeClient | null>(null)
   const activeSessionIdRef = useRef(activeSessionId)
+  const streamingExecution = useRef<string | undefined>(undefined)
+  const sessionRefreshSequence = useRef(0)
+  const fileInput = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
+  const has = (feature: string) => capabilities.includes(feature)
+  const serverSearch = has('session.search')
   const filteredSessions = useMemo(() => {
     const term = search.trim().toLowerCase()
-    return sessions.filter((session) => !session.archived && (!term || (session.title || '').toLowerCase().includes(term) || session.id.toLowerCase().includes(term)))
-  }, [sessions, search])
+    return sessions.filter((session) => (showArchived || !session.archived) && (serverSearch || !term || (session.title || '').toLowerCase().includes(term) || session.id.toLowerCase().includes(term)))
+  }, [sessions, search, showArchived, serverSearch])
   const displayedMessages = useMemo(() => [...history, ...optimistic.filter((message) => message.sessionId === activeSessionId)], [history, optimistic, activeSessionId])
   const selectedModel = activeSession?.settings.modelProfile || models[0]?.profile || ''
   const taskIsRunning = runtime.task.status === 'running'
   const taskIsQueued = runtime.task.status === 'queued'
   const taskIsPaused = runtime.task.status === 'paused'
+  const sessionBusy = taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0
+  const modelOption = models.find((option) => option.profile === selectedModel)
+  const contextLimit = runtime.task.contextWindow || modelOption?.contextWindow
+
+  const listSessions = useCallback((target: RuntimeClient, offset: number, term: string, archived: boolean) =>
+    target.request<SessionSummary[]>(serverSearch && term ? 'session.search' : 'session.list', {
+      offset, limit: sessionPageSize, includeArchived: archived,
+      ...(serverSearch && term ? { query: term } : {}),
+    }), [serverSearch])
+
+  useEffect(() => {
+    if (!client) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void listSessions(client, 0, search.trim(), showArchived).then((page) => {
+        if (cancelled) return
+        setSessions(page)
+        setSessionOffset(page.length)
+        setMoreSessions(page.length === sessionPageSize)
+      }).catch((error) => { if (!cancelled) setActionError(errorMessage(error)) })
+    }, search.trim() && serverSearch ? 250 : 0)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [client, listSessions, search, showArchived, listRevision, serverSearch])
+
+  useEffect(() => {
+    const desktopAPI = window.luneDesktop
+    if (!desktopAPI) return
+    void desktopAPI.shortcut().then(setShortcut).catch((error) => setConnectionError(errorMessage(error)))
+    return desktopAPI.onQuickMode(setQuick)
+  }, [])
 
   const scheduleReconnect = useCallback(() => {
     if (!autoReconnect.current || !connectionRef.current) return
@@ -185,7 +308,7 @@ export default function App() {
         await previousClient.close().catch(() => undefined)
       }
       candidate = await connectRuntime(options, retry)
-      const hello = await candidate.request<{ protocolVersion?: string }>('runtime.hello', {
+      const hello = await candidate.request<{ protocolVersion?: string; capabilities?: string[] }>('runtime.hello', {
         clientName: desktop ? 'Lune Desktop' : 'Lune Web',
         clientVersion: '0.1.0',
       })
@@ -194,6 +317,8 @@ export default function App() {
         await candidate.close()
         return
       }
+      capabilitiesRef.current = hello.capabilities ?? []
+      setCapabilities(capabilitiesRef.current)
       clientRef.current = candidate
       const savedOptions = desktop && options.mode === 'remote' ? { ...options, token: '' } : options
       connectionRef.current = savedOptions
@@ -232,6 +357,9 @@ export default function App() {
     setActiveSession(null)
     setActiveSessionId('')
     setHistory([])
+    setRecord([])
+    setAttachments([])
+    submissionRetry.current = null
     setPending([])
     setRuntime(emptyRuntime)
     setStreamingText('')
@@ -259,24 +387,31 @@ export default function App() {
   }, [client, scheduleReconnect])
 
   const refreshSessionData = useCallback(async (targetClient: RuntimeClient, sessionId: string) => {
+    const sequence = ++sessionRefreshSequence.current
     const [summary, rawHistory, nextRuntime, nextPending] = await Promise.all([
       targetClient.request<SessionSummary>('session.get', { sessionId }),
-      targetClient.request<unknown>('session.history', { sessionId }),
+      loadHistory(targetClient, sessionId, capabilitiesRef.current.includes('session.historyPage')),
       targetClient.request<RuntimeState>('runtime.state', { sessionId }),
       targetClient.request<Pending[]>('runtime.pending', { sessionId }),
     ])
+    if (clientRef.current !== targetClient || activeSessionIdRef.current !== sessionId || sequence !== sessionRefreshSequence.current) return
     const messages = historyMessages(rawHistory)
+    setRecord(toolRecords(rawHistory))
     setActiveSession(summary)
     setHistory(messages)
     setOptimistic((items) => {
       const counts = new Map<string, number>()
-      for (const message of messages) counts.set(message.text, (counts.get(message.text) ?? 0) + 1)
+      for (const message of messages) if (message.role === 'user') {
+        const identity = messageIdentity(message)
+        counts.set(identity, (counts.get(identity) ?? 0) + 1)
+      }
       const seen = new Map<string, number>()
       return items.filter((item) => {
         if (item.sessionId !== sessionId) return true
-        const count = counts.get(item.text) ?? 0
-        const alreadySeen = seen.get(item.text) ?? 0
-        seen.set(item.text, alreadySeen + 1)
+        const identity = messageIdentity(item)
+        const count = counts.get(identity) ?? 0
+        const alreadySeen = seen.get(identity) ?? 0
+        seen.set(identity, alreadySeen + 1)
         return count <= item.baselineCount + alreadySeen
       })
     })
@@ -290,6 +425,7 @@ export default function App() {
       targetClient.request<RuntimeState>('runtime.state', { sessionId }),
       targetClient.request<Pending[]>('runtime.pending', { sessionId }),
     ])
+    if (clientRef.current !== targetClient || activeSessionIdRef.current !== sessionId) return
     setRuntime(normalizeRuntimeState(nextRuntime))
     setPending(nextPending ?? [])
   }, [])
@@ -299,13 +435,15 @@ export default function App() {
     initializedClient.current = client
     let cancelled = false
     void Promise.all([
-      client.request<SessionSummary[]>('session.list', { limit: 100, includeArchived: false }),
+      client.request<SessionSummary[]>('session.list', { limit: sessionPageSize, includeArchived: false }),
       client.request<ModelOption[]>('model.list'),
     ]).then(async ([nextSessions, nextModels]) => {
       if (cancelled) return
       setSessions(nextSessions ?? [])
       setModels(nextModels ?? [])
-      const existing = nextSessions?.find((item) => item.id === activeSessionIdRef.current) ?? nextSessions?.[0]
+      const previousID = activeSessionIdRef.current
+      const existing = (previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]
+      if (cancelled) return
       if (existing) setActiveSessionId(existing.id)
       else {
         const created = await client.request<SessionSummary>('session.create')
@@ -329,6 +467,8 @@ export default function App() {
     const sessionId = activeSessionId
     setActiveSession(null)
     setHistory([])
+    setRecord([])
+    streamingExecution.current = undefined
     setPending([])
     setRuntime(emptyRuntime)
     setStreamingText('')
@@ -340,17 +480,26 @@ export default function App() {
     eventHandler.current = (event) => {
       if (event.cursor && event.cursor > readCursor(cursorKeyRef.current)) writeCursor(cursorKeyRef.current, event.cursor)
       if (event.kind === 'task_started') {
+        streamingExecution.current = event.executionId
         setStreamingText('')
         setRuntime((state) => ({ ...state, task: { ...state.task, status: 'running', executionId: event.executionId } }))
         setActivity((items) => [{ id: `${event.taskId}-started`, label: 'Working on your request', detail: event.executionId }, ...items].slice(0, 5))
       } else if (event.kind === 'task_finished' || event.kind === 'task_discarded') {
-        setStreamingText('')
+        if (!event.taskId && event.status === 'cancelled' && event.executionId) {
+          setOptimistic((items) => items.filter((item) => item.executionId !== event.executionId))
+        }
+        if (event.executionId === streamingExecution.current) {
+          streamingExecution.current = undefined
+          setStreamingText('')
+        }
         setActivity((items) => [{
           id: `${event.executionId}-${event.kind}`,
           label: event.kind === 'task_discarded' ? 'Run discarded' : `Run ${event.status ?? 'finished'}`,
           detail: event.error,
           failed: ['failed', 'cancelled'].includes(event.status ?? ''),
         }, ...items].slice(0, 5))
+        void refreshAll()
+      } else if (event.kind === 'context_compaction') {
         void refreshAll()
       } else if (event.kind === 'task_queued') {
         void refreshLiveState()
@@ -375,8 +524,8 @@ export default function App() {
       if (cancelled) return
       subscriptionId = crypto.randomUUID()
       const cursor = readCursor(cursorKeyRef.current)
+      subscriptionRef.current = subscriptionId
       await targetClient.request('runtime.subscribe', { sessionId, subscriptionId, afterCursor: cursor })
-      if (!cancelled) subscriptionRef.current = subscriptionId
     }).catch((error: unknown) => {
       if (!cancelled) setActionError(errorMessage(error))
     })
@@ -405,28 +554,48 @@ export default function App() {
   }
 
   const createSession = async () => {
-    if (!client) return
+    if (!client || working) return
+    setWorking(true)
     setActionError('')
     try {
       const created = await client.request<SessionSummary>('session.create')
+      setSearch('')
       setSessions((items) => [created, ...items])
       setActiveSessionId(created.id)
+      setListRevision((revision) => revision + 1)
       setHistory([])
       setOptimistic([])
       setActivity([])
       setStreamingText('')
     } catch (error) { setActionError(errorMessage(error)) }
+    finally { setWorking(false) }
   }
 
-  const sendMessage = async () => {
+  const sendMessage = async (steer = false) => {
     const text = draft.trim()
-    if (!client || !activeSessionId || !text || working) return
+    if (!client || activeSession?.id !== activeSessionId || !activeSessionId || (!text && !attachments.length) || working || connectionStatus !== 'connected') return
+    if (attachments.length && !has('turn.attachments')) {
+      setActionError('This Core does not support attachments. Remove them or connect to an updated Core.')
+      return
+    }
+    try { validateAttachments(attachments, Boolean(modelOption?.supportsInputImages)) } catch (error) { setActionError(errorMessage(error)); return }
+    const plan = has('turn.plan') && planMode && !steer
+    const requestedMode = steer ? 'steer_input' : taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0 ? 'queue_input' : 'start_if_idle'
+    const key = JSON.stringify([activeSessionId, text, attachments, plan, steer])
+    const existing = submissionRetry.current
+    const canRetry = existing?.key === key
+    const submissionId = canRetry ? existing.id : crypto.randomUUID()
+    const submissionMode = canRetry ? existing.mode : requestedMode
+    submissionRetry.current = { key, id: submissionId, mode: submissionMode }
     setWorking(true)
     setActionError('')
     setDraft('')
-    const baselineCount = history.filter((message) => message.text === text).length
-    const submissionId = crypto.randomUUID()
-    setOptimistic((items) => [...items, { id: submissionId, role: 'user', text, baselineCount, sessionId: activeSessionId }])
+    const attachmentNames = attachments.map((item) => item.name)
+    const identity = JSON.stringify([text, attachmentNames])
+    const baselineCount = history.filter((message) => message.role === 'user' && messageIdentity(message) === identity).length
+    setOptimistic((items) => [...items, { id: submissionId, role: 'user', text, baselineCount, sessionId: activeSessionId,
+      attachments: attachments.map(({ name, mediaType, data }) => ({ name, image: mediaType.startsWith('image/') ? `data:${mediaType};base64,${data}` : undefined })),
+    }])
     try {
       if (activeSession && !activeSession.title && !history.some((message) => message.role === 'user')) {
         const title = Array.from(text.replace(/\s+/g, ' ').trim()).slice(0, 64).join('')
@@ -438,12 +607,18 @@ export default function App() {
           } catch { /* session titles are cosmetic; do not block a turn */ }
         }
       }
-      const mode = taskIsRunning || runtime.queue.length > 0 ? 'queue_input' : 'start_if_idle'
-      await client.request('turn.submit', { sessionId: activeSessionId, submissionId, input: text, mode })
-      await refreshRuntime(client, activeSessionId)
+      const submitted = await client.request<{ executionId: string }>('turn.submit', { sessionId: activeSessionId, submissionId, input: text, mode: submissionMode,
+        ...(plan ? { planMode: true } : {}),
+        ...(attachments.length ? { attachments: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
+      })
+      setOptimistic((items) => items.map((item) => item.id === submissionId ? { ...item, executionId: submitted.executionId } : item))
+      submissionRetry.current = null
+      setAttachments([])
+      void refreshRuntime(client, activeSessionId).catch((error) => setActionError(errorMessage(error)))
     } catch (error) {
       setOptimistic((items) => items.filter((item) => item.id !== submissionId))
       setDraft(text)
+      if (/session_busy|task_paused/.test(errorMessage(error))) submissionRetry.current = null
       setActionError(errorMessage(error))
     } finally { setWorking(false) }
   }
@@ -478,13 +653,123 @@ export default function App() {
     finally { setWorking(false) }
   }
 
-  const changeModel = async (profile: string) => {
+  const changeModel = async (profile: string) => changeSettings({ modelProfile: profile })
+  const changeSettings = async (settings: Partial<SessionSummary['settings']>) => {
     if (!client || !activeSessionId || !activeSession) return
     try {
-      await client.request('session.setSettings', { sessionId: activeSessionId, settings: { ...activeSession.settings, modelProfile: profile } })
+      await client.request('session.setSettings', { sessionId: activeSessionId, settings: { ...activeSession.settings, ...settings } })
       await refreshSessionData(client, activeSessionId)
     } catch (error) { setActionError(errorMessage(error)) }
   }
+
+  const sessionAction = async (action: () => Promise<void>) => {
+    setWorking(true)
+    setInfo('')
+    setActionError('')
+    try { await action() }
+    catch (error) { setActionError(errorMessage(error)) }
+    finally { setWorking(false) }
+  }
+
+  const loadMoreSessions = () => void sessionAction(async () => {
+    if (!client) return
+    const page = await listSessions(client, sessionOffset, search.trim(), showArchived)
+    setSessions((items) => [...items, ...page.filter((item) => !items.some((old) => old.id === item.id))])
+    setSessionOffset(sessionOffset + page.length)
+    setMoreSessions(page.length === sessionPageSize)
+  })
+
+  const changeArchived = () => void sessionAction(async () => {
+    if (!client || !activeSession) return
+    await client.request('session.setArchived', { sessionId: activeSessionId, archived: !activeSession.archived })
+    await refreshSessionData(client, activeSessionId)
+    setListRevision((revision) => revision + 1)
+  })
+
+  const forkSession = () => void sessionAction(async () => {
+    if (!client) return
+    const forked = await client.request<SessionSummary>('session.fork', { sessionId: activeSessionId })
+    setSearch('')
+    setActiveSessionId(forked.id)
+    setListRevision((revision) => revision + 1)
+  })
+
+  const compactSession = () => void sessionAction(async () => {
+    if (!client) return
+    setInfo('Compacting context…')
+    try {
+      const result = await client.request<{ compacted: boolean; backend?: string }>('session.compact', { sessionId: activeSessionId })
+      setInfo(result.compacted ? (result.backend ? `Context compacted (${result.backend}).` : 'Context compacted.') : 'Context is already within its budget.')
+      await refreshSessionData(client, activeSessionId)
+    } catch (error) { setInfo(''); throw error }
+  })
+
+  const cancelQueued = (executionId: string) => void sessionAction(async () => {
+    if (!client) return
+    try {
+      await client.request('turn.cancelQueued', { sessionId: activeSessionId, executionId })
+      setOptimistic((items) => items.filter((item) => item.executionId !== executionId))
+    }
+    finally { await refreshRuntime(client, activeSessionId) }
+  })
+
+  const saveConversation = () => void sessionAction(async () => {
+    if (!client || !activeSession) return
+    const title = describeSession(activeSession, history)
+    const markdown = [`# ${title}`, ...history.map((message) =>
+      [`## ${message.role === 'user' ? 'You' : 'Lune'}`, message.text,
+        ...(message.attachments ?? []).map((file) => file.image ? `![Attachment](${file.image})` : `### ${file.name}\n\n${file.text ?? ''}`)].join('\n\n'),
+    )].join('\n\n')
+    if (window.luneDesktop) await window.luneDesktop.saveMarkdown(markdown)
+    else downloadMarkdown(markdown)
+  })
+
+  const confirmSessionDialog = () => void sessionAction(async () => {
+    if (!client || !sessionDialog) return
+    const { kind, value, digest } = sessionDialog
+    if (kind === 'rename') {
+      await client.request('session.setTitle', { sessionId: activeSessionId, title: value })
+    } else if (kind === 'delete') {
+      await client.request('session.delete', { sessionId: activeSessionId })
+      const next = (await client.request<SessionSummary[]>('session.list', { limit: 1 }))[0]
+      const selected = next ?? await client.request<SessionSummary>('session.create')
+      setActiveSessionId(selected.id)
+    } else if (!digest) {
+      const turns = Number(value)
+      if (!Number.isSafeInteger(turns) || turns < 1) throw new Error('Enter a positive number of turns.')
+      const preview = await client.request<{ removed: number; digest: string; excerpts: string[] | null }>('session.rewindPreview', { sessionId: activeSessionId, turns })
+      setSessionDialog({ ...sessionDialog, ...preview, excerpts: preview.excerpts ?? [] })
+      return
+    } else {
+      try {
+        await client.request('session.rewind', { sessionId: activeSessionId, turns: Number(value), digest })
+      } catch (error) {
+        setSessionDialog({ kind: 'rewind', value })
+        throw error
+      }
+      setInfo(`Removed ${sessionDialog.removed} turn(s) from this conversation.`)
+    }
+    setSessionDialog(null)
+    setListRevision((revision) => revision + 1)
+    if (kind !== 'delete') await refreshSessionData(client, activeSessionId)
+  })
+
+  const addFiles = (files: File[]) => void sessionAction(async () => {
+    if (!files.length) return
+    if (files.length + attachments.length > 5) throw new Error('Attach up to five files.')
+    const next = [...attachments, ...await Promise.all(files.map(readAttachment))]
+    validateAttachments(next, Boolean(modelOption?.supportsInputImages))
+    setAttachments(next)
+  })
+
+  const captureScreenshot = () => void sessionAction(async () => {
+    if (!window.luneDesktop) return
+    const screenshot = await window.luneDesktop.captureScreenshot()
+    if (!screenshot) return
+    const next = [...attachments, screenshot]
+    validateAttachments(next, Boolean(modelOption?.supportsInputImages))
+    setAttachments(next)
+  })
 
   const resolvePending = async (method: string, params: unknown) => {
     if (!client) return
@@ -561,24 +846,27 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${quick ? ' quick-mode' : ''}`}>
       <aside className="sidebar">
         <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={16} /></div><span>Lune</span><button className="icon-button sidebar-compose" title="New conversation" onClick={() => void createSession()}><SquarePen size={17} /></button></div>
         <button className="new-chat-button" onClick={() => void createSession()}><Plus size={16} /> New conversation</button>
-        <div className="sidebar-section-head"><span>RECENT</span><button className="subtle-icon" title="Refresh sessions" onClick={() => client.request<SessionSummary[]>('session.list', { limit: 100 }).then(setSessions).catch((error) => setActionError(errorMessage(error)))}><RefreshCw size={13} /></button></div>
-        <div className="session-search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find a conversation" /></div>
+        <div className="sidebar-section-head"><span>CONVERSATIONS</span><button className="subtle-icon" title="Refresh sessions" onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button></div>
+        <div className="session-search"><Search size={14} /><input aria-label="Search conversations" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={serverSearch ? 'Search titles and messages' : 'Find a conversation'} /></div>
+        <label className="archived-toggle"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> Include archived</label>
         <div className="session-list">
           {filteredSessions.map((session) => {
             const preview = session.title || `Conversation ${session.id.slice(0, 8)}`
-            return <button key={session.id} className={`session-item ${session.id === activeSessionId ? 'selected' : ''}`} onClick={() => setActiveSessionId(session.id)}>
-              <MessageSquare size={15} /><span>{preview}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+            return <button key={session.id} className={`session-item ${session.id === activeSessionId ? 'selected' : ''}`} disabled={working} onClick={() => setActiveSessionId(session.id)}>
+              <MessageSquare size={15} /><span>{preview}{session.archived ? ' (archived)' : ''}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
             </button>
           })}
+          {moreSessions && <button className="plain-button" disabled={working} onClick={loadMoreSessions}>Load more</button>}
           {!filteredSessions.length && <div className="empty-sessions">No conversations yet.<br />Start one when you're ready.</div>}
         </div>
         <div className="sidebar-bottom">
           <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
           <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} /> Connection settings <ChevronDown size={14} /></button>
+          {desktop && <button className="settings-button" onClick={() => void window.luneDesktop?.toggleQuick()}><Command size={16} /> Quick window</button>}
           <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} /> Disconnect</button>
         </div>
       </aside>
@@ -587,6 +875,23 @@ export default function App() {
         <header className="chat-header">
           <div className="header-title"><div className="mobile-brand"><div className="brand-mark small"><Sparkles size={16} /></div>Lune</div><span>{activeSession ? describeSession(activeSession, history) : 'Loading conversation…'}</span></div>
           <div className="header-actions">
+            {quick && <button className="plain-button" onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
+            {activeSession && <details className="conversation-menu">
+              <summary>Conversation</summary>
+              <div>
+                <button disabled={working} onClick={() => setSessionDialog({ kind: 'rename', value: activeSession.title || '' })}>Rename</button>
+                <button disabled={working} onClick={changeArchived}>{activeSession.archived ? 'Unarchive' : 'Archive'}</button>
+                <button disabled={sessionBusy || working} onClick={() => setSessionDialog({ kind: 'delete', value: '' })}>Delete…</button>
+                {has('session.fork') && <button disabled={taskIsRunning || working} onClick={forkSession}>Fork conversation</button>}
+                <button disabled={working} onClick={saveConversation}>Export Markdown</button>
+                {has('session.compact') && <button disabled={sessionBusy || working} onClick={compactSession}>Compact context</button>}
+                {has('session.rewind') && <button disabled={sessionBusy || working || !history.length} onClick={() => setSessionDialog({ kind: 'rewind', value: '1' })}>Rewind…</button>}
+                <label>Reasoning effort <select aria-label="Reasoning effort" value={activeSession.settings.reasoningEffort || ''} disabled={sessionBusy || working} onChange={(event) => void changeSettings({ reasoningEffort: event.target.value })}>
+                  <option value="">Default</option>
+                  {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => <option key={effort}>{effort}</option>)}
+                </select></label>
+              </div>
+            </details>}
             <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{statusLabel}</span>
             {models.length > 0 && <label className="model-picker"><span>MODEL</span><select value={selectedModel} disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused} onChange={(event) => void changeModel(event.target.value)}>{models.map((model) => <option value={model.profile} key={model.profile}>{model.displayName || model.profile}</option>)}</select><ChevronDown size={13} /></label>}
             <button className="icon-button header-new" title="New conversation" onClick={() => void createSession()}><FilePlus2 size={17} /></button>
@@ -603,8 +908,15 @@ export default function App() {
             </div>}
             {displayedMessages.map((message) => <article className={`message ${message.role}`} key={message.id}>
               {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={14} /></div>}
-              <div className="message-content"><div className="message-label">{message.role === 'user' ? 'YOU' : 'LUNE'}</div><div className="markdown-body"><ReactMarkdown>{message.text}</ReactMarkdown></div></div>
+              <div className="message-content"><div className="message-label">{message.role === 'user' ? 'YOU' : 'LUNE'}</div><div className="markdown-body"><ReactMarkdown>{message.text}</ReactMarkdown>
+                {message.attachments?.map((file, index) => <details className="history-attachment" key={index}><summary>{file.name}</summary>
+                  {file.image ? <img src={file.image} alt={file.name} /> : <pre>{file.text}</pre>}
+                </details>)}
+              </div></div>
             </article>)}
+            {record.length > 0 && <details className="tool-record"><summary>Tool calls ({record.length})</summary>
+              {record.map((item, index) => <details key={index}><summary>{item.name}</summary><pre>{item.arguments}</pre>{item.output !== undefined && <pre>{item.output}</pre>}</details>)}
+            </details>}
             {streamingText && <article className="message assistant streaming-message"><div className="assistant-avatar"><Sparkles size={14} /></div><div className="message-content"><div className="message-label">LUNE <span className="streaming-indicator"><i /><i /><i /></span></div><div className="markdown-body"><ReactMarkdown>{streamingText}</ReactMarkdown><span className="caret" /></div></div></article>}
 
             {activity.length > 0 && (taskIsRunning || runtime.queue.length > 0) && <div className="activity-tray">{activity.slice(0, 3).map((item) => <div className={`activity-item ${item.failed ? 'failed' : ''}`} key={item.id}><span className="activity-dot" /> <span>{item.label}</span>{item.detail && <small>{item.detail}</small>}</div>)}</div>}
@@ -624,21 +936,72 @@ export default function App() {
             </div>)}
 
             {taskIsPaused && <div className="paused-banner"><div><strong>This run is paused</strong><span>Resume from its saved checkpoint, or discard it.</span></div><button className="plain-button" disabled={working} onClick={() => void discardPaused()}>Discard</button><button className="primary-button compact" disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} /> Resume run</button></div>}
-            {runtime.queue.length > 0 && <div className="queue-banner"><div className="queue-icon"><Command size={15} /></div><div><strong>{runtime.queue.length} {runtime.queue.length === 1 ? 'message' : 'messages'} in the queue</strong><span>They will run in order after the current turn.</span></div><span className="queue-count">{runtime.queue.length}</span></div>}
+            {runtime.queue.length > 0 && <div className="queue-banner"><Command size={15} /><div><strong>Message queue</strong>
+              <ol>{runtime.queue.map((item) => <li key={item.executionId}>
+                <span>#{item.position} · {item.status}</span>
+                {has('turn.cancelQueued') && item.status === 'queued' && <button className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>Cancel</button>}
+              </li>)}</ol>
+            </div></div>}
             <div ref={bottomRef} />
           </div>
         </div>
 
         <div className="composer-wrap">
+          {info && <div className="form-status" role="status">{info}</div>}
           {actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label="Dismiss"><X size={14} /></button></div>}
           {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.'}</div>}
-          <div className="composer">
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} placeholder={runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune…'} rows={1} disabled={!client || working} />
-            <div className="composer-footer"><span><kbd>↵</kbd> to send <span className="composer-separator">·</span> <kbd>⇧ ↵</kbd> for new line</span><div className="composer-actions">{(taskIsRunning || taskIsQueued) && <button className="stop-button" disabled={working} onClick={() => void stopRun()}><CircleStop size={15} />{taskIsQueued ? 'Cancel queued' : 'Stop'}</button>}<button className="send-button" disabled={!draft.trim() || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label="Send message">{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div></div>
+          <div className="composer" onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }} onDrop={(event) => {
+            if (!has('turn.attachments')) return
+            event.preventDefault()
+            if (!working) addFiles(Array.from(event.dataTransfer.files))
+          }}>
+            {attachments.length > 0 && <ul className="attachment-list">{attachments.map((file, index) => <li key={`${file.name}-${index}`}>
+              {file.mediaType.startsWith('image/') && <img alt="" src={`data:${file.mediaType};base64,${file.data}`} />}
+              <span>{file.name}</span><button aria-label={`Remove ${file.name}`} disabled={working} onClick={() => setAttachments((items) => items.filter((_, at) => at !== index))}>×</button>
+            </li>)}</ul>}
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} placeholder={runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune…'} rows={1} disabled={!client || !activeSession || working} />
+            <div className="composer-footer">
+              <div className="composer-options">
+                {has('turn.attachments') && <>
+                  <input type="file" ref={fileInput} hidden multiple accept=".txt,.md,.markdown,.csv,.png,.jpg,.jpeg" onChange={(event) => {
+                    addFiles(Array.from(event.target.files ?? []))
+                    event.target.value = ''
+                  }} />
+                  <button className="plain-button" disabled={working} onClick={() => fileInput.current?.click()}>Attach</button>
+                  {desktop && modelOption?.supportsInputImages && <button className="plain-button" disabled={working} onClick={captureScreenshot}>Screenshot</button>}
+                </>}
+                {has('turn.plan') && <button className="plain-button plan-button" aria-pressed={planMode} disabled={working} onClick={() => setPlanMode(!planMode)} title="Use read-only tools for this turn">Plan</button>}
+              </div>
+              <div className="composer-actions">
+                {taskIsRunning && runtime.task.executionId && !planMode && <button className="plain-button" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}>Add to running task</button>}
+                {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button className="stop-button" disabled={working} onClick={() => void stopRun()}><CircleStop size={15} />{taskIsQueued ? 'Cancel queued' : 'Stop'}</button>}
+                <button className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label="Send message">{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button>
+              </div>
+            </div>
           </div>
-          <div className="composer-note">Lune can make mistakes. Review important information.</div>
+          {activeSession?.sessionUsage && <div className="composer-note">
+            Session tokens · {activeSession.sessionUsage.input.toLocaleString()} input · {activeSession.sessionUsage.output.toLocaleString()} output
+            {contextLimit ? ` · ${contextLimit.toLocaleString()} context limit` : ''}
+          </div>}
         </div>
       </main>
+
+      {sessionDialog && <div className="modal-backdrop">
+        <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
+          <h2 id="session-dialog-title">{sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation'}</h2>
+          {sessionDialog.kind === 'delete' ? <p>This removes the conversation and its saved history.</p> :
+            <label className="form-field">{sessionDialog.kind === 'rename' ? 'Title' : 'User turns to remove'}
+              <input value={sessionDialog.value} type={sessionDialog.kind === 'rewind' ? 'number' : 'text'} min={1}
+                onChange={(event) => setSessionDialog({ kind: sessionDialog.kind, value: event.target.value })} />
+            </label>}
+          {Boolean(sessionDialog.excerpts?.length) && <ol className="rewind-excerpts">{sessionDialog.excerpts?.map((excerpt, index) => <li key={index}>{excerpt}</li>)}</ol>}
+          {sessionDialog.removed !== undefined && <p>{sessionDialog.removed} turn(s) will be removed from the end of the conversation.</p>}
+          {actionError && <div className="form-error" role="alert">{actionError}</div>}
+          <div className="modal-footer"><button className="plain-button" disabled={working} onClick={() => setSessionDialog(null)}>Cancel</button><button className="primary-button compact" disabled={working || sessionDialog.removed === 0} onClick={confirmSessionDialog}>
+            {sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview'}
+          </button></div>
+        </section>
+      </div>}
 
       {showConnection && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowConnection(false) }}>
         <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="connection-modal-title">
@@ -647,6 +1010,11 @@ export default function App() {
           {desktop && <div className="connection-tabs compact-tabs"><button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={15} /> This computer</button><button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={15} /> Remote Core</button></div>}
           {mode === 'local' && desktop ? <div className="form-field"><label>Workspace folder</label><div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a folder with config.json" /><button onClick={() => void chooseWorkspace()}><FolderOpen size={16} /></button></div><small>Requires a workspace config.json with a model provider.</small></div> : <><div className="form-field"><label>Core WebSocket URL</label><input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} autoCapitalize="none" spellCheck={false} /></div><div className="form-field"><label>Access token</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></div></>}
           {(connectionError || connectionStatus === 'reconnecting') && <div className="form-error"><ShieldAlert size={15} /><span>{connectionError || 'The connection was interrupted. Reconnect to continue.'}</span></div>}
+          {desktop && <div className="form-field"><label htmlFor="quick-shortcut">Quick window shortcut</label>
+            <div className="input-with-action"><input id="quick-shortcut" value={shortcut} onChange={(event) => setShortcut(event.target.value)} />
+              <button onClick={() => void window.luneDesktop?.setShortcut(shortcut).then(setShortcut).catch((error) => setConnectionError(errorMessage(error)))}>Set</button>
+            </div>
+          </div>}
           <div className="modal-footer"><span>{connectionStatus === 'connected' ? <><span className="connection-light connected" /> Connected</> : statusLabel}</span><button className="primary-button compact" disabled={connectDisabled} onClick={() => { setBusy(true); const options: RuntimeConnection = mode === 'local' ? { mode: 'local', workspace } : { mode: 'remote', url: remoteURL.trim(), token }; void activateConnection(options).finally(() => setBusy(false)) }}>{busy ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={14} />}{connectionStatus === 'connected' ? 'Reconnect' : 'Connect'}</button></div>
         </section>
       </div>}

@@ -12,7 +12,7 @@ const goos = target === 'win32' ? 'windows' : target
 const suffix = target === 'win32' ? '.exe' : ''
 const pinnedModule = readFileSync(resolve(repositoryRoot, 'go.mod'), 'utf8').match(/github\.com\/afterlune\/luneCore\s+(v\S+)/)?.[1]
 const pinnedRevision = pinnedModule?.split('-').at(-1)
-const siblingCore = process.env.LUNE_CORE_DIR || resolve(repositoryRoot, '../luneCore')
+const siblingCore = process.env.LUNE_CORE_DIR ? resolve(process.env.LUNE_CORE_DIR) : resolve(repositoryRoot, '../luneCore')
 const siblingHead = existsSync(resolve(siblingCore, 'go.mod'))
   ? spawnSync('git', ['rev-parse', 'HEAD'], { cwd: siblingCore, encoding: 'utf8' }).stdout?.trim()
   : undefined
@@ -60,4 +60,4 @@ for (const [packagePath, filename] of [
   if (result.status !== 0) throw new Error(`Could not build ${packagePath}.`)
 }
 
-console.log(`Built lune-core and lune-sandbox for ${target} x64 in ${outputDirectory}${useSiblingCore ? ' from the pinned sibling Core checkout' : ' from the pinned Go module source'}`)
+console.log(`Built lune-core and lune-sandbox for ${target} x64 in ${outputDirectory}${process.env.LUNE_CORE_DIR ? ' from LUNE_CORE_DIR' : useSiblingCore ? ' from the pinned sibling Core checkout' : ' from the pinned Go module source'}`)

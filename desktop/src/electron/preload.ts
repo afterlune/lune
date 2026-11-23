@@ -14,6 +14,16 @@ export interface RemoteConnectionOptions {
 export type DesktopConnectionOptions = LocalConnectionOptions | RemoteConnectionOptions
 
 contextBridge.exposeInMainWorld('luneDesktop', {
+  shortcut: (): Promise<string> => ipcRenderer.invoke('desktop:shortcut'),
+  setShortcut: (accelerator: string): Promise<string> => ipcRenderer.invoke('desktop:set-shortcut', accelerator),
+  toggleQuick: (): Promise<void> => ipcRenderer.invoke('desktop:quick-toggle'),
+  saveMarkdown: (markdown: string): Promise<void> => ipcRenderer.invoke('desktop:save-markdown', markdown),
+  captureScreenshot: () => ipcRenderer.invoke('desktop:screenshot'),
+  onQuickMode: (listener: (quick: boolean) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, enabled: boolean) => listener(enabled)
+    ipcRenderer.on('desktop:quick-mode', handler)
+    return () => ipcRenderer.removeListener('desktop:quick-mode', handler)
+  },
   selectWorkspace: (): Promise<string | null> => ipcRenderer.invoke('desktop:select-workspace'),
   connect: (options: DesktopConnectionOptions): Promise<unknown> => ipcRenderer.invoke('runtime:connect', options),
   reconnect: (): Promise<unknown> => ipcRenderer.invoke('runtime:reconnect'),

@@ -296,3 +296,30 @@ kbd { padding: 2px 4px; color: #9297a0; border: 1px solid #e9eaed; border-radius
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.archived-toggle { display: flex; align-items: center; gap: 5px; padding: 2px 4px 8px; font-size: 11px; color: #656d78; }
+.conversation-menu { position: relative; font-size: 12px; }
+.conversation-menu > summary, .tool-record summary, .history-attachment summary { cursor: pointer; }
+.conversation-menu > div { position: absolute; top: 24px; right: 0; z-index: 5; min-width: 185px; display: grid; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); box-shadow: var(--shadow); }
+.conversation-menu button, .conversation-menu label { padding: 7px; background: transparent; border: 0; text-align: left; }
+.conversation-menu button { cursor: pointer; }
+.conversation-menu button:hover:not(:disabled) { background: var(--violet-soft); }
+.conversation-menu label { display: grid; gap: 5px; }
+.tool-record, .history-attachment { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.tool-record details { margin: 6px 0 0 4px; }
+.tool-record pre, .history-attachment pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.history-attachment { margin-top: 6px; }
+.history-attachment img { display: block; max-width: 100%; max-height: 340px; object-fit: contain; margin-top: 8px; }
+.composer-options, .attachment-list, .attachment-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.attachment-list { padding: 0; margin: 4px; list-style: none; }
+.attachment-list li { padding: 4px 7px; border-radius: 6px; background: var(--violet-soft); font-size: 11px; overflow-wrap: anywhere; }
+.attachment-list img { width: 32px; height: 28px; object-fit: cover; border-radius: 3px; }
+.attachment-list button { background: none; border: 0; cursor: pointer; }
+.plan-button[aria-pressed="true"] { background: var(--violet-soft); color: var(--violet-dark); }
+.queue-banner ol { margin: 4px 0; padding: 0; list-style: none; }
+.queue-banner li { display: flex; align-items: center; gap: 12px; }
+.app-shell.quick-mode { grid-template-columns: minmax(0, 1fr); }
+.quick-mode .sidebar { display: none; }
+.quick-mode .chat-header { padding-inline: 12px; }
+.rewind-excerpts { max-height: 13rem; overflow: auto; padding-inline-start: 1.5rem; font-size: 12px; overflow-wrap: anywhere; }
+.rewind-excerpts li { margin-bottom: .4rem; }

@@ -50,7 +50,7 @@ function browserClient(url: string, token: string): Promise<RuntimeClient> {
   socket.addEventListener('error', () => peer.fail(new Error('Core WebSocket connection failed.')))
 
   return ready.then(() => ({
-    request: <T,>(method: string, params?: unknown) => peer.request<T>(method, params ?? {}),
+    request: <T,>(method: string, params?: unknown) => peer.request<T>(method, params ?? {}, method === 'session.compact' ? 600_000 : undefined),
     onNotification: (listener: (notification: JsonRpcNotification) => void) => peer.onNotification(listener),
     close: async () => {
       if (socket.readyState < WebSocket.CLOSING) socket.close(1000, 'Application disconnected')

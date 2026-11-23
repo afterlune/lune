@@ -1,6 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { StringDecoder } from 'node:string_decoder'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import WebSocket from 'ws'
@@ -12,7 +14,9 @@ const developmentServer = process.env.ELECTRON_RENDERER_URL
 const rendererFileURL = pathToFileURL(resolve(currentDirectory, '../renderer/index.html')).toString()
 const allowedRuntimeMethods = new Set([
   'runtime.hello', 'runtime.subscribe', 'runtime.unsubscribe', 'runtime.state', 'runtime.pending',
-  'session.create', 'session.get', 'session.history', 'session.list', 'session.setSettings', 'session.setTitle',
+  'session.create', 'session.get', 'session.history', 'session.historyPage', 'session.list', 'session.search',
+  'session.setSettings', 'session.setTitle', 'session.setArchived', 'session.delete', 'session.fork',
+  'session.rewindPreview', 'session.rewind', 'session.compact', 'turn.cancelQueued',
   'model.list', 'turn.submit', 'turn.interrupt', 'turn.recover', 'turn.discardPaused',
   'approval.resolve', 'question.resolve', 'interaction.resolve', 'toolRecovery.resolve',
 ])
@@ -23,6 +27,41 @@ let coreProcess: ChildProcessWithoutNullStreams | null = null
 let coreExit: Promise<void> | null = null
 let lastConnection: DesktopConnectionOptions | null = null
 let quitting = false
+const defaultShortcut = 'CommandOrControl+Shift+Space'
+let quickShortcut = defaultShortcut
+let expandedWindow: { bounds: Electron.Rectangle; maximized: boolean } | null = null
+
+function toggleQuickWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow()
+  const window = mainWindow!
+  if (window.isMinimized()) window.restore()
+  if (expandedWindow) {
+    const { bounds, maximized } = expandedWindow
+    expandedWindow = null
+    window.setAlwaysOnTop(false)
+    window.setMinimumSize(980, 680)
+    window.setBounds(bounds)
+    if (maximized) window.maximize()
+  } else {
+    expandedWindow = { bounds: window.getNormalBounds(), maximized: window.isMaximized() }
+    if (window.isMaximized()) window.unmaximize()
+    window.setMinimumSize(440, 440)
+    window.setSize(680, 600)
+    window.center()
+    window.setAlwaysOnTop(true)
+  }
+  window.show()
+  window.focus()
+  window.webContents.send('desktop:quick-mode', Boolean(expandedWindow))
+}
+
+function shortcutFile(): string {
+  return join(app.getPath('userData'), 'quick-shortcut.txt')
+}
+
+function registerQuickShortcut(accelerator: string): boolean {
+  try { return globalShortcut.register(accelerator, toggleQuickWindow) } catch { return false }
+}
 
 function sendNotification(notification: JsonRpcNotification): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('runtime:notification', notification)
@@ -106,13 +145,64 @@ function createMainWindow(): void {
 
   if (developmentServer) void mainWindow.loadURL(developmentServer)
   else void mainWindow.loadFile(join(currentDirectory, '../renderer/index.html'))
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents.send('desktop:quick-mode', Boolean(expandedWindow))
+  })
+  mainWindow.on('closed', () => { mainWindow = null; expandedWindow = null })
 }
 
 ipcMain.handle('desktop:select-workspace', async (event) => {
   assertMainWindow(event)
   const selection = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
   return selection.canceled ? null : selection.filePaths[0] ?? null
+})
+
+ipcMain.handle('desktop:quick-toggle', (event) => {
+  assertMainWindow(event)
+  toggleQuickWindow()
+})
+
+ipcMain.handle('desktop:shortcut', (event) => {
+  assertMainWindow(event)
+  if (!globalShortcut.isRegistered(quickShortcut)) throw new Error('The quick window shortcut is unavailable. Choose another in Connection settings.')
+  return quickShortcut
+})
+
+ipcMain.handle('desktop:set-shortcut', (event, value: unknown) => {
+  assertMainWindow(event)
+  const accelerator = typeof value === 'string' ? value.trim() : ''
+  if (!accelerator || accelerator.length > 100) throw new Error('Enter an Electron shortcut such as Control+Alt+Space.')
+  if (accelerator === quickShortcut && globalShortcut.isRegistered(quickShortcut)) return quickShortcut
+  if (!registerQuickShortcut(accelerator)) throw new Error('This shortcut is invalid or already in use.')
+  try { writeFileSync(shortcutFile(), accelerator, { mode: 0o600 }) }
+  catch (error) { globalShortcut.unregister(accelerator); throw error }
+  globalShortcut.unregister(quickShortcut)
+  quickShortcut = accelerator
+  return quickShortcut
+})
+
+ipcMain.handle('desktop:save-markdown', async (event, markdown: unknown) => {
+  assertMainWindow(event)
+  if (typeof markdown !== 'string') throw new Error('Conversation export must be Markdown text.')
+  const result = await dialog.showSaveDialog(mainWindow!, {
+    defaultPath: 'lune-conversation.md', filters: [{ name: 'Markdown', extensions: ['md'] }],
+  })
+  if (result.filePath && !result.canceled) await writeFile(result.filePath, markdown, 'utf8')
+})
+
+ipcMain.handle('desktop:screenshot', async (event) => {
+  assertMainWindow(event)
+  const sources = (await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1600, height: 1200 } }))
+    .filter((source) => !source.thumbnail.isEmpty())
+  if (!sources.length) throw new Error('No display is available for capture. Check your system screen capture permissions.')
+  const result = await dialog.showMessageBox(mainWindow!, {
+    title: 'Attach a screenshot', message: 'Choose a display to attach to the draft',
+    buttons: ['Cancel', ...sources.map((source) => source.name)], cancelId: 0, defaultId: 0, noLink: true,
+  })
+  const selected = sources[result.response - 1]
+  if (!selected) return null
+  const data = selected.thumbnail.toJPEG(82)
+  return { name: 'screenshot.jpg', mediaType: 'image/jpeg', data: data.toString('base64'), size: data.length }
 })
 
 async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> {
@@ -142,8 +232,9 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
       child.stdin.write(`${message}\n`)
     })
     let pending = ''
+    const decoder = new StringDecoder('utf8')
     child.stdout.on('data', (chunk: Buffer) => {
-      pending += chunk.toString('utf8')
+      pending += decoder.write(chunk)
       for (;;) {
         const lineEnd = pending.indexOf('\n')
         if (lineEnd < 0) break
@@ -203,7 +294,7 @@ ipcMain.handle('runtime:request', (event, message: { method?: unknown; params?: 
   assertMainWindow(event)
   if (typeof message?.method !== 'string' || !allowedRuntimeMethods.has(message.method)) throw new Error('This Runtime Protocol method is not available to the frontend.')
   if (!peer) throw new Error('Connect to Core first.')
-  return peer.request(message.method, message.params ?? {})
+  return peer.request(message.method, message.params ?? {}, message.method === 'session.compact' ? 600_000 : undefined)
 })
 
 ipcMain.handle('runtime:close', async (event, forget = false) => {
@@ -212,7 +303,12 @@ ipcMain.handle('runtime:close', async (event, forget = false) => {
   if (forget) lastConnection = null
 })
 
-app.whenReady().then(createMainWindow)
+app.whenReady().then(() => {
+  try { quickShortcut = readFileSync(shortcutFile(), 'utf8').trim() || defaultShortcut } catch { /* first launch */ }
+  registerQuickShortcut(quickShortcut)
+  createMainWindow()
+})
+app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 app.on('before-quit', (event) => {
   if (quitting) return
