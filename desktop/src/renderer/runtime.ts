@@ -22,7 +22,8 @@ function base64URL(value: string): string {
 function browserClient(url: string, token: string, loopback = false): Promise<RuntimeClient> {
   const endpoint = new URL(url)
   const validTransport = loopback
-    ? isLocalBrowser() && endpoint.href === `ws://${location.host}/v1/runtime`
+    ? isLocalBrowser() && endpoint.protocol === 'ws:' && endpoint.host === location.host &&
+      /^\/v1\/(?:runtime|workspaces\/[A-Z2-7]{26,120}\/runtime)$/.test(endpoint.pathname)
     : endpoint.protocol === 'wss:'
   if (!validTransport || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new Error('Use a wss:// Core URL without credentials, query, or fragment.')

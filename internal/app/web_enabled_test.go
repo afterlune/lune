@@ -12,8 +12,9 @@ import (
 func TestLocalWebAdmission(t *testing.T) {
 	handler := &localWebHandler{
 		host: "127.0.0.1:18000", code: "pair-code", token: "runtime-token",
-		assets:  http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
-		runtime: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusSwitchingProtocols) }),
+		assets:     http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		runtime:    http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusSwitchingProtocols) }),
+		workspaces: &webWorkspaces{token: "runtime-token"},
 	}
 	for _, tc := range []struct {
 		name, host, origin, address, path string
@@ -25,6 +26,8 @@ func TestLocalWebAdmission(t *testing.T) {
 		{"missing runtime origin", "127.0.0.1:18000", "", "127.0.0.1:18001", "/v1/runtime", http.StatusForbidden},
 		{"pair", "127.0.0.1:18000", "http://127.0.0.1:18000", "127.0.0.1:18001", "/_lune/pair", http.StatusOK},
 		{"pair replay", "127.0.0.1:18000", "http://127.0.0.1:18000", "127.0.0.1:18001", "/_lune/pair", http.StatusUnauthorized},
+		{"workspace action wrong origin", "127.0.0.1:18000", "http://other.invalid", "127.0.0.1:18001", "/_lune/open-workspace", http.StatusForbidden},
+		{"workspace action requires token", "127.0.0.1:18000", "http://127.0.0.1:18000", "127.0.0.1:18001", "/_lune/open-workspace", http.StatusUnauthorized},
 		{"same origin runtime", "127.0.0.1:18000", "http://127.0.0.1:18000", "127.0.0.1:18001", "/v1/runtime", http.StatusSwitchingProtocols},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

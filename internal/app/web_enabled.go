@@ -19,25 +19,24 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	core "github.com/afterlune/luneCore"
-	"github.com/afterlune/luneCore/runtimehost"
 )
 
 //go:embed webdist
 var webAssets embed.FS
 
 type localWebHandler struct {
-	host    string
-	token   string
-	code    string
-	paired  bool
-	mu      sync.Mutex
-	assets  http.Handler
-	runtime http.Handler
+	host       string
+	token      string
+	code       string
+	paired     bool
+	mu         sync.Mutex
+	assets     http.Handler
+	runtime    http.Handler
+	workspaces *webWorkspaces
 }
 
 func (h *localWebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,8 +49,8 @@ func (h *localWebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	switch r.URL.Path {
-	case "/_lune/pair", "/v1/runtime":
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/_lune/"), r.URL.Path == "/v1/runtime", strings.HasPrefix(r.URL.Path, "/v1/workspaces/"):
 		if r.Header.Get("Origin") != "http://"+h.host {
 			http.Error(w, "unexpected local origin", http.StatusForbidden)
 			return
@@ -60,7 +59,15 @@ func (h *localWebHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.runtime.ServeHTTP(w, r)
 			return
 		}
-		h.pair(w, r)
+		if r.URL.Path == "/_lune/pair" {
+			h.pair(w, r)
+			return
+		}
+		if h.workspaces == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.workspaces.serve(w, r)
 	default:
 		h.assets.ServeHTTP(w, r)
 	}
@@ -100,18 +107,18 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 	if err != nil {
 		return err
 	}
-	client, err := openCore(workspace, stderr, false, true)
-	if err != nil {
-		return err
-	}
+	token := rand.Text()
+	workspaces := &webWorkspaces{token: token, diagnostics: stderr}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		runErr = errors.Join(runErr, client.Shutdown(ctx))
+		runErr = errors.Join(runErr, workspaces.shutdown(ctx))
 	}()
-	if err := client.SetPermissionMode(core.PermissionWorkspace); err != nil {
+	initial, err := workspaces.open(workspace)
+	if err != nil {
 		return err
 	}
+	workspaces.initial = initial.ID
 	assets, err := fs.Sub(webAssets, "webdist")
 	if err != nil {
 		return err
@@ -121,13 +128,8 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 		return err
 	}
 	defer listener.Close()
-	token := rand.Text()
-	host, err := runtimehost.New(client, token)
-	if err != nil {
-		return err
-	}
 	handler := &localWebHandler{host: listener.Addr().String(), token: token, code: rand.Text(),
-		assets: http.FileServerFS(assets), runtime: host}
+		assets: http.FileServerFS(assets), runtime: workspaces.hosts[initial.ID], workspaces: workspaces}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 90 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -156,7 +158,7 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return errors.Join(runErr, host.Shutdown(shutdownCtx), server.Shutdown(shutdownCtx), server.Close())
+	return errors.Join(runErr, server.Shutdown(shutdownCtx), server.Close())
 }
 
 func openWebBrowser(address string) error {

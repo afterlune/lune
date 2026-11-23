@@ -17,6 +17,14 @@
 
 在连接页或聊天顶部的 **Appearance** 菜单选择 **System**、**Light** 或 **Dark**。默认跟随系统外观，系统切换时页面一起更新。Web 在当前站点保存选择，Electron 在应用用户配置中保存。外观设置与 Core 和会话无关。
 
+## Web 工作台
+
+左侧显示工作区和会话。右上角的「文件」打开右侧目录树，选中文件后可在同一侧只读预览。预览标题栏可以重新展开目录树。远程文件浏览由 Core 握手中的 `workspace.files` 能力启用，范围为服务端指定的工作目录。
+
+顶栏可以切换简体中文和 English。本机 Web 在 Lune 用户设置中记住语言，远程 Web 在当前站点记住语言。会话标题、聊天内容和文件名保留原文。
+
+本机 `lune web` 可在左侧打开其他工作目录。每个目录有独立的 Core 运行时和 `.lune/` 状态。切换时其他目录中的任务继续执行，左侧显示当前订阅会话的运行或待交互状态。退出 `lune web` 会按 Core 的关停规则保留排队任务与可恢复执行状态。
+
 ## 开发
 
 需要 Node.js 22.12 或更新版本与 npm。安装依赖并启动 Electron：
@@ -94,7 +102,7 @@ Electron 主进程持有远程令牌，并通过 context-isolated preload 暴露
 
 ## Core 版本
 
-桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。根目录 `go.mod` 固定到包含 SQLite 配置入口及内嵌 Web 宿主接口的 `luneCore` revision `167fbf5`。默认构建脚本使用该固定版本，可在独立检出中构建。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
+桌面本机模式依赖 `luneCore/cmd/lune-core` 和 `luneCore/cmd/lune-sandbox`。根目录 `go.mod` 固定到包含工作区管理与只读文件接口的 `luneCore` revision `888b2e3`。默认构建脚本使用该固定版本，可在独立检出中构建。构建脚本优先使用干净且恰好位于固定 revision 的兄弟 Core 检出，否则从固定 Go module source 构建。不要加入本地路径 `replace`。Runtime Protocol 约定保存在 Core 仓库的 `docs/runtime-protocol-v1.md`。
 
 同一工作区中开发尚未固定到 `go.mod` 的 Core 功能时，使用 `LUNE_CORE_DIR` 显式指定 checkout：
 

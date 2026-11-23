@@ -29,10 +29,10 @@ export async function loadLoopbackToken(): Promise<string | null> {
   return token
 }
 
-export function lastLoopbackSession(): string | null {
-  try { return sessionStorage.getItem('lune:loopback-session') } catch { return null }
+export function lastLoopbackSession(workspace: string): string | null {
+  try { return sessionStorage.getItem(`lune:loopback-session:${workspace}`) } catch { return null }
 }
 
-export function rememberLoopbackSession(id: string): void {
-  try { sessionStorage.setItem('lune:loopback-session', id) } catch { /* session can still be selected by hand */ }
+export function rememberLoopbackSession(workspace: string, id: string): void {
+  try { sessionStorage.setItem(`lune:loopback-session:${workspace}`, id) } catch { /* session can still be selected by hand */ }
 }

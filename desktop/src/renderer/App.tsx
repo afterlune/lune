@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ConfigSettings } from './config-settings'
 import type { SavedConnection } from '../shared/desktop-settings'
-import { lastLoopbackSession, loadLoopbackToken, rememberLoopbackSession } from './loopback'
+import { lastLoopbackSession, rememberLoopbackSession } from './loopback'
+import { LanguagePicker, useTranslate } from './language'
+import type { ManagedWorkspace, WorkspaceActivity } from './workbench'
+import { WorkspaceFiles, type WorkspaceInfo } from './workspace-files'
 import { ThemePicker } from './theme'
 import type { ThemePreference } from '../shared/theme'
 import ReactMarkdown from 'react-markdown'
@@ -178,12 +181,18 @@ function messageIdentity(message: HistoryMessage): string {
   return JSON.stringify([message.text, message.attachments?.map((item) => item.name) ?? []])
 }
 
-function describeSession(session: SessionSummary, messages: HistoryMessage[]): string {
-  return session.title || messages.find((message) => message.role === 'user')?.text.slice(0, 56) || 'New conversation'
+function describeSession(session: SessionSummary, messages: HistoryMessage[], fallback = 'New conversation'): string {
+  return session.title || messages.find((message) => message.role === 'user')?.text.slice(0, 56) || fallback
 }
 
-export default function App({ initialTheme }: { initialTheme: ThemePreference }) {
-  const [theme, setTheme] = useState(initialTheme)
+export default function App({ initialTheme, managed, pairingError, onThemeChange }: {
+  initialTheme: ThemePreference; managed?: ManagedWorkspace; pairingError?: string; onThemeChange?: (theme: ThemePreference) => void
+}) {
+  const [privateTheme, setPrivateTheme] = useState(initialTheme)
+  const theme = onThemeChange ? initialTheme : privateTheme
+  const setTheme = onThemeChange ?? setPrivateTheme
+  const t = useTranslate()
+  const accessibilityId = useId()
   const desktop = Boolean(window.luneDesktop)
   const [client, setClient] = useState<RuntimeClient | null>(null)
   const [connection, setConnection] = useState<RuntimeConnection | null>(null)
@@ -199,7 +208,8 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([])
   const [connectionNotice, setConnectionNotice] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
-  const [localWeb, setLocalWeb] = useState<Extract<RuntimeConnection, { mode: 'loopback' }> | null>(null)
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [models, setModels] = useState<ModelOption[]>([])
   const [activeSessionId, setActiveSessionId] = useState('')
@@ -253,6 +263,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const drawerRef = useRef<HTMLDialogElement>(null)
   const drawerButtonRef = useRef<HTMLButtonElement>(null)
+  const fileButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     const viewport = window.matchMedia('(max-width: 680px)')
@@ -376,26 +387,40 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   }, [desktop, reloadSavedConnections, scheduleReconnect])
 
   useEffect(() => { startConnection.current = activateConnection }, [activateConnection])
+  const workspaceId = managed?.workspace.id ?? ''
+  const localURL = managed?.options.url
+  const localToken = managed?.options.token
+  const report = managed?.report
   useEffect(() => {
+    if (localURL && localToken) void activateConnection({ mode: 'loopback', url: localURL, token: localToken })
+  }, [activateConnection, localURL, localToken])
+  const workspaceActivity: WorkspaceActivity = pending.length ? 'Needs attention'
+    : taskIsRunning ? 'Running' : taskIsPaused ? 'Paused' : taskIsQueued || runtime.queue.length ? 'Queued' : ''
+  useEffect(() => { if (report) report(workspaceId, workspaceActivity) }, [report, workspaceId, workspaceActivity])
+  useEffect(() => {
+    if (managed?.active === false && drawerRef.current?.open) drawerRef.current.close()
+  }, [managed?.active])
+  const canBrowse = !desktop && has('workspace.files')
+  useEffect(() => {
+    setWorkspaceInfo(null)
+    if (!client || !canBrowse) return
     let active = true
-    void loadLoopbackToken().then((token) => {
-      if (!token || !active) return
-      const options = { mode: 'loopback', url: `ws://${location.host}/v1/runtime`, token } as const
-      setLocalWeb(options)
-      void activateConnection(options)
-    }).catch((error) => { if (active) setConnectionError(errorMessage(error)) })
+    void client.request<WorkspaceInfo>('workspace.info').then(
+      workspace => { if (active) setWorkspaceInfo(workspace) },
+      () => undefined,
+    )
     return () => { active = false }
-  }, [activateConnection])
+  }, [canBrowse, client])
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
   useEffect(() => {
     if (!connection || !activeSession || activeSession.id !== activeSessionId) return
     if (connection.mode === 'loopback') {
-      rememberLoopbackSession(activeSessionId)
+      rememberLoopbackSession(workspaceId, activeSessionId)
       return
     }
     const address = connection.mode === 'local' ? connection.workspace : connection.url
     void window.luneDesktop?.rememberSession(connection.mode, address, activeSessionId).catch(() => undefined)
-  }, [connection, activeSession, activeSessionId])
+  }, [connection, activeSession, activeSessionId, workspaceId])
 
   const disconnect = useCallback(async () => {
     autoReconnect.current = false
@@ -500,7 +525,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       setModels(nextModels ?? [])
       const previousID = window.luneDesktop
         ? await window.luneDesktop.lastSession().catch(() => null)
-        : connectionRef.current?.mode === 'loopback' ? lastLoopbackSession() : activeSessionIdRef.current
+        : connectionRef.current?.mode === 'loopback' ? lastLoopbackSession(workspaceId) : activeSessionIdRef.current
       if (cancelled) return
       const existing = (previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]
       if (cancelled) return
@@ -517,7 +542,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
       if (!cancelled) setActionError(errorMessage(error))
     })
     return () => { cancelled = true }
-  }, [client])
+  }, [client, workspaceId])
 
   useEffect(() => {
     if (!client || !activeSessionId) return
@@ -922,17 +947,28 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
   const configSettings = configOpen && desktop && <ConfigSettings workspace={workspace} onClose={() => setConfigOpen(false)} />
   const connectDisabled = busy || (mode === 'local' ? !workspace.trim() : !remoteURL.trim() || (!token.trim() && !canReuseDesktopRemote))
 
+  if (managed && (!client || showConnection)) {
+    return <div className="web-workbench web-workbench-loading">
+      <header className="workbench-top"><span className="workbench-brand"><Sparkles size={19} /> Lune</span><LanguagePicker /></header>
+      <aside className="sidebar">{managed.navigation}</aside>
+      <main className="web-launch">
+        {connectionError || actionError ? <><p role="alert">{t(connectionError || actionError)}</p><button className="secondary-button"
+          onClick={() => void activateConnection(managed.options)}>{t('Retry')}</button></> :
+          <p role="status">{t('Connecting to local Core…')}</p>}
+      </main>
+    </div>
+  }
   if (!client || showConnection) {
     return (
       <div className="connect-page">
         <div className="connect-orb orb-one" /><div className="connect-orb orb-two" />
-        <div className="connect-top"><div className="brand-mark"><Sparkles size={18} /></div><span>Lune</span><span className="build-label">CORE CLIENT</span></div>
-        <div className="connect-appearance"><ThemePicker value={theme} onChange={setTheme} /></div>
+        <div className="connect-top"><div className="brand-mark"><Sparkles size={18} /></div><span>Lune</span>{desktop && <span className="build-label">CORE CLIENT</span>}</div>
+        <div className="connect-appearance">{!desktop && <LanguagePicker />}<ThemePicker value={theme} onChange={setTheme} /></div>
         <main className="connect-card">
-          <div className="eyebrow"><span className="eyebrow-dot" /> YOUR WORKSPACE, YOUR CORE</div>
-          <h1>A quiet place<br />to think with AI.</h1>
-          <p className="connect-intro">Connect to a Lune Core. Your sessions, tools, and permissions stay with the Core you choose.</p>
-          {localWeb && <button className="secondary-button" onClick={() => void activateConnection(localWeb)} disabled={connectionStatus === 'connecting'}>Connect to this workspace</button>}
+          {desktop ? <><div className="eyebrow"><span className="eyebrow-dot" /> YOUR WORKSPACE, YOUR CORE</div>
+            <h1>A quiet place<br />to think with AI.</h1>
+            <p className="connect-intro">Connect to a Lune Core. Your sessions, tools, and permissions stay with the Core you choose.</p></> :
+            <h1>{t('Link a remote Core')}</h1>}
           {desktop && <div className="connection-tabs">
             <button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={16} /> This computer</button>
             <button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={16} /> Remote Core</button>
@@ -952,61 +988,83 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
             <small>Core uses your desktop settings. Sessions are stored in this workspace’s <code>.lune</code> folder.</small>
           </div> : <>
             <div className="form-field">
-              <label>Core WebSocket URL</label>
+              <label>{t("Core WebSocket URL")}</label>
               <input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} placeholder="wss://core.example.com:18092/v1/runtime" autoCapitalize="none" spellCheck={false} />
             </div>
             <div className="form-field">
-              <label>Access token</label>
-              <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste your Core token" autoComplete="off" />
-              {!desktop && <small><LockKeyhole size={13} /> Kept in memory for this page only. The browser connects over TLS.</small>}
+              <label>{t("Access token")}</label>
+              <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("Paste your Core token")} autoComplete="off" />
+              {!desktop && <small><LockKeyhole size={13} />{t("Kept in memory for this page only. The browser connects over TLS.")}</small>}
               {desktop && <label className="remember-token"><input type="checkbox" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> Remember token with system credentials</label>}
             </div>
             {desktop && <label className="form-field">Connection name<input value={remoteName} onChange={(event) => setRemoteName(event.target.value)} maxLength={120} /></label>}
           </>}
           {desktop && mode === 'local' && <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfigOpen(true)}>Configure Core</button>}
           {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
-          {connectionError && <div className="form-error"><ShieldAlert size={16} /> <span>{connectionError}</span></div>}
+          {(connectionError || pairingError) && <div className="form-error" role="alert"><ShieldAlert size={16} /> <span>{t(connectionError || pairingError || '')}</span></div>}
           {!connectionError && connectionStatus === 'reconnecting' && <div className="form-status"><LoaderCircle size={15} className="spin" /> The connection dropped. Lune is trying again automatically.</div>}
           <button className="primary-button connect-button" disabled={connectDisabled} onClick={() => void connectFromForm()}>
-            {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}{busy ? 'Connecting…' : 'Connect to Core'}
+            {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}{t(busy ? 'Connecting…' : 'Connect to Core')}
           </button>
-          {desktop && connection && <button className="forget-connection" onClick={() => void disconnect()}>Disconnect</button>}
+          {desktop && connection && <button className="forget-connection" onClick={() => void disconnect()}>{t("Disconnect")}</button>}
           <div className="connect-footnote"><span><LockKeyhole size={13} /> End-to-end transport security</span><span>Runtime Protocol v1</span></div>
         </main>
         {configSettings}
-        <div className="connect-bottom"><span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span></div>
+        {desktop && <div className="connect-bottom"><span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span></div>}
       </div>
     )
   }
 
   const sessionNavigation = <>
-    <button className="new-chat-button" disabled={working} onClick={() => void createSession()}><Plus size={16} /> New conversation</button>
-    <div className="sidebar-section-head">{!compactLayout && <span>CONVERSATIONS</span>}<button className="subtle-icon" title="Refresh sessions" aria-label="Refresh sessions" disabled={working || listLoading} onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button></div>
-    <div className="session-search"><Search size={14} /><input aria-label="Search conversations" value={search} disabled={working} onChange={(event) => setSearch(event.target.value)} placeholder={serverSearch ? 'Search titles and messages' : 'Find a conversation'} /></div>
-    <label className="archived-toggle"><input type="checkbox" checked={showArchived} disabled={working} onChange={(event) => setShowArchived(event.target.checked)} /> Include archived</label>
+    {managed?.navigation}
+    <button className="new-chat-button" disabled={working} onClick={() => void createSession()}><Plus size={16} />{t("New conversation")}</button>
+    <div className="sidebar-section-head">{!compactLayout && <span>{t('Conversations')}</span>}<button className="subtle-icon" title={t("Refresh sessions")} aria-label={t("Refresh sessions")} disabled={working || listLoading} onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button></div>
+    <div className="session-search"><Search size={14} /><input aria-label={t("Search conversations")} value={search} disabled={working} onChange={(event) => setSearch(event.target.value)} placeholder={t(serverSearch ? 'Search titles and messages' : 'Find a conversation')} /></div>
+    <label className="archived-toggle"><input type="checkbox" checked={showArchived} disabled={working} onChange={(event) => setShowArchived(event.target.checked)} />{t("Include archived")}</label>
     <div className="session-list" aria-busy={listLoading}>
       {filteredSessions.map((session) => {
-        const preview = session.title || `Conversation ${session.id.slice(0, 8)}`
+        const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
         return <button key={session.id} className={`session-item ${session.id === activeSessionId ? 'selected' : ''}`} disabled={working} aria-current={session.id === activeSessionId ? 'true' : undefined} onClick={() => chooseSession(session.id)}>
-          <MessageSquare size={15} /><span>{preview}{session.archived ? ' (archived)' : ''}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+          <MessageSquare size={15} /><span>{preview}{session.archived ? t(' (archived)') : ''}</span><span className="session-time">{new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
         </button>
       })}
-      {moreSessions && <button className="plain-button" disabled={working || listLoading} onClick={loadMoreSessions}>Load more</button>}
-      {!filteredSessions.length && <div className="empty-sessions">{listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.'}</div>}
+      {moreSessions && <button className="plain-button" disabled={working || listLoading} onClick={loadMoreSessions}>{t("Load more")}</button>}
+      {!filteredSessions.length && <div className="empty-sessions">{t(listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.')}</div>}
     </div>
     {drawerOpen && actionError && <div className="action-error" role="alert">{actionError}</div>}
-    <div className="sidebar-bottom">
-      <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{connection?.mode === 'local' || connection?.mode === 'loopback' ? 'Local Core' : 'Remote Core'}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
-      {desktop && <button className="settings-button" onClick={() => { closeDrawer(); setConfigOpen(true) }}><Settings2 size={16} /> Core configuration</button>}
-      <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} /> Connection settings <ChevronDown size={14} /></button>
+    {!managed && <div className="sidebar-bottom">
+      <div className="core-card"><div className="core-card-icon"><Code2 size={16} /></div><div className="core-card-copy"><strong>{t(connection?.mode === 'local' || connection?.mode === 'loopback' ? 'Local Core' : 'Remote Core')}</strong><span>{connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : connection?.url}</span></div><span className={`connection-light ${connectionStatus}`} /></div>
+      {desktop && <button className="settings-button" onClick={() => { closeDrawer(); setConfigOpen(true) }}><Settings2 size={16} />{t("Core configuration")}</button>}
+      <button className="settings-button" onClick={() => setShowConnection(true)}><Settings2 size={16} />{t("Connection settings")}<ChevronDown size={14} /></button>
       {desktop && <button className="settings-button" onClick={() => void window.luneDesktop?.toggleQuick()}><Command size={16} /> Quick window</button>}
-      <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} /> Disconnect</button>
-    </div>
+      <button className="disconnect-button" onClick={() => void disconnect()}><X size={15} />{t("Disconnect")}</button>
+    </div>}
   </>
 
+  function closeFiles() {
+    setFilesOpen(false)
+    fileButtonRef.current?.focus()
+  }
+
+  const workspacePath = managed?.workspace.path || workspaceInfo?.path
+  const workspaceName = workspaceInfo?.name || workspacePath?.split(/[\\/]/).filter(Boolean).at(-1)
+
   return (
-    <div className={`app-shell${quick ? ' quick-mode' : ''}`}>
-      {compactLayout ? <dialog id="session-drawer" className="session-drawer" aria-labelledby="session-drawer-title" ref={drawerRef}
+    <div className={`app-shell${quick ? ' quick-mode' : ''}${!desktop ? ' web-workbench' : ''}${canBrowse && filesOpen ? ' files-open' : ''}`}>
+      {!desktop && <header className="workbench-top">
+        {compactLayout && <button className="icon-button workbench-drawer" aria-label={t('Open conversations')} aria-expanded={drawerOpen}
+          aria-controls={accessibilityId + '-drawer'} onClick={openDrawer} ref={drawerButtonRef}><MessageSquare size={17} /></button>}
+        <span className="workbench-brand"><Sparkles size={19} /> Lune</span>
+        {workspaceName && <span className="workbench-location" title={workspacePath}><FolderOpen size={16} />{workspaceName}</span>}
+        <div className="workbench-controls">
+          <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{t(statusLabel)}</span>
+          <LanguagePicker />
+          <ThemePicker value={theme} onChange={setTheme} />
+          {canBrowse && <button ref={fileButtonRef} className="secondary-button workbench-file-toggle" aria-expanded={filesOpen}
+            aria-label={t('Files')} onClick={() => setFilesOpen(!filesOpen)}><FolderOpen size={16} /><span>{t('Files')}</span></button>}
+        </div>
+      </header>}
+      {compactLayout ? <dialog id={accessibilityId + '-drawer'} className="session-drawer" aria-labelledby={accessibilityId + '-drawer-title'} ref={drawerRef}
         onClose={() => {
           if (drawerRef.current?.open) return
           setDrawerOpen(false)
@@ -1014,61 +1072,60 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
         }}
         onClick={(event) => { if (event.target === event.currentTarget) closeDrawer() }}>
         <div className="drawer-panel">
-          <div className="drawer-heading"><h2 id="session-drawer-title">Conversations</h2><button type="button" className="icon-button" aria-label="Close conversations" onClick={closeDrawer}><X size={18} /></button></div>
+          <div className="drawer-heading"><h2 id={accessibilityId + '-drawer-title'}>{t('Conversations')}</h2><button type="button" className="icon-button" aria-label={t('Close conversations')} onClick={closeDrawer}><X size={18} /></button></div>
           {sessionNavigation}
         </div>
-      </dialog> : <aside className="sidebar" aria-label="Conversations">
-        <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={16} /></div><span>Lune</span><button className="icon-button sidebar-compose" title="New conversation" disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button></div>
+      </dialog> : <aside className="sidebar" aria-label={t('Conversations')}>
+        {desktop && <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={16} /></div><span>Lune</span><button className="icon-button sidebar-compose" title={t("New conversation")} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button></div>}
         {sessionNavigation}
       </aside>}
 
       <main className="chat-area">
         <header className="chat-header">
           <div className="header-title">
-            {compactLayout && <button type="button" className="icon-button drawer-toggle" title="Conversations" aria-label="Open conversations" aria-haspopup="dialog" aria-controls="session-drawer" aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><MessageSquare size={17} /></button>}
-            <span>{activeSession ? describeSession(activeSession, history) : 'Loading conversation…'}</span></div>
+            {desktop && compactLayout && <button type="button" className="icon-button drawer-toggle" title="Conversations" aria-label="Open conversations" aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><MessageSquare size={17} /></button>}
+            <span>{activeSession ? describeSession(activeSession, history, t('New conversation')) : t('Loading conversation…')}</span></div>
           <div className="header-actions">
-            <ThemePicker value={theme} onChange={setTheme} />
+            {desktop && <ThemePicker value={theme} onChange={setTheme} />}
             {quick && <button className="plain-button" onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
             {activeSession && <details className="conversation-menu">
-              <summary>Conversation</summary>
+              <summary>{t("Conversation")}</summary>
               <div>
-                <button disabled={working} onClick={() => setSessionDialog({ kind: 'rename', value: activeSession.title || '' })}>Rename</button>
-                <button disabled={working} onClick={changeArchived}>{activeSession.archived ? 'Unarchive' : 'Archive'}</button>
-                <button disabled={sessionBusy || working} onClick={() => setSessionDialog({ kind: 'delete', value: '' })}>Delete…</button>
-                {has('session.fork') && <button disabled={taskIsRunning || working} onClick={forkSession}>Fork conversation</button>}
-                <button disabled={working} onClick={saveConversation}>Export Markdown</button>
-                {has('session.compact') && <button disabled={sessionBusy || working} onClick={compactSession}>Compact context</button>}
-                {has('session.rewind') && <button disabled={sessionBusy || working || !history.length} onClick={() => setSessionDialog({ kind: 'rewind', value: '1' })}>Rewind…</button>}
-                <label>Reasoning effort <select aria-label="Reasoning effort" value={activeSession.settings.reasoningEffort || ''} disabled={sessionBusy || working} onChange={(event) => void changeSettings({ reasoningEffort: event.target.value })}>
-                  <option value="">Default</option>
-                  {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => <option key={effort}>{effort}</option>)}
+                <button disabled={working} onClick={() => setSessionDialog({ kind: 'rename', value: activeSession.title || '' })}>{t("Rename")}</button>
+                <button disabled={working} onClick={changeArchived}>{t(activeSession.archived ? 'Unarchive' : 'Archive')}</button>
+                <button disabled={sessionBusy || working} onClick={() => setSessionDialog({ kind: 'delete', value: '' })}>{t("Delete…")}</button>
+                {has('session.fork') && <button disabled={taskIsRunning || working} onClick={forkSession}>{t("Fork conversation")}</button>}
+                <button disabled={working} onClick={saveConversation}>{t("Export Markdown")}</button>
+                {has('session.compact') && <button disabled={sessionBusy || working} onClick={compactSession}>{t("Compact context")}</button>}
+                {has('session.rewind') && <button disabled={sessionBusy || working || !history.length} onClick={() => setSessionDialog({ kind: 'rewind', value: '1' })}>{t("Rewind…")}</button>}
+                <label>{t('Reasoning effort')} <select aria-label={t("Reasoning effort")} value={activeSession.settings.reasoningEffort || ''} disabled={sessionBusy || working} onChange={(event) => void changeSettings({ reasoningEffort: event.target.value })}>
+                  <option value="">{t("Default")}</option>
+                  {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((effort) => <option value={effort} key={effort}>{t(effort)}</option>)}
                 </select></label>
               </div>
             </details>}
-            <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{statusLabel}</span>
-            {models.length > 0 && <label className="model-picker"><span>MODEL</span><select value={selectedModel} disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused} onChange={(event) => void changeModel(event.target.value)}>{models.map((model) => <option value={model.profile} key={model.profile}>{model.displayName || model.profile}</option>)}</select><ChevronDown size={13} /></label>}
-            <button className="icon-button header-new" title="New conversation" onClick={() => void createSession()}><FilePlus2 size={17} /></button>
+            {desktop && <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{statusLabel}</span>}
+            {models.length > 0 && <label className="model-picker"><span>{t("MODEL")}</span><select value={selectedModel} disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused} onChange={(event) => void changeModel(event.target.value)}>{models.map((model) => <option value={model.profile} key={model.profile}>{model.displayName || model.profile}</option>)}</select><ChevronDown size={13} /></label>}
+            <button className="icon-button header-new" title={t("New conversation")} onClick={() => void createSession()}><FilePlus2 size={17} /></button>
           </div>
         </header>
 
         <div className="conversation-scroll">
           <div className="conversation-column">
             {displayedMessages.length === 0 && !streamingText && <div className="welcome-block">
-              <div className="welcome-symbol"><Sparkles size={23} /></div><div className="welcome-kicker">LUNE CORE IS READY</div>
-              <h2>What would you like<br />to work through?</h2>
-              <p>Ask a question, explore an idea, or give Lune a task. Your conversation belongs to this session.</p>
-              <div className="suggestion-row"><button onClick={() => setDraft('Help me understand this project.')}>Understand a project <ArrowDown size={13} /></button><button onClick={() => setDraft('Help me make a plan for…')}>Make a plan <ArrowDown size={13} /></button></div>
+              <div className="welcome-symbol"><Sparkles size={23} /></div>
+              <h2>{t('What would you like to work through?')}</h2>
+              <div className="suggestion-row"><button onClick={() => setDraft(t('Help me understand this project.'))}>{t("Understand a project")}<ArrowDown size={13} /></button><button onClick={() => setDraft(t('Help me make a plan for…'))}>{t("Make a plan")}<ArrowDown size={13} /></button></div>
             </div>}
             {displayedMessages.map((message) => <article className={`message ${message.role}`} key={message.id}>
               {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={14} /></div>}
-              <div className="message-content"><div className="message-label">{message.role === 'user' ? 'YOU' : 'LUNE'}</div><div className="markdown-body"><ReactMarkdown>{message.text}</ReactMarkdown>
+              <div className="message-content"><div className="message-label">{message.role === 'user' ? t('YOU') : 'LUNE'}</div><div className="markdown-body"><ReactMarkdown>{message.text}</ReactMarkdown>
                 {message.attachments?.map((file, index) => <details className="history-attachment" key={index}><summary>{file.name}</summary>
                   {file.image ? <img src={file.image} alt={file.name} /> : <pre>{file.text}</pre>}
                 </details>)}
               </div></div>
             </article>)}
-            {record.length > 0 && <details className="tool-record"><summary>Tool calls ({record.length})</summary>
+            {record.length > 0 && <details className="tool-record"><summary>{t('Tool calls')} ({record.length})</summary>
               {record.map((item, index) => <details key={index}><summary>{item.name}</summary><pre>{item.arguments}</pre>{item.output !== undefined && <pre>{item.output}</pre>}</details>)}
             </details>}
             {streamingText && <article className="message assistant streaming-message"><div className="assistant-avatar"><Sparkles size={14} /></div><div className="message-content"><div className="message-label">LUNE <span className="streaming-indicator"><i /><i /><i /></span></div><div className="markdown-body"><ReactMarkdown>{streamingText}</ReactMarkdown><span className="caret" /></div></div></article>}
@@ -1076,24 +1133,24 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
             {activity.length > 0 && (taskIsRunning || runtime.queue.length > 0) && <div className="activity-tray">{activity.slice(0, 3).map((item) => <div className={`activity-item ${item.failed ? 'failed' : ''}`} key={item.id}><span className="activity-dot" /> <span>{item.label}</span>{item.detail && <small>{item.detail}</small>}</div>)}</div>}
 
             {pending.map((item, index) => <div className="pending-card" key={`${item.kind}-${item.approval?.id ?? item.userQuestion?.id ?? item.interaction?.id ?? item.toolRecovery?.invocationId ?? index}`}>
-              <div className="pending-heading"><div className="pending-icon"><CircleHelp size={17} /></div><div><strong>{item.kind === 'approval' ? 'Permission needed' : item.kind === 'user_question' ? 'A question for you' : item.kind === 'user_interaction' ? 'Input requested' : item.kind === 'tool_recovery' ? 'Tool needs attention' : item.kind === 'model_recovery' ? 'Run paused' : 'Execution blocked'}</strong><span>{item.kind === 'approval' ? `Lune wants to use ${item.approval?.tool ?? 'a tool'}` : 'Your response will continue this run.'}</span></div></div>
+              <div className="pending-heading"><div className="pending-icon"><CircleHelp size={17} /></div><div><strong>{t(item.kind === 'approval' ? 'Permission needed' : item.kind === 'user_question' ? 'A question for you' : item.kind === 'user_interaction' ? 'Input requested' : item.kind === 'tool_recovery' ? 'Tool needs attention' : item.kind === 'model_recovery' ? 'Run paused' : 'Execution blocked')}</strong><span>{item.kind === 'approval' ? `${t('Lune wants to use')} ${item.approval?.tool ?? t('a tool')}` : t('Your response will continue this run.')}</span></div></div>
               {item.approval && <>
                 {item.approval.autoReviewReason && <p className="pending-reason">{item.approval.autoReviewReason}</p>}
                 <pre className="json-preview">{JSON.stringify(item.approval.arguments, null, 2)}</pre>
-                <div className="pending-actions"><button className="plain-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'deny')}>Deny</button><button className="secondary-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_once')}>Allow once</button><button className="primary-button compact" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_session')}>Allow this session</button></div>
+                <div className="pending-actions"><button className="plain-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'deny')}>{t("Deny")}</button><button className="secondary-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_once')}>{t("Allow once")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_session')}>{t("Allow this session")}</button></div>
               </>}
               {item.userQuestion && <QuestionForm request={item.userQuestion} disabled={working} onSubmit={(answers) => resolveQuestion(item.userQuestion!, answers)} />}
               {item.interaction && <InteractionForm request={item.interaction} disabled={working} onSubmit={(value) => resolveInteraction(item.interaction!, value)} />}
-              {item.toolRecovery && <><p className="pending-reason">The <strong>{item.toolRecovery.tool}</strong> tool did not finish cleanly. You can retry it or skip it.</p><pre className="json-preview">{JSON.stringify(item.toolRecovery.arguments, null, 2)}</pre><div className="pending-actions"><button className="secondary-button" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'skip' })}>Skip</button><button className="primary-button compact" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'retry' })}>Retry tool</button></div></>}
-              {Boolean(item.modelRecovery) && <p className="pending-reason">This run has a saved checkpoint. Resume it when you are ready.</p>}
+              {item.toolRecovery && <><p className="pending-reason"><strong>{item.toolRecovery.tool}</strong> · {t('You can retry this tool or skip it.')}</p><pre className="json-preview">{JSON.stringify(item.toolRecovery.arguments, null, 2)}</pre><div className="pending-actions"><button className="secondary-button" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'skip' })}>{t("Skip")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'retry' })}>{t("Retry tool")}</button></div></>}
+              {Boolean(item.modelRecovery) && <p className="pending-reason">{t("This run has a saved checkpoint. Resume it when you are ready.")}</p>}
               {item.blocker && <p className="pending-reason">{item.blocker.reason}</p>}
             </div>)}
 
-            {taskIsPaused && <div className="paused-banner"><div><strong>This run is paused</strong><span>Resume from its saved checkpoint, or discard it.</span></div><button className="plain-button" disabled={working} onClick={() => void discardPaused()}>Discard</button><button className="primary-button compact" disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} /> Resume run</button></div>}
-            {runtime.queue.length > 0 && <div className="queue-banner"><Command size={15} /><div><strong>Message queue</strong>
+            {taskIsPaused && <div className="paused-banner"><div><strong>{t("This run is paused")}</strong><span>{t("Resume from its saved checkpoint, or discard it.")}</span></div><button className="plain-button" disabled={working} onClick={() => void discardPaused()}>{t("Discard")}</button><button className="primary-button compact" disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} />{t("Resume run")}</button></div>}
+            {runtime.queue.length > 0 && <div className="queue-banner"><Command size={15} /><div><strong>{t("Message queue")}</strong>
               <ol>{runtime.queue.map((item) => <li key={item.executionId}>
-                <span>#{item.position} · {item.status}</span>
-                {has('turn.cancelQueued') && item.status === 'queued' && <button className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>Cancel</button>}
+                <span>#{item.position} · {t(item.status)}</span>
+                {has('turn.cancelQueued') && item.status === 'queued' && <button className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>{t("Cancel")}</button>}
               </li>)}</ol>
             </div></div>}
             <div ref={bottomRef} />
@@ -1103,8 +1160,8 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
         <div className="composer-wrap">
           {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
           {info && <div className="form-status" role="status">{info}</div>}
-          {!drawerOpen && actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label="Dismiss"><X size={14} /></button></div>}
-          {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.'}</div>}
+          {!drawerOpen && actionError && <div className="action-error"><ShieldAlert size={15} /><span>{actionError}</span><button onClick={() => setActionError('')} aria-label={t("Dismiss")}><X size={14} /></button></div>}
+          {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {t(connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.')}</div>}
           <div className="composer" onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }} onDrop={(event) => {
             if (!has('turn.attachments')) return
             event.preventDefault()
@@ -1114,7 +1171,7 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
               {file.mediaType.startsWith('image/') && <img alt="" src={`data:${file.mediaType};base64,${file.data}`} />}
               <span>{file.name}</span><button aria-label={`Remove ${file.name}`} disabled={working} onClick={() => setAttachments((items) => items.filter((_, at) => at !== index))}>×</button>
             </li>)}</ul>}
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} placeholder={runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune…'} rows={1} disabled={!client || !activeSession || working} />
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} placeholder={t(runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune…')} rows={1} disabled={!client || !activeSession || working} />
             <div className="composer-footer">
               <div className="composer-options">
                 {has('turn.attachments') && <>
@@ -1122,56 +1179,57 @@ export default function App({ initialTheme }: { initialTheme: ThemePreference })
                     addFiles(Array.from(event.target.files ?? []))
                     event.target.value = ''
                   }} />
-                  <button className="plain-button" disabled={working} onClick={() => fileInput.current?.click()}>Attach</button>
+                  <button className="plain-button" disabled={working} onClick={() => fileInput.current?.click()}>{t("Attach")}</button>
                   {desktop && modelOption?.supportsInputImages && <button className="plain-button" disabled={working} onClick={captureScreenshot}>Screenshot</button>}
                 </>}
-                {has('turn.plan') && <button className="plain-button plan-button" aria-pressed={planMode} disabled={working} onClick={() => setPlanMode(!planMode)} title="Use read-only tools for this turn">Plan</button>}
+                {has('turn.plan') && <button className="plain-button plan-button" aria-pressed={planMode} disabled={working} onClick={() => setPlanMode(!planMode)} title={t("Use read-only tools for this turn")}>{t("Plan")}</button>}
               </div>
               <div className="composer-actions">
-                {taskIsRunning && runtime.task.executionId && !planMode && <button className="plain-button" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}>Add to running task</button>}
-                {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button className="stop-button" disabled={working} onClick={() => void stopRun()}><CircleStop size={15} />{taskIsQueued ? 'Cancel queued' : 'Stop'}</button>}
-                <button className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label="Send message">{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button>
+                {taskIsRunning && runtime.task.executionId && !planMode && <button className="plain-button" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}>{t("Add to running task")}</button>}
+                {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button className="stop-button" disabled={working} onClick={() => void stopRun()}><CircleStop size={15} />{t(taskIsQueued ? 'Cancel queued' : 'Stop')}</button>}
+                <button className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label={t("Send message")}>{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button>
               </div>
             </div>
           </div>
           {activeSession?.sessionUsage && <div className="composer-note">
-            Session tokens · {activeSession.sessionUsage.input.toLocaleString()} input · {activeSession.sessionUsage.output.toLocaleString()} output
-            {contextLimit ? ` · ${contextLimit.toLocaleString()} context limit` : ''}
+            {t('Session tokens')} · {activeSession.sessionUsage.input.toLocaleString()} {t('input')} · {activeSession.sessionUsage.output.toLocaleString()} {t('output')}
+            {contextLimit ? ` · ${contextLimit.toLocaleString()} ${t('context limit')}` : ''}
           </div>}
         </div>
       </main>
+      {canBrowse && <WorkspaceFiles client={client} workspace={workspaceInfo} visible={filesOpen} close={closeFiles} />}
 
       {configSettings}
       {sessionDialog && <div className="modal-backdrop">
         <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
-          <h2 id="session-dialog-title">{sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation'}</h2>
-          {sessionDialog.kind === 'delete' ? <p>This removes the conversation and its saved history.</p> :
-            <label className="form-field">{sessionDialog.kind === 'rename' ? 'Title' : 'User turns to remove'}
+          <h2 id="session-dialog-title">{t(sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation')}</h2>
+          {sessionDialog.kind === 'delete' ? <p>{t("This removes the conversation and its saved history.")}</p> :
+            <label className="form-field">{t(sessionDialog.kind === 'rename' ? 'Title' : 'User turns to remove')}
               <input value={sessionDialog.value} type={sessionDialog.kind === 'rewind' ? 'number' : 'text'} min={1}
                 onChange={(event) => setSessionDialog({ kind: sessionDialog.kind, value: event.target.value })} />
             </label>}
           {Boolean(sessionDialog.excerpts?.length) && <ol className="rewind-excerpts">{sessionDialog.excerpts?.map((excerpt, index) => <li key={index}>{excerpt}</li>)}</ol>}
-          {sessionDialog.removed !== undefined && <p>{sessionDialog.removed} turn(s) will be removed from the end of the conversation.</p>}
+          {sessionDialog.removed !== undefined && <p>{sessionDialog.removed} {t('turn(s) will be removed from the end of the conversation.')}</p>}
           {actionError && <div className="form-error" role="alert">{actionError}</div>}
-          <div className="modal-footer"><button className="plain-button" disabled={working} onClick={() => setSessionDialog(null)}>Cancel</button><button className="primary-button compact" disabled={working || sessionDialog.removed === 0} onClick={confirmSessionDialog}>
-            {sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview'}
+          <div className="modal-footer"><button className="plain-button" disabled={working} onClick={() => setSessionDialog(null)}>{t("Cancel")}</button><button className="primary-button compact" disabled={working || sessionDialog.removed === 0} onClick={confirmSessionDialog}>
+            {t(sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview')}
           </button></div>
         </section>
       </div>}
 
       {showConnection && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowConnection(false) }}>
         <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="connection-modal-title">
-          <div className="modal-top"><div className="brand-mark small"><Settings2 size={15} /></div><button className="icon-button" onClick={() => setShowConnection(false)} aria-label="Close"><X size={17} /></button></div>
-          <div className="eyebrow">CONNECTION</div><h2 id="connection-modal-title">Connect to a Core</h2><p className="modal-copy">Change the Core that serves this frontend. Your sessions are stored with that Core.</p>
+          <div className="modal-top"><div className="brand-mark small"><Settings2 size={15} /></div><button className="icon-button" onClick={() => setShowConnection(false)} aria-label={t("Close")}><X size={17} /></button></div>
+          <div className="eyebrow">CONNECTION</div><h2 id="connection-modal-title">{t("Connect to a Core")}</h2><p className="modal-copy">{t("Change the Core that serves this frontend. Your sessions are stored with that Core.")}</p>
           {desktop && <div className="connection-tabs compact-tabs"><button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={15} /> This computer</button><button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={15} /> Remote Core</button></div>}
-          {mode === 'local' && desktop ? <div className="form-field"><label>Workspace folder</label><div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" /><button onClick={() => void chooseWorkspace()}><FolderOpen size={16} /></button></div><small>Requires a workspace config.json with a model provider.</small></div> : <><div className="form-field"><label>Core WebSocket URL</label><input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} autoCapitalize="none" spellCheck={false} /></div><div className="form-field"><label>Access token</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></div></>}
-          {(connectionError || connectionStatus === 'reconnecting') && <div className="form-error"><ShieldAlert size={15} /><span>{connectionError || 'The connection was interrupted. Reconnect to continue.'}</span></div>}
+          {mode === 'local' && desktop ? <div className="form-field"><label>Workspace folder</label><div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" /><button onClick={() => void chooseWorkspace()}><FolderOpen size={16} /></button></div><small>Requires a workspace config.json with a model provider.</small></div> : <><div className="form-field"><label>{t("Core WebSocket URL")}</label><input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} autoCapitalize="none" spellCheck={false} /></div><div className="form-field"><label>{t("Access token")}</label><input type="password" value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></div></>}
+          {(connectionError || connectionStatus === 'reconnecting') && <div className="form-error"><ShieldAlert size={15} /><span>{t(connectionError || 'The connection was interrupted. Reconnect to continue.')}</span></div>}
           {desktop && <div className="form-field"><label htmlFor="quick-shortcut">Quick window shortcut</label>
             <div className="input-with-action"><input id="quick-shortcut" value={shortcut} onChange={(event) => setShortcut(event.target.value)} />
               <button onClick={() => void window.luneDesktop?.setShortcut(shortcut).then(setShortcut).catch((error) => setConnectionError(errorMessage(error)))}>Set</button>
             </div>
           </div>}
-          <div className="modal-footer"><span>{connectionStatus === 'connected' ? <><span className="connection-light connected" /> Connected</> : statusLabel}</span><button className="primary-button compact" disabled={connectDisabled} onClick={() => { setBusy(true); const options: RuntimeConnection = mode === 'local' ? { mode: 'local', workspace } : { mode: 'remote', url: remoteURL.trim(), token }; void activateConnection(options).finally(() => setBusy(false)) }}>{busy ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={14} />}{connectionStatus === 'connected' ? 'Reconnect' : 'Connect'}</button></div>
+          <div className="modal-footer"><span>{connectionStatus === 'connected' ? <><span className="connection-light connected" /> {t('Connected')}</> : t(statusLabel)}</span><button className="primary-button compact" disabled={connectDisabled} onClick={() => { setBusy(true); const options: RuntimeConnection = mode === 'local' ? { mode: 'local', workspace } : { mode: 'remote', url: remoteURL.trim(), token }; void activateConnection(options).finally(() => setBusy(false)) }}>{busy ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={14} />}{t(connectionStatus === 'connected' ? 'Reconnect' : 'Connect')}</button></div>
         </section>
       </div>}
     </div>
@@ -1183,15 +1241,16 @@ function QuestionForm({ request, disabled, onSubmit }: {
   disabled: boolean
   onSubmit: (answers: Array<{ question_id: string; answer: string }>) => void
 }) {
+  const t = useTranslate()
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const questions = request.questions ?? []
   const complete = questions.length > 0 && questions.every((question) => (answers[question.id] ?? '').trim())
   return <div className="question-form">
     {questions.map((question) => <fieldset className="question-item" key={question.id}><legend>{question.question}</legend>
-      {question.options?.length ? <div className="question-options">{question.options.map((option) => <label className={`question-option ${answers[question.id] === option.label ? 'chosen' : ''}`} key={option.label}><input type="radio" name={question.id} value={option.label} checked={answers[question.id] === option.label} onChange={() => setAnswers((value) => ({ ...value, [question.id]: option.label }))} /><span><strong>{option.label}{option.recommended && <em>Suggested</em>}</strong><small>{option.description}</small></span></label>)}</div> : <input className="text-answer" value={answers[question.id] ?? ''} onChange={(event) => setAnswers((value) => ({ ...value, [question.id]: event.target.value }))} placeholder="Your answer" />}
+      {question.options?.length ? <div className="question-options">{question.options.map((option) => <label className={`question-option ${answers[question.id] === option.label ? 'chosen' : ''}`} key={option.label}><input type="radio" name={question.id} value={option.label} checked={answers[question.id] === option.label} onChange={() => setAnswers((value) => ({ ...value, [question.id]: option.label }))} /><span><strong>{option.label}{option.recommended && <em>{t("Suggested")}</em>}</strong><small>{option.description}</small></span></label>)}</div> : <input className="text-answer" value={answers[question.id] ?? ''} onChange={(event) => setAnswers((value) => ({ ...value, [question.id]: event.target.value }))} placeholder={t("Your answer")} />}
     </fieldset>)}
-    {!questions.length && <p className="pending-reason">This clarification needs an answer, but Core did not provide question details.</p>}
-    <div className="pending-actions"><button className="primary-button compact" disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}><Check size={14} /> Send answer</button></div>
+    {!questions.length && <p className="pending-reason">{t("This clarification needs an answer, but Core did not provide question details.")}</p>}
+    <div className="pending-actions"><button className="primary-button compact" disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}><Check size={14} />{t("Send answer")}</button></div>
   </div>
 }
 
@@ -1200,7 +1259,8 @@ function InteractionForm({ request, disabled, onSubmit }: {
   disabled: boolean
   onSubmit: (value: unknown) => void
 }) {
+  const t = useTranslate()
   const [value, setValue] = useState('{\n  "action": "accept",\n  "content": {}\n}')
   const [error, setError] = useState('')
-  return <div className="interaction-form"><p className="pending-reason">{request.serverName} is asking for input.</p><pre className="json-preview">{JSON.stringify(request.request, null, 2)}</pre><label className="interaction-label">Response JSON</label><textarea value={value} onChange={(event) => { setValue(event.target.value); setError('') }} spellCheck={false} /><div className="pending-actions">{error && <small className="inline-error">{error}</small>}<button className="primary-button compact" disabled={disabled} onClick={() => { try { onSubmit(JSON.parse(value)) } catch { setError('Enter a valid JSON response.') } }}><Check size={14} /> Send response</button></div></div>
+  return <div className="interaction-form"><p className="pending-reason">{request.serverName} {t('is asking for input.')}</p><pre className="json-preview">{JSON.stringify(request.request, null, 2)}</pre><label className="interaction-label">{t("Response JSON")}</label><textarea value={value} onChange={(event) => { setValue(event.target.value); setError('') }} spellCheck={false} /><div className="pending-actions">{error && <small className="inline-error">{t(error)}</small>}<button className="primary-button compact" disabled={disabled} onClick={() => { try { onSubmit(JSON.parse(value)) } catch { setError('Enter a valid JSON response.') } }}><Check size={14} />{t("Send response")}</button></div></div>
 }

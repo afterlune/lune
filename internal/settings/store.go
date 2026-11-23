@@ -15,6 +15,7 @@ import (
 type Store struct{ db *sql.DB }
 
 const tuiThemeKey = "tui.theme"
+const webLanguageKey = "web.language"
 
 func UserSettingsPath() (string, error) {
 	root, err := os.UserConfigDir()
@@ -116,4 +117,16 @@ func (s *Store) saveSetting(key, value string) error {
 		return fmt.Errorf("save %s setting: %w", key, err)
 	}
 	return nil
+}
+
+func (s *Store) WebLanguage() (string, error) {
+	value, _, err := s.setting(webLanguageKey)
+	return value, err
+}
+
+func (s *Store) SaveWebLanguage(value string) error {
+	if value != "en" && value != "zh" {
+		return errors.New("invalid interface language")
+	}
+	return s.saveSetting(webLanguageKey, value)
 }

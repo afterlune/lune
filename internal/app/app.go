@@ -236,9 +236,24 @@ func newCoreWithDiagnostics(workspace string, diagnostics io.Writer, noSandbox .
 }
 
 func openCore(workspace string, diagnostics io.Writer, allowLocalCommand, exclusive bool) (*core.Core, error) {
-	projectConfig, configPath, err := loadUserProjectConfigWithDiagnostics(diagnostics)
+	config, err := workspaceCoreConfig(workspace, diagnostics)
 	if err != nil {
 		return nil, err
+	}
+	config.AllowLocalCommand = allowLocalCommand
+	config.ExclusiveState = exclusive
+	client, err := core.New(config)
+	if err != nil {
+		return nil, fmt.Errorf("initialize Lune: %w", err)
+	}
+	enableCoreIntegrations(client, config, diagnostics)
+	return client, nil
+}
+
+func workspaceCoreConfig(workspace string, diagnostics io.Writer) (core.Config, error) {
+	projectConfig, _, err := loadUserProjectConfigWithDiagnostics(diagnostics)
+	if err != nil {
+		return core.Config{}, err
 	}
 	helperPath := findSandboxHelper(workspace)
 	// Core owns the sandbox decision, including LUNE_SANDBOX/LUNE_NO_SANDBOX, so the
@@ -262,26 +277,21 @@ func openCore(workspace string, diagnostics io.Writer, allowLocalCommand, exclus
 		toolchainRoots = toolchains.AutoDetectRoots()
 	}
 
-	baseCfg := core.Config{
+	return core.Config{
 		Workspace:             workspace,
-		ExclusiveState:        exclusive,
 		StateDir:              filepath.Join(workspace, ".lune"),
 		Logger:                slog.Default(),
 		PersonalInstructions:  engram.Instructions(projectConfig.MCPServers),
 		SandboxHelperPath:     helperPath,
-		AllowLocalCommand:     allowLocalCommand,
 		ProjectConfig:         &projectConfig,
 		CommandToolchainPaths: toolchainRoots,
-	}
+	}, nil
+}
 
-	client, err := core.New(baseCfg)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Lune with user config %s: %w", configPath, err)
-	}
-	if err := engram.EnsureEnabled(client, projectConfig.MCPServers); err != nil && diagnostics != nil {
+func enableCoreIntegrations(client *core.Core, config core.Config, diagnostics io.Writer) {
+	if err := engram.EnsureEnabled(client, config.ProjectConfig.MCPServers); err != nil && diagnostics != nil {
 		fmt.Fprintln(diagnostics, "warning: Engram MCP could not be connected; continuing without automatic memory. Check `/mcp list` or retry with `/mcp enable engram`.")
 	}
-	return client, nil
 }
 
 func loadUserProjectConfig() (core.ProjectConfig, string, error) {

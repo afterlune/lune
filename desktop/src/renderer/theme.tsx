@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Monitor, Moon, Sun } from 'lucide-react'
 import { isThemePreference, windowColors, type ThemePreference } from '../shared/theme'
+import { useTranslate } from './language'
 
 const storageKey = 'lune:appearance'
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)')
@@ -28,6 +29,7 @@ function updateThemeColor(): void {
 systemDark.addEventListener('change', updateThemeColor)
 
 export function ThemePicker({ value, onChange }: { value: ThemePreference; onChange: (value: ThemePreference) => void }) {
+  const t = useTranslate()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(false)
   const Icon = value === 'system' ? Monitor : value === 'dark' ? Moon : Sun
@@ -53,12 +55,12 @@ export function ThemePicker({ value, onChange }: { value: ThemePreference; onCha
   }
 
   return <div className="appearance">
-    <label className="theme-picker" title="Appearance">
+    <label className="theme-picker" title={t('Appearance')}>
       <Icon size={15} aria-hidden="true" />
-      <select aria-label="Appearance" value={value} disabled={saving} onChange={(event) => void choose(event.currentTarget.value)}>
-        <option value="system">System</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
+      <select aria-label={t('Appearance')} value={value} disabled={saving} onChange={(event) => void choose(event.currentTarget.value)}>
+        <option value="system">{t('System')}</option>
+        <option value="light">{t('Light')}</option>
+        <option value="dark">{t('Dark')}</option>
       </select>
     </label>
     {error && <span className="theme-error" role="alert">Could not save appearance.</span>}
