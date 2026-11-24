@@ -102,6 +102,20 @@ export interface ModelFailure {
   stream_started?: boolean
 }
 
+export interface UserQuestionDraftResponse {
+  question_id: string
+  selected_option?: number
+  notes?: string
+  custom_answer?: string
+  confirmed?: boolean
+}
+
+export interface UserQuestionDraft {
+  current_question_id?: string
+  responses?: UserQuestionDraftResponse[]
+  raw_payload?: unknown
+}
+
 export interface Pending {
   kind: string
   approval?: {
@@ -123,6 +137,8 @@ export interface Pending {
       question: string
       options?: Array<{ label: string; description: string; recommended?: boolean }>
     }>
+    draft?: UserQuestionDraft
+    draftPayload?: unknown
   }
   interaction?: { id: string; serverName: string; request: unknown }
   toolRecovery?: { invocationId: string; tool: string; arguments: unknown }
@@ -133,6 +149,7 @@ export interface Pending {
 export interface RuntimeEvent {
   kind: string
   cursor?: number
+  occurredAt?: string
   status?: string
   executionId?: string
   taskId?: string
@@ -142,9 +159,29 @@ export interface RuntimeEvent {
   goal?: Goal | null
   error?: string
   modelFailure?: ModelFailure
-  tool?: { id?: string; invocationId?: string; name?: string; arguments?: unknown; failed?: boolean; canceled?: boolean; duration?: number }
+  tool?: { id?: string; invocationId?: string; agentId?: string; name?: string; arguments?: unknown; failed?: boolean; canceled?: boolean; duration?: number }
   stream?: { type?: string; purpose?: string; delta?: string; toolName?: string }
+  agentId?: string
   agentName?: string
+  agentRole?: string
+  agentTask?: string
+  teamRunId?: string
+  usage?: Partial<UsageTotals>
+  estimatedInputTokens?: number
+}
+
+export interface LiveAgentRun {
+  id: string
+  name: string
+  role?: string
+  task?: string
+  teamRunId?: string
+  status: 'running' | 'completed' | 'failed'
+  currentTool?: string
+  toolCount: number
+  startedAt: number
+  durationMs?: number
+  error?: string
 }
 
 export interface Activity {
@@ -198,14 +235,37 @@ export interface MCPServerStatus {
   lastError?: string
 }
 
-export interface MCPPrompt {
+export interface MCPPromptArgument {
   name: string
   description?: string
+  required?: boolean
+}
+
+export interface MCPPrompt {
+  name: string
+  title?: string
+  description?: string
+  arguments?: MCPPromptArgument[]
+}
+
+export interface MCPPromptResult {
+  description?: string
+  input?: unknown
 }
 
 export interface MCPResource {
   uri: string
   name: string
+  title?: string
+  description?: string
+  mimeType?: string
+  size?: number
+}
+
+export interface MCPResourceTemplate {
+  uriTemplate: string
+  name: string
+  title?: string
   description?: string
   mimeType?: string
 }

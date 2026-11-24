@@ -1,5 +1,7 @@
 import { isValidElement, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeHighlight from 'rehype-highlight'
 import { Check, Copy } from 'lucide-react'
 import { useTranslate } from './language'
 
@@ -58,18 +60,22 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 
 const previewComponents: Components = {
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  table: ({ children }) => <div className="table-wrap"><table>{children}</table></div>,
   img: ({ alt }) => <span>{alt}</span>,
   a: ({ children }) => <span>{children}</span>,
 }
 
 const defaultComponents: Components = {
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  table: ({ children }) => <div className="table-wrap"><table>{children}</table></div>,
 }
 
 export function MarkdownContent({ text, safePreview = false }: { text: string; safePreview?: boolean }) {
   return (
     <ReactMarkdown
       skipHtml={safePreview}
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={safePreview ? [] : [[rehypeHighlight, { detect: true }]]}
       components={safePreview ? previewComponents : defaultComponents}
     >
       {text}

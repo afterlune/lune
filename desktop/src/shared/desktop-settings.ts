@@ -1,9 +1,19 @@
 export type ConfigDocument = Record<string, unknown>
 
+export type MCPServerSummary = {
+  transport: 'stdio' | 'streamable-http'
+  command?: string
+  args?: string[]
+  envKeys?: string[]
+  url?: string
+  clientMetadataURL?: string
+}
+
 export type ConfigView = {
   document: ConfigDocument
   savedKeys: string[]
   hasMCP: boolean
+  mcpServers?: Record<string, MCPServerSummary>
   canSaveSecrets: boolean
   secretStorage?: 'encrypted' | 'sqlite'
   inheritedProfiles: string[]

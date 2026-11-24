@@ -5,6 +5,30 @@ const formats: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
 }
 
+const mimeToExt: Record<string, string> = {
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+  'text/csv': 'csv',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+}
+
+export function isSupportedClipboardFile(file: File): boolean {
+  const ext = file.name.includes('.') ? file.name.split('.').at(-1)?.toLowerCase() ?? '' : ''
+  return Boolean(formats[ext] || mimeToExt[file.type])
+}
+
+function normalizeAttachmentName(file: File, mediaType: string): string {
+  const ext = mimeToExt[mediaType] || 'bin'
+  const rawName = file.name.trim()
+  if (!rawName || (mediaType.startsWith('image/') && rawName === 'image.png' && file.lastModified)) {
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    return mediaType.startsWith('image/') ? `pasted-image-${suffix}.${ext}` : `pasted-text-${suffix}.${ext}`
+  }
+  if (!rawName.includes('.')) return `${rawName}.${ext}`
+  return rawName
+}
+
 export function validateAttachments(files: Attachment[], supportsImages: boolean): void {
   if (files.length > 5 || files.reduce((total, file) => total + file.size, 0) > 4 * 1024 * 1024) {
     throw new Error('Attach up to five files, totaling at most 4 MiB.')
@@ -17,17 +41,18 @@ export function validateAttachments(files: Attachment[], supportsImages: boolean
 }
 
 export async function readAttachment(file: File): Promise<Attachment> {
-  const mediaType = formats[file.name.split('.').at(-1)?.toLowerCase() ?? '']
-    || (file.type === 'text/plain' && !file.name.includes('.') ? file.type : '')
-  if (!mediaType) throw new Error(`Unsupported file: ${file.name}`)
+  const ext = file.name.includes('.') ? file.name.split('.').at(-1)?.toLowerCase() ?? '' : ''
+  const mediaType = formats[ext] || (mimeToExt[file.type] ? file.type : '')
+  if (!mediaType) throw new Error(`Unsupported file: ${file.name || file.type || 'unknown'}`)
+  const name = normalizeAttachmentName(file, mediaType)
   const fileLimit = mediaType.startsWith('image/') ? 2 * 1024 * 1024 : 128 * 1024
-  if (file.size > fileLimit) throw new Error(`${file.name} exceeds the attachment size limit.`)
+  if (file.size > fileLimit) throw new Error(`${name} exceeds the attachment size limit.`)
   if (!mediaType.startsWith('image/')) {
     try {
       const contents = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer())
       if (contents.includes('\0')) throw new Error('Binary data')
     } catch {
-      throw new Error(`${file.name} is not UTF-8 text.`)
+      throw new Error(`${name} is not UTF-8 text.`)
     }
   }
   const data = await new Promise<string>((resolve, reject) => {
@@ -36,7 +61,7 @@ export async function readAttachment(file: File): Promise<Attachment> {
     reader.onload = () => resolve(String(reader.result).split(',', 2)[1])
     reader.readAsDataURL(file)
   })
-  return { name: file.name, mediaType, data, size: file.size }
+  return { name, mediaType, data, size: file.size }
 }
 
 export function downloadMarkdown(text: string): void {

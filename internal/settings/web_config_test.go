@@ -253,3 +253,122 @@ func TestFetchWebProviderModels(t *testing.T) {
 		t.Fatalf("anthropic models = (%#v, %v)", anthModels, err)
 	}
 }
+
+func TestWebConfigMCPRedactionAndEnvMerge(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	// Save global MCP servers before configuring any model providers.
+	err = store.SaveWebConfig("", map[string]any{
+		"mcpServers": map[string]any{
+			"local": map[string]any{
+				"transport": "stdio",
+				"command":   "npx",
+				"args":      []string{"-y", "@modelcontextprotocol/server-filesystem", "."},
+				"env": map[string]any{
+					"API_TOKEN": "s3cr3t-value",
+					"MODE":      "prod",
+				},
+			},
+			"docs": map[string]any{
+				"transport": "streamable-http",
+				"url":       "https://mcp.example.com/mcp",
+			},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWebConfig MCP initial: %v", err)
+	}
+
+	view, err := store.WebConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.HasMCP || len(view.MCPServers) != 2 {
+		t.Fatalf("WebConfig MCP = (hasMCP=%v, servers=%#v)", view.HasMCP, view.MCPServers)
+	}
+	localSummary := view.MCPServers["local"]
+	if localSummary.Transport != "stdio" || localSummary.Command != "npx" ||
+		len(localSummary.EnvKeys) != 2 || localSummary.EnvKeys[0] != "API_TOKEN" || localSummary.EnvKeys[1] != "MODE" {
+		t.Fatalf("unexpected local summary: %#v", localSummary)
+	}
+	rawView, _ := json.Marshal(view)
+	if contains := string(rawView); contains == "" || jsonStringContains(contains, "s3cr3t-value") {
+		t.Fatalf("WebConfig leaked MCP env secret value: %s", contains)
+	}
+
+	// Update keeping API_TOKEN via keepEnvKeys, adding NEW_VAR, and dropping MODE.
+	err = store.SaveWebConfig("", map[string]any{
+		"mcpServers": map[string]any{
+			"local": map[string]any{
+				"transport":   "stdio",
+				"command":     "npx",
+				"args":        []string{"-y", "@modelcontextprotocol/server-filesystem", "."},
+				"keepEnvKeys": []string{"API_TOKEN"},
+				"env": map[string]any{
+					"NEW_VAR": "1",
+				},
+			},
+			"docs": map[string]any{
+				"transport": "streamable-http",
+				"url":       "https://mcp.example.com/mcp",
+			},
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWebConfig MCP merge: %v", err)
+	}
+	cfg, _, err := store.EffectiveWebConfig("")
+	if err != nil {
+		t.Fatalf("EffectiveWebConfig after MCP merge: %v", err)
+	}
+	gotEnv := cfg.MCPServers["local"].Env
+	if gotEnv["API_TOKEN"] != "s3cr3t-value" || gotEnv["NEW_VAR"] != "1" || len(gotEnv) != 2 {
+		t.Fatalf("merged MCP env = %#v, want API_TOKEN + NEW_VAR only", gotEnv)
+	}
+
+	// Saving models without mcpServers preserves existing MCP configuration.
+	err = store.SaveWebConfig("", map[string]any{
+		"models": map[string]any{
+			"providers": map[string]any{
+				"openai": map[string]any{"protocol": "responses", "baseURL": "https://api.openai.com/v1", "apiKey": "sk-1"},
+			},
+			"profiles":       map[string]any{"chat": map[string]any{"provider": "openai", "model": "gpt-5"}},
+			"defaultProfile": "chat",
+		},
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWebConfig models without mcpServers: %v", err)
+	}
+	cfg, configured, err := store.EffectiveWebConfig("")
+	if err != nil || !configured || len(cfg.MCPServers) != 2 {
+		t.Fatalf("EffectiveWebConfig lost MCP servers: configured=%v err=%v mcp=%#v", configured, err, cfg.MCPServers)
+	}
+
+	// Clearing mcpServers removes all entries.
+	err = store.SaveWebConfig("", map[string]any{"mcpServers": map[string]any{}}, "")
+	if err != nil {
+		t.Fatalf("SaveWebConfig clear MCP: %v", err)
+	}
+	clearedView, err := store.WebConfig("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearedView.HasMCP || len(clearedView.MCPServers) != 0 {
+		t.Fatalf("expected cleared MCP view, got %#v", clearedView)
+	}
+}
+
+func jsonStringContains(haystack, needle string) bool {
+	return len(needle) > 0 && len(haystack) >= len(needle) && func() bool {
+		for i := 0; i <= len(haystack)-len(needle); i++ {
+			if haystack[i:i+len(needle)] == needle {
+				return true
+			}
+		}
+		return false
+	}()
+}

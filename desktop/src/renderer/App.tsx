@@ -12,23 +12,26 @@ import { defaultUiPreferences, type UiPreferences } from '../shared/ui-preferenc
 import { MarkdownContent } from './markdown'
 import { HarnessPanel } from './harness-panel'
 import { TimelineView } from './timeline'
+import { CommandPalette, type PaletteActionItem, type PaletteWorkspaceItem } from './command-palette'
 import { matchSlashCommands, parseSlashCommand, slashCommands } from './slash-commands'
 import {
   buildTimeline, objectValue as object, timelineMessages,
-  type Activity, type CommandInfo, type HarnessTab, type HistoryMessage, type LiveToolStep,
-  type ModelFailure, type ModelOption, type OptimisticMessage, type Pending, type RuntimeEvent,
-  type RuntimeState, type SessionSummary, type TimelineEntry,
+  type Activity, type CommandInfo, type HarnessTab, type HistoryMessage, type LiveAgentRun,
+  type LiveToolStep, type ModelFailure, type ModelOption, type OptimisticMessage, type Pending,
+  type RuntimeEvent, type RuntimeState, type SessionSummary, type TimelineEntry,
+  type UserQuestionDraft,
 } from './harness-types'
 import {
-  Archive, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, CircleHelp, Code2,
-  Command, Compass, CornerDownRight, Download, Folder, FolderOpen, GitFork, Laptop,
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, CircleHelp, Code2,
+  Command, Compass, CornerDownRight, Download, File as FileIcon, Folder, FolderOpen, GitFork, Laptop,
   LoaderCircle, Lock, LockKeyhole, Minimize2, MoreHorizontal, PanelLeftClose,
   PanelLeftOpen, PanelRight, Pause, Pencil, Play, Plus, Radio, RefreshCw,
   RotateCcw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Sparkles,
   Square, SquarePen, Target, Terminal, Trash2, Wifi, WifiOff, X,
 } from 'lucide-react'
-import { downloadMarkdown, readAttachment, validateAttachments, type Attachment } from './attachments'
+import { downloadMarkdown, isSupportedClipboardFile, readAttachment, validateAttachments, type Attachment } from './attachments'
 import { connectRuntime, type RuntimeClient, type RuntimeConnection } from './runtime'
+import { filterMentionItems, indexWorkspaceFiles, matchMentionQuery, type MentionItem } from './workspace-mentions'
 
 const sessionPageSize = 50
 type PermissionMode = 'read-only' | 'workspace' | 'auto' | 'full-access'
@@ -282,10 +285,20 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [recoveryClock, setRecoveryClock] = useState(Date.now())
   const [streamingReasoning, setStreamingReasoning] = useState('')
   const [streamingText, setStreamingText] = useState('')
+  const [liveAgents, setLiveAgents] = useState<LiveAgentRun[]>([])
   const [liveTools, setLiveTools] = useState<LiveToolStep[]>([])
   const [latestExecutionId, setLatestExecutionId] = useState('')
   const [activity, setActivity] = useState<Activity[]>([])
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [editingQueueExecId, setEditingQueueExecId] = useState('')
+  const [queueEditDraft, setQueueEditDraft] = useState('')
   const [draft, setDraft] = useState('')
+  const [cursorPos, setCursorPos] = useState(0)
+  const [mentionItems, setMentionItems] = useState<MentionItem[]>([])
+  const [mentionLoading, setMentionLoading] = useState(false)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const [mentionDismissedAt, setMentionDismissedAt] = useState<number | null>(null)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashNotice, setSlashNotice] = useState('')
   const [rowMenuId, setRowMenuId] = useState('')
@@ -342,6 +355,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const streamingExecution = useRef<string | undefined>(undefined)
   const sessionRefreshSequence = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const stickToBottomRef = useRef(true)
+  const lastScrollTopRef = useRef(0)
+  const programmaticScrollRef = useRef(false)
+  const mentionCacheRef = useRef<{ key: string; items: MentionItem[]; loaded: boolean }>({ key: '', items: [], loaded: false })
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const drawerRef = useRef<HTMLDialogElement>(null)
   const drawerButtonRef = useRef<HTMLButtonElement>(null)
@@ -370,6 +388,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (event.key === 'Escape') {
         setRowMenuId('')
         setComposerMenu(null)
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setPaletteOpen((open) => !open)
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
         event.preventDefault()
@@ -401,6 +423,45 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const sessionGroups = useMemo(() => groupSessionsByTime(filteredSessions), [filteredSessions])
   const slashMatches = useMemo(() => matchSlashCommands(draft, capabilities), [draft, capabilities])
   useEffect(() => { setSlashIndex(0) }, [slashMatches.length, draft])
+  const mentionWorkspaceKey = workspaceInfo?.path || managed?.workspace.path || (connection?.mode === 'local' ? connection.workspace : connection?.mode === 'remote' ? connection.url : '')
+  useEffect(() => {
+    mentionCacheRef.current = { key: mentionWorkspaceKey, items: [], loaded: false }
+    setMentionItems([])
+    setMentionLoading(false)
+    setMentionIndex(0)
+    setMentionDismissedAt(null)
+  }, [client, mentionWorkspaceKey])
+  const rawMentionMatch = useMemo(
+    () => (has('workspace.files') && activeSession && !working && slashMatches.length === 0 ? matchMentionQuery(draft, cursorPos) : null),
+    [capabilities, activeSession, working, slashMatches.length, draft, cursorPos],
+  )
+  useEffect(() => {
+    if (!rawMentionMatch) setMentionDismissedAt(null)
+  }, [rawMentionMatch])
+  const activeMention = rawMentionMatch && rawMentionMatch.start !== mentionDismissedAt ? rawMentionMatch : null
+  useEffect(() => {
+    if ((!activeMention && !paletteOpen) || !client || !has('workspace.files') || mentionCacheRef.current.loaded) return
+    const controller = new AbortController()
+    const targetClient = client
+    const cacheKey = mentionWorkspaceKey
+    setMentionLoading(true)
+    void indexWorkspaceFiles(targetClient, { signal: controller.signal })
+      .then((items) => {
+        if (controller.signal.aborted || clientRef.current !== targetClient) return
+        mentionCacheRef.current = { key: cacheKey, items, loaded: true }
+        setMentionItems(items)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!controller.signal.aborted) setMentionLoading(false)
+      })
+    return () => controller.abort()
+  }, [activeMention !== null, paletteOpen, client, mentionWorkspaceKey, capabilities])
+  const mentionMatches = useMemo(
+    () => (activeMention ? filterMentionItems(mentionItems, activeMention.query, 12) : []),
+    [activeMention, mentionItems],
+  )
+  useEffect(() => { setMentionIndex(0) }, [activeMention?.query])
   const displayedMessages = useMemo(() => [...history, ...optimistic.filter((message) => message.sessionId === activeSessionId)], [history, optimistic, activeSessionId])
   const selectedModel = activeSession?.settings.modelProfile || models[0]?.profile || ''
   const taskIsRunning = runtime.task.status === 'running'
@@ -610,7 +671,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setCommands([])
     setStreamingReasoning('')
     setStreamingText('')
+    setLiveAgents([])
     setLiveTools([])
+    setEditingQueueExecId('')
+    setQueueEditDraft('')
     setLatestExecutionId('')
     setSlashNotice('')
     setShowConnection(true)
@@ -685,6 +749,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (recoveredFailure) setModelFailure(recoveredFailure)
     else if (['completed', 'failed', 'cancelled', 'discarded', 'idle'].includes(normalized.task.status)) setModelFailure(null)
     setSessions((items) => items.map((item) => item.id === summary.id ? summary : item))
+    return messages
   }, [])
 
   const refreshRuntime = useCallback(async (targetClient: RuntimeClient, sessionId: string) => {
@@ -754,7 +819,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setCommands([])
     setStreamingReasoning('')
     setStreamingText('')
+    setLiveAgents([])
     setLiveTools([])
+    setEditingQueueExecId('')
+    setQueueEditDraft('')
     setLatestExecutionId('')
     setActivity([])
     setSlashNotice('')
@@ -769,6 +837,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         if (event.executionId) setLatestExecutionId(event.executionId)
         setStreamingReasoning('')
         setStreamingText('')
+        setLiveAgents([])
         setLiveTools([])
         setRuntime((state) => ({ ...state, task: { ...state.task, status: 'running', executionId: event.executionId } }))
         setActivity((items) => [{ id: `${event.taskId}-started`, label: 'Working on your request', detail: event.executionId }, ...items].slice(0, 5))
@@ -781,6 +850,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           streamingExecution.current = undefined
           setStreamingReasoning('')
           setStreamingText('')
+          setLiveAgents([])
           setLiveTools([])
         }
         setActivity((items) => [{
@@ -790,6 +860,62 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           failed: ['failed', 'cancelled'].includes(event.status ?? ''),
         }, ...items].slice(0, 5))
         void refreshAll()
+      } else if (event.kind === 'agent_started') {
+        const agentKey = event.agentId || event.agentName || event.taskId || `agent-${Date.now()}`
+        const name = event.agentName || event.agentRole || 'Subagent'
+        const startedAt = Date.parse(event.occurredAt || '') || Date.now()
+        setLiveAgents((agents) => [
+          ...agents.filter((a) => a.id !== agentKey),
+          {
+            id: agentKey,
+            name,
+            role: event.agentRole,
+            task: event.agentTask,
+            teamRunId: event.teamRunId,
+            status: 'running',
+            toolCount: 0,
+            startedAt,
+          },
+        ])
+        setActivity((items) => [{
+          id: `${agentKey}-started-${startedAt}`,
+          label: `Subagent ${name} started`,
+          detail: event.agentTask,
+        }, ...items].slice(0, 5))
+      } else if (event.kind === 'agent_finished') {
+        const agentKey = event.agentId || event.agentName || event.taskId || ''
+        const failed = Boolean(event.error) || event.status === 'failed' || event.status === 'cancelled'
+        const finishedAt = Date.parse(event.occurredAt || '') || Date.now()
+        setLiveAgents((agents) => agents.map((a) =>
+          (agentKey && a.id === agentKey) || (event.agentName && a.name === event.agentName)
+            ? {
+                ...a,
+                status: failed ? 'failed' : 'completed',
+                currentTool: undefined,
+                durationMs: Math.max(0, finishedAt - a.startedAt),
+                error: event.error,
+              }
+            : a,
+        ))
+        setActivity((items) => [{
+          id: `${agentKey || 'agent'}-finished-${finishedAt}`,
+          label: `Subagent ${event.agentName || 'worker'} ${failed ? 'failed' : 'finished'}`,
+          detail: event.error,
+          failed,
+        }, ...items].slice(0, 5))
+      } else if (event.kind === 'usage') {
+        setActiveSession((prev) => {
+          if (!prev || prev.id !== sessionId) return prev
+          const cur = prev.sessionUsage ?? { requests: 0, measured: 0, input: 0, output: 0, reasoning: 0, total: 0, cached: 0 }
+          return {
+            ...prev,
+            sessionUsage: {
+              ...cur,
+              ...(event.usage ?? {}),
+              ...(event.estimatedInputTokens !== undefined ? { estimated_input: event.estimatedInputTokens } : {}),
+            },
+          }
+        })
       } else if (event.kind === 'model_retry' || event.kind === 'model_recovery_required') {
         if (event.modelFailure) setModelFailure(event.modelFailure)
         if (event.kind === 'model_recovery_required') void refreshLiveState()
@@ -808,9 +934,19 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         const stepId = event.tool?.invocationId || event.tool?.id || `${event.taskId}-${name}`
         if (event.kind === 'tool_started') {
           setLiveTools((steps) => [...steps.filter((s) => s.id !== stepId), { id: stepId, name, status: 'running' as const }].slice(-8))
+          if (event.tool?.agentId) {
+            setLiveAgents((agents) => agents.map((a) =>
+              a.id === event.tool?.agentId ? { ...a, currentTool: name, toolCount: a.toolCount + 1 } : a,
+            ))
+          }
         } else {
           const durationMs = event.tool?.duration ? Math.round(event.tool.duration / 1_000_000) : undefined
           setLiveTools((steps) => steps.map((s) => s.id === stepId ? { ...s, status: event.tool?.failed ? 'failed' : 'completed', durationMs } : s))
+          if (event.tool?.agentId) {
+            setLiveAgents((agents) => agents.map((a) =>
+              a.id === event.tool?.agentId ? { ...a, currentTool: undefined } : a,
+            ))
+          }
         }
         setActivity((items) => [{
           id: `${event.taskId}-${name}-${event.kind}-${Date.now()}`,
@@ -844,8 +980,61 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     }
   }, [client, activeSessionId, connection, refreshRuntime, refreshSessionData])
 
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesScrollRef.current
+    if (!el) return
+    const currentTop = el.scrollTop
+    const distance = el.scrollHeight - currentTop - el.clientHeight
+    const nearBottom = distance <= 80
+    if (nearBottom) {
+      stickToBottomRef.current = true
+      setShowScrollBottom(false)
+      programmaticScrollRef.current = false
+    } else if (!programmaticScrollRef.current && currentTop < lastScrollTopRef.current - 2) {
+      stickToBottomRef.current = false
+      setShowScrollBottom(el.scrollHeight > el.clientHeight + 80)
+    } else if (!stickToBottomRef.current) {
+      setShowScrollBottom(el.scrollHeight > el.clientHeight + 80)
+    }
+    lastScrollTopRef.current = currentTop
+  }, [])
+
+  const scrollToBottom = useCallback((smooth = true) => {
+    stickToBottomRef.current = true
+    setShowScrollBottom(false)
+    const el = messagesScrollRef.current
+    if (el) {
+      if (smooth) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      } else {
+        programmaticScrollRef.current = true
+        el.scrollTop = el.scrollHeight
+        lastScrollTopRef.current = el.scrollTop
+        window.requestAnimationFrame(() => { programmaticScrollRef.current = false })
+      }
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
+    }
+  }, [])
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    stickToBottomRef.current = true
+    lastScrollTopRef.current = 0
+    programmaticScrollRef.current = false
+    setShowScrollBottom(false)
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return
+    const el = messagesScrollRef.current
+    if (el) {
+      programmaticScrollRef.current = true
+      el.scrollTop = el.scrollHeight
+      lastScrollTopRef.current = el.scrollTop
+      window.requestAnimationFrame(() => { programmaticScrollRef.current = false })
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+    }
   }, [timeline.length, optimistic.length, streamingText, streamingReasoning, liveTools.length, pending.length])
 
   const connectFromForm = async () => {
@@ -891,7 +1080,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setTimeline([])
       setOptimistic([])
       setActivity([])
+      setLiveAgents([])
       setLiveTools([])
+      setEditingQueueExecId('')
+      setQueueEditDraft('')
       setStreamingReasoning('')
       setStreamingText('')
       setLatestExecutionId('')
@@ -923,6 +1115,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const submissionId = canRetry ? existing.id : crypto.randomUUID()
     const submissionMode = canRetry ? existing.mode : requestedMode
     submissionRetry.current = { key, id: submissionId, mode: submissionMode }
+    stickToBottomRef.current = true
+    setShowScrollBottom(false)
     setWorking(true)
     setActionError('')
     setDraft('')
@@ -957,6 +1151,58 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (/session_busy|task_paused/.test(errorMessage(error))) submissionRetry.current = null
       setActionError(errorMessage(error))
     } finally { setWorking(false) }
+  }
+
+  const rewindAndSubmit = async (turns: number, nextText: string) => {
+    const trimmed = nextText.trim()
+    if (!client || !activeSession?.id || !activeSessionId || !trimmed || sessionBusy || working || connectionStatus !== 'connected' || !has('session.rewind')) return
+    stickToBottomRef.current = true
+    setShowScrollBottom(false)
+    setWorking(true)
+    setActionError('')
+    let submittedOptimisticId = ''
+    try {
+      const preview = await client.request<{ removed: number; digest: string }>('session.rewindPreview', { sessionId: activeSessionId, turns })
+      if (!preview.digest || preview.removed === 0) throw new Error('Nothing to rewind.')
+      await client.request('session.rewind', { sessionId: activeSessionId, turns, digest: preview.digest })
+      streamingExecution.current = undefined
+      setStreamingReasoning('')
+      setStreamingText('')
+      setLiveAgents([])
+      setLiveTools([])
+      setOptimistic([])
+      const postRewindMessages = (await refreshSessionData(client, activeSessionId)) ?? []
+      const identity = JSON.stringify([trimmed, []])
+      const baselineCount = postRewindMessages.filter((message) => message.role === 'user' && messageIdentity(message) === identity).length
+      const submissionId = crypto.randomUUID()
+      submittedOptimisticId = submissionId
+      const plan = has('turn.plan') && planMode
+      setOptimistic([{ id: submissionId, role: 'user', text: trimmed, baselineCount, sessionId: activeSessionId }])
+      const submitted = await client.request<{ executionId: string }>('turn.submit', {
+        sessionId: activeSessionId,
+        submissionId,
+        input: trimmed,
+        mode: 'start_if_idle',
+        ...(plan ? { planMode: true } : {}),
+      })
+      setOptimistic((items) => items.map((item) => item.id === submissionId ? { ...item, executionId: submitted.executionId } : item))
+      void refreshRuntime(client, activeSessionId).catch((error) => setActionError(errorMessage(error)))
+    } catch (error) {
+      if (submittedOptimisticId) setOptimistic((items) => items.filter((item) => item.id !== submittedOptimisticId))
+      setActionError(errorMessage(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const regenerateLastResponse = async () => {
+    const lastUser = [...timeline].reverse().find((entry): entry is Extract<TimelineEntry, { kind: 'message' }> => entry.kind === 'message' && entry.role === 'user')
+    if (!lastUser) return
+    if (!lastUser.text.trim()) {
+      setActionError('Cannot regenerate an attachment-only message.')
+      return
+    }
+    await rewindAndSubmit(1, lastUser.text)
   }
 
   const stopRun = async () => {
@@ -1100,6 +1346,45 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       await refreshRuntime(client, activeSessionId)
     }
   })
+
+  const replaceQueued = (executionId: string, nextText: string) => void sessionAction(async () => {
+    const trimmed = nextText.trim()
+    if (!client || !activeSessionId || !trimmed) return
+    const result = await client.request<{ submission?: { executionId?: string }; cancelledExecutionIds?: string[] }>('turn.replaceQueued', {
+      sessionId: activeSessionId,
+      executionId,
+      input: trimmed,
+    })
+    const cancelled = new Set(result.cancelledExecutionIds ?? [])
+    const nextExecId = result.submission?.executionId || executionId
+    const identity = JSON.stringify([trimmed, []])
+    const baselineCount = history.filter((m) => m.role === 'user' && messageIdentity(m) === identity).length
+    setOptimistic((items) => {
+      const kept = items.filter((item) => !item.executionId || !cancelled.has(item.executionId))
+      const found = kept.some((item) => item.executionId === executionId)
+      if (found) {
+        return kept.map((item) => item.executionId === executionId ? { ...item, executionId: nextExecId, text: trimmed, baselineCount } : item)
+      }
+      return [...kept, { id: nextExecId, role: 'user', text: trimmed, baselineCount, sessionId: activeSessionId, executionId: nextExecId }]
+    })
+    setEditingQueueExecId('')
+    setQueueEditDraft('')
+    await refreshRuntime(client, activeSessionId)
+  })
+
+  const saveQuestionDraft = useCallback(async (request: NonNullable<Pending['userQuestion']>, draftValue: UserQuestionDraft) => {
+    if (!client || !activeSessionId || !capabilitiesRef.current.includes('question.draft')) return
+    await client.request('question.saveDraft', {
+      sessionId: activeSessionId,
+      wait: {
+        executionId: request.executionId,
+        runId: request.runId,
+        invocationId: request.invocationId,
+        callId: request.callId,
+      },
+      draft: draftValue,
+    })
+  }, [client, activeSessionId])
 
   const implementPlan = (sourceExecutionId: string, planModeChoice: 'same_context' | 'new_context') => void sessionAction(async () => {
     if (!client || !activeSessionId) return
@@ -1894,11 +2179,39 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     textareaRef.current?.focus()
   }
 
+  const applyMentionMatch = (item: MentionItem) => {
+    if (!activeMention) return
+    const replacement = `@${item.path} `
+    const nextDraft = `${draft.slice(0, activeMention.start)}${replacement}${draft.slice(activeMention.end)}`
+    const nextCaret = activeMention.start + replacement.length
+    setDraft(nextDraft)
+    setCursorPos(nextCaret)
+    setMentionDismissedAt(null)
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(nextCaret, nextCaret)
+      }
+    })
+  }
+
   const isEmptyConversation = displayedMessages.length === 0 && timeline.length === 0 && !streamingText && !streamingReasoning && liveTools.length === 0 && pending.length === 0 && !taskIsPaused && runtime.queue.length === 0
   const runningCommandsCount = commands.filter((cmd) => cmd.status === 'running').length
 
   const composerNode = (
     <div className="composer-wrap">
+      {!isEmptyConversation && showScrollBottom && slashMatches.length === 0 && !activeMention && (
+        <button
+          type="button"
+          className="scroll-bottom-btn"
+          aria-label={t('Scroll to bottom')}
+          title={t('Scroll to bottom')}
+          onClick={() => scrollToBottom(true)}
+        >
+          <ArrowDown size={16} aria-hidden="true" />
+        </button>
+      )}
       {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
       {info && <div className="form-status" role="status">{info}</div>}
       {slashNotice && (
@@ -1937,6 +2250,40 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           ))}
         </div>
       )}
+      {activeMention && activeSession && !working && slashMatches.length === 0 && (mentionLoading || mentionMatches.length > 0 || activeMention.query.length > 0) && (
+        <div className="slash-popover mention-popover" role="listbox" aria-label={t('Files matching @')}>
+          {mentionLoading && mentionMatches.length === 0 ? (
+            <div className="mention-empty">{t('Loading files…')}</div>
+          ) : mentionMatches.length === 0 ? (
+            <div className="mention-empty">{t('No matching files.')}</div>
+          ) : (
+            mentionMatches.map((item, index) => {
+              const slashAt = item.path.lastIndexOf('/')
+              const dirPart = slashAt >= 0 ? item.path.slice(0, slashAt) : ''
+              return (
+                <button
+                  key={item.path}
+                  type="button"
+                  role="option"
+                  aria-selected={index === mentionIndex}
+                  className={`slash-item mention-item${index === mentionIndex ? ' active' : ''}`}
+                  onMouseEnter={() => setMentionIndex(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    applyMentionMatch(item)
+                  }}
+                >
+                  <span className="mention-icon" aria-hidden="true">
+                    {item.kind === 'directory' ? <Folder size={14} /> : <FileIcon size={14} />}
+                  </span>
+                  <span className="mention-name">{item.name}</span>
+                  {dirPart && <span className="mention-path">{dirPart}</span>}
+                </button>
+              )
+            })
+          )}
+        </div>
+      )}
       <div className="composer" onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }} onDrop={(event) => {
         if (!has('turn.attachments')) return
         event.preventDefault()
@@ -1956,7 +2303,27 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         <textarea
           ref={textareaRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setCursorPos(event.target.selectionStart ?? event.target.value.length)
+          }}
+          onSelect={(event) => setCursorPos(event.currentTarget.selectionStart ?? 0)}
+          onClick={(event) => setCursorPos(event.currentTarget.selectionStart ?? 0)}
+          onKeyUp={(event) => setCursorPos(event.currentTarget.selectionStart ?? 0)}
+          onPaste={(event) => {
+            if (!has('turn.attachments') || working) return
+            const items = Array.from(event.clipboardData?.items ?? [])
+            const itemFiles = items
+              .filter((item) => item.kind === 'file')
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => Boolean(file))
+            const rawFiles = itemFiles.length ? itemFiles : Array.from(event.clipboardData?.files ?? [])
+            const supported = rawFiles.filter(isSupportedClipboardFile)
+            if (supported.length > 0) {
+              event.preventDefault()
+              addFiles(supported)
+            }
+          }}
           onKeyDown={(event) => {
             if (slashMatches.length > 0) {
               if (event.key === 'ArrowDown') {
@@ -1986,12 +2353,39 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                 return
               }
             }
+            if (activeMention && (mentionMatches.length > 0 || mentionLoading)) {
+              if (event.key === 'ArrowDown' && mentionMatches.length > 0) {
+                event.preventDefault()
+                setMentionIndex((i) => (i + 1) % mentionMatches.length)
+                return
+              }
+              if (event.key === 'ArrowUp' && mentionMatches.length > 0) {
+                event.preventDefault()
+                setMentionIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
+                return
+              }
+              if (event.key === 'Tab' && mentionMatches.length > 0) {
+                event.preventDefault()
+                applyMentionMatch(mentionMatches[mentionIndex] ?? mentionMatches[0])
+                return
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                setMentionDismissedAt(activeMention.start)
+                return
+              }
+              if (event.key === 'Enter' && !event.shiftKey && mentionMatches.length > 0) {
+                event.preventDefault()
+                applyMentionMatch(mentionMatches[mentionIndex] ?? mentionMatches[0])
+                return
+              }
+            }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               void sendMessage(uiPreferences.runningEnter === 'steer' && (taskIsRunning || taskIsQueued || taskIsPaused))
             }
           }}
-          placeholder={t(runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune, or type / for commands…')}
+          placeholder={t(runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune, / for commands, @ for files…')}
           rows={1}
           disabled={!client || !activeSession || working}
         />
@@ -2316,20 +2710,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           </div>
         ) : (
           <>
-            <div className="conversation-scroll">
+            <div className="conversation-scroll" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
               <div className="conversation-column">
                 <TimelineView
                   entries={timeline}
                   optimistic={optimistic.filter((item) => item.sessionId === activeSessionId)}
+                  liveAgents={liveAgents}
                   liveTools={liveTools}
                   streamingReasoning={streamingReasoning}
                   streamingText={streamingText}
                   canImplementPlan={has('turn.implementPlan')}
+                  canRewind={has('session.rewind')}
                   sessionBusy={sessionBusy}
                   working={working}
                   latestExecutionId={latestExecutionId}
                   detailsExpanded={uiPreferences.timelineDetailsExpanded}
                   onImplementPlan={(executionId, planModeChoice) => implementPlan(executionId, planModeChoice)}
+                  onEditAndResend={rewindAndSubmit}
+                  onRegenerate={regenerateLastResponse}
                 />
 
                 {activity.length > 0 && (taskIsRunning || runtime.queue.length > 0) && <div className="activity-tray">{activity.slice(0, 3).map((item) => <div className={`activity-item ${item.failed ? 'failed' : ''}`} key={item.id}><span className="activity-dot" /> <span>{item.label}</span>{item.detail && <small>{item.detail}</small>}</div>)}</div>}
@@ -2359,7 +2757,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     <pre className="json-preview">{JSON.stringify(item.approval.arguments, null, 2)}</pre>
                     <div className="pending-actions"><button className="plain-button danger" disabled={working} onClick={() => void resolveApproval(item.approval!, 'deny')}>{t("Deny")}</button><button className="secondary-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_once')}>{t("Allow once")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_session')}>{t("Allow this session")}</button></div>
                   </>}
-                  {item.userQuestion && <QuestionForm request={item.userQuestion} disabled={working} onSubmit={(answers) => resolveQuestion(item.userQuestion!, answers)} />}
+                  {item.userQuestion && (
+                    <QuestionForm
+                      request={item.userQuestion}
+                      disabled={working}
+                      canSaveDraft={has('question.draft')}
+                      onSaveDraft={(draftValue) => saveQuestionDraft(item.userQuestion!, draftValue)}
+                      onSubmit={(answers) => resolveQuestion(item.userQuestion!, answers)}
+                    />
+                  )}
                   {item.interaction && <InteractionForm request={item.interaction} disabled={working} onSubmit={(value) => resolveInteraction(item.interaction!, value)} />}
                   {item.toolRecovery && <><p className="pending-reason"><strong>{item.toolRecovery.tool}</strong> · {t('You can retry this tool or skip it.')}</p><pre className="json-preview">{JSON.stringify(item.toolRecovery.arguments, null, 2)}</pre><div className="pending-actions"><button className="secondary-button" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'skip' })}>{t("Skip")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'retry' })}>{t("Retry tool")}</button></div></>}
                   {item.blocker && <p className="pending-reason">{item.blocker.reason}</p>}
@@ -2367,10 +2773,63 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
                 {taskIsPaused && !modelFailure && <div className="paused-banner"><div><strong>{t("This run is paused")}</strong><span>{t("Resume from its saved checkpoint, or discard it.")}</span></div><button className="plain-button danger" disabled={working} onClick={() => void discardPaused()}>{t("Discard")}</button><button className="primary-button compact" disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} />{t("Resume run")}</button></div>}
                 {runtime.queue.length > 0 && <div className="queue-banner"><Command size={15} /><div><div className="queue-banner-head"><strong>{t("Message queue")}</strong>{has('turn.cancelPending') && <button type="button" className="plain-button" disabled={working} onClick={cancelAllPending}>{t("Cancel all")}</button>}</div>
-                  <ol>{runtime.queue.map((item) => <li key={item.executionId}>
-                    <span>#{item.position} · {t(item.status)}</span>
-                    {has('turn.cancelQueued') && item.status === 'queued' && <button className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>{t("Cancel")}</button>}
-                  </li>)}</ol>
+                  <ol>{runtime.queue.map((item) => {
+                    const queuedMsg = optimistic.find((m) => m.sessionId === activeSessionId && m.executionId === item.executionId)
+                    const isEditing = editingQueueExecId === item.executionId
+                    return (
+                      <li key={item.executionId} className="queue-item-row">
+                        {isEditing ? (
+                          <form
+                            className="queue-edit-form"
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              replaceQueued(item.executionId, queueEditDraft)
+                            }}
+                          >
+                            <input
+                              type="text"
+                              value={queueEditDraft}
+                              disabled={working}
+                              autoFocus
+                              onChange={(event) => setQueueEditDraft(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  setEditingQueueExecId('')
+                                  setQueueEditDraft('')
+                                }
+                              }}
+                            />
+                            <button type="button" className="plain-button" disabled={working} onClick={() => { setEditingQueueExecId(''); setQueueEditDraft('') }}>{t('Cancel')}</button>
+                            <button type="submit" className="primary-button compact" disabled={working || !queueEditDraft.trim()}>{t('Save')}</button>
+                          </form>
+                        ) : (
+                          <>
+                            <span>#{item.position} · {t(item.status)}</span>
+                            {queuedMsg?.text && <small className="queue-item-preview" title={queuedMsg.text}>{queuedMsg.text}</small>}
+                            <span className="queue-item-actions">
+                              {has('turn.replaceQueued') && item.status === 'queued' && (
+                                <button
+                                  type="button"
+                                  className="plain-button"
+                                  disabled={working}
+                                  onClick={() => {
+                                    setEditingQueueExecId(item.executionId)
+                                    setQueueEditDraft(queuedMsg?.text || '')
+                                  }}
+                                >
+                                  {t('Edit')}
+                                </button>
+                              )}
+                              {has('turn.cancelQueued') && item.status === 'queued' && (
+                                <button type="button" className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>{t("Cancel")}</button>
+                              )}
+                            </span>
+                          </>
+                        )}
+                      </li>
+                    )
+                  })}</ol>
                 </div></div>}
                 <div ref={bottomRef} />
               </div>
@@ -2396,6 +2855,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           initialFile={requestedFile}
           initialCommandId={requestedCommandId}
           onInsertPath={insertPathReference}
+          onInsertText={(snippet) => {
+            setDraft((prev) => (prev.trimEnd() ? `${prev.trimEnd()}\n\n${snippet}` : snippet))
+            window.requestAnimationFrame(() => textareaRef.current?.focus())
+          }}
+          onOpenMCPSettings={() => {
+            setSettingsTab('mcp')
+            setSettingsOpen(true)
+          }}
           onChangeReasoningEffort={(effort) => void changeSettings({ reasoningEffort: effort })}
           permissionMode={permissionMode}
           allowedPermissionModes={allowedPermissionModes}
@@ -2407,6 +2874,67 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       )}
 
       {settingsDialogNode}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={chooseSession}
+        workspaces={(() => {
+          if (managed?.workspaces?.length) {
+            return managed.workspaces.map((w) => ({
+              id: w.id,
+              name: w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
+              path: w.path,
+              active: !managed.isRemoteOverride && w.id === managed.workspace.id,
+            }))
+          }
+          if (desktop) {
+            return savedConnections
+              .filter((c) => c.mode === 'local')
+              .map((c) => ({
+                id: c.address,
+                name: c.address.split(/[\\/]/).filter(Boolean).at(-1) || c.address,
+                path: c.address,
+                active: connection?.mode === 'local' && connection.workspace === c.address,
+              }))
+          }
+          return []
+        })() satisfies PaletteWorkspaceItem[]}
+        onSelectWorkspace={managed?.onSelectWorkspace
+          ? (id) => managed.onSelectWorkspace!(id)
+          : desktop
+            ? (address) => {
+                setMode('local')
+                setWorkspace(address)
+                void activateConnection({ mode: 'local', workspace: address })
+              }
+            : undefined}
+        files={mentionItems}
+        filesLoading={mentionLoading}
+        onOpenFile={(filePath) => {
+          setRequestedFile(filePath)
+          setHarnessTab('files')
+          setHarnessOpen(true)
+        }}
+        actions={[
+          { id: 'new-session', label: 'New conversation', section: 'Actions', run: () => void createSession() },
+          ...(has('workspace.files') ? [{ id: 'tab-files', label: 'Open workspace files', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('files') }] : []),
+          ...(has('goal.manage') && activeSession ? [{ id: 'tab-goal', label: 'Inspect Goal', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('goal') }] : []),
+          ...(has('command.control') && activeSession ? [{ id: 'tab-proc', label: 'Inspect Processes', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('processes') }] : []),
+          ...(has('mcp.inspect') ? [{ id: 'tab-mcp', label: 'Inspect MCP servers', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('mcp') }] : []),
+          ...(has('turn.plan') ? [{ id: 'toggle-plan', label: planMode ? 'Disable plan mode' : 'Enable plan mode', section: 'Actions' as const, run: () => setPlanMode((v) => !v) }] : []),
+          ...(has('session.compact') && activeSession ? [{ id: 'compact', label: 'Compact context', section: 'Actions' as const, run: compactSession }] : []),
+          ...(activeSession ? [{ id: 'export', label: 'Export Markdown', section: 'Actions' as const, run: () => saveConversation() }] : []),
+          ...(settingsAPI.supportsModelConfig ? [
+            { id: 'set-models', label: 'Models', hint: 'Settings', section: 'Settings' as const, run: () => { setSettingsTab('models'); setSettingsOpen(true) } },
+            { id: 'set-mcp', label: 'MCP', hint: 'Settings', section: 'Settings' as const, run: () => { setSettingsTab('mcp'); setSettingsOpen(true) } },
+            { id: 'set-runtime', label: 'Runtime & Agents', hint: 'Settings', section: 'Settings' as const, run: () => { setSettingsTab('runtime'); setSettingsOpen(true) } },
+          ] : []),
+          { id: 'set-remote', label: 'Remote & Token', hint: 'Settings', section: 'Settings', run: () => { setSettingsTab('remote'); setSettingsOpen(true) } },
+          { id: 'set-general', label: 'General', hint: 'Settings', section: 'Settings', run: () => { setSettingsTab('general'); setSettingsOpen(true) } },
+        ] satisfies PaletteActionItem[]}
+      />
       {sessionDialog && <div className="modal-backdrop">
         <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
           <h2 id="session-dialog-title">{t(sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation')}</h2>
@@ -2427,21 +2955,75 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   )
 }
 
-function QuestionForm({ request, disabled, onSubmit }: {
+function QuestionForm({ request, disabled, canSaveDraft, onSaveDraft, onSubmit }: {
   request: NonNullable<Pending['userQuestion']>
   disabled: boolean
+  canSaveDraft: boolean
+  onSaveDraft?: (draft: UserQuestionDraft) => Promise<void>
   onSubmit: (answers: Array<{ question_id: string; answer: string }>) => void
 }) {
   const t = useTranslate()
-  const [answers, setAnswers] = useState<Record<string, string>>({})
   const questions = request.questions ?? []
+  const [answers, setAnswers] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = {}
+    for (const resp of request.draft?.responses ?? []) {
+      const q = questions.find((item) => item.id === resp.question_id)
+      const val = resp.custom_answer || resp.notes || (
+        q?.options && resp.selected_option !== undefined && resp.selected_option >= 0 && resp.selected_option < q.options.length
+          ? q.options[resp.selected_option].label
+          : ''
+      )
+      if (val) initial[resp.question_id] = val
+    }
+    return initial
+  })
+  const [draftState, setDraftState] = useState<'idle' | 'saving' | 'saved'>(() =>
+    (request.draft?.responses?.length ? 'saved' : 'idle'),
+  )
+  const mountedRef = useRef(false)
+  const saveDraftRef = useRef(onSaveDraft)
+  saveDraftRef.current = onSaveDraft
+
+  useEffect(() => {
+    if (!canSaveDraft || !saveDraftRef.current) return
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const responses = questions
+        .filter((q) => (answers[q.id] ?? '') !== '')
+        .map((q) => {
+          const val = answers[q.id] ?? ''
+          const optIdx = q.options ? q.options.findIndex((o) => o.label === val) : -1
+          return {
+            question_id: q.id,
+            ...(optIdx >= 0 ? { selected_option: optIdx } : {}),
+            custom_answer: val,
+            confirmed: false,
+          }
+        })
+      setDraftState('saving')
+      void saveDraftRef.current!({
+        current_question_id: questions[0]?.id,
+        responses,
+      })
+        .then(() => setDraftState('saved'))
+        .catch(() => setDraftState('idle'))
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [answers, canSaveDraft, request.id])
+
   const complete = questions.length > 0 && questions.every((question) => (answers[question.id] ?? '').trim())
   return <div className="question-form">
     {questions.map((question) => <fieldset className="question-item" key={question.id}><legend>{question.question}</legend>
       {question.options?.length ? <div className="question-options">{question.options.map((option) => <label className={`question-option ${answers[question.id] === option.label ? 'chosen' : ''}`} key={option.label}><input type="radio" name={question.id} value={option.label} checked={answers[question.id] === option.label} onChange={() => setAnswers((value) => ({ ...value, [question.id]: option.label }))} /><span><strong>{option.label}{option.recommended && <em>{t("Suggested")}</em>}</strong><small>{option.description}</small></span></label>)}</div> : <input className="text-answer" value={answers[question.id] ?? ''} onChange={(event) => setAnswers((value) => ({ ...value, [question.id]: event.target.value }))} placeholder={t("Your answer")} />}
     </fieldset>)}
     {!questions.length && <p className="pending-reason">{t("This clarification needs an answer, but Core did not provide question details.")}</p>}
-    <div className="pending-actions"><button className="primary-button compact" disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}><Check size={14} />{t("Send answer")}</button></div>
+    <div className="pending-actions">
+      {canSaveDraft && draftState === 'saved' && <small className="draft-saved-note">{t('Draft saved')}</small>}
+      <button className="primary-button compact" disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}><Check size={14} />{t("Send answer")}</button>
+    </div>
   </div>
 }
 

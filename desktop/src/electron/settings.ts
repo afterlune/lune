@@ -2,7 +2,7 @@ import { app, safeStorage } from 'electron'
 import { chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { ConfigDocument, ConfigImport, ConfigView, SavedConnection } from '../shared/desktop-settings.js'
+import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, SavedConnection } from '../shared/desktop-settings.js'
 import { defaultUiPreferences, normalizeUiPreferences, type UiPreferences } from '../shared/ui-preferences.js'
 
 export const startupConfigLimit = 1024 * 1024
@@ -231,12 +231,15 @@ export class DesktopSettings {
     void value
   }
 
-  config(scope: string): ConfigView {
+  async config(scope: string): Promise<ConfigView> {
     const document = this.document(scope)
+    const mcpRaw = await this.secret(scope, 'mcp')
+    const mcpServers = mcpRaw ? summarizeMCPServers(mcpRaw) : undefined
     return {
       document,
       savedKeys: Object.keys(catalog(document).providers).filter((name) => this.hasSecret(scope, 'provider:' + name)),
       hasMCP: this.hasSecret(scope, 'mcp'),
+      ...(mcpServers ? { mcpServers } : {}),
       canSaveSecrets: true,
       secretStorage: canEncrypt() ? 'encrypted' : 'sqlite',
       inheritedProfiles: scope ? Object.keys(catalog(this.document('')).profiles) : [],
@@ -313,8 +316,10 @@ export class DesktopSettings {
     const { mcpServers, ...publicDocument } = configWithProviders(document, cfg, providers)
     const newMCP = mcpServers ?? imported?.mcpServers
     if (newMCP !== undefined) {
-      const entries = asObject(newMCP)
-      changes.set('mcp', Object.keys(entries).length ? await this.protect(JSON.stringify(entries)) : null)
+      const entriesMap = asObject(newMCP)
+      const oldMCP = await this.secret(scope, 'mcp')
+      const merged = mergeMCPServers(entriesMap, oldMCP)
+      changes.set('mcp', Object.keys(merged).length ? await this.protect(JSON.stringify(merged)) : null)
     }
     const inherited = scope ? this.document('') : {}
     const hidden = new Set(Object.keys(providers))
@@ -411,6 +416,65 @@ export class DesktopSettings {
     }
     this.setPreference('workspace.permission:' + workspace, mode)
   }
+}
+
+function summarizeMCPServers(rawJSON: string): Record<string, MCPServerSummary> | undefined {
+  let parsed: Record<string, Json>
+  try { parsed = asObject(JSON.parse(rawJSON)) as Record<string, Json> } catch { return undefined }
+  const out: Record<string, MCPServerSummary> = Object.create(null)
+  for (const [name, rawEntry] of Object.entries(parsed)) {
+    if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) continue
+    const entry = rawEntry
+    const transport = entry.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
+    const summary: MCPServerSummary = { transport }
+    if (typeof entry.command === 'string' && entry.command) summary.command = entry.command
+    if (Array.isArray(entry.args)) {
+      const args = entry.args.filter((a): a is string => typeof a === 'string')
+      if (args.length) summary.args = args
+    }
+    if (entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env)) {
+      const envKeys = Object.keys(entry.env as Record<string, unknown>).sort()
+      if (envKeys.length) summary.envKeys = envKeys
+    }
+    if (typeof entry.url === 'string' && entry.url) summary.url = entry.url
+    if (typeof entry.clientMetadataURL === 'string' && entry.clientMetadataURL) summary.clientMetadataURL = entry.clientMetadataURL
+    out[name] = summary
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+function mergeMCPServers(incoming: Json, existingJSON?: string): Json {
+  let oldServers: Record<string, Json> = {}
+  if (existingJSON) {
+    try { oldServers = asObject(JSON.parse(existingJSON)) as Record<string, Json> } catch { oldServers = {} }
+  }
+  const out: Json = Object.create(null)
+  for (const [name, rawEntry] of Object.entries(incoming)) {
+    const entry = asObject(rawEntry)
+    checkFields(entry, ['transport', 'command', 'args', 'env', 'keepEnvKeys', 'url', 'clientMetadataURL'], `mcpServers[${JSON.stringify(name)}]`)
+    const clean: Json = { ...entry }
+    const keepKeys = Array.isArray(clean.keepEnvKeys) ? clean.keepEnvKeys.filter((k): k is string => typeof k === 'string') : []
+    delete clean.keepEnvKeys
+    const mergedEnv: Record<string, string> = Object.create(null)
+    const oldEntry = oldServers[name]
+    if (oldEntry && typeof oldEntry === 'object' && !Array.isArray(oldEntry) && oldEntry.env && typeof oldEntry.env === 'object' && !Array.isArray(oldEntry.env)) {
+      const oldEnv = oldEntry.env as Record<string, unknown>
+      for (const key of keepKeys) {
+        if (typeof oldEnv[key] === 'string') mergedEnv[key] = oldEnv[key] as string
+      }
+    }
+    if (clean.env !== undefined) {
+      const newEnv = asObject(clean.env)
+      for (const [k, v] of Object.entries(newEnv)) {
+        if (typeof v !== 'string') throw new Error(`mcpServers[${JSON.stringify(name)}].env[${JSON.stringify(k)}] must be a string.`)
+        mergedEnv[k] = v
+      }
+    }
+    delete clean.env
+    if (Object.keys(mergedEnv).length > 0) clean.env = mergedEnv
+    out[name] = clean
+  }
+  return out
 }
 
 function splitImportedConfig(document: ConfigDocument) {

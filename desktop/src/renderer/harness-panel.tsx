@@ -1,15 +1,65 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
-  Activity, ChevronRight, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play, Plug, RefreshCw,
-  Square, Target, Terminal, Trash2, X,
+  Activity, Check, ChevronRight, Copy, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play,
+  Plug, RefreshCw, Settings, Square, Target, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useTranslate } from './language'
 import type { RuntimeClient } from './runtime'
 import { WorkspaceFiles, type WorkspaceInfo } from './workspace-files'
-import type {
-  CommandInfo, CommandOutput, Goal, HarnessTab, MCPPrompt, MCPResource,
-  MCPServerStatus, ModelOption, RuntimeState, SessionSummary,
+import {
+  contentText, objectValue,
+  type CommandInfo, type CommandOutput, type Goal, type HarnessTab, type MCPPrompt,
+  type MCPPromptResult, type MCPResource, type MCPResourceTemplate, type MCPServerStatus,
+  type ModelOption, type RuntimeState, type SessionSummary,
 } from './harness-types'
+
+function extractResponseInputText(input: unknown): string {
+  if (input === null || input === undefined) return ''
+  if (typeof input === 'string') return input
+  const obj = objectValue(input)
+  if (typeof obj.text === 'string') return obj.text
+  const items = Array.isArray(input) ? input : Array.isArray(obj.items) ? obj.items : null
+  if (items) {
+    const parts = items.map((entry) => {
+      if (typeof entry === 'string') return entry
+      const item = objectValue(entry)
+      if (item.content !== undefined) return contentText(item.content)
+      if (typeof item.text === 'string') return item.text
+      return contentText([entry])
+    }).filter(Boolean)
+    if (parts.length > 0) return parts.join('\n\n')
+  }
+  const direct = contentText(input)
+  if (direct) return direct
+  try {
+    return JSON.stringify(input, null, 2)
+  } catch {
+    return String(input)
+  }
+}
+
+function parseTemplateParams(uriTemplate: string): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  const re = /\{[+]?([a-zA-Z0-9_.-]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(uriTemplate)) !== null) {
+    const key = m[1]
+    if (!seen.has(key)) {
+      seen.add(key)
+      names.push(key)
+    }
+  }
+  return names
+}
+
+function resolveUriTemplate(uriTemplate: string, values: Record<string, string>): string {
+  return uriTemplate.replace(/\{([+]?)([a-zA-Z0-9_.-]+)\}/g, (_, plus: string, key: string) => {
+    const raw = values[key] ?? ''
+    if (!raw) return `{${plus}${key}}`
+    return plus ? raw : encodeURIComponent(raw)
+  })
+}
 
 export function HarnessPanel({
   client,
@@ -27,6 +77,8 @@ export function HarnessPanel({
   initialFile,
   initialCommandId,
   onInsertPath,
+  onInsertText,
+  onOpenMCPSettings,
   onRefreshState,
   onChangeReasoningEffort,
   permissionMode,
@@ -48,6 +100,8 @@ export function HarnessPanel({
   initialFile?: string
   initialCommandId?: string
   onInsertPath: (path: string) => void
+  onInsertText?: (text: string) => void
+  onOpenMCPSettings?: () => void
   onRefreshState: () => Promise<void>
   onChangeReasoningEffort?: (effort: string) => void
   permissionMode?: string
@@ -127,10 +181,16 @@ export function HarnessPanel({
             client={client}
             sessionId={activeSession.id}
             initialCommandId={initialCommandId}
+            visible={visible && effectiveTab === 'processes'}
           />
         )}
         {effectiveTab === 'mcp' && (
-          <MCPInspector client={client} sessionId={activeSession?.id ?? ''} />
+          <MCPInspector
+            client={client}
+            sessionId={activeSession?.id ?? ''}
+            onInsertText={onInsertText}
+            onOpenMCPSettings={onOpenMCPSettings}
+          />
         )}
         {effectiveTab === 'context' && (
           <ContextInspector
@@ -364,17 +424,22 @@ function ProcessInspector({
   client,
   sessionId,
   initialCommandId,
+  visible,
 }: {
   client: RuntimeClient
   sessionId: string
   initialCommandId?: string
+  visible: boolean
 }) {
   const t = useTranslate()
   const [commands, setCommands] = useState<CommandInfo[]>([])
   const [selectedId, setSelectedId] = useState(initialCommandId ?? '')
   const [output, setOutput] = useState<CommandOutput | null>(null)
+  const [followLog, setFollowLog] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const logRef = useRef<HTMLPreElement | null>(null)
+  const pollingRef = useRef(false)
 
   useEffect(() => {
     if (initialCommandId) setSelectedId(initialCommandId)
@@ -405,9 +470,56 @@ function ProcessInspector({
 
   useEffect(() => { void loadList() }, [loadList])
   useEffect(() => {
-    if (selectedId) void loadOutput(selectedId)
-    else setOutput(null)
+    if (selectedId) {
+      setFollowLog(true)
+      void loadOutput(selectedId)
+    } else {
+      setOutput(null)
+    }
   }, [selectedId, loadOutput])
+
+  const selectedCommand = commands.find((cmd) => cmd.id === selectedId)
+  const selectedStatus = selectedCommand?.status ?? output?.command.status ?? ''
+  const selectedActive = selectedStatus === 'running' || selectedStatus === 'stopping'
+
+  useEffect(() => {
+    if (!visible || !selectedId || !selectedActive) return
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      if (pollingRef.current || cancelled) return
+      pollingRef.current = true
+      void Promise.all([
+        client.request<CommandOutput>('command.read', { sessionId, commandId: selectedId, cursor: 0, waitMs: 0 }),
+        client.request<CommandInfo[]>('command.list', { sessionId }),
+      ])
+        .then(([nextOut, nextList]) => {
+          if (cancelled) return
+          if (nextOut) setOutput(nextOut)
+          if (nextList) setCommands(nextList)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          pollingRef.current = false
+        })
+    }, 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [visible, selectedId, selectedActive, client, sessionId])
+
+  useEffect(() => {
+    if (!followLog || !logRef.current) return
+    logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [output?.output, followLog])
+
+  const handleLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distance > 24 && followLog) setFollowLog(false)
+    else if (distance <= 16 && !followLog) setFollowLog(true)
+  }
 
   const stopCommand = async (commandId: string) => {
     setBusy(true)
@@ -468,23 +580,61 @@ function ProcessInspector({
       {output && (
         <div className="process-log-wrap">
           <div className="process-log-head">
-            <span>{output.command.id.slice(0, 8)} · {output.command.status}</span>
-            <button type="button" className="plain-button" onClick={() => void loadOutput(output.command.id)}>
-              <RefreshCw size={12} />
-              <span>{t('Refresh')}</span>
-            </button>
+            <span className="process-log-title">
+              {selectedActive && <span className="process-live-dot" aria-hidden="true" />}
+              {output.command.id.slice(0, 8)} · {output.command.status}
+            </span>
+            <div className="process-log-actions">
+              <button
+                type="button"
+                className={`process-follow-btn${followLog ? ' active' : ''}`}
+                aria-pressed={followLog}
+                onClick={() => setFollowLog((v) => !v)}
+              >
+                {t('Follow')}
+              </button>
+              <button type="button" className="plain-button" onClick={() => void loadOutput(output.command.id)}>
+                <RefreshCw size={12} />
+                <span>{t('Refresh')}</span>
+              </button>
+            </div>
           </div>
-          <pre className="process-log">{output.output || t('(no output yet)')}</pre>
+          <pre className="process-log" ref={logRef} onScroll={handleLogScroll}>{output.output || t('(no output yet)')}</pre>
         </div>
       )}
     </div>
   )
 }
 
-function MCPInspector({ client, sessionId }: { client: RuntimeClient; sessionId: string }) {
+function MCPInspector({
+  client,
+  sessionId,
+  onInsertText,
+  onOpenMCPSettings,
+}: {
+  client: RuntimeClient
+  sessionId: string
+  onInsertText?: (text: string) => void
+  onOpenMCPSettings?: () => void
+}) {
   const t = useTranslate()
   const [servers, setServers] = useState<MCPServerStatus[]>([])
-  const [expanded, setExpanded] = useState<Record<string, { prompts: MCPPrompt[]; resources: MCPResource[] }>>({})
+  const [expanded, setExpanded] = useState<Record<string, {
+    prompts: MCPPrompt[]
+    resources: MCPResource[]
+    templates: MCPResourceTemplate[]
+  }>>({})
+  const [activePromptKey, setActivePromptKey] = useState('')
+  const [promptArgs, setPromptArgs] = useState<Record<string, string>>({})
+  const [activeTemplateKey, setActiveTemplateKey] = useState('')
+  const [templateVars, setTemplateVars] = useState<Record<string, string>>({})
+  const [previewState, setPreviewState] = useState<{
+    key: string
+    title: string
+    text: string
+  } | null>(null)
+  const [copiedKey, setCopiedKey] = useState('')
+  const [loadingKey, setLoadingKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -526,24 +676,121 @@ function MCPInspector({ client, sessionId }: { client: RuntimeClient; sessionId:
       return
     }
     if (!server.connected || !sessionId) return
+    setLoadingKey(`server:${server.name}`)
+    setError('')
     try {
-      const [prompts, resources] = await Promise.all([
+      const [prompts, resources, templates] = await Promise.all([
         client.request<MCPPrompt[]>('mcp.listPrompts', { sessionId, serverName: server.name }).catch(() => []),
         client.request<MCPResource[]>('mcp.listResources', { sessionId, serverName: server.name }).catch(() => []),
+        client.request<MCPResourceTemplate[]>('mcp.listResourceTemplates', { sessionId, serverName: server.name }).catch(() => []),
       ])
-      setExpanded((prev) => ({ ...prev, [server.name]: { prompts: prompts ?? [], resources: resources ?? [] } }))
+      setExpanded((prev) => ({
+        ...prev,
+        [server.name]: { prompts: prompts ?? [], resources: resources ?? [], templates: templates ?? [] },
+      }))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingKey('')
     }
+  }
+
+  const fetchPromptPreview = async (serverName: string, prompt: MCPPrompt) => {
+    if (!sessionId) return
+    const key = `${serverName}:prompt:${prompt.name}`
+    setLoadingKey(key)
+    setError('')
+    try {
+      const args: Record<string, string> = {}
+      for (const arg of prompt.arguments ?? []) {
+        const val = (promptArgs[`${key}:${arg.name}`] ?? '').trim()
+        if (val) args[arg.name] = val
+      }
+      const res = await client.request<MCPPromptResult>('mcp.getPrompt', {
+        sessionId,
+        serverName,
+        promptName: prompt.name,
+        ...(Object.keys(args).length ? { arguments: args } : {}),
+      })
+      const text = extractResponseInputText(res?.input) || res?.description || ''
+      setPreviewState({ key, title: prompt.title || prompt.name, text })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingKey('')
+    }
+  }
+
+  const readResourcePreview = async (serverName: string, key: string, title: string, uri: string) => {
+    if (!sessionId || !uri.trim()) return
+    setLoadingKey(key)
+    setError('')
+    try {
+      const res = await client.request<unknown>('mcp.readResource', {
+        sessionId,
+        serverName,
+        uri: uri.trim(),
+      })
+      setPreviewState({ key, title, text: extractResponseInputText(res) })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingKey('')
+    }
+  }
+
+  const copyPreview = async (key: string, text: string) => {
+    try {
+      await navigator.clipboard?.writeText(text)
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey((cur) => (cur === key ? '' : cur)), 1500)
+    } catch {
+      /* ignore clipboard unavailability */
+    }
+  }
+
+  const renderPreview = (key: string) => {
+    if (!previewState || previewState.key !== key) return null
+    return (
+      <div className="mcp-detail-drawer">
+        <div className="mcp-preview-head">
+          <span>{previewState.title}</span>
+          <div className="mcp-preview-actions">
+            <button type="button" className="plain-button" onClick={() => void copyPreview(key, previewState.text)}>
+              {copiedKey === key ? <Check size={12} /> : <Copy size={12} />}
+              <span>{t(copiedKey === key ? 'Copied' : 'Copy')}</span>
+            </button>
+            {onInsertText && previewState.text.trim() && (
+              <button
+                type="button"
+                className="primary-button compact"
+                onClick={() => onInsertText(previewState.text)}
+              >
+                {t('Insert into composer')}
+              </button>
+            )}
+          </div>
+        </div>
+        <pre className="mcp-preview-pre">{previewState.text || t('(empty)')}</pre>
+      </div>
+    )
   }
 
   return (
     <div className="inspector-pane">
       <div className="inspector-head">
         <h3>{t('MCP servers')}</h3>
-        <button type="button" className="subtle-icon" aria-label={t('Refresh')} disabled={busy} onClick={() => void load()}>
-          <RefreshCw size={13} className={busy ? 'spin' : undefined} />
-        </button>
+        <div className="inspector-head-actions">
+          {onOpenMCPSettings && (
+            <button type="button" className="plain-button" onClick={onOpenMCPSettings}>
+              <Settings size={12} aria-hidden="true" />
+              <span>{t('Configure')}</span>
+            </button>
+          )}
+          <button type="button" className="subtle-icon" aria-label={t('Refresh')} disabled={busy} onClick={() => void load()}>
+            <RefreshCw size={13} className={busy ? 'spin' : undefined} />
+          </button>
+        </div>
       </div>
       {error && <div className="form-error" role="alert">{error}</div>}
       {servers.length === 0 ? (
@@ -552,6 +799,7 @@ function MCPInspector({ client, sessionId }: { client: RuntimeClient; sessionId:
         <div className="mcp-list">
           {servers.map((server) => {
             const details = expanded[server.name]
+            const loadingThis = loadingKey === `server:${server.name}`
             return (
               <div className="mcp-card" key={server.name}>
                 <div className="mcp-card-head">
@@ -573,16 +821,147 @@ function MCPInspector({ client, sessionId }: { client: RuntimeClient; sessionId:
                   <div className="mcp-endpoint">{server.endpoint || server.command}</div>
                 )}
                 {server.lastError && <div className="mcp-error">{server.lastError}</div>}
+                {loadingThis && <div className="mcp-item">{t('Loading…')}</div>}
                 {details && (
                   <div className="mcp-details">
                     <div>
-                      <span>{t('Prompts')}: {details.prompts.length}</span>
-                      {details.prompts.map((p) => <div className="mcp-item" key={p.name}>{p.name}</div>)}
+                      <span className="mcp-section-label">{t('Prompts')}: {details.prompts.length}</span>
+                      {details.prompts.map((p) => {
+                        const pKey = `${server.name}:prompt:${p.name}`
+                        const isOpen = activePromptKey === pKey
+                        const isBusy = loadingKey === pKey
+                        return (
+                          <div className="mcp-interactive-item" key={p.name}>
+                            <button
+                              type="button"
+                              className={`mcp-item-btn${isOpen ? ' active' : ''}`}
+                              onClick={() => {
+                                if ((p.arguments?.length ?? 0) > 0) {
+                                  setActivePromptKey((cur) => (cur === pKey ? '' : pKey))
+                                } else {
+                                  setActivePromptKey(pKey)
+                                  void fetchPromptPreview(server.name, p)
+                                }
+                              }}
+                            >
+                              <ChevronRight size={12} className={isOpen ? 'rotated' : undefined} />
+                              <span>{p.title || p.name}</span>
+                              {p.description && <small>{p.description}</small>}
+                            </button>
+                            {isOpen && (
+                              <div className="mcp-arg-panel">
+                                {(p.arguments ?? []).map((arg) => (
+                                  <label className="mcp-arg-field" key={arg.name}>
+                                    <span>
+                                      {arg.name}{arg.required ? ' *' : ''}
+                                      {arg.description ? ` — ${arg.description}` : ''}
+                                    </span>
+                                    <input
+                                      type="text"
+                                      value={promptArgs[`${pKey}:${arg.name}`] ?? ''}
+                                      disabled={isBusy}
+                                      onChange={(event) => setPromptArgs((prev) => ({
+                                        ...prev,
+                                        [`${pKey}:${arg.name}`]: event.target.value,
+                                      }))}
+                                    />
+                                  </label>
+                                ))}
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  disabled={isBusy}
+                                  onClick={() => void fetchPromptPreview(server.name, p)}
+                                >
+                                  {isBusy ? t('Loading…') : t('Load prompt')}
+                                </button>
+                                {renderPreview(pKey)}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
+
                     <div>
-                      <span>{t('Resources')}: {details.resources.length}</span>
-                      {details.resources.map((r) => <div className="mcp-item" key={r.uri}>{r.name || r.uri}</div>)}
+                      <span className="mcp-section-label">{t('Resources')}: {details.resources.length}</span>
+                      {details.resources.map((r) => {
+                        const rKey = `${server.name}:res:${r.uri}`
+                        const isBusy = loadingKey === rKey
+                        return (
+                          <div className="mcp-interactive-item" key={r.uri}>
+                            <button
+                              type="button"
+                              className={`mcp-item-btn${previewState?.key === rKey ? ' active' : ''}`}
+                              disabled={isBusy}
+                              onClick={() => void readResourcePreview(server.name, rKey, r.title || r.name || r.uri, r.uri)}
+                            >
+                              <ChevronRight size={12} className={previewState?.key === rKey ? 'rotated' : undefined} />
+                              <span>{r.title || r.name || r.uri}</span>
+                              <small>{r.mimeType || r.uri}</small>
+                            </button>
+                            {renderPreview(rKey)}
+                          </div>
+                        )
+                      })}
                     </div>
+
+                    {details.templates.length > 0 && (
+                      <div>
+                        <span className="mcp-section-label">{t('Resource templates')}: {details.templates.length}</span>
+                        {details.templates.map((tpl) => {
+                          const tKey = `${server.name}:tpl:${tpl.uriTemplate}`
+                          const isOpen = activeTemplateKey === tKey
+                          const params = parseTemplateParams(tpl.uriTemplate)
+                          const resolved = resolveUriTemplate(
+                            tpl.uriTemplate,
+                            Object.fromEntries(params.map((name) => [name, templateVars[`${tKey}:${name}`] ?? ''])),
+                          )
+                          const isBusy = loadingKey === tKey
+                          return (
+                            <div className="mcp-interactive-item" key={tpl.uriTemplate}>
+                              <button
+                                type="button"
+                                className={`mcp-item-btn${isOpen ? ' active' : ''}`}
+                                onClick={() => setActiveTemplateKey((cur) => (cur === tKey ? '' : tKey))}
+                              >
+                                <ChevronRight size={12} className={isOpen ? 'rotated' : undefined} />
+                                <span>{tpl.title || tpl.name || tpl.uriTemplate}</span>
+                                <small>{tpl.uriTemplate}</small>
+                              </button>
+                              {isOpen && (
+                                <div className="mcp-arg-panel">
+                                  {params.map((param) => (
+                                    <label className="mcp-arg-field" key={param}>
+                                      <span>{param}</span>
+                                      <input
+                                        type="text"
+                                        value={templateVars[`${tKey}:${param}`] ?? ''}
+                                        disabled={isBusy}
+                                        onChange={(event) => setTemplateVars((prev) => ({
+                                          ...prev,
+                                          [`${tKey}:${param}`]: event.target.value,
+                                        }))}
+                                      />
+                                    </label>
+                                  ))}
+                                  <div className="mcp-resolved-uri">{resolved}</div>
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    disabled={isBusy}
+                                    onClick={() => void readResourcePreview(server.name, tKey, tpl.title || tpl.name || resolved, resolved)}
+                                  >
+                                    {isBusy ? t('Loading…') : t('Read resource')}
+                                  </button>
+                                  {renderPreview(tKey)}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

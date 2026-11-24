@@ -22,13 +22,23 @@ const WebStartupConfigLimit = 1024 * 1024
 
 var ErrInvalidRemoteURL = errors.New("use a wss:// Core URL without credentials, query, or fragment")
 
+type MCPServerSummary struct {
+	Transport         string   `json:"transport"`
+	Command           string   `json:"command,omitempty"`
+	Args              []string `json:"args,omitempty"`
+	EnvKeys           []string `json:"envKeys,omitempty"`
+	URL               string   `json:"url,omitempty"`
+	ClientMetadataURL string   `json:"clientMetadataURL,omitempty"`
+}
+
 type WebConfigView struct {
-	Document          map[string]any `json:"document"`
-	SavedKeys         []string       `json:"savedKeys"`
-	HasMCP            bool           `json:"hasMCP"`
-	CanSaveSecrets    bool           `json:"canSaveSecrets"`
-	SecretStorage     string         `json:"secretStorage"`
-	InheritedProfiles []string       `json:"inheritedProfiles"`
+	Document          map[string]any              `json:"document"`
+	SavedKeys         []string                    `json:"savedKeys"`
+	HasMCP            bool                        `json:"hasMCP"`
+	MCPServers        map[string]MCPServerSummary `json:"mcpServers,omitempty"`
+	CanSaveSecrets    bool                        `json:"canSaveSecrets"`
+	SecretStorage     string                      `json:"secretStorage"`
+	InheritedProfiles []string                    `json:"inheritedProfiles"`
 }
 
 type WebConfigImport struct {
@@ -344,9 +354,13 @@ func (s *Store) WebConfig(scope string) (WebConfigView, error) {
 		}
 	}
 	sort.Strings(savedKeys)
-	hasMCP, err := s.hasWebSecret(normalized, "mcp")
+	mcpJSON, hasMCP, err := s.readWebSecret(normalized, "mcp")
 	if err != nil {
 		return WebConfigView{}, err
+	}
+	var mcpSummaries map[string]MCPServerSummary
+	if hasMCP && strings.TrimSpace(mcpJSON) != "" {
+		mcpSummaries = summarizeMCPServers(mcpJSON)
 	}
 	var inheritedProfiles []string
 	if normalized != "" {
@@ -371,10 +385,116 @@ func (s *Store) WebConfig(scope string) (WebConfigView, error) {
 		Document:          doc,
 		SavedKeys:         savedKeys,
 		HasMCP:            hasMCP,
+		MCPServers:        mcpSummaries,
 		CanSaveSecrets:    true,
 		SecretStorage:     storage,
 		InheritedProfiles: inheritedProfiles,
 	}, nil
+}
+
+func summarizeMCPServers(rawJSON string) map[string]MCPServerSummary {
+	var parsed map[string]map[string]any
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil || len(parsed) == 0 {
+		return nil
+	}
+	out := make(map[string]MCPServerSummary, len(parsed))
+	for name, entry := range parsed {
+		transport, _ := entry["transport"].(string)
+		summary := MCPServerSummary{Transport: transport}
+		if cmd, ok := entry["command"].(string); ok && cmd != "" {
+			summary.Command = cmd
+		}
+		if rawArgs, ok := entry["args"].([]any); ok && len(rawArgs) > 0 {
+			args := make([]string, 0, len(rawArgs))
+			for _, a := range rawArgs {
+				if s, ok := a.(string); ok {
+					args = append(args, s)
+				}
+			}
+			if len(args) > 0 {
+				summary.Args = args
+			}
+		}
+		if rawEnv, ok := entry["env"].(map[string]any); ok && len(rawEnv) > 0 {
+			keys := make([]string, 0, len(rawEnv))
+			for k := range rawEnv {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			summary.EnvKeys = keys
+		}
+		if u, ok := entry["url"].(string); ok && u != "" {
+			summary.URL = u
+		}
+		if cm, ok := entry["clientMetadataURL"].(string); ok && cm != "" {
+			summary.ClientMetadataURL = cm
+		}
+		out[name] = summary
+	}
+	return out
+}
+
+func mergeIncomingMCPServers(incoming map[string]any, existingJSON string) (map[string]any, error) {
+	if err := checkAllowedFields(incoming, func() []string {
+		keys := make([]string, 0, len(incoming))
+		for k := range incoming {
+			keys = append(keys, k)
+		}
+		return keys
+	}(), "mcpServers"); err != nil {
+		return nil, err
+	}
+	var oldServers map[string]map[string]any
+	if strings.TrimSpace(existingJSON) != "" {
+		_ = json.Unmarshal([]byte(existingJSON), &oldServers)
+	}
+	out := make(map[string]any, len(incoming))
+	for name, rawEntry := range incoming {
+		entry, err := asJSONMap(rawEntry)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkAllowedFields(entry, []string{"transport", "command", "args", "env", "keepEnvKeys", "url", "clientMetadataURL"}, fmt.Sprintf("mcpServers[%q]", name)); err != nil {
+			return nil, err
+		}
+		clean := cloneMap(entry)
+		rawKeep := clean["keepEnvKeys"]
+		delete(clean, "keepEnvKeys")
+
+		mergedEnv := map[string]string{}
+		if oldServer, ok := oldServers[name]; ok {
+			if oldEnv, ok := oldServer["env"].(map[string]any); ok {
+				if keepList, ok := rawKeep.([]any); ok {
+					for _, k := range keepList {
+						if keyStr, ok := k.(string); ok {
+							if val, exists := oldEnv[keyStr].(string); exists {
+								mergedEnv[keyStr] = val
+							}
+						}
+					}
+				}
+			}
+		}
+		if rawEnv, hasEnv := clean["env"]; hasEnv && rawEnv != nil {
+			envMap, err := asJSONMap(rawEnv)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range envMap {
+				strVal, ok := v.(string)
+				if !ok {
+					return nil, fmt.Errorf("mcpServers[%q].env[%q] must be a string", name, k)
+				}
+				mergedEnv[k] = strVal
+			}
+		}
+		delete(clean, "env")
+		if len(mergedEnv) > 0 {
+			clean["env"] = mergedEnv
+		}
+		out[name] = clean
+	}
+	return out, nil
 }
 
 func (s *Store) PrepareWebImport(rawJSON string) (WebConfigImport, error) {
@@ -505,29 +625,45 @@ func validateMergedWebProject(merged map[string]any) (core.ProjectConfig, bool, 
 	hasProviders := len(project.Models.Providers) > 0
 	hasProfiles := len(project.Models.Profiles) > 0
 	if !hasProviders && !hasProfiles {
+		if _, explicitMCP := merged["mcpServers"]; explicitMCP && len(project.MCPServers) > 0 {
+			dummy := core.ProjectConfig{
+				Models: publicmodel.Config{
+					Providers:      map[string]publicmodel.ProviderConfig{"__mcp_check": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://example.invalid", APIKey: "placeholder"}},
+					Profiles:       map[string]publicmodel.ModelProfile{"__mcp_check": {Provider: "__mcp_check", Model: "placeholder"}},
+					DefaultProfile: "__mcp_check",
+				},
+				MCPServers: project.MCPServers,
+			}
+			if err := dummy.Validate(); err != nil {
+				return core.ProjectConfig{}, false, err
+			}
+		}
 		return project, false, nil
 	}
 	if hasProviders && !hasProfiles {
 		// Allow saving providers before the user finishes adding model profiles,
 		// while validating each provider's protocol & URL via a synthetic profile.
-		testCfg := publicmodel.Config{
-			Providers:      project.Models.Providers,
-			Profiles:       make(map[string]publicmodel.ModelProfile, len(project.Models.Providers)),
-			DefaultProfile: "",
+		dummy := core.ProjectConfig{
+			Models: publicmodel.Config{
+				Providers:      project.Models.Providers,
+				Profiles:       make(map[string]publicmodel.ModelProfile, len(project.Models.Providers)),
+				DefaultProfile: "",
+			},
+			MCPServers: project.MCPServers,
 		}
 		for name, p := range project.Models.Providers {
-			if testCfg.DefaultProfile == "" {
-				testCfg.DefaultProfile = "__check__" + name
+			if dummy.Models.DefaultProfile == "" {
+				dummy.Models.DefaultProfile = "__check__" + name
 			}
 			maxTok := int64(0)
 			if p.Protocol == publicmodel.ProtocolAnthropicMessages {
 				maxTok = 4096
 			}
-			testCfg.Profiles["__check__"+name] = publicmodel.ModelProfile{
+			dummy.Models.Profiles["__check__"+name] = publicmodel.ModelProfile{
 				Provider: name, Model: "validation-placeholder", MaxOutputTokens: maxTok,
 			}
 		}
-		if err := testCfg.Validate(); err != nil {
+		if err := dummy.Validate(); err != nil {
 			return core.ProjectConfig{}, false, err
 		}
 		return project, false, nil
@@ -633,10 +769,15 @@ func (s *Store) SaveWebConfig(scope string, document map[string]any, importID st
 		if err != nil {
 			return err
 		}
-		if len(mcpObj) == 0 {
+		oldMCPJSON, _, _ := s.readWebSecret(normalized, "mcp")
+		mergedMCP, err := mergeIncomingMCPServers(mcpObj, oldMCPJSON)
+		if err != nil {
+			return err
+		}
+		if len(mergedMCP) == 0 {
 			changes["mcp"] = webSecretValue{set: false}
 		} else {
-			encodedMCP, err := json.Marshal(mcpObj)
+			encodedMCP, err := json.Marshal(mergedMCP)
 			if err != nil {
 				return err
 			}

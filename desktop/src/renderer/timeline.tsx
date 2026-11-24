@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Brain, Check, ChevronRight, Copy, FileText, LoaderCircle, Paperclip, Play, Terminal } from 'lucide-react'
+import { Bot, Brain, Check, ChevronRight, Copy, FileText, LoaderCircle, Paperclip, Pencil, Play, RotateCcw, Terminal, X } from 'lucide-react'
 import { useTranslate } from './language'
 import { MarkdownContent } from './markdown'
-import { extractProposedPlan, type LiveToolStep, type OptimisticMessage, type TimelineEntry } from './harness-types'
+import { extractProposedPlan, type LiveAgentRun, type LiveToolStep, type OptimisticMessage, type TimelineEntry } from './harness-types'
 
 function CopyMessageButton({ text }: { text: string }) {
   const t = useTranslate()
@@ -84,38 +84,78 @@ function AssistantBody({
 export function TimelineView({
   entries,
   optimistic,
+  liveAgents = [],
   liveTools,
   streamingReasoning,
   streamingText,
   canImplementPlan,
+  canRewind,
   sessionBusy,
   working,
   latestExecutionId,
   detailsExpanded,
   onImplementPlan,
+  onEditAndResend,
+  onRegenerate,
 }: {
   entries: TimelineEntry[]
   optimistic: OptimisticMessage[]
+  liveAgents?: LiveAgentRun[]
   liveTools: LiveToolStep[]
   streamingReasoning: string
   streamingText: string
   canImplementPlan: boolean
+  canRewind: boolean
   sessionBusy: boolean
   working: boolean
   latestExecutionId: string
   detailsExpanded: boolean
   onImplementPlan: (sourceExecutionId: string, mode: 'same_context' | 'new_context') => void
+  onEditAndResend: (turnsFromEnd: number, nextText: string) => Promise<void> | void
+  onRegenerate: () => Promise<void> | void
 }) {
   const t = useTranslate()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    setEditingId(null)
+    setEditDraft('')
+  }, [entries])
+
+  useEffect(() => {
+    if (sessionBusy && editingId) {
+      setEditingId(null)
+    }
+  }, [sessionBusy, editingId])
+
+  useEffect(() => {
+    if (editingId) {
+      const el = editTextareaRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(el.value.length, el.value.length)
+      }
+    }
+  }, [editingId])
 
   let lastAssistantId = ''
-  for (let i = entries.length - 1; i >= 0; i--) {
+  let userCount = 0
+  const userOrderById = new Map<string, number>()
+  for (let i = 0; i < entries.length; i++) {
     const item = entries[i]
-    if (item.kind === 'message' && item.role === 'assistant') {
-      lastAssistantId = item.id
-      break
+    if (item.kind === 'message') {
+      if (item.role === 'user') {
+        userOrderById.set(item.id, userCount)
+        userCount += 1
+      } else if (item.role === 'assistant') {
+        lastAssistantId = item.id
+      }
     }
   }
+
+  const canActOnMessages = canRewind && !sessionBusy && !working && !streamingText && optimistic.length === 0
 
   return (
     <>
@@ -166,38 +206,121 @@ export function TimelineView({
 
         const isLatestAssistant = entry.role === 'assistant' && entry.id === lastAssistantId
         const showPlanActions = isLatestAssistant && canImplementPlan && !sessionBusy && !streamingText && Boolean(latestExecutionId)
+        const isEditingUser = entry.role === 'user' && editingId === entry.id
+        const userIndex = entry.role === 'user' ? userOrderById.get(entry.id) : undefined
+        const turnsFromEnd = userIndex !== undefined ? userCount - userIndex : 1
+
+        const submitEditedUser = () => {
+          const trimmed = editDraft.trim()
+          if (!trimmed || working || sessionBusy) return
+          setEditingId(null)
+          void onEditAndResend(turnsFromEnd, trimmed)
+        }
 
         return (
-          <article className={`message ${entry.role}`} key={entry.id}>
+          <article className={`message ${entry.role}${isEditingUser ? ' editing' : ''}`} key={entry.id}>
             <div className="message-content">
-              <div className="markdown-body">
-                {entry.role === 'assistant' ? (
-                  <AssistantBody
-                    text={entry.text}
-                    canImplement={showPlanActions}
-                    working={working}
-                    onImplementPlan={(mode) => onImplementPlan(latestExecutionId, mode)}
+              {isEditingUser ? (
+                <div className="message-edit-box">
+                  <textarea
+                    ref={editTextareaRef}
+                    className="message-edit-textarea"
+                    value={editDraft}
+                    rows={Math.min(10, Math.max(2, editDraft.split('\n').length))}
+                    disabled={working || sessionBusy}
+                    aria-label={t('Edit and resend')}
+                    onChange={(event) => setEditDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        setEditingId(null)
+                        return
+                      }
+                      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                        event.preventDefault()
+                        submitEditedUser()
+                      }
+                    }}
                   />
-                ) : (
-                  <MarkdownContent text={entry.text} />
-                )}
-                {entry.attachments?.map((file, index) => (
-                  <details className="history-attachment" key={index} open={detailsExpanded}>
-                    <summary>
-                      <ChevronRight size={13} className="disclosure-chevron" aria-hidden="true" />
-                      <Paperclip size={13} aria-hidden="true" />
-                      <span>{file.name}</span>
-                    </summary>
-                    {file.image ? <img src={file.image} alt={file.name} /> : <pre>{file.text}</pre>}
-                  </details>
-                ))}
-              </div>
+                  <div className="message-edit-actions">
+                    <button
+                      type="button"
+                      className="plain-button"
+                      disabled={working}
+                      onClick={() => setEditingId(null)}
+                    >
+                      {t('Cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button compact"
+                      disabled={!editDraft.trim() || working || sessionBusy}
+                      onClick={submitEditedUser}
+                    >
+                      {t('Save & Resend')}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="markdown-body">
+                  {entry.role === 'assistant' ? (
+                    <AssistantBody
+                      text={entry.text}
+                      canImplement={showPlanActions}
+                      working={working}
+                      onImplementPlan={(mode) => onImplementPlan(latestExecutionId, mode)}
+                    />
+                  ) : (
+                    <MarkdownContent text={entry.text} />
+                  )}
+                  {entry.attachments?.map((file, index) => (
+                    <details className="history-attachment" key={index} open={detailsExpanded}>
+                      <summary>
+                        <ChevronRight size={13} className="disclosure-chevron" aria-hidden="true" />
+                        <Paperclip size={13} aria-hidden="true" />
+                        <span>{file.name}</span>
+                      </summary>
+                      {file.image ? <img src={file.image} alt={file.name} /> : <pre>{file.text}</pre>}
+                    </details>
+                  ))}
+                </div>
+              )}
               {entry.role === 'assistant' && (
                 <div className="message-actions">
                   <CopyMessageButton text={entry.text} />
+                  {isLatestAssistant && canActOnMessages && userCount > 0 && (
+                    <button
+                      type="button"
+                      className="message-action-btn"
+                      aria-label={t('Regenerate response')}
+                      title={t('Regenerate response')}
+                      onClick={() => void onRegenerate()}
+                    >
+                      <RotateCcw size={14} aria-hidden="true" />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
+            {entry.role === 'user' && !isEditingUser && (
+              <div className="message-actions user-actions">
+                {entry.text.trim() && <CopyMessageButton text={entry.text} />}
+                {canActOnMessages && (
+                  <button
+                    type="button"
+                    className="message-action-btn"
+                    aria-label={t('Edit and resend')}
+                    title={t('Edit and resend')}
+                    onClick={() => {
+                      setEditingId(entry.id)
+                      setEditDraft(entry.text)
+                    }}
+                  >
+                    <Pencil size={13.5} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            )}
           </article>
         )
       })}
@@ -221,6 +344,43 @@ export function TimelineView({
           </div>
         </article>
       ))}
+
+      {liveAgents.length > 0 && (
+        <div className="live-agents" aria-live="polite">
+          <div className="live-agents-head">
+            <Bot size={13} aria-hidden="true" />
+            <span>{t('Subagents')}</span>
+            <span className="live-agents-count">
+              {liveAgents.filter((a) => a.status === 'running').length}/{liveAgents.length}
+            </span>
+          </div>
+          <div className="live-agents-list">
+            {liveAgents.map((agent) => (
+              <div className={`live-agent-row ${agent.status}`} key={agent.id}>
+                {agent.status === 'running' ? (
+                  <LoaderCircle size={13} className="spin" aria-hidden="true" />
+                ) : agent.status === 'failed' ? (
+                  <X size={13} className="live-agent-fail-icon" aria-hidden="true" />
+                ) : (
+                  <Check size={13} aria-hidden="true" />
+                )}
+                <span className="live-agent-name">{agent.name}</span>
+                {agent.role && <span className="live-agent-role">{agent.role}</span>}
+                {agent.task && <small className="live-agent-task" title={agent.task}>{agent.task}</small>}
+                {agent.currentTool && <span className="live-agent-tool">{agent.currentTool}</span>}
+                {agent.toolCount > 0 && !agent.currentTool && (
+                  <span className="live-agent-meta">{agent.toolCount} {t('tools')}</span>
+                )}
+                {agent.durationMs !== undefined && agent.status !== 'running' && (
+                  <span className="live-tool-dur">
+                    {agent.durationMs < 1000 ? `${agent.durationMs}ms` : `${(agent.durationMs / 1000).toFixed(1)}s`}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {liveTools.length > 0 && (
         <div className="live-tools" aria-live="polite">

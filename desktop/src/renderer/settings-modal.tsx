@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Activity, Check, ChevronDown, Cpu, Database, Eye, EyeOff,
-  FolderGit2, Globe, KeyRound, Plus, RefreshCw, Search, SlidersHorizontal,
+  FolderGit2, Globe, KeyRound, Plug, Plus, RefreshCw, Search, SlidersHorizontal,
   Star, Trash2, Upload, X,
 } from 'lucide-react'
-import type { ConfigDocument, ConfigImport, ConfigView, ProviderModelInfo, ProviderTestInput, SavedConnection, UiPreferences } from '../shared/desktop-settings'
+import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, ProviderModelInfo, ProviderTestInput, SavedConnection, UiPreferences } from '../shared/desktop-settings'
 import type { ThemePreference } from '../shared/theme'
 import { useLanguage, useTranslate } from './language'
 import type { FrontendSettingsAPI, SaveConfigResult } from './settings-api'
@@ -26,7 +26,7 @@ function normalizeRemoteInput(raw: string): string {
   return value
 }
 
-export type SettingsTab = 'models' | 'providers' | 'runtime' | 'remote' | 'general'
+export type SettingsTab = 'models' | 'providers' | 'mcp' | 'runtime' | 'remote' | 'general'
 
 function normalizeTab(tab?: SettingsTab): Exclude<SettingsTab, 'providers'> | undefined {
   if (!tab) return undefined
@@ -244,6 +244,18 @@ export function SettingsModal({
   const [rememberToken, setRememberToken] = useState(true)
   const [shortcut, setShortcut] = useState('CommandOrControl+Shift+Space')
 
+  // MCP editor state
+  const [mcpEditorMode, setMcpEditorMode] = useState<'closed' | 'add' | 'edit'>('closed')
+  const [editingMcpName, setEditingMcpName] = useState('')
+  const [confirmDeleteMcp, setConfirmDeleteMcp] = useState('')
+  const [mcpName, setMcpName] = useState('')
+  const [mcpTransport, setMcpTransport] = useState<'stdio' | 'streamable-http'>('stdio')
+  const [mcpCommand, setMcpCommand] = useState('')
+  const [mcpArgs, setMcpArgs] = useState<string[]>([])
+  const [mcpEnvRows, setMcpEnvRows] = useState<Array<{ id: string; key: string; value: string; saved: boolean }>>([])
+  const [mcpURL, setMcpURL] = useState('')
+  const [mcpClientMetadataURL, setMcpClientMetadataURL] = useState('')
+
   const wasOpen = useRef(false)
   useEffect(() => {
     if (!open) {
@@ -257,6 +269,8 @@ export function SettingsModal({
       setStatus('')
       setEditorMode('closed')
       setConfirmDeleteId('')
+      setMcpEditorMode('closed')
+      setConfirmDeleteMcp('')
       setPickerOpen(false)
       setProviderTestMessage('')
     }
@@ -307,6 +321,9 @@ export function SettingsModal({
   const closeEditor = () => {
     setEditorMode('closed')
     setEditingProviderId('')
+    setMcpEditorMode('closed')
+    setEditingMcpName('')
+    setConfirmDeleteMcp('')
     setPickerOpen(false)
     setDiscoveredModels([])
     setProviderTestMessage('')
@@ -744,10 +761,131 @@ export function SettingsModal({
 
   const navItems: Array<{ id: Exclude<SettingsTab, 'providers'>; label: string; icon: typeof KeyRound; hidden?: boolean }> = [
     { id: 'models', label: 'Models', icon: Cpu, hidden: !api.supportsModelConfig },
+    { id: 'mcp', label: 'MCP', icon: Plug, hidden: !api.supportsModelConfig },
     { id: 'runtime', label: 'Runtime & Agents', icon: Activity, hidden: !api.supportsModelConfig },
     { id: 'remote', label: 'Remote & Token', icon: Globe },
     { id: 'general', label: 'General', icon: SlidersHorizontal },
   ]
+
+  const mcpServers = view?.mcpServers ?? {}
+  const mcpServerNames = Object.keys(mcpServers).sort()
+
+  const toMCPPayloadEntry = (summary: MCPServerSummary): Record<string, unknown> => {
+    if (summary.transport === 'streamable-http') {
+      return {
+        transport: 'streamable-http',
+        url: summary.url || '',
+        ...(summary.clientMetadataURL ? { clientMetadataURL: summary.clientMetadataURL } : {}),
+      }
+    }
+    return {
+      transport: 'stdio',
+      command: summary.command || '',
+      ...(summary.args?.length ? { args: summary.args } : {}),
+      ...(summary.envKeys?.length ? { keepEnvKeys: summary.envKeys } : {}),
+    }
+  }
+
+  const openAddMCP = () => {
+    setError('')
+    setStatus('')
+    setConfirmDeleteMcp('')
+    setMcpEditorMode('add')
+    setEditingMcpName('')
+    setMcpName('')
+    setMcpTransport('stdio')
+    setMcpCommand('')
+    setMcpArgs([])
+    setMcpEnvRows([])
+    setMcpURL('')
+    setMcpClientMetadataURL('')
+  }
+
+  const openEditMCP = (name: string) => {
+    const entry = mcpServers[name]
+    if (!entry) return
+    setError('')
+    setStatus('')
+    setConfirmDeleteMcp('')
+    setMcpEditorMode('edit')
+    setEditingMcpName(name)
+    setMcpName(name)
+    setMcpTransport(entry.transport === 'streamable-http' ? 'streamable-http' : 'stdio')
+    setMcpCommand(entry.command || '')
+    setMcpArgs([...(entry.args ?? [])])
+    setMcpEnvRows((entry.envKeys ?? []).map((key) => ({ id: `${name}:${key}`, key, value: '', saved: true })))
+    setMcpURL(entry.url || '')
+    setMcpClientMetadataURL(entry.clientMetadataURL || '')
+  }
+
+  const submitMCPServer = async (event: FormEvent) => {
+    event.preventDefault()
+    setError('')
+    const name = (mcpEditorMode === 'edit' ? editingMcpName : mcpName).trim()
+    if (!name) { setError(t('Server name is required.')); return }
+    if (mcpEditorMode === 'add' && Object.hasOwn(mcpServers, name)) {
+      setError(`${t('Duplicate server name')}: ${name}`)
+      return
+    }
+    let nextEntry: Record<string, unknown>
+    if (mcpTransport === 'stdio') {
+      if (!mcpCommand.trim()) { setError(t('Command is required for stdio transport.')); return }
+      const args = mcpArgs.map((a) => a.trim()).filter(Boolean)
+      const keepEnvKeys: string[] = []
+      const env: Record<string, string> = {}
+      const seenKeys = new Set<string>()
+      for (const row of mcpEnvRows) {
+        const k = row.key.trim()
+        if (!k) continue
+        const lowered = k.toLowerCase()
+        if (seenKeys.has(lowered)) { setError(`${t('Duplicate environment variable')}: ${k}`); return }
+        seenKeys.add(lowered)
+        if (row.value !== '') env[k] = row.value
+        else if (row.saved) keepEnvKeys.push(k)
+        else env[k] = ''
+      }
+      nextEntry = {
+        transport: 'stdio',
+        command: mcpCommand.trim(),
+        ...(args.length ? { args } : {}),
+        ...(keepEnvKeys.length ? { keepEnvKeys } : {}),
+        ...(Object.keys(env).length ? { env } : {}),
+      }
+    } else {
+      if (!mcpURL.trim()) { setError(t('Endpoint URL is required.')); return }
+      nextEntry = {
+        transport: 'streamable-http',
+        url: mcpURL.trim(),
+        ...(mcpClientMetadataURL.trim() ? { clientMetadataURL: mcpClientMetadataURL.trim() } : {}),
+      }
+    }
+
+    const nextServers: Record<string, unknown> = {}
+    for (const [key, summary] of Object.entries(mcpServers)) {
+      nextServers[key] = toMCPPayloadEntry(summary)
+    }
+    nextServers[name] = nextEntry
+    const ok = await commitDocument({ ...doc, mcpServers: nextServers }, imported?.id, t('MCP servers saved to SQLite database.'))
+    if (ok) {
+      setMcpEditorMode('closed')
+      setEditingMcpName('')
+    }
+  }
+
+  const deleteMCPServer = async (name: string) => {
+    const nextServers: Record<string, unknown> = {}
+    for (const [key, summary] of Object.entries(mcpServers)) {
+      if (key !== name) nextServers[key] = toMCPPayloadEntry(summary)
+    }
+    const ok = await commitDocument({ ...doc, mcpServers: nextServers }, imported?.id, t('MCP servers saved to SQLite database.'))
+    if (ok) {
+      setConfirmDeleteMcp('')
+      if (mcpEditorMode === 'edit' && editingMcpName === name) {
+        setMcpEditorMode('closed')
+        setEditingMcpName('')
+      }
+    }
+  }
 
   const renderUnifiedEditor = () => {
     const isEdit = editorMode === 'edit'
@@ -1163,7 +1301,7 @@ export function SettingsModal({
           {error && <p className="form-error" role="alert">{error}</p>}
           {status && <p className="form-status" role="status">{status}</p>}
 
-          {(tab === 'models' || tab === 'runtime') && api.supportsModelConfig && (
+          {(tab === 'models' || tab === 'mcp' || tab === 'runtime') && api.supportsModelConfig && (
             <div className="settings-scope-row">
               <div className="connection-tabs compact-tabs">
                 <button type="button" className={!scope ? 'active' : ''} disabled={busy} onClick={() => { closeEditor(); setScope('') }}>{t('Defaults')}</button>
@@ -1343,6 +1481,207 @@ export function SettingsModal({
                   </button>
                 </div>
               </details>
+            </div>
+          )}
+
+          {tab === 'mcp' && api.supportsModelConfig && (
+            <div className="settings-pane">
+              <div className="models-top-bar">
+                <p className="inspector-hint">
+                  {t('Configure local stdio or remote streamable-http MCP servers. Environment variable values stay encrypted in SQLite.')}
+                </p>
+                {mcpEditorMode === 'closed' && (
+                  <button type="button" className="primary-button compact" disabled={busy} onClick={openAddMCP}>
+                    <Plus size={14} aria-hidden="true" />{t('Add server')}
+                  </button>
+                )}
+              </div>
+
+              {mcpEditorMode !== 'closed' && (
+                <form className="provider-editor-card" onSubmit={submitMCPServer}>
+                  <div className="settings-form-head">
+                    <div className="provider-editor-title">
+                      <Plug size={15} aria-hidden="true" />
+                      <h3>{mcpEditorMode === 'edit' ? `${t('Edit MCP server')}: ${editingMcpName}` : t('Add MCP server')}</h3>
+                    </div>
+                    <button type="button" className="icon-button" aria-label={t('Close')} disabled={busy} onClick={() => setMcpEditorMode('closed')}><X size={15} /></button>
+                  </div>
+
+                  <div className="settings-form-grid">
+                    <label className="form-field">{t('Server name')}
+                      <input
+                        required
+                        disabled={busy || mcpEditorMode === 'edit'}
+                        value={mcpName}
+                        placeholder="filesystem"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        onChange={(e) => setMcpName(e.target.value)}
+                      />
+                    </label>
+                    <label className="form-field">{t('Transport')}
+                      <select value={mcpTransport} disabled={busy} onChange={(e) => setMcpTransport(e.target.value as 'stdio' | 'streamable-http')}>
+                        <option value="stdio">stdio</option>
+                        <option value="streamable-http">streamable-http</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {mcpTransport === 'stdio' ? (
+                    <>
+                      <label className="form-field">{t('Command')}
+                        <input
+                          required
+                          disabled={busy}
+                          value={mcpCommand}
+                          placeholder="npx"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          onChange={(e) => setMcpCommand(e.target.value)}
+                        />
+                      </label>
+
+                      <div className="mcp-editor-block">
+                        <div className="provider-models-head">
+                          <span className="provider-models-label"><strong>{t('Arguments')}</strong></span>
+                          <button type="button" className="plain-button" disabled={busy} onClick={() => setMcpArgs((prev) => [...prev, ''])}>
+                            <Plus size={12} />{t('Add argument')}
+                          </button>
+                        </div>
+                        {mcpArgs.map((arg, idx) => (
+                          <div className="mcp-kv-row" key={idx}>
+                            <input
+                              value={arg}
+                              disabled={busy}
+                              placeholder={`arg ${idx + 1}`}
+                              spellCheck={false}
+                              onChange={(e) => setMcpArgs((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
+                            />
+                            <button type="button" className="icon-button" aria-label={t('Delete')} disabled={busy} onClick={() => setMcpArgs((prev) => prev.filter((_, i) => i !== idx))}>
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mcp-editor-block">
+                        <div className="provider-models-head">
+                          <span className="provider-models-label"><strong>{t('Environment variables')}</strong></span>
+                          <button
+                            type="button"
+                            className="plain-button"
+                            disabled={busy}
+                            onClick={() => setMcpEnvRows((prev) => [...prev, { id: `new:${Date.now()}:${prev.length}`, key: '', value: '', saved: false }])}
+                          >
+                            <Plus size={12} />{t('Add variable')}
+                          </button>
+                        </div>
+                        {mcpEnvRows.map((row) => (
+                          <div className="mcp-kv-row env" key={row.id}>
+                            <input
+                              value={row.key}
+                              disabled={busy}
+                              placeholder="ENV_KEY"
+                              autoCapitalize="none"
+                              spellCheck={false}
+                              onChange={(e) => setMcpEnvRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, key: e.target.value, saved: false } : r)))}
+                            />
+                            <input
+                              type="password"
+                              value={row.value}
+                              disabled={busy}
+                              autoComplete="off"
+                              placeholder={row.saved ? t('Saved — leave blank to keep') : t('Value')}
+                              onChange={(e) => setMcpEnvRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, value: e.target.value } : r)))}
+                            />
+                            <button type="button" className="icon-button" aria-label={t('Delete')} disabled={busy} onClick={() => setMcpEnvRows((prev) => prev.filter((r) => r.id !== row.id))}>
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <label className="form-field">{t('Endpoint URL')}
+                        <input
+                          required
+                          type="url"
+                          disabled={busy}
+                          value={mcpURL}
+                          placeholder="https://mcp.example.com/mcp"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          onChange={(e) => setMcpURL(e.target.value)}
+                        />
+                      </label>
+                      <label className="form-field">{t('OAuth client metadata URL (optional)')}
+                        <input
+                          type="url"
+                          disabled={busy}
+                          value={mcpClientMetadataURL}
+                          placeholder="https://app.example.com/oauth/client.json"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          onChange={(e) => setMcpClientMetadataURL(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  <div className="settings-form-footer">
+                    <button type="button" className="secondary-button" disabled={busy} onClick={() => setMcpEditorMode('closed')}>{t('Cancel')}</button>
+                    <button type="submit" className="primary-button compact" disabled={busy}><Check size={14} />{t('Save')}</button>
+                  </div>
+                </form>
+              )}
+
+              <div className="provider-cards">
+                {mcpServerNames.length === 0 && mcpEditorMode === 'closed' && (
+                  <div className="provider-empty-card">
+                    <p>{t('No custom MCP servers configured in this scope.')}</p>
+                    <button type="button" className="primary-button compact" disabled={busy} onClick={openAddMCP}>
+                      <Plus size={14} aria-hidden="true" />{t('Add server')}
+                    </button>
+                  </div>
+                )}
+
+                {mcpServerNames.map((name) => {
+                  const s = mcpServers[name]
+                  const cmdLine = s.transport === 'stdio'
+                    ? [s.command || '', ...(s.args ?? [])].filter(Boolean).join(' ')
+                    : (s.url || '')
+                  return (
+                    <div className="provider-card mcp-config-card" key={name}>
+                      <div className="provider-card-head">
+                        <div className="provider-card-main">
+                          <div className="provider-card-title">
+                            <strong>{name}</strong>
+                            <span className="status-pill">{s.transport}</span>
+                            {Boolean(s.envKeys?.length) && (
+                              <span className="status-pill mcp-env-saved-tag">{s.envKeys!.length} {t('env')}</span>
+                            )}
+                          </div>
+                          <small>{cmdLine}</small>
+                        </div>
+                        <div className="settings-card-actions">
+                          {confirmDeleteMcp === name ? (
+                            <>
+                              <button type="button" className="plain-button" disabled={busy} onClick={() => setConfirmDeleteMcp('')}>{t('Cancel')}</button>
+                              <button type="button" className="plain-button danger" disabled={busy} onClick={() => void deleteMCPServer(name)}>{t('Confirm delete')}</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" className="secondary-button" disabled={busy} onClick={() => openEditMCP(name)}>{t('Edit')}</button>
+                              <button type="button" className="icon-button" disabled={busy} aria-label={t('Delete')} onClick={() => setConfirmDeleteMcp(name)}><Trash2 size={14} /></button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
 

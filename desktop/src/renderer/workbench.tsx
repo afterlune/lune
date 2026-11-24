@@ -40,6 +40,8 @@ export interface ManagedWorkspace {
   isRemoteOverride?: boolean
   onConnectRemote?: (options: { url: string; token: string; name?: string; rememberToken?: boolean }) => Promise<void>
   onReturnToLocal?: () => Promise<void>
+  workspaces?: Workspace[]
+  onSelectWorkspace?: (id: string) => void
 }
 
 const selectionKey = 'lune:active-workspace'
@@ -348,6 +350,8 @@ function Workbench({ theme }: { theme: ThemePreference }) {
             openDirectoryPicker,
             focusFilesToken: focusFilesRequest?.id === workspace.id ? focusFilesRequest.seq : 0,
             workspaceRevision,
+            workspaces,
+            onSelectWorkspace: select,
           reconnectWorkspace: async () => {
             await localRequest(credential, 'reload-workspace', { id: workspace.id })
             setPairingError('')
