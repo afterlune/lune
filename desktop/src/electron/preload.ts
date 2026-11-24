@@ -1,14 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ThemePreference } from '../shared/theme.js'
 
-import type { ConfigDocument, ConfigImport, ConfigView, DesktopConnectionOptions, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings.js'
+import type { ConfigDocument, ConfigImport, ConfigView, DesktopConnectionOptions, ProviderModelInfo, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings.js'
 
 contextBridge.exposeInMainWorld('luneDesktop', {
   getConfig: (scope: string): Promise<ConfigView> => ipcRenderer.invoke('settings:config', scope),
   chooseConfigImport: (): Promise<ConfigImport | null> => ipcRenderer.invoke('settings:import'),
   saveConfig: (scope: string, document: ConfigDocument, importId?: string): Promise<boolean> => ipcRenderer.invoke('settings:save-config', scope, document, importId),
   resetWorkspaceConfig: (workspace: string): Promise<void> => ipcRenderer.invoke('settings:reset-workspace', workspace),
-  fetchProviderModels: (scope: string, provider: string): Promise<Array<{ id: string; displayName?: string }>> =>
+  fetchProviderModels: (scope: string, provider: string): Promise<ProviderModelInfo[]> =>
     ipcRenderer.invoke('settings:fetch-provider-models', scope, provider),
   testProvider: (scope: string, input: ProviderTestInput): Promise<ProviderTestResult> => ipcRenderer.invoke('settings:test-provider', scope, input),
   getUiPreferences: (): Promise<UiPreferences> => ipcRenderer.invoke('settings:ui-preferences'),

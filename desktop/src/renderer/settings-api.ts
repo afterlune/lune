@@ -1,6 +1,8 @@
-import type { ConfigDocument, ConfigImport, ConfigView, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings'
+import type { ConfigDocument, ConfigImport, ConfigView, ProviderModelInfo, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings'
 import { defaultUiPreferences, normalizeUiPreferences } from '../shared/ui-preferences'
 import { loadSavedWebConnection, saveWebConnection } from './loopback'
+
+export type { ProviderModelInfo }
 
 export interface SaveRemoteInput {
   url: string
@@ -15,11 +17,6 @@ export interface SaveConfigResult {
   reconnectError?: string
   initial?: string
   needsSetup?: boolean
-}
-
-export interface ProviderModelInfo {
-  id: string
-  displayName?: string
 }
 
 export interface FrontendSettingsAPI {

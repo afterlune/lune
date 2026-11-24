@@ -36,5 +36,20 @@ export type ProviderTestInput = {
   apiKeyEnv?: string
 }
 
-export type ProviderTestResult = { ok: boolean; durationMs: number; modelCount?: number; error?: string }
+export type ProviderModelInfo = {
+  id: string
+  displayName?: string
+  contextWindow?: number
+  maxOutputTokens?: number
+  supportsInputImages?: boolean
+  supportsInputAudio?: boolean
+}
+
+export type ProviderTestResult = {
+  ok: boolean
+  durationMs: number
+  modelCount?: number
+  models?: ProviderModelInfo[]
+  error?: string
+}
 export type { UiPreferences } from './ui-preferences.js'

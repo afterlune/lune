@@ -183,6 +183,22 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 		t.Fatalf("provider test leaked provider error or secret: %d %s", providerTest.Code, providerTest.Body.String())
 	}
 
+	okProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m1","display_name":"Model One","context_window":128000}]}`))
+	}))
+	okTest := post("/_lune/providers/test", map[string]any{
+		"provider": "temporary", "protocol": "responses", "baseURL": okProvider.URL + "/v1", "apiKey": "k-ok",
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	okProvider.Close()
+	if okTest.Code != http.StatusOK || !strings.Contains(okTest.Body.String(), `"modelCount":1`) || !strings.Contains(okTest.Body.String(), `"contextWindow":128000`) {
+		t.Fatalf("provider ok test = %d %s", okTest.Code, okTest.Body.String())
+	}
+
 	// Remote connection persistence in unified settings.db.
 	connSave := post("/_lune/connections/save", map[string]any{
 		"mode": "remote", "address": "wss://remote.example:18092/v1/runtime", "name": "Prod", "token": "tok-999", "rememberToken": true,

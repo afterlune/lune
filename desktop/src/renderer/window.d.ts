@@ -1,6 +1,6 @@
 import type { ThemePreference } from '../shared/theme'
 import type { Attachment } from './attachments'
-import type { ConfigDocument, ConfigImport, ConfigView, DesktopConnectionOptions, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings'
+import type { ConfigDocument, ConfigImport, ConfigView, DesktopConnectionOptions, ProviderModelInfo, ProviderTestInput, ProviderTestResult, SavedConnection, UiPreferences } from '../shared/desktop-settings'
 
 declare global {
   interface Window {
@@ -9,7 +9,7 @@ declare global {
       chooseConfigImport(): Promise<ConfigImport | null>
       saveConfig(scope: string, document: ConfigDocument, importId?: string): Promise<boolean>
       resetWorkspaceConfig(workspace: string): Promise<void>
-      fetchProviderModels(scope: string, provider: string): Promise<Array<{ id: string; displayName?: string }>>
+      fetchProviderModels(scope: string, provider: string): Promise<ProviderModelInfo[]>
       testProvider(scope: string, input: ProviderTestInput): Promise<ProviderTestResult>
       getUiPreferences(): Promise<UiPreferences>
       saveUiPreferences(patch: Partial<UiPreferences>): Promise<UiPreferences>

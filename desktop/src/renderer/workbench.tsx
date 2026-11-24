@@ -394,7 +394,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
 
     <SettingsModal
       open={setupSettingsOpen}
-      initialTab={needsSetup ? 'providers' : 'remote'}
+      initialTab={needsSetup ? 'models' : 'remote'}
       api={settingsAPI}
       workspace={currentWorkspacePath}
       theme={currentTheme}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createDesktopSettingsAPI, createRemoteOnlySettingsAPI } from './settings-api'
-import { SettingsModal, type SettingsTab } from './settings-modal'
+import { formatCapacity, SettingsModal, type SettingsTab } from './settings-modal'
 import type { SavedConnection } from '../shared/desktop-settings'
 import { lastLoopbackSession, rememberLoopbackSession } from './loopback'
 import { LanguagePicker, useLanguage, useTranslate } from './language'
@@ -20,7 +20,7 @@ import {
   type RuntimeState, type SessionSummary, type TimelineEntry,
 } from './harness-types'
 import {
-  Archive, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, CircleHelp, Code2,
+  Archive, ArrowUp, ArrowUpRight, Brain, Camera, Check, ChevronDown, CircleHelp, Code2,
   Command, Compass, CornerDownRight, Download, Folder, FolderOpen, GitFork, Laptop,
   LoaderCircle, LockKeyhole, Minimize2, MoreHorizontal, PanelLeftClose,
   PanelLeftOpen, PanelRight, Pause, Pencil, Play, Plus, Radio, RefreshCw,
@@ -224,7 +224,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([])
   const [connectionNotice, setConnectionNotice] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('providers')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('models')
   const [configReconnectRequired, setConfigReconnectRequired] = useState(false)
   const [applyingConfig, setApplyingConfig] = useState(false)
   const [harnessOpen, setHarnessOpen] = useState(false)
@@ -273,6 +273,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [harnessFullScreen, setHarnessFullScreen] = useState(false)
   const [harnessOverlay, setHarnessOverlay] = useState(() => window.innerWidth < 1100)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [composerMenu, setComposerMenu] = useState<'model' | 'effort' | null>(null)
+  const [draggingColumn, setDraggingColumn] = useState<'sidebar' | 'harness' | null>(null)
   const compactLayout = narrow || quick
   const [sessionDialog, setSessionDialog] = useState<null | {
     kind: 'rename' | 'delete' | 'rewind'; sessionId: string; value: string; digest?: string; removed?: number; excerpts?: string[]
@@ -318,13 +320,19 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Element && !event.target.closest('.session-row-menu')) {
-        setRowMenuId('')
+      if (event.target instanceof Element) {
+        if (!event.target.closest('.session-row-menu')) {
+          setRowMenuId('')
+        }
+        if (!event.target.closest('.composer-picker-group')) {
+          setComposerMenu(null)
+        }
       }
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setRowMenuId('')
+        setComposerMenu(null)
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
         event.preventDefault()
@@ -559,6 +567,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setShowConnection(true)
     if (active) await active.close(true).catch(() => undefined)
     else if (window.luneDesktop) await window.luneDesktop.close(true).catch(() => undefined)
+  }, [])
+
+  useEffect(() => () => {
+    autoReconnect.current = false
+    if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current)
+    reconnectTimer.current = null
+    connectionRef.current = null
+    void clientRef.current?.close(true).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -1350,7 +1366,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (drag.side === 'sidebar') setSidebarWidth(Math.min(420, Math.max(200, drag.width + event.clientX - drag.x)))
       else setHarnessWidth(Math.min(760, Math.max(320, drag.width + drag.x - event.clientX)))
     }
-    const finish = () => { columnDrag.current = null }
+    const finish = () => {
+      columnDrag.current = null
+      setDraggingColumn(null)
+    }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', finish)
     window.addEventListener('pointercancel', finish)
@@ -1517,7 +1536,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             type="button"
             className="settings-button"
             onClick={() => {
-              setSettingsTab(settingsAPI.supportsModelConfig ? 'providers' : 'remote')
+              setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
               setSettingsOpen(true)
             }}
           >
@@ -1583,7 +1602,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             </div>
             {desktop && <label className="form-field">Connection name<input value={remoteName} onChange={(event) => setRemoteName(event.target.value)} maxLength={120} /></label>}
           </>}
-          {desktop && mode === 'local' && <button type="button" className="secondary-button" disabled={busy} onClick={() => { setSettingsTab('providers'); setSettingsOpen(true) }}>{t('Settings')}</button>}
+          {desktop && mode === 'local' && <button type="button" className="secondary-button" disabled={busy} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>{t('Settings')}</button>}
           {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
           {(connectionError || pairingError) && <div className="form-error" role="alert"><ShieldAlert size={16} /> <span>{t(connectionError || pairingError || '')}</span></div>}
           {!connectionError && connectionStatus === 'reconnecting' && <div className="form-status"><LoaderCircle size={15} className="spin" /> The connection dropped. Lune is trying again automatically.</div>}
@@ -1766,7 +1785,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         className="settings-button"
         onClick={() => {
           closeDrawer()
-          setSettingsTab(settingsAPI.supportsModelConfig ? 'providers' : 'remote')
+          setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
           setSettingsOpen(true)
         }}
       >
@@ -1896,9 +1915,129 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               {desktop && modelOption?.supportsInputImages && <button type="button" className="composer-icon-btn" disabled={working} onClick={captureScreenshot} aria-label="Screenshot" title="Screenshot"><Camera size={16} aria-hidden="true" /></button>}
             </>}
             {has('turn.plan') && <button type="button" className="composer-pill-btn plan-button" aria-pressed={planMode} disabled={working} onClick={() => setPlanMode(!planMode)} title={t("Use read-only tools for this turn")}><Compass size={15} aria-hidden="true" /><span>{t("Plan")}</span></button>}
-            <button type="button" className="composer-pill-btn" disabled={!activeSession || working} onClick={() => { setDraft('/'); textareaRef.current?.focus() }} title={t('Slash commands')} aria-label={t('Slash commands')}><span>/</span></button>
           </div>
           <div className="composer-actions">
+            <div className="composer-picker-group">
+              <div className="composer-picker-wrap">
+                <button
+                  type="button"
+                  className="composer-pill-btn composer-picker-btn"
+                  aria-haspopup="listbox"
+                  aria-expanded={composerMenu === 'model'}
+                  title={t(models.length > 0 ? 'MODEL' : 'Configure models')}
+                  disabled={models.length > 0 ? (!activeSession || taskIsRunning || taskIsQueued || taskIsPaused) : false}
+                  onClick={() => {
+                    if (models.length === 0) {
+                      setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
+                      setSettingsOpen(true)
+                      return
+                    }
+                    setComposerMenu((current) => current === 'model' ? null : 'model')
+                  }}
+                >
+                  <span className="composer-picker-label">
+                    {models.length > 0
+                      ? (modelOption?.displayName || modelOption?.model || selectedModel || t('Select model'))
+                      : t('Configure models')}
+                  </span>
+                  <ChevronDown size={13} aria-hidden="true" />
+                </button>
+                {composerMenu === 'model' && models.length > 0 && (
+                  <div className="composer-popover" role="listbox" aria-label={t('MODEL')}>
+                    <div className="composer-popover-list">
+                      {models.map((m) => {
+                        const active = m.profile === selectedModel
+                        const cap = formatCapacity(m.contextWindow)
+                        return (
+                          <button
+                            key={m.profile}
+                            type="button"
+                            role="option"
+                            aria-selected={active}
+                            className={`composer-popover-item${active ? ' active' : ''}`}
+                            onClick={() => {
+                              setComposerMenu(null)
+                              void changeModel(m.profile)
+                            }}
+                          >
+                            <div className="composer-popover-item-main">
+                              <span>{m.displayName || m.model}</span>
+                              <small>{m.provider}{cap ? ` · ${cap}` : ''}</small>
+                            </div>
+                            {active && <Check size={14} aria-hidden="true" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {settingsAPI.supportsModelConfig && (
+                      <div className="composer-popover-footer">
+                        <button
+                          type="button"
+                          className="plain-button"
+                          onClick={() => {
+                            setComposerMenu(null)
+                            setSettingsTab('models')
+                            setSettingsOpen(true)
+                          }}
+                        >
+                          <Settings size={12} aria-hidden="true" />
+                          <span>{t('Manage models…')}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {models.length > 0 && Boolean(selectedModel) && (
+                <div className="composer-picker-wrap">
+                  <button
+                    type="button"
+                    className="composer-pill-btn composer-picker-btn"
+                    aria-haspopup="listbox"
+                    aria-expanded={composerMenu === 'effort'}
+                    title={t('Reasoning effort')}
+                    disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused}
+                    onClick={() => setComposerMenu((current) => current === 'effort' ? null : 'effort')}
+                  >
+                    <Brain size={14} aria-hidden="true" />
+                    <span className="composer-picker-label">
+                      {activeSession?.settings.reasoningEffort ? t(activeSession.settings.reasoningEffort) : t('Default')}
+                    </span>
+                    <ChevronDown size={13} aria-hidden="true" />
+                  </button>
+                  {composerMenu === 'effort' && (
+                    <div className="composer-popover composer-popover-effort" role="listbox" aria-label={t('Reasoning effort')}>
+                      <div className="composer-popover-head">{t('Reasoning effort')}</div>
+                      <div className="composer-popover-list">
+                        {(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((level) => {
+                          const current = activeSession?.settings.reasoningEffort || ''
+                          const active = current === level
+                          return (
+                            <button
+                              key={level || 'default'}
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              className={`composer-popover-item${active ? ' active' : ''}`}
+                              onClick={() => {
+                                setComposerMenu(null)
+                                void changeSettings({ reasoningEffort: level })
+                              }}
+                            >
+                              <div className="composer-popover-item-main">
+                                <span>{level ? t(level) : t('Default')}</span>
+                                {!level && <small>{t('Follow model default')}</small>}
+                              </div>
+                              {active && <Check size={14} aria-hidden="true" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             {taskIsRunning && runtime.task.executionId && !planMode && <button type="button" className="composer-pill-btn" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}><CornerDownRight size={14} aria-hidden="true" /><span>{t("Add to running task")}</span></button>}
             {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button type="button" className="stop-button" disabled={working} onClick={() => void stopRun()} aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')} title={t(taskIsQueued ? 'Cancel queued' : 'Stop')}><Square size={12} fill="currentColor" aria-hidden="true" /></button>}
             <button type="button" className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label={t("Send message")} title={t("Send message")}>{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}</button>
@@ -1934,7 +2073,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   return (
     <div
-      className={`app-shell${quick ? ' quick-mode' : ''}${!desktop ? ' web-workbench' : ''}${sidebarCollapsed && !compactLayout ? ' sidebar-collapsed' : ''}${harnessOpen ? ' files-open' : ''}${harnessOpen && harnessOverlay ? ' harness-overlay' : ''}`}
+      className={`app-shell${quick ? ' quick-mode' : ''}${!desktop ? ' web-workbench' : ''}${sidebarCollapsed && !compactLayout ? ' sidebar-collapsed' : ''}${harnessOpen ? ' files-open' : ''}${harnessOpen && harnessOverlay ? ' harness-overlay' : ''}${draggingColumn ? ' resizing' : ''}`}
       style={{ '--sidebar-width': `${sidebarWidth}px`, '--sidebar-edge': `${sidebarCollapsed ? 56 : sidebarWidth}px`, '--harness-width': `${harnessWidth}px` } as CSSProperties}
     >
       {compactLayout ? <dialog id={accessibilityId + '-drawer'} className="session-drawer" aria-labelledby={accessibilityId + '-drawer-title'} ref={drawerRef}
@@ -1961,11 +2100,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       {!compactLayout && sidebarCollapsed && <nav className="sidebar-rail" aria-label={t('Quick navigation')}>
         <button type="button" className="icon-button" title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
         <button type="button" className="icon-button" title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
+        <button type="button" className="icon-button sidebar-rail-settings" title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>
       </nav>}
       {!compactLayout && !sidebarCollapsed && <div
         className="column-resizer sidebar-resizer" role="separator" aria-orientation="vertical" aria-label={t('Resize conversation sidebar')}
         aria-valuemin={200} aria-valuemax={420} aria-valuenow={sidebarWidth} tabIndex={0}
-        onPointerDown={(event) => { event.preventDefault(); columnDrag.current = { side: 'sidebar', x: event.clientX, width: sidebarWidth } }}
+        onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('sidebar'); columnDrag.current = { side: 'sidebar', x: event.clientX, width: sidebarWidth } }}
         onDoubleClick={() => setSidebarWidth(260)}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -1975,7 +2115,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       {!compactLayout && harnessOpen && !harnessFullScreen && <div
         className="column-resizer harness-resizer" role="separator" aria-orientation="vertical" aria-label={t('Resize Harness panel')}
         aria-valuemin={320} aria-valuemax={760} aria-valuenow={harnessWidth} tabIndex={0}
-        onPointerDown={(event) => { event.preventDefault(); columnDrag.current = { side: 'harness', x: event.clientX, width: harnessWidth } }}
+        onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('harness'); columnDrag.current = { side: 'harness', x: event.clientX, width: harnessWidth } }}
         onDoubleClick={() => setHarnessWidth(420)}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -1986,24 +2126,20 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       <main className="chat-area">
         <header className="chat-header">
           <div className="header-left">
-            {compactLayout ? (
+            {compactLayout && (
               <button type="button" className="icon-button drawer-toggle" title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={18} /></button>
-            ) : sidebarCollapsed ? (
-              <>
-                <button type="button" className="icon-button" aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
-                <button type="button" className="icon-button" aria-label={t('New conversation')} title={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
-              </>
-            ) : null}
-            {models.length > 0 ? (
-              <label className="model-picker">
-                <select aria-label={t('MODEL')} value={selectedModel} disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused} onChange={(event) => void changeModel(event.target.value)}>{models.map((model) => <option value={model.profile} key={model.profile}>{model.displayName || model.profile}</option>)}</select>
-                <ChevronDown size={15} aria-hidden="true" />
-              </label>
+            )}
+            {workspaceName ? (
+              <span className="header-workspace" title={workspacePath}>{workspaceName}</span>
             ) : (
               <span className="header-brand-title">Lune</span>
             )}
-            {workspaceName && <span className="header-workspace" title={workspacePath}>{workspaceName}</span>}
-            {activeSession?.title && <span className="header-session-title" title={activeSession.title}>{activeSession.title}</span>}
+            {activeSession?.title && (
+              <>
+                <span className="header-crumb-sep" aria-hidden="true">/</span>
+                <span className="header-session-title" title={activeSession.title}>{activeSession.title}</span>
+              </>
+            )}
           </div>
           <div className="header-actions">
             {connectionStatus !== 'connected' && <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{t(statusLabel)}</span>}
@@ -2102,7 +2238,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     : <p className="retry-countdown">{t('Retry is available now.')}</p>}
                   <div className="pending-actions">
                     <button className="plain-button danger" disabled={working} onClick={() => void discardPaused()}>{t('Discard')}</button>
-                    <button className="secondary-button" disabled={working} onClick={() => { setSettingsTab('providers'); setSettingsOpen(true) }}>{t('Open model settings')}</button>
+                    <button className="secondary-button" disabled={working} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>{t('Open model settings')}</button>
                     <button className="primary-button compact" disabled={working || (Number.isFinite(Date.parse(modelFailure.retry_not_before || '')) && recoveryClock < Date.parse(modelFailure.retry_not_before || ''))} onClick={() => void resumeRun()}><RefreshCw size={14} />{t('Resume run')}</button>
                   </div>
                 </div>}

@@ -490,7 +490,7 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 			if testErr != nil {
 				result = map[string]any{"ok": false, "durationMs": time.Since(started).Milliseconds(), "error": "Provider connection failed. Check the URL, credentials, and network."}
 			} else {
-				result = map[string]any{"ok": true, "durationMs": time.Since(started).Milliseconds(), "modelCount": len(models)}
+				result = map[string]any{"ok": true, "durationMs": time.Since(started).Milliseconds(), "modelCount": len(models), "models": models}
 			}
 		}
 	case "/_lune/config/save":

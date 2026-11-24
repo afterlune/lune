@@ -17,8 +17,26 @@ import (
 const providerModelsResponseLimit = 4 << 20
 
 type ProviderModelInfo struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"displayName,omitempty"`
+	ID                  string `json:"id"`
+	DisplayName         string `json:"displayName,omitempty"`
+	ContextWindow       int64  `json:"contextWindow,omitempty"`
+	MaxOutputTokens     int64  `json:"maxOutputTokens,omitempty"`
+	SupportsInputImages bool   `json:"supportsInputImages,omitempty"`
+	SupportsInputAudio  bool   `json:"supportsInputAudio,omitempty"`
+}
+
+type rawProviderModel struct {
+	ID                   string   `json:"id"`
+	DisplayName          string   `json:"display_name"`
+	DisplayNameCamel     string   `json:"displayName"`
+	Name                 string   `json:"name"`
+	ContextWindow        int64    `json:"context_window"`
+	ContextWindowCamel   int64    `json:"contextWindow"`
+	MaxOutputTokens      int64    `json:"max_output_tokens"`
+	MaxOutputTokensCamel int64    `json:"maxOutputTokens"`
+	MaxTokens            int64    `json:"max_tokens"`
+	InputModalities      []string `json:"input_modalities"`
+	InputModalitiesCamel []string `json:"inputModalities"`
 }
 
 type ProviderTestInput struct {
@@ -219,48 +237,70 @@ func fetchModelsFromEndpoint(ctx context.Context, client *http.Client, protocol,
 		}
 
 		var parsed struct {
-			Data []struct {
-				ID          string `json:"id"`
-				DisplayName string `json:"display_name"`
-				Name        string `json:"name"`
-			} `json:"data"`
-			Models []struct {
-				ID          string `json:"id"`
-				DisplayName string `json:"displayName"`
-				Name        string `json:"name"`
-			} `json:"models"`
+			Data []rawProviderModel `json:"data"`
+			Models []rawProviderModel `json:"models"`
 		}
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			return nil, fmt.Errorf("parse provider models JSON: %w", err)
 		}
 
 		seen := make(map[string]ProviderModelInfo)
-		for _, item := range parsed.Data {
+		addModel := func(item rawProviderModel, fallbackNameAsID bool) {
 			id := strings.TrimSpace(item.ID)
-			if id == "" {
-				continue
-			}
-			display := strings.TrimSpace(item.DisplayName)
-			if display == "" {
-				display = strings.TrimSpace(item.Name)
-			}
-			seen[id] = ProviderModelInfo{ID: id, DisplayName: display}
-		}
-		for _, item := range parsed.Models {
-			id := strings.TrimSpace(item.ID)
-			if id == "" {
+			if id == "" && fallbackNameAsID {
 				id = strings.TrimSpace(item.Name)
 			}
 			if id == "" {
-				continue
+				return
 			}
-			if _, exists := seen[id]; !exists {
-				display := strings.TrimSpace(item.DisplayName)
-				if display == "" {
-					display = strings.TrimSpace(item.Name)
+			if _, exists := seen[id]; exists {
+				return
+			}
+			display := strings.TrimSpace(item.DisplayName)
+			if display == "" {
+				display = strings.TrimSpace(item.DisplayNameCamel)
+			}
+			if display == "" {
+				display = strings.TrimSpace(item.Name)
+			}
+			ctxWin := item.ContextWindow
+			if ctxWin == 0 {
+				ctxWin = item.ContextWindowCamel
+			}
+			maxOut := item.MaxOutputTokens
+			if maxOut == 0 {
+				maxOut = item.MaxOutputTokensCamel
+			}
+			if maxOut == 0 {
+				maxOut = item.MaxTokens
+			}
+			modalities := item.InputModalities
+			if len(modalities) == 0 {
+				modalities = item.InputModalitiesCamel
+			}
+			var supportsImg, supportsAudio bool
+			for _, m := range modalities {
+				switch strings.ToLower(strings.TrimSpace(m)) {
+				case "image", "images", "vision":
+					supportsImg = true
+				case "audio":
+					supportsAudio = true
 				}
-				seen[id] = ProviderModelInfo{ID: id, DisplayName: display}
 			}
+			seen[id] = ProviderModelInfo{
+				ID:                  id,
+				DisplayName:         display,
+				ContextWindow:       ctxWin,
+				MaxOutputTokens:     maxOut,
+				SupportsInputImages: supportsImg,
+				SupportsInputAudio:  supportsAudio,
+			}
+		}
+		for _, item := range parsed.Data {
+			addModel(item, false)
+		}
+		for _, item := range parsed.Models {
+			addModel(item, true)
 		}
 		out := make([]ProviderModelInfo, 0, len(seen))
 		for _, item := range seen {

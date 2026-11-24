@@ -19,7 +19,7 @@ func TestTestWebProviderUsesTransientCredentialsWithoutSaving(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"model-a","display_name":"Model A"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a","display_name":"Model A","context_window":200000,"max_output_tokens":32000,"input_modalities":["text","image"]}]}`))
 	}))
 	defer server.Close()
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
@@ -34,7 +34,8 @@ func TestTestWebProviderUsesTransientCredentialsWithoutSaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].ID != "model-a" || models[0].DisplayName != "Model A" {
+	if len(models) != 1 || models[0].ID != "model-a" || models[0].DisplayName != "Model A" ||
+		models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 32000 || !models[0].SupportsInputImages || models[0].SupportsInputAudio {
 		t.Fatalf("test result = %#v", models)
 	}
 	view, err := store.WebConfig("")

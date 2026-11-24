@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import WebSocket from 'ws'
 import { JsonRpcPeer, type JsonRpcNotification } from '../shared/jsonrpc.js'
 import { isThemePreference, windowColors } from '../shared/theme.js'
-import type { ConfigDocument, DesktopConnectionOptions, ProviderTestInput, ProviderTestResult } from '../shared/desktop-settings.js'
+import type { ConfigDocument, DesktopConnectionOptions, ProviderModelInfo, ProviderTestInput, ProviderTestResult } from '../shared/desktop-settings.js'
 import { configFrame, DesktopSettings, remoteAddress, startupConfigLimit, workspacePath } from './settings.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -360,17 +360,44 @@ async function requestProviderModels(protocol: string, baseURL: string, apiKey: 
       if (declaredLength > 4 * 1024 * 1024) throw new Error('Provider model response is too large.')
       const body = await res.text()
       if (body.length > 4 * 1024 * 1024) throw new Error('Provider model response is too large.')
-      let parsed: { data?: Array<{ id?: string; display_name?: string; name?: string }>; models?: Array<{ id?: string; displayName?: string; name?: string }> }
+      let parsed: {
+        data?: Array<{
+          id?: string; display_name?: string; name?: string
+          context_window?: number; contextWindow?: number
+          max_output_tokens?: number; maxOutputTokens?: number; max_tokens?: number
+          input_modalities?: string[]; inputModalities?: string[]
+        }>
+        models?: Array<{
+          id?: string; displayName?: string; display_name?: string; name?: string
+          context_window?: number; contextWindow?: number
+          max_output_tokens?: number; maxOutputTokens?: number; max_tokens?: number
+          input_modalities?: string[]; inputModalities?: string[]
+        }>
+      }
       try { parsed = JSON.parse(body) as typeof parsed } catch { throw new Error('Provider returned invalid model data.') }
-      const map = new Map<string, { id: string; displayName?: string }>()
-      for (const item of parsed.data ?? []) {
-        const id = item.id?.trim()
-        if (id) map.set(id, { id, displayName: item.display_name?.trim() || item.name?.trim() || undefined })
+      const map = new Map<string, ProviderModelInfo>()
+      const collect = (items: typeof parsed.models, fallbackNameAsID: boolean) => {
+        for (const item of items ?? []) {
+          const id = (item.id || (fallbackNameAsID ? item.name : ''))?.trim()
+          if (!id || map.has(id)) continue
+          const displayName = item.displayName?.trim() || item.display_name?.trim() || item.name?.trim() || undefined
+          const contextWindow = item.contextWindow || item.context_window || undefined
+          const maxOutputTokens = item.maxOutputTokens || item.max_output_tokens || item.max_tokens || undefined
+          const modalities = (item.inputModalities ?? item.input_modalities ?? []).map((m) => String(m).toLowerCase().trim())
+          const supportsInputImages = modalities.some((m) => m === 'image' || m === 'images' || m === 'vision')
+          const supportsInputAudio = modalities.includes('audio')
+          map.set(id, {
+            id,
+            ...(displayName ? { displayName } : {}),
+            ...(contextWindow ? { contextWindow } : {}),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
+            ...(supportsInputImages ? { supportsInputImages: true } : {}),
+            ...(supportsInputAudio ? { supportsInputAudio: true } : {}),
+          })
+        }
       }
-      for (const item of parsed.models ?? []) {
-        const id = (item.id || item.name)?.trim()
-        if (id && !map.has(id)) map.set(id, { id, displayName: item.displayName?.trim() || item.name?.trim() || undefined })
-      }
+      collect(parsed.data, false)
+      collect(parsed.models, true)
       return [...map.values()].sort((a, b) => a.id.localeCompare(b.id))
     } catch (error) {
       const message = error instanceof Error ? error.message : ''
@@ -409,7 +436,7 @@ ipcMain.handle('settings:test-provider', async (event, scope: unknown, rawInput:
   const started = Date.now()
   try {
     const models = await requestProviderModels(protocol, baseURL, apiKey)
-    return { ok: true, durationMs: Date.now() - started, modelCount: models.length }
+    return { ok: true, durationMs: Date.now() - started, modelCount: models.length, models }
   } catch (error) {
     return { ok: false, durationMs: Date.now() - started, error: error instanceof Error ? error.message : 'Provider connection failed.' }
   }
