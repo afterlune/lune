@@ -78,3 +78,46 @@ func workspaceConfigKey(workspace string) (string, error) {
 	}
 	return absolute, nil
 }
+
+const workspacePermissionKeyPrefix = "workspace.permission:"
+
+func isValidWorkspacePermissionMode(mode string) bool {
+	switch mode {
+	case "read-only", "workspace", "auto", "full-access":
+		return true
+	default:
+		return false
+	}
+}
+
+// LoadWorkspacePermissionMode returns the persisted tool permission mode for a workspace.
+func (s *Store) LoadWorkspacePermissionMode(workspace string) (string, bool, error) {
+	if s == nil || s.db == nil {
+		return "", false, errors.New("settings store is closed")
+	}
+	key, err := workspaceConfigKey(workspace)
+	if err != nil {
+		return "", false, err
+	}
+	mode, found, err := s.setting(workspacePermissionKeyPrefix + key)
+	if err != nil || !found || !isValidWorkspacePermissionMode(mode) {
+		return "", false, err
+	}
+	return mode, true, nil
+}
+
+// SaveWorkspacePermissionMode stores the selected tool permission mode for a workspace.
+func (s *Store) SaveWorkspacePermissionMode(workspace, mode string) error {
+	if s == nil || s.db == nil {
+		return errors.New("settings store is closed")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if !isValidWorkspacePermissionMode(mode) {
+		return fmt.Errorf("unknown permission mode %q", mode)
+	}
+	key, err := workspaceConfigKey(workspace)
+	if err != nil {
+		return err
+	}
+	return s.saveSetting(workspacePermissionKeyPrefix+key, mode)
+}

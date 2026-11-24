@@ -20,6 +20,7 @@ import (
 
 	"github.com/afterlune/lune/internal/engram"
 	"github.com/afterlune/lune/internal/settings"
+	"github.com/afterlune/lune/internal/slashcmd"
 	"github.com/afterlune/lune/internal/toolchains"
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/runtimehost"
@@ -139,7 +140,15 @@ func (s *webWorkspaces) openLocked(path string) (core.Workspace, error) {
 	if err != nil {
 		return core.Workspace{}, err
 	}
-	if err := client.SetPermissionMode(core.PermissionWorkspace); err != nil {
+	initialPerm := core.PermissionWorkspace
+	if s.store != nil {
+		if savedPerm, ok, permErr := s.store.LoadWorkspacePermissionMode(canonical); permErr == nil && ok {
+			if parsed, parseErr := slashcmd.ParsePermissionMode(savedPerm); parseErr == nil {
+				initialPerm = parsed
+			}
+		}
+	}
+	if err := client.SetPermissionMode(initialPerm); err != nil {
 		_ = client.Close(context.Background())
 		return core.Workspace{}, err
 	}
@@ -374,9 +383,10 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 		Provider      string                  `json:"provider"`
 		Protocol      string                  `json:"protocol"`
 		BaseURL       string                  `json:"baseURL"`
-		APIKey        *string                 `json:"apiKey"`
-		APIKeyEnv     string                  `json:"apiKeyEnv"`
-		Preferences   *settings.UIPreferences `json:"preferences"`
+		APIKey         *string                 `json:"apiKey"`
+		APIKeyEnv      string                  `json:"apiKeyEnv"`
+		PermissionMode string                  `json:"permissionMode"`
+		Preferences    *settings.UIPreferences `json:"preferences"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&input); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -544,6 +554,31 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 			var tok string
 			tok, err = s.store.WebRemoteToken(input.Address)
 			result = map[string]string{"token": tok}
+		}
+	case "/_lune/workspaces/permission":
+		var mode core.PermissionMode
+		mode, err = slashcmd.ParsePermissionMode(input.PermissionMode)
+		if err == nil {
+			targetPath := strings.TrimSpace(input.Path)
+			var liveCore *core.Core
+			if input.ID != "" {
+				s.mu.Lock()
+				entry := s.entries[input.ID]
+				if entry != nil {
+					targetPath = entry.workspace.Path
+					liveCore = entry.core
+				}
+				s.mu.Unlock()
+			}
+			if liveCore != nil {
+				err = liveCore.SetPermissionMode(mode)
+			}
+			if err == nil && s.store != nil && targetPath != "" {
+				err = s.store.SaveWorkspacePermissionMode(targetPath, string(mode))
+			}
+			if err == nil {
+				result = map[string]any{"mode": string(mode)}
+			}
 		}
 	default:
 		http.NotFound(w, r)

@@ -20,17 +20,52 @@ import {
   type RuntimeState, type SessionSummary, type TimelineEntry,
 } from './harness-types'
 import {
-  Archive, ArrowUp, ArrowUpRight, Brain, Camera, Check, ChevronDown, CircleHelp, Code2,
+  Archive, ArrowUp, ArrowUpRight, Camera, Check, ChevronDown, CircleHelp, Code2,
   Command, Compass, CornerDownRight, Download, Folder, FolderOpen, GitFork, Laptop,
-  LoaderCircle, LockKeyhole, Minimize2, MoreHorizontal, PanelLeftClose,
+  LoaderCircle, Lock, LockKeyhole, Minimize2, MoreHorizontal, PanelLeftClose,
   PanelLeftOpen, PanelRight, Pause, Pencil, Play, Plus, Radio, RefreshCw,
-  RotateCcw, Search, Settings, ShieldAlert, Sparkles,
+  RotateCcw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Sparkles,
   Square, SquarePen, Target, Terminal, Trash2, Wifi, WifiOff, X,
 } from 'lucide-react'
 import { downloadMarkdown, readAttachment, validateAttachments, type Attachment } from './attachments'
 import { connectRuntime, type RuntimeClient, type RuntimeConnection } from './runtime'
 
 const sessionPageSize = 50
+type PermissionMode = 'read-only' | 'workspace' | 'auto' | 'full-access'
+const PERMISSION_MODES: readonly PermissionMode[] = ['read-only', 'workspace', 'auto', 'full-access']
+const PERM_LABEL: Record<PermissionMode, string> = {
+  'read-only': 'Read-only',
+  workspace: 'Workspace',
+  auto: 'Auto review',
+  'full-access': 'Full access',
+}
+const PERM_DESC: Record<PermissionMode, string> = {
+  'read-only': 'Read workspace files; external directories and web need approval; block writes and commands',
+  workspace: 'Read and write workspace files; commands, external directories, and web need approval',
+  auto: 'Read and write workspace files; commands and external actions are auto-reviewed first',
+  'full-access': 'Allow tools and user directories without prompts; extremely dangerous commands stay blocked',
+}
+const EFFORT_TIERS: ReadonlyArray<{ value: string; label: string; bars: number }> = [
+  { value: '', label: 'Auto', bars: 0 },
+  { value: 'low', label: 'Low', bars: 1 },
+  { value: 'medium', label: 'Medium', bars: 2 },
+  { value: 'high', label: 'High', bars: 3 },
+  { value: 'max', label: 'Max', bars: 4 },
+]
+
+function effortDisplayInfo(raw: string): { idx: number; label: string; bars: number; isMax: boolean } {
+  const exact = EFFORT_TIERS.findIndex((t) => t.value === raw)
+  if (exact >= 0) {
+    const tier = EFFORT_TIERS[exact]
+    return { idx: exact, label: tier.label, bars: tier.bars, isMax: raw === 'max' }
+  }
+  switch (raw) {
+    case 'none': return { idx: 0, label: 'None', bars: 0, isMax: false }
+    case 'minimal': return { idx: 1, label: 'Minimal', bars: 1, isMax: false }
+    case 'xhigh': return { idx: 3, label: 'XHigh', bars: 3, isMax: false }
+    default: return { idx: 0, label: 'Auto', bars: 0, isMax: false }
+  }
+}
 
 async function loadHistory(client: RuntimeClient, sessionId: string, paged: boolean): Promise<unknown> {
   if (!paged) return client.request('session.history', { sessionId })
@@ -273,7 +308,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [harnessFullScreen, setHarnessFullScreen] = useState(false)
   const [harnessOverlay, setHarnessOverlay] = useState(() => window.innerWidth < 1100)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [composerMenu, setComposerMenu] = useState<'model' | 'effort' | null>(null)
+  const [composerMenu, setComposerMenu] = useState<'permission' | 'model' | null>(null)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('workspace')
+  const [allowedPermissionModes, setAllowedPermissionModes] = useState<PermissionMode[]>([...PERMISSION_MODES])
   const [draggingColumn, setDraggingColumn] = useState<'sidebar' | 'harness' | null>(null)
   const compactLayout = narrow || quick
   const [sessionDialog, setSessionDialog] = useState<null | {
@@ -324,7 +361,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         if (!event.target.closest('.session-row-menu')) {
           setRowMenuId('')
         }
-        if (!event.target.closest('.composer-picker-group')) {
+        if (!event.target.closest('.composer-picker-group') && !event.target.closest('.composer-perm-wrap')) {
           setComposerMenu(null)
         }
       }
@@ -440,7 +477,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         await previousClient.close().catch(() => undefined)
       }
       candidate = await connectRuntime(options, retry)
-      const hello = await candidate.request<{ protocolVersion?: string; capabilities?: string[] }>('runtime.hello', {
+      const hello = await candidate.request<{ protocolVersion?: string; capabilities?: string[]; permissionMode?: PermissionMode }>('runtime.hello', {
         clientName: desktop ? 'Lune Desktop' : 'Lune Web',
         clientVersion: '0.1.0',
       })
@@ -451,6 +488,18 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       }
       capabilitiesRef.current = hello.capabilities ?? []
       setCapabilities(capabilitiesRef.current)
+      if (hello.permissionMode && PERMISSION_MODES.includes(hello.permissionMode)) {
+        setPermissionMode(hello.permissionMode)
+      }
+      if (capabilitiesRef.current.includes('permission.manage')) {
+        void candidate.request<{ mode?: PermissionMode; modes?: PermissionMode[] }>('permission.get').then((res) => {
+          if (res.mode && PERMISSION_MODES.includes(res.mode)) setPermissionMode(res.mode)
+          if (res.modes?.length) {
+            const valid = res.modes.filter((m): m is PermissionMode => PERMISSION_MODES.includes(m))
+            if (valid.length) setAllowedPermissionModes(valid)
+          }
+        }).catch(() => undefined)
+      }
       clientRef.current = candidate
       const savedOptions = desktop && options.mode === 'remote' ? { ...options, token: '' } : options
       connectionRef.current = savedOptions
@@ -943,10 +992,32 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const changeModel = async (profile: string) => changeSettings({ modelProfile: profile })
   const changeSettings = async (settings: Partial<SessionSummary['settings']>) => {
     if (!client || !activeSessionId || !activeSession) return
+    const targetSessionId = activeSessionId
+    const previousSettings = activeSession.settings
+    const nextSettings = { ...previousSettings, ...settings }
+    setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, settings: nextSettings } : prev))
+    setSessions((items) => items.map((item) => (item.id === targetSessionId ? { ...item, settings: nextSettings } : item)))
     try {
-      await client.request('session.setSettings', { sessionId: activeSessionId, settings: { ...activeSession.settings, ...settings } })
-      await refreshSessionData(client, activeSessionId)
-    } catch (error) { setActionError(errorMessage(error)) }
+      await client.request('session.setSettings', { sessionId: targetSessionId, settings: nextSettings })
+    } catch (error) {
+      setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, settings: previousSettings } : prev))
+      setSessions((items) => items.map((item) => (item.id === targetSessionId ? { ...item, settings: previousSettings } : item)))
+      setActionError(errorMessage(error))
+    }
+  }
+  const changePermissionMode = async (mode: PermissionMode) => {
+    if (!client) return
+    try {
+      const res = await client.request<{ mode?: PermissionMode }>('permission.set', { mode })
+      const applied = res.mode && PERMISSION_MODES.includes(res.mode) ? res.mode : mode
+      setPermissionMode(applied)
+      const persistPath = managed?.workspace.path || (connection?.mode === 'local' ? connection.workspace : '')
+      if (persistPath && settingsAPI.saveWorkspacePermission) {
+        void settingsAPI.saveWorkspacePermission(persistPath, applied, managed?.workspace.id).catch(() => undefined)
+      }
+    } catch (error) {
+      setActionError(errorMessage(error))
+    }
   }
 
   const sessionAction = async (action: () => Promise<void>) => {
@@ -1125,7 +1196,6 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         return
       case '/plan':
         setPlanMode((value) => !value)
-        setInfo(!planMode ? 'Plan mode enabled (read-only).' : 'Plan mode disabled.')
         return
       case '/files':
         if (args) setRequestedFile(args)
@@ -1204,6 +1274,20 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         }
         await changeSettings({ reasoningEffort: normalized === 'default' ? '' : normalized })
         setInfo(`Reasoning effort set to ${normalized}.`)
+        return
+      }
+      case '/permissions': {
+        if (!args) {
+          setComposerMenu('permission')
+          return
+        }
+        const normalized = args.toLowerCase() as PermissionMode
+        if (!allowedPermissionModes.includes(normalized)) {
+          setActionError(`Invalid permission mode: ${args}`)
+          return
+        }
+        await changePermissionMode(normalized)
+        setInfo(`${t('Permission mode set to')} ${t(PERM_LABEL[normalized])}.`)
         return
       }
       case '/compact':
@@ -1858,6 +1942,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         event.preventDefault()
         if (!working) addFiles(Array.from(event.dataTransfer.files))
       }}>
+        {planMode && (
+          <div className="plan-active-strip" role="status">
+            <Compass size={13} aria-hidden="true" />
+            <span>{t('Plan mode active (read-only)')}</span>
+            <button type="button" className="plan-active-exit" disabled={working} onClick={() => setPlanMode(false)}>{t('Exit Plan')}</button>
+          </div>
+        )}
         {attachments.length > 0 && <ul className="attachment-list">{attachments.map((file, index) => <li key={`${file.name}-${index}`}>
           {file.mediaType.startsWith('image/') && <img alt="" src={`data:${file.mediaType};base64,${file.data}`} />}
           <span>{file.name}</span><button aria-label={`Remove ${file.name}`} disabled={working} onClick={() => setAttachments((items) => items.filter((_, at) => at !== index))}>×</button>
@@ -1914,130 +2005,148 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               <button type="button" className="composer-icon-btn" disabled={working} onClick={() => fileInput.current?.click()} aria-label={t("Attach")} title={t("Attach")}><Plus size={18} aria-hidden="true" /></button>
               {desktop && modelOption?.supportsInputImages && <button type="button" className="composer-icon-btn" disabled={working} onClick={captureScreenshot} aria-label="Screenshot" title="Screenshot"><Camera size={16} aria-hidden="true" /></button>}
             </>}
-            {has('turn.plan') && <button type="button" className="composer-pill-btn plan-button" aria-pressed={planMode} disabled={working} onClick={() => setPlanMode(!planMode)} title={t("Use read-only tools for this turn")}><Compass size={15} aria-hidden="true" /><span>{t("Plan")}</span></button>}
-          </div>
-          <div className="composer-actions">
-            <div className="composer-picker-group">
-              <div className="composer-picker-wrap">
+            {has('permission.manage') && (
+              <div className="composer-perm-wrap">
                 <button
                   type="button"
-                  className="composer-pill-btn composer-picker-btn"
+                  className="composer-pill-btn composer-perm-btn"
+                  data-perm={permissionMode}
                   aria-haspopup="listbox"
-                  aria-expanded={composerMenu === 'model'}
-                  title={t(models.length > 0 ? 'MODEL' : 'Configure models')}
-                  disabled={models.length > 0 ? (!activeSession || taskIsRunning || taskIsQueued || taskIsPaused) : false}
-                  onClick={() => {
-                    if (models.length === 0) {
-                      setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
-                      setSettingsOpen(true)
-                      return
-                    }
-                    setComposerMenu((current) => current === 'model' ? null : 'model')
-                  }}
+                  aria-expanded={composerMenu === 'permission'}
+                  title={t('Permission mode')}
+                  disabled={sessionBusy || working}
+                  onClick={() => setComposerMenu((current) => current === 'permission' ? null : 'permission')}
                 >
-                  <span className="composer-picker-label">
-                    {models.length > 0
-                      ? (modelOption?.displayName || modelOption?.model || selectedModel || t('Select model'))
-                      : t('Configure models')}
-                  </span>
+                  {permissionMode === 'read-only' ? <Lock size={13} aria-hidden="true" />
+                    : permissionMode === 'auto' ? <ShieldCheck size={13} aria-hidden="true" />
+                      : permissionMode === 'full-access' ? <ShieldAlert size={13} aria-hidden="true" />
+                        : <Shield size={13} aria-hidden="true" />}
+                  <span>{t(PERM_LABEL[permissionMode])}</span>
                   <ChevronDown size={13} aria-hidden="true" />
                 </button>
-                {composerMenu === 'model' && models.length > 0 && (
-                  <div className="composer-popover" role="listbox" aria-label={t('MODEL')}>
+                {composerMenu === 'permission' && (
+                  <div className="composer-popover composer-popover-left" role="listbox" aria-label={t('Permission mode')}>
+                    <div className="composer-popover-head">{t('Permission mode')}</div>
                     <div className="composer-popover-list">
-                      {models.map((m) => {
-                        const active = m.profile === selectedModel
-                        const cap = formatCapacity(m.contextWindow)
+                      {allowedPermissionModes.map((mode) => {
+                        const active = permissionMode === mode
                         return (
                           <button
-                            key={m.profile}
+                            key={mode}
                             type="button"
                             role="option"
                             aria-selected={active}
                             className={`composer-popover-item${active ? ' active' : ''}`}
                             onClick={() => {
                               setComposerMenu(null)
-                              void changeModel(m.profile)
+                              void changePermissionMode(mode)
                             }}
                           >
                             <div className="composer-popover-item-main">
-                              <span>{m.displayName || m.model}</span>
-                              <small>{m.provider}{cap ? ` · ${cap}` : ''}</small>
+                              <span>{t(PERM_LABEL[mode])}<code className="composer-perm-code">{mode}</code></span>
+                              <small className="composer-perm-desc">{t(PERM_DESC[mode])}</small>
                             </div>
                             {active && <Check size={14} aria-hidden="true" />}
                           </button>
                         )
                       })}
                     </div>
-                    {settingsAPI.supportsModelConfig && (
-                      <div className="composer-popover-footer">
-                        <button
-                          type="button"
-                          className="plain-button"
-                          onClick={() => {
-                            setComposerMenu(null)
-                            setSettingsTab('models')
-                            setSettingsOpen(true)
-                          }}
-                        >
-                          <Settings size={12} aria-hidden="true" />
-                          <span>{t('Manage models…')}</span>
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
-              {models.length > 0 && Boolean(selectedModel) && (
-                <div className="composer-picker-wrap">
-                  <button
-                    type="button"
-                    className="composer-pill-btn composer-picker-btn"
-                    aria-haspopup="listbox"
-                    aria-expanded={composerMenu === 'effort'}
-                    title={t('Reasoning effort')}
-                    disabled={!activeSession || taskIsRunning || taskIsQueued || taskIsPaused}
-                    onClick={() => setComposerMenu((current) => current === 'effort' ? null : 'effort')}
-                  >
-                    <Brain size={14} aria-hidden="true" />
-                    <span className="composer-picker-label">
-                      {activeSession?.settings.reasoningEffort ? t(activeSession.settings.reasoningEffort) : t('Default')}
-                    </span>
-                    <ChevronDown size={13} aria-hidden="true" />
-                  </button>
-                  {composerMenu === 'effort' && (
-                    <div className="composer-popover composer-popover-effort" role="listbox" aria-label={t('Reasoning effort')}>
-                      <div className="composer-popover-head">{t('Reasoning effort')}</div>
-                      <div className="composer-popover-list">
-                        {(['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((level) => {
-                          const current = activeSession?.settings.reasoningEffort || ''
-                          const active = current === level
-                          return (
+            )}
+          </div>
+          <div className="composer-actions">
+            {(() => {
+              const currentEffort = activeSession?.settings.reasoningEffort || ''
+              const effortInfo = effortDisplayInfo(currentEffort)
+              const isMaxEffort = models.length > 0 && Boolean(selectedModel) && effortInfo.isMax
+              return (
+                <div className="composer-picker-group">
+                  <div className="composer-picker-wrap">
+                    <button
+                      type="button"
+                      className={`composer-pill-btn composer-picker-btn${isMaxEffort ? ' is-max' : ''}`}
+                      aria-haspopup="listbox"
+                      aria-expanded={composerMenu === 'model'}
+                      title={t(models.length > 0 ? 'MODEL' : 'Configure models')}
+                      disabled={models.length > 0 ? (!activeSession || sessionBusy) : false}
+                      onClick={() => {
+                        if (models.length === 0) {
+                          setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
+                          setSettingsOpen(true)
+                          return
+                        }
+                        setComposerMenu((current) => current === 'model' ? null : 'model')
+                      }}
+                    >
+                      <span className="composer-picker-label">
+                        {models.length > 0
+                          ? (modelOption?.displayName || modelOption?.model || selectedModel || t('Select model'))
+                          : t('Configure models')}
+                      </span>
+                      {models.length > 0 && Boolean(selectedModel) && currentEffort !== '' && (
+                        <span className={`composer-effort-inline${isMaxEffort ? ' is-max' : ''}`}>
+                          <EffortBars bars={effortInfo.bars} max={isMaxEffort} />
+                          <span className={isMaxEffort ? 'effort-max-tag' : undefined}>{effortInfo.label}</span>
+                        </span>
+                      )}
+                      <ChevronDown size={13} aria-hidden="true" />
+                    </button>
+                    {composerMenu === 'model' && models.length > 0 && (
+                      <div className="composer-popover" role="listbox" aria-label={t('MODEL')}>
+                        <div className="composer-popover-list">
+                          {models.map((m) => {
+                            const active = m.profile === selectedModel
+                            const cap = formatCapacity(m.contextWindow)
+                            return (
+                              <button
+                                key={m.profile}
+                                type="button"
+                                role="option"
+                                aria-selected={active}
+                                className={`composer-popover-item${active ? ' active' : ''}`}
+                                onClick={() => { void changeModel(m.profile) }}
+                              >
+                                <div className="composer-popover-item-main">
+                                  <span>{m.displayName || m.model}</span>
+                                  <small>{m.provider}{cap ? ` · ${cap}` : ''}</small>
+                                </div>
+                                {active && <Check size={14} aria-hidden="true" />}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {Boolean(selectedModel) && (
+                          <EffortSlider
+                            label={t('Reasoning effort')}
+                            value={currentEffort}
+                            disabled={!activeSession || sessionBusy}
+                            onCommit={(next) => void changeSettings({ reasoningEffort: next })}
+                          />
+                        )}
+                        {settingsAPI.supportsModelConfig && (
+                          <div className="composer-popover-footer">
                             <button
-                              key={level || 'default'}
                               type="button"
-                              role="option"
-                              aria-selected={active}
-                              className={`composer-popover-item${active ? ' active' : ''}`}
+                              className="plain-button"
                               onClick={() => {
                                 setComposerMenu(null)
-                                void changeSettings({ reasoningEffort: level })
+                                setSettingsTab('models')
+                                setSettingsOpen(true)
                               }}
                             >
-                              <div className="composer-popover-item-main">
-                                <span>{level ? t(level) : t('Default')}</span>
-                                {!level && <small>{t('Follow model default')}</small>}
-                              </div>
-                              {active && <Check size={14} aria-hidden="true" />}
+                              <Settings size={12} aria-hidden="true" />
+                              <span>{t('Manage models…')}</span>
                             </button>
-                          )
-                        })}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
+              )
+            })()}
             {taskIsRunning && runtime.task.executionId && !planMode && <button type="button" className="composer-pill-btn" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}><CornerDownRight size={14} aria-hidden="true" /><span>{t("Add to running task")}</span></button>}
             {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button type="button" className="stop-button" disabled={working} onClick={() => void stopRun()} aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')} title={t(taskIsQueued ? 'Cancel queued' : 'Stop')}><Square size={12} fill="currentColor" aria-hidden="true" /></button>}
             <button type="button" className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label={t("Send message")} title={t("Send message")}>{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}</button>
@@ -2288,6 +2397,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           initialCommandId={requestedCommandId}
           onInsertPath={insertPathReference}
           onChangeReasoningEffort={(effort) => void changeSettings({ reasoningEffort: effort })}
+          permissionMode={permissionMode}
+          allowedPermissionModes={allowedPermissionModes}
+          onChangePermissionMode={(mode) => void changePermissionMode(mode as PermissionMode)}
           onRefreshState={async () => {
             if (client && activeSessionId) await refreshSessionData(client, activeSessionId)
           }}
@@ -2342,4 +2454,157 @@ function InteractionForm({ request, disabled, onSubmit }: {
   const [value, setValue] = useState('{\n  "action": "accept",\n  "content": {}\n}')
   const [error, setError] = useState('')
   return <div className="interaction-form"><p className="pending-reason">{request.serverName} {t('is asking for input.')}</p><pre className="json-preview">{JSON.stringify(request.request, null, 2)}</pre><label className="interaction-label">{t("Response JSON")}</label><textarea value={value} onChange={(event) => { setValue(event.target.value); setError('') }} spellCheck={false} /><div className="pending-actions">{error && <small className="inline-error">{t(error)}</small>}<button className="primary-button compact" disabled={disabled} onClick={() => { try { onSubmit(JSON.parse(value)) } catch { setError('Enter a valid JSON response.') } }}><Check size={14} />{t("Send response")}</button></div></div>
+}
+
+function EffortBars({ bars, max = false }: { bars: number; max?: boolean }) {
+  const heights = [3, 5.5, 8, 10.5]
+  return (
+    <svg className={`effort-bars${max ? ' is-max' : ''}`} width="13" height="12" viewBox="0 0 13 12" aria-hidden="true">
+      {heights.map((h, i) => (
+        <rect
+          key={i}
+          x={i * 3.2 + 0.4}
+          y={11.5 - h}
+          width="2"
+          height={h}
+          rx="0.9"
+          fill="currentColor"
+          opacity={i < bars ? 1 : 0.22}
+        />
+      ))}
+    </svg>
+  )
+}
+
+function EffortSlider({
+  label,
+  value,
+  disabled,
+  onCommit,
+}: {
+  label: string
+  value: string
+  disabled: boolean
+  onCommit: (next: string) => void
+}) {
+  const trackRef = useRef<HTMLDivElement>(null)
+  const [dragPos, setDragPos] = useState<number | null>(null)
+  const [dragging, setDragging] = useState(false)
+
+  const committed = effortDisplayInfo(value)
+  const maxIndex = EFFORT_TIERS.length - 1
+  const displayPos = dragPos ?? committed.idx
+  const clampedPos = Math.max(0, Math.min(maxIndex, displayPos))
+  const pct = (clampedPos / maxIndex) * 100
+  const activeIdx = dragPos !== null ? Math.round(clampedPos) : committed.idx
+  const previewTier = EFFORT_TIERS[activeIdx] ?? EFFORT_TIERS[0]
+  const displayLabel = dragPos !== null ? previewTier.label : committed.label
+  const displayBars = dragPos !== null ? previewTier.bars : committed.bars
+  const isMax = activeIdx === maxIndex
+
+  const posFromClientX = (clientX: number): number => {
+    const el = trackRef.current
+    if (!el) return committed.idx
+    const rect = el.getBoundingClientRect()
+    if (rect.width <= 0) return committed.idx
+    return Math.max(0, Math.min(maxIndex, ((clientX - rect.left) / rect.width) * maxIndex))
+  }
+
+  return (
+    <div className={`effort-slider-section${isMax ? ' is-max' : ''}`}>
+      <div className="effort-slider-head">
+        <span>{label}</span>
+        <span className={`effort-value-pill${isMax ? ' is-max-pill' : ''}`}>
+          <EffortBars bars={displayBars} max={isMax} />
+          <span>{displayLabel}</span>
+        </span>
+      </div>
+      <div
+        ref={trackRef}
+        role="slider"
+        tabIndex={disabled ? -1 : 0}
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={maxIndex}
+        aria-valuenow={activeIdx}
+        aria-valuetext={displayLabel}
+        aria-disabled={disabled || undefined}
+        className={`effort-track-hit${dragging ? ' dragging' : ''}${disabled ? ' disabled' : ''}`}
+        onPointerDown={(event) => {
+          if (disabled) return
+          event.preventDefault()
+          event.currentTarget.setPointerCapture(event.pointerId)
+          setDragging(true)
+          setDragPos(posFromClientX(event.clientX))
+        }}
+        onPointerMove={(event) => {
+          if (!dragging || disabled) return
+          setDragPos(posFromClientX(event.clientX))
+        }}
+        onPointerUp={(event) => {
+          if (!dragging) return
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId)
+          }
+          const finalIdx = Math.round(posFromClientX(event.clientX))
+          const next = EFFORT_TIERS[finalIdx]?.value ?? ''
+          setDragging(false)
+          setDragPos(null)
+          if (next !== value) onCommit(next)
+        }}
+        onPointerCancel={() => {
+          setDragging(false)
+          setDragPos(null)
+        }}
+        onKeyDown={(event) => {
+          if (disabled) return
+          let nextIdx: number | null = null
+          if (event.key === 'ArrowRight' || event.key === 'ArrowUp') nextIdx = Math.min(maxIndex, committed.idx + 1)
+          else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') nextIdx = Math.max(0, committed.idx - 1)
+          else if (event.key === 'Home') nextIdx = 0
+          else if (event.key === 'End') nextIdx = maxIndex
+          if (nextIdx !== null) {
+            event.preventDefault()
+            const next = EFFORT_TIERS[nextIdx].value
+            if (next !== value) onCommit(next)
+          }
+        }}
+      >
+        <div className="effort-track">
+          <div className="effort-track-fill" style={{ width: `${pct}%` }} />
+          {EFFORT_TIERS.map((tier, index) => {
+            const passed = clampedPos >= index - 0.05
+            return (
+              <span
+                key={tier.value || 'auto'}
+                className={`effort-detent${passed ? ' passed' : ''}${index === maxIndex ? ' is-end' : ''}`}
+                style={{ left: `${(index / maxIndex) * 100}%` }}
+                aria-hidden="true"
+              />
+            )
+          })}
+          <span
+            className={`effort-thumb${dragging ? ' grabbing' : ''}${isMax ? ' is-max' : ''}`}
+            style={{ left: `${pct}%` }}
+            aria-hidden="true"
+          />
+        </div>
+      </div>
+      <div className="effort-ticks">
+        {EFFORT_TIERS.map((tier, index) => (
+          <button
+            key={tier.value || 'auto'}
+            type="button"
+            disabled={disabled}
+            className={`effort-tick${index === activeIdx ? ' active' : ''}${tier.value === 'max' ? ' is-max-tick' : ''}`}
+            onClick={() => {
+              if (tier.value !== value) onCommit(tier.value)
+            }}
+          >
+            {tier.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }

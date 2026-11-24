@@ -399,6 +399,18 @@ export class DesktopSettings {
   rememberSession(mode: string, address: string, session: string) {
     this.database.prepare('UPDATE connections SET session = ? WHERE mode = ? AND address = ?').run(session, mode, address)
   }
+
+  workspacePermissionMode(workspace: string): string {
+    const mode = this.preference('workspace.permission:' + workspace)
+    return mode === 'read-only' || mode === 'workspace' || mode === 'auto' || mode === 'full-access' ? mode : 'workspace'
+  }
+
+  saveWorkspacePermissionMode(workspace: string, mode: string) {
+    if (mode !== 'read-only' && mode !== 'workspace' && mode !== 'auto' && mode !== 'full-access') {
+      throw new Error(`Invalid permission mode: ${mode}`)
+    }
+    this.setPreference('workspace.permission:' + workspace, mode)
+  }
 }
 
 function splitImportedConfig(document: ConfigDocument) {

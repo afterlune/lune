@@ -487,6 +487,13 @@ ipcMain.handle('settings:remember-session', (event, mode: unknown, address: unkn
   settings.rememberSession(lastConnection.mode, normalized, session)
 })
 
+ipcMain.handle('settings:save-workspace-permission', (event, workspace: unknown, mode: unknown) => {
+  assertMainWindow(event)
+  if (typeof workspace !== 'string' || !workspace.trim()) throw new Error('Workspace path is required.')
+  if (mode !== 'read-only' && mode !== 'workspace' && mode !== 'auto' && mode !== 'full-access') throw new Error('Invalid permission mode.')
+  settings.saveWorkspacePermissionMode(workspacePath(workspace), mode)
+})
+
 async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> {
   if (!options || (options.mode !== 'local' && options.mode !== 'remote')) throw new Error('Choose a valid connection type.')
   let frame: string | undefined
@@ -513,10 +520,12 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
   if (options.mode === 'local') {
     const binary = coreExecutable()
     const helper = sandboxExecutable()
+    const permissionMode = settings.workspacePermissionMode(options.workspace)
     const child = spawn(binary, [
       'stdio', '--config-stdin', '--workspace', options.workspace,
       '--state-dir', join(options.workspace, '.lune'),
       '--sandbox-helper', helper,
+      '--permission-mode', permissionMode,
     ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env } })
     coreProcess = child
     coreExit = new Promise((resolveExit) => child.once('close', () => resolveExit()))

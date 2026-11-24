@@ -119,3 +119,25 @@ func TestStorePersistsCommandToolchains(t *testing.T) {
 		t.Fatalf("LoadWorkspaceCommandToolchainPaths() = (%#v, %v, %v); want (%#v, true, nil)", got, found, err, want)
 	}
 }
+
+func TestStorePersistsWorkspacePermissionMode(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	workspace := t.TempDir()
+	if _, found, err := store.LoadWorkspacePermissionMode(workspace); err != nil || found {
+		t.Fatalf("LoadWorkspacePermissionMode() = found %v, err %v; want false", found, err)
+	}
+	if err := store.SaveWorkspacePermissionMode(workspace, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, found, err := store.LoadWorkspacePermissionMode(workspace); err != nil || !found || mode != "auto" {
+		t.Fatalf("LoadWorkspacePermissionMode() = %q, %v, %v; want auto", mode, found, err)
+	}
+	if err := store.SaveWorkspacePermissionMode(workspace, "invalid-mode"); err == nil {
+		t.Fatal("SaveWorkspacePermissionMode accepted an invalid mode")
+	}
+}

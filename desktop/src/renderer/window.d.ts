@@ -18,6 +18,7 @@ declare global {
       forgetConnection(mode: string, address: string): Promise<void>
       lastSession(): Promise<string | null>
       rememberSession(mode: string, address: string, session: string): Promise<void>
+      saveWorkspacePermission(workspace: string, mode: string): Promise<void>
       getTheme(): Promise<ThemePreference>
       setTheme(theme: ThemePreference): Promise<void>
       shortcut(): Promise<string>

@@ -353,6 +353,19 @@ const chinese: Record<string, string> = {
   'Select model': '选择模型',
   'Configure models': '配置模型',
   'Standard': '标准',
+  'Permission mode': '权限模式',
+  'View or switch tool permission mode': '查看或切换工具权限模式',
+  'Plan mode active (read-only)': '计划模式已开启（仅只读工具）',
+  'Exit Plan': '退出计划',
+  'Read-only': '只读',
+  'Workspace': '工作区',
+  'Auto review': '自动审查',
+  'Full access': '完全访问',
+  'Read workspace files; external directories and web need approval; block writes and commands': '只读工作区文件；外部目录和网络需审批；禁止写入与命令执行',
+  'Read and write workspace files; commands, external directories, and web need approval': '可读写工作区文件；外部目录、命令与网络操作需审批',
+  'Read and write workspace files; commands and external actions are auto-reviewed first': '可读写工作区文件；命令和外部操作优先由模型自动审查',
+  'Allow tools and user directories without prompts; extremely dangerous commands stay blocked': '免确认使用已注册工具与当前用户目录（极危险命令仍拦截）',
+  'Permission mode set to': '权限模式已切换为',
 }
 
 export function useTranslate(): (message: string) => string {

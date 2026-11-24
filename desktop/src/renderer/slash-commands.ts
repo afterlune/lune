@@ -19,6 +19,7 @@ export const slashCommands: SlashCommandDef[] = [
   { name: '/mcp', usage: '/mcp [list|enable <name>|disable <name>]', argHint: '[list | enable <name> | disable <name>]', description: 'Inspect or toggle configured MCP servers', capability: 'mcp.inspect', category: 'harness' },
   { name: '/model', usage: '/model [profile]', argHint: '[profile]', description: 'List or switch active model profile', category: 'execution' },
   { name: '/effort', usage: '/effort [level]', argHint: '[none|minimal|low|medium|high|xhigh|max]', description: 'View or set model reasoning effort', category: 'execution' },
+  { name: '/permissions', aliases: ['/perm'], usage: '/permissions [read-only|workspace|auto|full-access]', argHint: '[read-only|workspace|auto|full-access]', description: 'View or switch tool permission mode', capability: 'permission.manage', category: 'execution' },
   { name: '/compact', usage: '/compact', description: 'Compact older conversation history', capability: 'session.compact', category: 'execution' },
   { name: '/rewind', usage: '/rewind [N]', argHint: '[N]', description: 'Rewind conversation by N user turns', capability: 'session.rewind', category: 'session' },
   { name: '/fork', usage: '/fork', description: 'Fork current conversation into a new session', capability: 'session.fork', category: 'session' },

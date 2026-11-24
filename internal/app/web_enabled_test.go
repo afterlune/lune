@@ -210,5 +210,22 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 	if connList.Code != http.StatusOK || !strings.Contains(connList.Body.String(), "wss://remote.example:18092/v1/runtime") {
 		t.Fatalf("connections/list = %d %s", connList.Code, connList.Body.String())
 	}
+
+	// Workspace permission persistence & live update.
+	permRes := post("/_lune/workspaces/permission", map[string]any{
+		"path": workspaceDir, "permissionMode": "auto",
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	if permRes.Code != http.StatusOK || !strings.Contains(permRes.Body.String(), `"mode":"auto"`) {
+		t.Fatalf("workspaces/permission = %d %s", permRes.Code, permRes.Body.String())
+	}
+	if savedMode, found, permErr := store.LoadWorkspacePermissionMode(workspaceDir); permErr != nil || !found || savedMode != "auto" {
+		t.Fatalf("LoadWorkspacePermissionMode = %q, %v, %v; want auto", savedMode, found, permErr)
+	}
+	badPerm := post("/_lune/workspaces/permission", map[string]any{
+		"path": workspaceDir, "permissionMode": "invalid",
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	if badPerm.Code != http.StatusBadRequest {
+		t.Fatalf("invalid permission returned %d, want 400", badPerm.Code)
+	}
 	_ = ws.shutdown(t.Context())
 }

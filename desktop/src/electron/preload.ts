@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('luneDesktop', {
   forgetConnection: (mode: string, address: string): Promise<void> => ipcRenderer.invoke('settings:forget-connection', mode, address),
   lastSession: (): Promise<string | null> => ipcRenderer.invoke('settings:last-session'),
   rememberSession: (mode: string, address: string, session: string): Promise<void> => ipcRenderer.invoke('settings:remember-session', mode, address, session),
+  saveWorkspacePermission: (workspace: string, mode: string): Promise<void> =>
+    ipcRenderer.invoke('settings:save-workspace-permission', workspace, mode),
   getTheme: (): Promise<ThemePreference> => ipcRenderer.invoke('desktop:get-theme'),
   setTheme: (theme: ThemePreference): Promise<void> => ipcRenderer.invoke('desktop:set-theme', theme),
   shortcut: (): Promise<string> => ipcRenderer.invoke('desktop:shortcut'),

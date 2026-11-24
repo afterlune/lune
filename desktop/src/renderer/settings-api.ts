@@ -36,6 +36,7 @@ export interface FrontendSettingsAPI {
   saveRemoteConnection(input: SaveRemoteInput): Promise<void>
   forgetConnection(mode: 'local' | 'remote', address: string): Promise<void>
   getRemoteToken?(url: string): Promise<string>
+  saveWorkspacePermission?(workspace: string, mode: string, workspaceId?: string): Promise<void>
 }
 
 export function createDesktopSettingsAPI(): FrontendSettingsAPI {
@@ -61,6 +62,7 @@ export function createDesktopSettingsAPI(): FrontendSettingsAPI {
     savedConnections: () => desktop.savedConnections(),
     saveRemoteConnection: (input) => desktop.saveRemoteConnection(input),
     forgetConnection: (mode, address) => desktop.forgetConnection(mode, address),
+    saveWorkspacePermission: (workspace, mode) => desktop.saveWorkspacePermission(workspace, mode),
   }
 }
 
@@ -139,6 +141,9 @@ export function createWebHostSettingsAPI(
     getRemoteToken: async (url) => {
       const res = await request<{ token: string }>('connections/token', { address: url })
       return res.token || ''
+    },
+    saveWorkspacePermission: async (workspace, mode, workspaceId) => {
+      await request('workspaces/permission', { id: workspaceId || '', path: workspace, permissionMode: mode })
     },
   }
 }

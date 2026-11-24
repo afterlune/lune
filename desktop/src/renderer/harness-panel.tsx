@@ -29,6 +29,9 @@ export function HarnessPanel({
   onInsertPath,
   onRefreshState,
   onChangeReasoningEffort,
+  permissionMode,
+  allowedPermissionModes,
+  onChangePermissionMode,
 }: {
   client: RuntimeClient
   workspace: WorkspaceInfo | null
@@ -47,6 +50,9 @@ export function HarnessPanel({
   onInsertPath: (path: string) => void
   onRefreshState: () => Promise<void>
   onChangeReasoningEffort?: (effort: string) => void
+  permissionMode?: string
+  allowedPermissionModes?: string[]
+  onChangePermissionMode?: (mode: string) => void
 }) {
   const t = useTranslate()
   const has = (cap: string) => capabilities.includes(cap)
@@ -133,6 +139,9 @@ export function HarnessPanel({
             models={models}
             capabilities={capabilities}
             onChangeReasoningEffort={onChangeReasoningEffort}
+            permissionMode={permissionMode}
+            allowedPermissionModes={allowedPermissionModes}
+            onChangePermissionMode={onChangePermissionMode}
           />
         )}
       </div>
@@ -585,18 +594,42 @@ function MCPInspector({ client, sessionId }: { client: RuntimeClient; sessionId:
   )
 }
 
+const EFFORT_LABELS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Auto' },
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'XHigh' },
+  { value: 'max', label: 'Max' },
+]
+
+const PERM_LABEL: Record<string, string> = {
+  'read-only': 'Read-only',
+  workspace: 'Workspace',
+  auto: 'Auto review',
+  'full-access': 'Full access',
+}
+
 function ContextInspector({
   activeSession,
   runtime,
   models,
   capabilities,
   onChangeReasoningEffort,
+  permissionMode,
+  allowedPermissionModes,
+  onChangePermissionMode,
 }: {
   activeSession: SessionSummary | null
   runtime: RuntimeState
   models: ModelOption[]
   capabilities: string[]
   onChangeReasoningEffort?: (effort: string) => void
+  permissionMode?: string
+  allowedPermissionModes?: string[]
+  onChangePermissionMode?: (mode: string) => void
 }) {
   const t = useTranslate()
   const usage = activeSession?.sessionUsage
@@ -607,6 +640,9 @@ function ContextInspector({
   const contextPct = contextLimit > 0 ? Math.min(100, Math.round((latestInput / contextLimit) * 100)) : 0
   const cachePct = usage && usage.input > 0 ? Math.round((usage.cached / usage.input) * 100) : 0
   const busy = runtime.task.status === 'running' || runtime.task.status === 'queued' || runtime.task.status === 'paused' || runtime.queue.length > 0
+  const currentEffort = activeSession?.settings.reasoningEffort || ''
+  const currentEffortLabel = EFFORT_LABELS.find((e) => e.value === currentEffort)?.label ?? currentEffort
+  const permModes = allowedPermissionModes?.length ? allowedPermissionModes : ['read-only', 'workspace', 'auto', 'full-access']
 
   return (
     <div className="inspector-pane">
@@ -623,19 +659,38 @@ function ContextInspector({
             <select
               className="inspector-select"
               aria-label={t('Reasoning effort')}
-              value={activeSession?.settings.reasoningEffort || ''}
+              value={currentEffort}
               disabled={!activeSession || busy}
               onChange={(e) => onChangeReasoningEffort(e.target.value)}
             >
-              <option value="">{t('Default')}</option>
-              {['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => (
-                <option key={level} value={level}>{t(level)}</option>
+              {EFFORT_LABELS.map((item) => (
+                <option key={item.value || 'auto'} value={item.value}>{item.label}</option>
               ))}
             </select>
           ) : (
-            <code>{activeSession?.settings.reasoningEffort || t('Default')}</code>
+            <code>{currentEffortLabel}</code>
           )}
         </div>
+        {capabilities.includes('permission.manage') && permissionMode && (
+          <div className="kv-row">
+            <span>{t('Permission mode')}</span>
+            {onChangePermissionMode ? (
+              <select
+                className="inspector-select"
+                aria-label={t('Permission mode')}
+                value={permissionMode}
+                disabled={busy}
+                onChange={(e) => onChangePermissionMode(e.target.value)}
+              >
+                {permModes.map((mode) => (
+                  <option key={mode} value={mode}>{t(PERM_LABEL[mode] ?? mode)} ({mode})</option>
+                ))}
+              </select>
+            ) : (
+              <code>{t(PERM_LABEL[permissionMode] ?? permissionMode)}</code>
+            )}
+          </div>
+        )}
         <div className="kv-row"><span>{t('Task state')}</span><code>{t(runtime.task.status || 'idle')}</code></div>
         <div className="kv-row"><span>{t('Queued turns')}</span><code>{runtime.queue.length}</code></div>
       </div>
