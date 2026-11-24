@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { X } from 'lucide-react'
 import type { ConfigDocument, ConfigImport, ConfigView } from '../shared/desktop-settings'
 
 export function ConfigSettings({ workspace, onClose }: { workspace: string; onClose: () => void }) {
@@ -72,7 +73,7 @@ export function ConfigSettings({ workspace, onClose }: { workspace: string; onCl
     onCancel={(event) => { if (pending) event.preventDefault() }}>
     <header className="drawer-heading">
       <h2 id="desktop-config-title">Core configuration</h2>
-      <button type="button" className="icon-button" aria-label="Close configuration" disabled={pending} onClick={() => dialog.current?.close()}>×</button>
+      <button type="button" className="icon-button" aria-label="Close configuration" disabled={pending} onClick={() => dialog.current?.close()}><X size={16} /></button>
     </header>
     <div className="connection-tabs compact-tabs">
       <button type="button" className={!scope ? 'active' : ''} disabled={pending} onClick={() => setScope('')}>Defaults</button>

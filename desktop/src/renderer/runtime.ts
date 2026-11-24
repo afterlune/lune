@@ -21,8 +21,9 @@ function base64URL(value: string): string {
 
 function browserClient(url: string, token: string, loopback = false): Promise<RuntimeClient> {
   const endpoint = new URL(url)
+  const expectedHostProtocol = isLocalBrowser() ? 'ws:' : location.protocol === 'https:' ? 'wss:' : ''
   const validTransport = loopback
-    ? isLocalBrowser() && endpoint.protocol === 'ws:' && endpoint.host === location.host &&
+    ? Boolean(expectedHostProtocol) && endpoint.protocol === expectedHostProtocol && endpoint.host === location.host &&
       /^\/v1\/(?:runtime|workspaces\/[A-Z2-7]{26,120}\/runtime)$/.test(endpoint.pathname)
     : endpoint.protocol === 'wss:'
   if (!validTransport || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {

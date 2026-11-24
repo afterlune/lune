@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import WebSocket from 'ws'
 import { JsonRpcPeer, type JsonRpcNotification } from '../shared/jsonrpc.js'
 import { isThemePreference, windowColors } from '../shared/theme.js'
-import type { ConfigDocument, DesktopConnectionOptions } from '../shared/desktop-settings.js'
+import type { ConfigDocument, DesktopConnectionOptions, ProviderTestInput, ProviderTestResult } from '../shared/desktop-settings.js'
 import { configFrame, DesktopSettings, remoteAddress, startupConfigLimit, workspacePath } from './settings.js'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -16,11 +16,17 @@ const developmentServer = process.env.ELECTRON_RENDERER_URL
 const rendererFileURL = pathToFileURL(resolve(currentDirectory, '../renderer/index.html')).toString()
 const allowedRuntimeMethods = new Set([
   'runtime.hello', 'runtime.subscribe', 'runtime.unsubscribe', 'runtime.state', 'runtime.pending',
+  'workspace.info', 'workspace.listDirectory', 'workspace.readFile',
   'session.create', 'session.get', 'session.history', 'session.historyPage', 'session.list', 'session.search',
   'session.setSettings', 'session.setTitle', 'session.setArchived', 'session.delete', 'session.fork',
-  'session.rewindPreview', 'session.rewind', 'session.compact', 'turn.cancelQueued',
+  'session.rewindPreview', 'session.rewind', 'session.compact',
+  'goal.get', 'goal.create', 'goal.pause', 'goal.resume', 'goal.edit', 'goal.setBudget', 'goal.clear',
+  'command.list', 'command.read', 'command.stop',
+  'mcp.servers', 'mcp.enable', 'mcp.disable', 'mcp.listPrompts', 'mcp.getPrompt',
+  'mcp.listResources', 'mcp.listResourceTemplates', 'mcp.readResource',
   'model.list', 'turn.submit', 'turn.interrupt', 'turn.recover', 'turn.discardPaused',
-  'approval.resolve', 'question.resolve', 'interaction.resolve', 'toolRecovery.resolve',
+  'turn.cancelQueued', 'turn.cancelPending', 'turn.replaceQueued', 'turn.implementPlan',
+  'approval.resolve', 'question.resolve', 'question.saveDraft', 'interaction.resolve', 'toolRecovery.resolve',
 ])
 let mainWindow: BrowserWindow | null = null
 let peer: JsonRpcPeer | null = null
@@ -288,6 +294,16 @@ ipcMain.handle('settings:config', (event, scope: unknown) => {
   return settings.config(configScope(scope))
 })
 
+ipcMain.handle('settings:ui-preferences', (event) => {
+  assertMainWindow(event)
+  return settings.uiPreferences()
+})
+
+ipcMain.handle('settings:save-ui-preferences', (event, patch: unknown) => {
+  assertMainWindow(event)
+  return settings.saveUiPreferences(patch)
+})
+
 ipcMain.handle('settings:import', async (event) => {
   assertMainWindow(event)
   const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], filters: [{ name: 'Core configuration', extensions: ['json'] }] })
@@ -319,6 +335,86 @@ ipcMain.handle('settings:reset-workspace', (event, workspace: unknown) => {
   return serial(settingsWrite, () => settings.resetWorkspace(workspacePath(workspace), validateCoreConfig), (pending) => { settingsWrite = pending })
 })
 
+async function requestProviderModels(protocol: string, baseURL: string, apiKey: string) {
+  if (protocol !== 'responses' && protocol !== 'anthropic-messages') throw new Error('Choose a supported provider protocol.')
+  if (baseURL.length > 2048) throw new Error('Provider URL is too long.')
+  let parsedBase: URL
+  try { parsedBase = new URL(baseURL) } catch { throw new Error('Enter a valid provider URL.') }
+  if (!['http:', 'https:'].includes(parsedBase.protocol) || parsedBase.username || parsedBase.password || parsedBase.hash) throw new Error('Use an HTTP or HTTPS provider URL without embedded credentials or fragments.')
+  const base = baseURL.replace(/\/+$/, '')
+  const urls = protocol === 'anthropic-messages'
+    ? [base.endsWith('/v1') ? `${base}/models` : `${base}/v1/models`]
+    : [`${base}/models`, ...(base.endsWith('/v1') ? [] : [`${base}/v1/models`])]
+  let lastError = 'Provider connection failed. Check the URL and credentials.'
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' }
+      if (protocol === 'anthropic-messages') {
+        headers['anthropic-version'] = '2023-06-01'
+        if (apiKey) headers['x-api-key'] = apiKey
+      } else if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const res = await fetch(urls[i], { headers, signal: AbortSignal.timeout(12_000), redirect: 'error' })
+      if (res.status === 404 && i + 1 < urls.length) { lastError = 'Provider returned HTTP 404.'; continue }
+      if (!res.ok) throw new Error(`Provider returned HTTP ${res.status}.`)
+      const declaredLength = Number(res.headers.get('content-length') || 0)
+      if (declaredLength > 4 * 1024 * 1024) throw new Error('Provider model response is too large.')
+      const body = await res.text()
+      if (body.length > 4 * 1024 * 1024) throw new Error('Provider model response is too large.')
+      let parsed: { data?: Array<{ id?: string; display_name?: string; name?: string }>; models?: Array<{ id?: string; displayName?: string; name?: string }> }
+      try { parsed = JSON.parse(body) as typeof parsed } catch { throw new Error('Provider returned invalid model data.') }
+      const map = new Map<string, { id: string; displayName?: string }>()
+      for (const item of parsed.data ?? []) {
+        const id = item.id?.trim()
+        if (id) map.set(id, { id, displayName: item.display_name?.trim() || item.name?.trim() || undefined })
+      }
+      for (const item of parsed.models ?? []) {
+        const id = (item.id || item.name)?.trim()
+        if (id && !map.has(id)) map.set(id, { id, displayName: item.displayName?.trim() || item.name?.trim() || undefined })
+      }
+      return [...map.values()].sort((a, b) => a.id.localeCompare(b.id))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      lastError = /^Provider (returned HTTP|model response)/.test(message) || message === 'Provider returned invalid model data.'
+        ? message : 'Provider connection failed. Check the URL and credentials.'
+    }
+  }
+  throw new Error(lastError)
+}
+
+ipcMain.handle('settings:fetch-provider-models', async (event, scope: unknown, provider: unknown) => {
+  assertMainWindow(event)
+  if (typeof provider !== 'string' || !provider.trim()) throw new Error('Provider name is required.')
+  const normalizedScope = typeof scope === 'string' && scope ? configScope(scope) : ''
+  const saved = await settings.providerCredentials(normalizedScope, provider.trim())
+  return requestProviderModels(saved.protocol, saved.baseURL, saved.apiKey)
+})
+
+ipcMain.handle('settings:test-provider', async (event, scope: unknown, rawInput: unknown): Promise<ProviderTestResult> => {
+  assertMainWindow(event)
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) throw new Error('Provider details are required.')
+  const input = rawInput as Partial<ProviderTestInput>
+  if (typeof input.provider !== 'string' || input.provider.length > 120 || typeof input.baseURL !== 'string' || input.baseURL.length > 2048) throw new Error('Enter a provider name and URL.')
+  const normalizedScope = typeof scope === 'string' && scope ? configScope(scope) : ''
+  let saved: { protocol: string; baseURL: string; apiKey: string } | undefined
+  try { if (input.provider.trim()) saved = await settings.providerCredentials(normalizedScope, input.provider.trim()) } catch { /* a new provider can be tested before saving */ }
+  const protocol = input.protocol === 'anthropic-messages' ? input.protocol : input.protocol === 'responses' ? input.protocol : saved?.protocol || 'responses'
+  const baseURL = input.baseURL.trim() || saved?.baseURL || ''
+  let apiKey = typeof input.apiKey === 'string' && input.apiKey ? input.apiKey : saved?.apiKey || ''
+  if (input.apiKeyEnv) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(input.apiKeyEnv)) throw new Error('Enter a valid environment variable name.')
+    const value = process.env[input.apiKeyEnv]
+    if (!value) return { ok: false, durationMs: 0, error: 'The selected environment variable is not set.' }
+    apiKey = value
+  }
+  const started = Date.now()
+  try {
+    const models = await requestProviderModels(protocol, baseURL, apiKey)
+    return { ok: true, durationMs: Date.now() - started, modelCount: models.length }
+  } catch (error) {
+    return { ok: false, durationMs: Date.now() - started, error: error instanceof Error ? error.message : 'Provider connection failed.' }
+  }
+})
+
 function connectionAddress(connection: DesktopConnectionOptions) {
   return connection.mode === 'local' ? connection.workspace : connection.url
 }
@@ -326,6 +422,15 @@ function connectionAddress(connection: DesktopConnectionOptions) {
 ipcMain.handle('settings:connections', (event) => {
   assertMainWindow(event)
   return { items: settings.connections(), notice: connectionNotice }
+})
+
+ipcMain.handle('settings:save-remote', (event, input: { url?: unknown; name?: unknown; token?: unknown; rememberToken?: unknown }) => {
+  assertMainWindow(event)
+  if (typeof input?.url !== 'string') throw new Error('Enter a remote Core URL.')
+  if (input.token !== undefined && typeof input.token !== 'string') throw new Error('Invalid token.')
+  const name = typeof input.name === 'string' ? input.name : undefined
+  const remember = typeof input.rememberToken === 'boolean' ? input.rememberToken : true
+  return serial(settingsWrite, () => settings.saveRemoteConnection(input.url as string, name, input.token as string | undefined, remember), (pending) => { settingsWrite = pending })
 })
 
 ipcMain.handle('settings:forget-connection', async (event, mode: unknown, address: unknown) => {

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Monitor, Moon, Sun } from 'lucide-react'
+import { ChevronDown, Monitor, Moon, Sun } from 'lucide-react'
 import { isThemePreference, windowColors, type ThemePreference } from '../shared/theme'
 import { useTranslate } from './language'
 
@@ -62,6 +62,7 @@ export function ThemePicker({ value, onChange }: { value: ThemePreference; onCha
         <option value="light">{t('Light')}</option>
         <option value="dark">{t('Dark')}</option>
       </select>
+      <ChevronDown size={13} className="select-chevron" aria-hidden="true" />
     </label>
     {error && <span className="theme-error" role="alert">Could not save appearance.</span>}
   </div>

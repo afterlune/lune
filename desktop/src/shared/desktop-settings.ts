@@ -5,6 +5,7 @@ export type ConfigView = {
   savedKeys: string[]
   hasMCP: boolean
   canSaveSecrets: boolean
+  secretStorage?: 'encrypted' | 'sqlite'
   inheritedProfiles: string[]
 }
 
@@ -26,3 +27,14 @@ export type SavedConnection = {
 export type DesktopConnectionOptions =
   | { mode: 'local'; workspace: string }
   | { mode: 'remote'; url: string; token: string; name?: string; rememberToken?: boolean }
+
+export type ProviderTestInput = {
+  provider: string
+  protocol: 'responses' | 'anthropic-messages'
+  baseURL: string
+  apiKey?: string
+  apiKeyEnv?: string
+}
+
+export type ProviderTestResult = { ok: boolean; durationMs: number; modelCount?: number; error?: string }
+export type { UiPreferences } from './ui-preferences.js'

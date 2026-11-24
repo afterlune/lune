@@ -3,10 +3,11 @@ import { chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { ConfigDocument, ConfigImport, ConfigView, SavedConnection } from '../shared/desktop-settings.js'
+import { defaultUiPreferences, normalizeUiPreferences, type UiPreferences } from '../shared/ui-preferences.js'
 
 export const startupConfigLimit = 1024 * 1024
 type Json = Record<string, unknown>
-type Secret = { text: string; encrypted: Buffer | null }
+type Secret = { text: string; encrypted: Buffer; encoding: 'safeStorage' | 'plain' }
 type Catalog = {
   models: Json
   providers: Record<string, Json>
@@ -117,12 +118,12 @@ export class DesktopSettings {
           this.database.exec(`
             CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE configs (scope TEXT PRIMARY KEY, document TEXT NOT NULL);
-            CREATE TABLE secrets (scope TEXT NOT NULL, name TEXT NOT NULL, encrypted BLOB NOT NULL, PRIMARY KEY(scope,name));
+            CREATE TABLE secrets (scope TEXT NOT NULL, name TEXT NOT NULL, encoding TEXT NOT NULL DEFAULT 'safeStorage', encrypted BLOB NOT NULL, PRIMARY KEY(scope,name));
             CREATE TABLE connections (
               mode TEXT NOT NULL, address TEXT NOT NULL, name TEXT NOT NULL,
               touched INTEGER NOT NULL, session TEXT, PRIMARY KEY(mode,address)
             );
-            PRAGMA user_version = 1;
+            PRAGMA user_version = 2;
           `)
           for (const [key, filename] of [['theme', 'appearance.txt'], ['shortcut', 'quick-shortcut.txt']]) {
             try {
@@ -133,7 +134,11 @@ export class DesktopSettings {
             }
           }
         })
-      } else if (version !== 1) {
+      } else if (version === 1) {
+        this.transaction(() => {
+          this.database.exec(`ALTER TABLE secrets ADD COLUMN encoding TEXT NOT NULL DEFAULT 'safeStorage'; PRAGMA user_version = 2;`)
+        })
+      } else if (version !== 2) {
         throw new Error('Unsupported desktop settings database version.')
       }
     } catch (error) {
@@ -158,6 +163,25 @@ export class DesktopSettings {
     this.database.prepare('INSERT INTO preferences VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
   }
 
+  uiPreferences(): UiPreferences {
+    const saved = this.preference('ui.preferences')
+    let parsed: unknown = {}
+    try { if (saved) parsed = JSON.parse(saved) } catch { /* repair malformed preferences with defaults */ }
+    const base = normalizeUiPreferences(parsed, {
+      ...defaultUiPreferences,
+      theme: this.preference('theme') === 'light' || this.preference('theme') === 'dark' || this.preference('theme') === 'system'
+        ? this.preference('theme') as UiPreferences['theme'] : defaultUiPreferences.theme,
+    })
+    return base
+  }
+
+  saveUiPreferences(patch: unknown): UiPreferences {
+    const next = normalizeUiPreferences(patch, this.uiPreferences())
+    this.setPreference('ui.preferences', JSON.stringify(next))
+    this.setPreference('theme', next.theme)
+    return next
+  }
+
   private document(scope: string): ConfigDocument {
     const saved = this.database.prepare('SELECT document FROM configs WHERE scope = ?').get(scope)
     return saved ? asObject(JSON.parse(String(saved.document))) : {}
@@ -173,35 +197,38 @@ export class DesktopSettings {
   private async secret(scope: string, name: string): Promise<string | undefined> {
     const transient = this.runSecrets.get(this.secretKey(scope, name))
     if (transient !== undefined) return transient
-    const saved = this.database.prepare('SELECT encrypted FROM secrets WHERE scope = ? AND name = ?').get(scope, name)
+    const saved = this.database.prepare('SELECT encoding, encrypted FROM secrets WHERE scope = ? AND name = ?').get(scope, name)
     if (!saved) return undefined
+    const buf = Buffer.from(saved.encrypted as Uint8Array)
+    if (saved.encoding === 'plain') return buf.toString('utf8')
     if (!canEncrypt()) throw new Error('The system credential store is unavailable. Unlock it or enter the credential for this run.')
     try {
-      const result = await safeStorage.decryptStringAsync(Buffer.from(saved.encrypted as Uint8Array))
+      const result = await safeStorage.decryptStringAsync(buf)
       return result.result
     } catch { throw new Error('A saved credential could not be unlocked. Re-enter it in settings.') }
   }
 
   private async protect(text: string): Promise<Secret> {
-    if (!canEncrypt()) return { text, encrypted: null }
-    try {
-      return { text, encrypted: await safeStorage.encryptStringAsync(text) }
-    } catch { return { text, encrypted: null } }
+    if (canEncrypt()) {
+      try {
+        return { text, encrypted: await safeStorage.encryptStringAsync(text), encoding: 'safeStorage' }
+      } catch { /* fallback to sqlite persistence */ }
+    }
+    return { text, encrypted: Buffer.from(text, 'utf8'), encoding: 'plain' }
   }
 
   private writeSecret(scope: string, name: string, value: Secret | null) {
-    if (value?.encrypted) {
-      this.database.prepare('INSERT INTO secrets VALUES(?,?,?) ON CONFLICT(scope,name) DO UPDATE SET encrypted = excluded.encrypted')
-        .run(scope, name, value.encrypted)
+    if (value) {
+      this.database.prepare('INSERT INTO secrets(scope, name, encoding, encrypted) VALUES(?,?,?,?) ON CONFLICT(scope,name) DO UPDATE SET encoding = excluded.encoding, encrypted = excluded.encrypted')
+        .run(scope, name, value.encoding, value.encrypted)
     } else {
       this.database.prepare('DELETE FROM secrets WHERE scope = ? AND name = ?').run(scope, name)
     }
   }
 
   private updateMemory(scope: string, name: string, value: Secret | null) {
-    const key = this.secretKey(scope, name)
-    if (value && !value.encrypted) this.runSecrets.set(key, value.text)
-    else this.runSecrets.delete(key)
+    this.runSecrets.delete(this.secretKey(scope, name))
+    void value
   }
 
   config(scope: string): ConfigView {
@@ -210,7 +237,8 @@ export class DesktopSettings {
       document,
       savedKeys: Object.keys(catalog(document).providers).filter((name) => this.hasSecret(scope, 'provider:' + name)),
       hasMCP: this.hasSecret(scope, 'mcp'),
-      canSaveSecrets: canEncrypt(),
+      canSaveSecrets: true,
+      secretStorage: canEncrypt() ? 'encrypted' : 'sqlite',
       inheritedProfiles: scope ? Object.keys(catalog(this.document('')).profiles) : [],
     }
   }
@@ -300,7 +328,7 @@ export class DesktopSettings {
     })
     for (const [name, change] of changes) this.updateMemory(scope, name, change)
     if (importId) this.importDrafts.delete(importId)
-    return [...changes.values()].some((change) => change !== null && !change.encrypted)
+    return false
   }
 
   async resetWorkspace(scope: string, validate: (config: ConfigDocument) => Promise<void>) {
@@ -333,7 +361,27 @@ export class DesktopSettings {
       if (remember) this.writeSecret(scope, 'token', protectedToken)
     })
     if (remember) this.updateMemory(scope, 'token', protectedToken)
-    return Boolean(protectedToken && !protectedToken.encrypted)
+    return false
+  }
+
+  async saveRemoteConnection(address: string, name?: string, token?: string, rememberToken = true): Promise<void> {
+    const normalized = remoteAddress(address)
+    const trimmedName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 120) : normalized
+    const remember = typeof token === 'string' ? { token, save: rememberToken && token.length > 0 } : undefined
+    await this.recordConnection('remote', normalized, trimmedName, remember)
+  }
+
+  async providerCredentials(scope: string, providerName: string): Promise<{ protocol: string; baseURL: string; apiKey: string }> {
+    const cfg = scope ? await this.effectiveConfig(scope) : await this.resolvedConfig('', this.document(''))
+    const models = cfg.models as { providers?: Record<string, { protocol?: string; baseURL?: string; apiKey?: string }> } | undefined
+    const entry = models?.providers?.[providerName]
+    if (!entry) throw new Error(`Provider "${providerName}" is not saved yet; save it first.`)
+    if (!entry.baseURL) throw new Error(`Provider "${providerName}" has no baseURL.`)
+    return {
+      protocol: typeof entry.protocol === 'string' ? entry.protocol : 'responses',
+      baseURL: entry.baseURL,
+      apiKey: typeof entry.apiKey === 'string' ? entry.apiKey : '',
+    }
   }
 
   forgetConnection(mode: SavedConnection['mode'], address: string) {

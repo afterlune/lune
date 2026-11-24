@@ -7,15 +7,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db           *sql.DB
+	importMu     sync.Mutex
+	importDrafts map[string]map[string]any
+}
 
 const tuiThemeKey = "tui.theme"
 const webLanguageKey = "web.language"
+const webThemeKey = "web.theme"
 
 func UserSettingsPath() (string, error) {
 	root, err := os.UserConfigDir()
@@ -80,10 +87,34 @@ CREATE TABLE IF NOT EXISTS command_toolchains (
   workspace_key TEXT PRIMARY KEY,
   paths_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS web_configs (
+  scope TEXT PRIMARY KEY,
+  document TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS web_secrets (
+  scope TEXT NOT NULL,
+  name TEXT NOT NULL,
+  encoding TEXT NOT NULL,
+  value BLOB NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(scope, name)
+);
+CREATE TABLE IF NOT EXISTS web_connections (
+  mode TEXT NOT NULL,
+  address TEXT NOT NULL,
+  name TEXT NOT NULL,
+  touched INTEGER NOT NULL,
+  session TEXT,
+  PRIMARY KEY(mode, address)
 );`
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize settings database: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(path, 0o600)
 	}
 	return store, nil
 }
@@ -128,5 +159,37 @@ func (s *Store) SaveWebLanguage(value string) error {
 	if value != "en" && value != "zh" {
 		return errors.New("invalid interface language")
 	}
+	if _, found, err := s.setting("web.preferences"); err != nil {
+		return err
+	} else if found {
+		preferences, err := s.WebUIPreferences()
+		if err != nil {
+			return err
+		}
+		preferences.Language = value
+		return s.SaveWebUIPreferences(preferences)
+	}
 	return s.saveSetting(webLanguageKey, value)
+}
+
+func (s *Store) WebTheme() (string, error) {
+	value, _, err := s.setting(webThemeKey)
+	return value, err
+}
+
+func (s *Store) SaveWebTheme(value string) error {
+	if value != "system" && value != "light" && value != "dark" {
+		return errors.New("invalid web theme preference")
+	}
+	if _, found, err := s.setting("web.preferences"); err != nil {
+		return err
+	} else if found {
+		preferences, err := s.WebUIPreferences()
+		if err != nil {
+			return err
+		}
+		preferences.Theme = value
+		return s.SaveWebUIPreferences(preferences)
+	}
+	return s.saveSetting(webThemeKey, value)
 }
