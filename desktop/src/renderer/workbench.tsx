@@ -280,7 +280,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws'
 
   const navigation = (
-    <section className="workspace-list mb-3 grid gap-0.5 border-b border-line-subtle pb-2.5" aria-label={t('Workspaces')}>
+    <section className="workspace-list mb-3 grid gap-0.5" aria-label={t('Workspaces')}>
       <div className="workspace-list-heading flex select-none items-center justify-between px-2.5 pt-0.5 pb-1 text-[11.5px] font-medium text-ink-muted">
         <span>{t('Workspaces')}</span>
         <button
@@ -407,9 +407,9 @@ function Workbench({ theme }: { theme: ThemePreference }) {
 
     {!remoteOverride && activeWorkspaces.length === 0 && (
       <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
-        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
           <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>
-          <div className="sidebar-bottom mt-2 border-t border-line-subtle pt-2">
+          <div className="sidebar-bottom mt-2 pt-2">
             <button
               type="button"
               className="settings-button flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:bg-hover"

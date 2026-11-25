@@ -2397,10 +2397,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           </span>
           <div className="ml-auto"><LanguagePicker /></div>
         </header>
-        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
           <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{managed.navigation}</div>
-          <div className="sidebar-bottom mt-2 flex flex-col gap-2 border-t border-line-subtle pt-2">
-            <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-canvas px-2.5 py-2">
+          <div className="sidebar-bottom mt-2 flex flex-col gap-2 pt-2">
+            <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-subtle px-2.5 py-2">
               <div className="core-card-icon grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={15} /></div>
               <div className="core-card-copy min-w-0 flex-1">
                 <strong className="block truncate text-[12px] font-semibold text-ink">{managed.isRemoteOverride ? t('Remote Core') : t('Local Core')}</strong>
@@ -2646,7 +2646,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       </div>
     )}
     {managed?.navigation ?? (desktop && (
-      <section className="workspace-list mb-3 grid gap-0.5 border-b border-line-subtle pb-2.5" aria-label={t('Workspaces')}>
+      <section className="workspace-list mb-3 grid gap-0.5" aria-label={t('Workspaces')}>
         <div className="workspace-list-heading flex select-none items-center justify-between px-2.5 pt-0.5 pb-1 text-[11.5px] font-medium text-ink-muted">
           <span>{t('Workspaces')}</span>
           <button
@@ -2813,8 +2813,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       )}
     </div>
     {drawerOpen && actionError && <div className={cn('action-error my-2 flex items-center gap-2', bannerError)} role="alert">{actionError}</div>}
-    <div className="sidebar-bottom mt-2 flex flex-col gap-2 border-t border-line-subtle pt-2">
-      <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-canvas px-2.5 py-2">
+    <div className="sidebar-bottom mt-2 flex flex-col gap-2 pt-2">
+      <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-subtle px-2.5 py-2">
         <div className="core-card-icon grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={15} /></div>
         <div className="core-card-copy min-w-0 flex-1">
           <strong className="block truncate text-[12px] font-semibold text-ink">{managed?.isRemoteOverride || connection?.mode === 'remote' ? t('Remote Core') : t('Local Core')}</strong>
@@ -3482,12 +3482,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         <aside
           className={cn(
             'sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar transition-opacity duration-150',
-            isSidebarCollapsed ? 'pointer-events-none border-r-0 p-0 opacity-0' : 'border-r border-line-subtle px-2.5 pt-2.5 pb-3',
+            isSidebarCollapsed ? 'pointer-events-none p-0 opacity-0' : 'px-2.5 pt-0 pb-3',
           )}
           aria-label={t('Conversations')}
           aria-hidden={sidebarCollapsed || undefined}
         >
-          <div className="sidebar-top mb-1.5 flex min-h-[36px] items-center justify-between">
+          <div className="sidebar-top flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between">
             <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
             <div className="sidebar-top-actions flex items-center gap-0.5">
               <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Search conversations')} title={t('Search conversations')} aria-pressed={searchOpen} onClick={() => setSearchOpen((open) => !open)}><Search size={17} /></button>
@@ -3498,7 +3498,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </aside>
       )}
       {!compactLayout && sidebarCollapsed && (
-        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] border-r border-line-subtle bg-sidebar pt-[9px] pb-3" aria-label={t('Quick navigation')}>
+        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] bg-sidebar pt-[10px] pb-3" aria-label={t('Quick navigation')}>
           <button type="button" className={cn('icon-button', btnIcon)} title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
           <button type="button" className={cn('icon-button', btnIcon)} title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
           <button type="button" className={cn('icon-button sidebar-rail-settings mt-auto', btnIcon)} title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>

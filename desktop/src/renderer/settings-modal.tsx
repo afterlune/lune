@@ -1372,7 +1372,7 @@ export function SettingsModal({
       </header>
 
       <div className="settings-shell grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[218px_minmax(0,1fr)] sm:grid-rows-none">
-        <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b border-line-subtle bg-sidebar px-2.5 py-2 sm:border-r sm:border-b-0 sm:pt-3 sm:pb-2.5">
+        <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b border-line-subtle bg-subtle px-2.5 py-2 sm:border-r sm:border-b-0 sm:pt-3 sm:pb-2.5">
           <nav className="settings-nav flex flex-row gap-1 overflow-x-auto sm:flex-col sm:gap-0.5" aria-label={t('Settings sections')}>
             {navItems.filter((item) => !item.hidden).map((item) => {
               const Icon = item.icon
