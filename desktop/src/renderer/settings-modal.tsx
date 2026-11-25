@@ -8,7 +8,7 @@ import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, Provid
 import type { ThemePreference } from '../shared/theme'
 import { useTranslation } from 'react-i18next'
 import { useLanguage } from './language'
-import type { FrontendSettingsAPI, SaveConfigResult } from './settings-api'
+import type { ActiveDelegationLimits, FrontendSettingsAPI, SaveConfigResult } from './settings-api'
 import { ThemePicker } from './theme'
 import { defaultUiPreferences } from '../shared/ui-preferences'
 import {
@@ -201,6 +201,7 @@ export function SettingsModal({
   initialTab,
   api,
   workspace,
+  workspaceId = '',
   theme,
   onThemeChange,
   onUiPreferencesChange,
@@ -217,6 +218,7 @@ export function SettingsModal({
   initialTab?: SettingsTab
   api: FrontendSettingsAPI
   workspace: string
+  workspaceId?: string
   theme: ThemePreference
   onThemeChange: (theme: ThemePreference) => void
   onUiPreferencesChange?: (preferences: UiPreferences) => void
@@ -243,6 +245,8 @@ export function SettingsModal({
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(defaultUiPreferences)
+  const [activeDelegation, setActiveDelegation] = useState<ActiveDelegationLimits | null>(null)
+  const [delegationRevision, setDelegationRevision] = useState(0)
 
   // Unified Provider + Models editor state (one card open at a time)
   const [editorMode, setEditorMode] = useState<'closed' | 'add' | 'edit'>('closed')
@@ -347,6 +351,30 @@ export function SettingsModal({
     return () => { active = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, scope])
+
+  useEffect(() => {
+    if (!open || tab !== 'runtime' || !api.activeDelegationLimits || !workspaceId) {
+      setActiveDelegation(null)
+      return
+    }
+    let active = true
+    let timer = 0
+    const refresh = async () => {
+      try {
+        const limits = await api.activeDelegationLimits!(workspaceId)
+        if (!active) return
+        setActiveDelegation(limits)
+        if (limits?.configStale) timer = window.setTimeout(() => void refresh(), 1500)
+      } catch {
+        if (active) setActiveDelegation(null)
+      }
+    }
+    void refresh()
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [api, delegationRevision, open, tab, workspaceId])
 
   const catalog = useMemo(() => normalizeDoc(doc), [doc])
   const providerNames = Object.keys(catalog.providers)
@@ -464,9 +492,12 @@ export function SettingsModal({
         loadConfig(scope),
       ])
       const finalResult = { ...result, ...followup }
+      setDelegationRevision((value) => value + 1)
       setStatus(finalResult.requiresReconnect
         ? t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
-        : message || (finalResult.reloaded ? t('Settings saved and runtime reconnected.') : t('Settings saved to SQLite database.')))
+        : finalResult.reloadPending
+          ? t('Settings saved. Changes will apply when the current work finishes.')
+          : message || (finalResult.reloaded ? t('Settings saved and runtime reconnected.') : t('Settings saved to SQLite database.')))
       return true
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1460,9 +1491,12 @@ export function SettingsModal({
                       await loadConfig(scope)
                       const followup = await onSavedConfig?.(result)
                       const finalResult = { ...result, ...followup }
+                      setDelegationRevision((revision) => revision + 1)
                       setStatus(finalResult.requiresReconnect
                         ? t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
-                        : t('Workspace now uses the default configuration.'))
+                        : finalResult.reloadPending
+                          ? t('Settings saved. Changes will apply when the current work finishes.')
+                          : t('Workspace now uses the default configuration.'))
                     }).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
                   >
                     {t('Use defaults')}
@@ -1847,6 +1881,36 @@ export function SettingsModal({
                   <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">{t('These limits apply to new tasks. Running tasks keep their current settings.')}</p>
                 </div>
               </div>
+
+              {activeDelegation && (
+                <section
+                  className="active-delegation-card flex flex-col gap-2 rounded-[11px] border border-line-subtle bg-subtle px-4 py-3.5"
+                  data-config-stale={activeDelegation.configStale ? 'true' : 'false'}
+                  aria-live="polite"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="m-0 text-[13px] font-semibold text-ink">{t('Active Core delegation')}</h4>
+                    <span className={statusPill}>
+                      {t(activeDelegation.configStale ? 'Saved settings pending' : activeDelegation.enabled ? 'Enabled in Core' : 'Disabled in Core')}
+                    </span>
+                  </div>
+                  <p className="m-0 text-[12px] leading-[1.55] text-ink-secondary">
+                    {t(activeDelegation.configStale
+                      ? 'The running Core has not applied the saved limits yet. Values below are currently active.'
+                      : activeDelegation.enabled && activeDelegation.profiles > 0
+                        ? 'Delegation is available in the running Core. If no subagents appear, the model may have chosen not to call delegate_team.'
+                        : activeDelegation.profiles === 0
+                          ? 'No model profiles are configured in this Core.'
+                          : 'Delegation is disabled in the running Core because the child or depth limit is zero.')}
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11.5px] text-ink-muted sm:grid-cols-4">
+                    <span>{t('Parallel agents')}: <strong className="font-mono font-medium text-ink-secondary">{activeDelegation.parallel}</strong></span>
+                    <span>{t('Children per agent')}: <strong className="font-mono font-medium text-ink-secondary">{activeDelegation.childrenPerAgent}</strong></span>
+                    <span>{t('Delegation depth')}: <strong className="font-mono font-medium text-ink-secondary">{activeDelegation.depth}</strong></span>
+                    <span>{t('Model profiles')}: <strong className="font-mono font-medium text-ink-secondary">{activeDelegation.profiles}</strong></span>
+                  </div>
+                </section>
+              )}
 
               <section className="settings-section flex flex-col gap-[7px]">
                 <h4 className={settingsSectionTitleCls}>{t('Concurrency & context')}</h4>

@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Bot, Brain, Check, ChevronRight, Copy, FileText, LoaderCircle, Paperclip, Pencil, Play, RotateCcw, Terminal, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { MarkdownContent, StreamingMarkdown } from './markdown'
-import { extractProposedPlan, type LiveAgentRun, type LiveToolStep, type OptimisticMessage, type TimelineEntry } from './harness-types'
+import { extractProposedPlan, type HistoryAttachment, type LiveAgentRun, type LiveToolStep, type OptimisticMessage, type TimelineEntry } from './harness-types'
 import type { StreamStore } from './stream-store'
 import { btnPlain, btnPrimaryCompact, btnSecondary, cn } from './ui'
 
@@ -96,6 +96,7 @@ const TimelineHistory = memo(function TimelineHistory({
   onImplementPlan,
   onEditAndResend,
   onRegenerate,
+  onInspectAgent,
 }: {
   entries: TimelineEntry[]
   optimistic: OptimisticMessage[]
@@ -107,8 +108,9 @@ const TimelineHistory = memo(function TimelineHistory({
   latestExecutionId: string
   detailsExpanded: boolean
   onImplementPlan: (sourceExecutionId: string, mode: 'same_context' | 'new_context') => void
-  onEditAndResend: (turnsFromEnd: number, nextText: string) => Promise<void> | void
+  onEditAndResend: (turnsFromEnd: number, nextText: string, attachments?: HistoryAttachment[]) => Promise<void> | void
   onRegenerate: () => Promise<void> | void
+  onInspectAgent?: (agentId: string) => void
 }) {
   const { t } = useTranslation()
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -116,15 +118,11 @@ const TimelineHistory = memo(function TimelineHistory({
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
-    setEditingId(null)
-    setEditDraft('')
-  }, [entries])
-
-  useEffect(() => {
-    if (sessionBusy && editingId) {
+    if (editingId && !entries.some((entry) => entry.kind === 'message' && entry.id === editingId)) {
       setEditingId(null)
+      setEditDraft('')
     }
-  }, [sessionBusy, editingId])
+  }, [entries, editingId])
 
   useEffect(() => {
     if (editingId) {
@@ -152,6 +150,7 @@ const TimelineHistory = memo(function TimelineHistory({
   }
 
   const canActOnMessages = canRewind && !sessionBusy && !working && !hasActiveStream && optimistic.length === 0
+  const canEditHistoricalMessages = canRewind && !working
 
   return (
     <>
@@ -179,6 +178,7 @@ const TimelineHistory = memo(function TimelineHistory({
         if (entry.kind === 'tool_round') {
           const names = [...new Set(entry.calls.map((c) => c.name))].slice(0, 3).join(', ')
           const hasFailure = entry.calls.some((c) => c.failed)
+          const hasTeamCall = entry.calls.some((c) => c.name === 'delegate_team')
           return (
             <details
               className={cn(
@@ -192,6 +192,20 @@ const TimelineHistory = memo(function TimelineHistory({
                 <Terminal size={14} aria-hidden="true" />
                 <span>{t('Tool calls')}</span>
                 {names && <span className="tool-summary-names truncate font-mono text-[11.5px] text-ink-muted">{names}</span>}
+                {hasTeamCall && onInspectAgent && (
+                  <button
+                    type="button"
+                    className="ml-2 inline-flex cursor-pointer items-center gap-1 rounded-[6px] border border-line bg-canvas px-2 py-[1px] font-sans text-[11px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onInspectAgent('')
+                    }}
+                  >
+                    <Bot size={11} aria-hidden="true" />
+                    <span>{t('Inspect subagents')}</span>
+                  </button>
+                )}
                 <span className="tool-count ml-auto rounded-full border border-line bg-canvas px-2 py-[1px] font-mono text-[11.5px] text-ink-muted tabular-nums">
                   {entry.calls.length}
                 </span>
@@ -234,9 +248,9 @@ const TimelineHistory = memo(function TimelineHistory({
 
         const submitEditedUser = () => {
           const trimmed = editDraft.trim()
-          if (!trimmed || working || sessionBusy) return
+          if ((!trimmed && !entry.attachments?.length) || working) return
           setEditingId(null)
-          void onEditAndResend(turnsFromEnd, trimmed)
+          void onEditAndResend(turnsFromEnd, trimmed, entry.attachments)
         }
 
         return (
@@ -266,7 +280,7 @@ const TimelineHistory = memo(function TimelineHistory({
                     className="message-edit-textarea max-h-[240px] min-h-[48px] w-full resize-y border-0 bg-transparent p-1 text-[14.5px] leading-[1.6] text-ink outline-none"
                     value={editDraft}
                     rows={Math.min(10, Math.max(2, editDraft.split('\n').length))}
-                    disabled={working || sessionBusy}
+                    disabled={working}
                     aria-label={t('Edit and resend')}
                     onChange={(event) => setEditDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -281,6 +295,11 @@ const TimelineHistory = memo(function TimelineHistory({
                       }
                     }}
                   />
+                  {entry.attachments && entry.attachments.length > 0 && (
+                    <div className="px-1 text-[11.5px] text-ink-muted">
+                      {t('Attachments from this message will be kept.')}
+                    </div>
+                  )}
                   <div className="message-edit-actions flex items-center justify-end gap-1.5">
                     <button
                       type="button"
@@ -293,7 +312,7 @@ const TimelineHistory = memo(function TimelineHistory({
                     <button
                       type="button"
                       className={btnPrimaryCompact}
-                      disabled={!editDraft.trim() || working || sessionBusy}
+                      disabled={(!editDraft.trim() && !entry.attachments?.length) || working}
                       onClick={submitEditedUser}
                     >
                       {t('Save & Resend')}
@@ -354,7 +373,7 @@ const TimelineHistory = memo(function TimelineHistory({
             {entry.role === 'user' && !isEditingUser && (
               <div className="message-actions user-actions mt-1 flex items-center justify-end gap-1 pr-1 opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
                 {entry.text.trim() && <CopyMessageButton text={entry.text} />}
-                {canActOnMessages && (
+                {canEditHistoricalMessages && (
                   <button
                     type="button"
                     className="message-action-btn inline-grid h-7 w-7 cursor-pointer place-items-center rounded-[7px] border-0 bg-transparent text-ink-muted transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
@@ -555,6 +574,7 @@ export function TimelineView({
   onImplementPlan,
   onEditAndResend,
   onRegenerate,
+  onInspectAgent,
 }: {
   entries: TimelineEntry[]
   optimistic: OptimisticMessage[]
@@ -569,8 +589,9 @@ export function TimelineView({
   latestExecutionId: string
   detailsExpanded: boolean
   onImplementPlan: (sourceExecutionId: string, mode: 'same_context' | 'new_context') => void
-  onEditAndResend: (turnsFromEnd: number, nextText: string) => Promise<void> | void
+  onEditAndResend: (turnsFromEnd: number, nextText: string, attachments?: HistoryAttachment[]) => Promise<void> | void
   onRegenerate: () => Promise<void> | void
+  onInspectAgent?: (agentId: string) => void
 }) {
   const { t } = useTranslation()
 
@@ -589,6 +610,7 @@ export function TimelineView({
         onImplementPlan={onImplementPlan}
         onEditAndResend={onEditAndResend}
         onRegenerate={onRegenerate}
+        onInspectAgent={onInspectAgent}
       />
 
       {liveAgents.length > 0 && (
@@ -599,38 +621,64 @@ export function TimelineView({
             <span className="live-agents-count ml-auto font-mono text-[11px] font-normal text-ink-muted">
               {liveAgents.filter((a) => a.status === 'running').length}/{liveAgents.length}
             </span>
-          </div>
-          <div className="live-agents-list flex flex-col gap-1.5">
-            {liveAgents.map((agent) => (
-              <div
-                className={cn(
-                  'live-agent-row flex flex-wrap items-center gap-1.5 rounded-[7px] px-1.5 py-0.5 text-[12px]',
-                  agent.status,
-                  agent.status === 'failed' ? 'text-danger' : 'text-ink-secondary',
-                )}
-                key={agent.id}
+            {onInspectAgent && (
+              <button
+                type="button"
+                className="ml-1 inline-flex cursor-pointer items-center gap-0.5 rounded-[6px] border-0 bg-transparent px-1.5 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-hover hover:text-ink"
+                onClick={() => onInspectAgent('')}
               >
-                {agent.status === 'running' ? (
-                  <LoaderCircle size={13} className="spin shrink-0" aria-hidden="true" />
-                ) : agent.status === 'failed' ? (
-                  <X size={13} className="live-agent-fail-icon shrink-0 text-danger" aria-hidden="true" />
-                ) : (
-                  <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
-                )}
-                <span className="live-agent-name font-medium text-ink">{agent.name}</span>
-                {agent.role && <span className="live-agent-role rounded bg-muted px-1.5 py-[1px] font-mono text-[10.5px] text-ink-muted">{agent.role}</span>}
-                {agent.task && <small className="live-agent-task min-w-0 flex-1 truncate text-[11.5px] text-ink-muted" title={agent.task}>{agent.task}</small>}
-                {agent.currentTool && <span className="live-agent-tool rounded bg-canvas px-1.5 py-[1px] font-mono text-[11px] text-ink-secondary">{agent.currentTool}</span>}
-                {agent.toolCount > 0 && !agent.currentTool && (
-                  <span className="live-agent-meta font-mono text-[11px] text-ink-muted">{agent.toolCount} {t('tools')}</span>
-                )}
-                {agent.durationMs !== undefined && agent.status !== 'running' && (
-                  <span className="live-tool-dur ml-auto font-mono text-[11px] text-ink-muted">
-                    {agent.durationMs < 1000 ? `${agent.durationMs}ms` : `${(agent.durationMs / 1000).toFixed(1)}s`}
-                  </span>
-                )}
-              </div>
-            ))}
+                <span>{t('Details')}</span>
+                <ChevronRight size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          <div className="live-agents-list flex flex-col gap-1">
+            {liveAgents.map((agent) => {
+              const rowClass = cn(
+                'live-agent-row flex w-full flex-wrap items-center gap-1.5 rounded-[7px] border-0 bg-transparent px-1.5 py-1 text-left text-[12px]',
+                agent.status,
+                agent.status === 'failed' || agent.status === 'cancelled' ? 'text-danger' : 'text-ink-secondary',
+                onInspectAgent && 'cursor-pointer hover:bg-hover',
+              )
+              const inner = (
+                <>
+                  {agent.status === 'running' ? (
+                    <LoaderCircle size={13} className="spin shrink-0" aria-hidden="true" />
+                  ) : agent.status === 'failed' || agent.status === 'cancelled' ? (
+                    <X size={13} className="live-agent-fail-icon shrink-0 text-danger" aria-hidden="true" />
+                  ) : (
+                    <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
+                  )}
+                  <span className="live-agent-name font-medium text-ink">{agent.name}</span>
+                  {agent.role && <span className="live-agent-role rounded bg-muted px-1.5 py-[1px] font-mono text-[10.5px] text-ink-muted">{t(agent.role)}</span>}
+                  {agent.modelProfile && <span className="font-mono text-[10.5px] text-ink-muted">{agent.modelProfile}</span>}
+                  {(agent.activity || agent.task) && (
+                    <small className="live-agent-task min-w-0 flex-1 truncate text-[11.5px] text-ink-muted" title={agent.task || agent.activity}>
+                      {agent.status === 'running' && agent.activity ? `${t(agent.activity)}${agent.task ? ` · ${agent.task}` : ''}` : (agent.task || t(agent.activity || ''))}
+                    </small>
+                  )}
+                  {agent.currentTool && <span className="live-agent-tool rounded bg-canvas px-1.5 py-[1px] font-mono text-[11px] text-ink-secondary">{agent.currentTool}</span>}
+                  {agent.toolCount > 0 && !agent.currentTool && (
+                    <span className="live-agent-meta font-mono text-[11px] text-ink-muted">{agent.toolCount} {t('tools')}</span>
+                  )}
+                  {agent.durationMs !== undefined && agent.status !== 'running' && (
+                    <span className="live-tool-dur ml-auto font-mono text-[11px] text-ink-muted">
+                      {agent.durationMs < 1000 ? `${agent.durationMs}ms` : `${(agent.durationMs / 1000).toFixed(1)}s`}
+                    </span>
+                  )}
+                  {onInspectAgent && <ChevronRight size={12} className={cn('shrink-0 text-ink-muted', !(agent.durationMs !== undefined && agent.status !== 'running') && 'ml-auto')} aria-hidden="true" />}
+                </>
+              )
+              return onInspectAgent ? (
+                <button type="button" className={rowClass} key={agent.id} onClick={() => onInspectAgent(agent.id)}>
+                  {inner}
+                </button>
+              ) : (
+                <div className={rowClass} key={agent.id}>
+                  {inner}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

@@ -169,6 +169,38 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 		t.Fatalf("reload-workspace did not recreate workspace core while preserving stable ID %q", oldWorkspaceID)
 	}
 
+	delegationOf := func() map[string]any {
+		res := post("/_lune/workspaces/delegation", map[string]any{"id": oldWorkspaceID}, "Bearer lan-secret", "https://10.0.0.5:5173")
+		var body struct {
+			Items []map[string]any `json:"items"`
+		}
+		if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &body) != nil || len(body.Items) != 1 {
+			t.Fatalf("delegation = %d %s", res.Code, res.Body.String())
+		}
+		return body.Items[0]
+	}
+	if got := delegationOf(); got["enabled"] != false || got["configStale"] != false {
+		t.Fatalf("default delegation should be disabled: %#v", got)
+	}
+	configRes := post("/_lune/config/get", map[string]any{"scope": ""}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	var configView struct {
+		Document map[string]any `json:"document"`
+	}
+	if configRes.Code != http.StatusOK || json.Unmarshal(configRes.Body.Bytes(), &configView) != nil || configView.Document == nil {
+		t.Fatalf("config/get before runtime update = %d %s", configRes.Code, configRes.Body.String())
+	}
+	configView.Document["runtime"] = map[string]any{"maxParallelAgents": 6, "maxTeamChildrenPerAgent": 3, "maxTeamDepth": 2}
+	runtimeSave := post("/_lune/config/save", map[string]any{
+		"scope":    "",
+		"document": configView.Document,
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	if runtimeSave.Code != http.StatusOK || !strings.Contains(runtimeSave.Body.String(), `"reloaded":true`) {
+		t.Fatalf("runtime config/save = %d %s", runtimeSave.Code, runtimeSave.Body.String())
+	}
+	if got := delegationOf(); got["enabled"] != true || got["childrenPerAgent"] != float64(3) || got["depth"] != float64(2) || got["parallel"] != float64(6) {
+		t.Fatalf("saved delegation limits were not applied: %#v", got)
+	}
+
 	getRes := post("/_lune/config/get", map[string]any{"scope": ""}, "Bearer lan-secret", "https://10.0.0.5:5173")
 	if getRes.Code != http.StatusOK || strings.Contains(getRes.Body.String(), "sk-db-only") || !strings.Contains(getRes.Body.String(), `"savedKeys":["deepseek"]`) {
 		t.Fatalf("config/get = %d %s", getRes.Code, getRes.Body.String())
@@ -230,6 +262,20 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 	}, "Bearer lan-secret", "https://10.0.0.5:5173")
 	if badPerm.Code != http.StatusBadRequest {
 		t.Fatalf("invalid permission returned %d, want 400", badPerm.Code)
+	}
+
+	// A save that removes the required model config closes the old Core but
+	// cannot claim that a replacement Core was reloaded.
+	setupSave := post("/_lune/config/save", map[string]any{
+		"scope":    "",
+		"document": map[string]any{"runtime": map[string]any{"maxParallelAgents": 2}},
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	var setupResult map[string]any
+	if setupSave.Code != http.StatusOK || json.Unmarshal(setupSave.Body.Bytes(), &setupResult) != nil || setupResult["reloaded"] != false || setupResult["requiresReconnect"] != true || setupResult["needsSetup"] != true {
+		t.Fatalf("incomplete config save was reported as reloaded: %d %s", setupSave.Code, setupSave.Body.String())
+	}
+	if len(ws.listOpened()) != 0 {
+		t.Fatalf("workspace remained open without a model config: %+v", ws.listOpened())
 	}
 	_ = ws.shutdown(t.Context())
 }

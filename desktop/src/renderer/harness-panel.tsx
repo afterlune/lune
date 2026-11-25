@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
-  Activity, Check, ChevronRight, Copy, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play,
+  Activity, Bot, Check, ChevronRight, Copy, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play,
   Plug, RefreshCw, Settings, Square, SquareTerminal, Target, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { RuntimeClient } from './runtime'
 import { WorkspaceFiles, type WorkspaceInfo } from './workspace-files'
+import { AgentInspector } from './agent-inspector'
+import type { AgentSnapshot } from './agent-state'
 import { TerminalPanel } from './terminal-panel'
 import { terminalTargetKey, type TerminalTarget } from './terminal-transport'
 import {
@@ -93,6 +95,9 @@ export function HarnessPanel({
   permissionMode,
   allowedPermissionModes,
   onChangePermissionMode,
+  agents,
+  selectedAgentId,
+  onSelectAgent,
 }: {
   client: RuntimeClient
   workspace: WorkspaceInfo | null
@@ -118,11 +123,18 @@ export function HarnessPanel({
   permissionMode?: string
   allowedPermissionModes?: string[]
   onChangePermissionMode?: (mode: string) => void
+  agents?: AgentSnapshot[]
+  selectedAgentId?: string
+  onSelectAgent?: (id: string) => void
 }) {
   const { t } = useTranslation()
   const has = (cap: string) => capabilities.includes(cap)
-  const tabs: Array<{ id: HarnessTab; label: string; icon: typeof FolderOpen; available: boolean }> = [
+  const subagents = (agents ?? []).filter((a) => !a.isLead)
+  const runningSubagents = subagents.filter((a) => a.status === 'running').length
+  const agentsBadge = runningSubagents > 0 ? String(runningSubagents) : subagents.length > 0 ? String(subagents.length) : ''
+  const tabs: Array<{ id: HarnessTab; label: string; icon: typeof FolderOpen; available: boolean; badge?: string }> = [
     { id: 'files', label: 'Files', icon: FolderOpen, available: has('workspace.files') },
+    { id: 'agents', label: 'Agents', icon: Bot, available: true, badge: agentsBadge || undefined },
     { id: 'goal', label: 'Goal', icon: Target, available: has('goal.manage') && Boolean(activeSession) },
     { id: 'processes', label: 'Processes', icon: Terminal, available: has('command.control') && Boolean(activeSession) },
     { id: 'terminal', label: 'Terminal', icon: SquareTerminal, available: Boolean(terminalTarget) },
@@ -285,6 +297,11 @@ export function HarnessPanel({
               >
                 <Icon size={14} aria-hidden="true" />
                 <span>{t(item.label)}</span>
+                {item.badge && (
+                  <span className="rounded-full bg-muted px-1.5 py-[1px] font-mono text-[10px] leading-tight text-ink-secondary">
+                    {item.badge}
+                  </span>
+                )}
               </button>
             )
           })}
@@ -307,6 +324,13 @@ export function HarnessPanel({
             initialFile={initialFile}
             onInsertPath={onInsertPath}
             embedded
+          />
+        )}
+        {visible && effectiveTab === 'agents' && (
+          <AgentInspector
+            agents={agents ?? []}
+            selectedAgentId={selectedAgentId ?? ''}
+            onSelectAgent={onSelectAgent ?? (() => undefined)}
           />
         )}
         {visible && effectiveTab === 'goal' && activeSession && (

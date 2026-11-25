@@ -34,6 +34,9 @@ type webWorkspaceEntry struct {
 	info      os.FileInfo
 	core      *core.Core
 	host      *runtimehost.Server
+	// stale is true when a saved configuration could not be applied yet
+	// because a task was running. Guarded by webWorkspaces.mu.
+	stale bool
 }
 
 type webWorkspaces struct {
@@ -42,14 +45,15 @@ type webWorkspaces struct {
 	initial     string
 	store       *settings.Store
 
-	lifecycleMu    sync.Mutex
-	mu             sync.Mutex
-	closing        bool
-	needsSetup     bool
-	pendingInitial string
+	lifecycleMu     sync.Mutex
+	mu              sync.Mutex
+	closing         bool
+	needsSetup      bool
+	pendingInitial  string
 	order           []string
 	entries         map[string]*webWorkspaceEntry
 	activeTerminals map[ptyterm.Session]struct{}
+	idleReloads     map[string]bool
 }
 
 type webWorkspaceView struct {
@@ -61,6 +65,46 @@ type webWorkspaceView struct {
 	UpdatedAt     int64                             `json:"updatedAt"`
 	LastOpenedAt  int64                             `json:"lastOpenedAt"`
 	Sessions      []settings.WorkspaceSessionRecord `json:"sessions"`
+}
+
+func coreHasPendingWork(ctx context.Context, client *core.Core) (bool, error) {
+	if client == nil {
+		return false, nil
+	}
+	if len(client.ActiveTasks()) > 0 {
+		return true, nil
+	}
+	const pageSize = 100
+	for offset := 0; ; {
+		sessions, err := client.ListSessionPage(ctx, offset, pageSize, true)
+		if err != nil {
+			return false, err
+		}
+		for _, session := range sessions {
+			runtime, err := client.OpenSessionRuntime(ctx, session.ID)
+			if err != nil {
+				return false, err
+			}
+			state, err := runtime.State(ctx)
+			closeErr := runtime.Close(ctx)
+			if err != nil || closeErr != nil {
+				return false, errors.Join(err, closeErr)
+			}
+			if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || state.Task.Status == core.TaskPaused || len(state.Queue) > 0 {
+				return true, nil
+			}
+		}
+		offset += len(sessions)
+		if len(sessions) < pageSize {
+			return len(client.ActiveTasks()) > 0, nil
+		}
+	}
+}
+
+func workspaceHasPendingWork(client *core.Core) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return coreHasPendingWork(ctx, client)
 }
 
 func (s *webWorkspaces) open(path string) (core.Workspace, error) {
@@ -304,7 +348,9 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if len(entry.core.ActiveTasks()) > 0 {
+	if busy, err := workspaceHasPendingWork(entry.core); err != nil {
+		return err
+	} else if busy {
 		return errWebWorkspaceBusy
 	}
 	if s.store != nil {
@@ -366,6 +412,8 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 
 	s.mu.Lock()
 	var targets []*webWorkspaceEntry
+	originalOrder := append([]string(nil), s.order...)
+	originalInitial := s.initial
 	for _, id := range s.order {
 		entry := s.entries[id]
 		if entry == nil {
@@ -377,31 +425,68 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 	}
 	pendingPath := s.pendingInitial
 	s.mu.Unlock()
+	restoreWorkspaceOrder := func() {
+		s.mu.Lock()
+		seen := make(map[string]bool, len(s.entries))
+		ordered := make([]string, 0, len(s.entries))
+		for _, id := range originalOrder {
+			if s.entries[id] != nil && !seen[id] {
+				ordered = append(ordered, id)
+				seen[id] = true
+			}
+		}
+		for _, id := range s.order {
+			if s.entries[id] != nil && !seen[id] {
+				ordered = append(ordered, id)
+				seen[id] = true
+			}
+		}
+		s.order = ordered
+		if s.entries[originalInitial] != nil {
+			s.initial = originalInitial
+		} else if s.entries[s.initial] == nil {
+			s.initial = ""
+			if len(ordered) > 0 {
+				s.initial = ordered[0]
+			}
+		}
+		s.mu.Unlock()
+	}
 
 	for _, entry := range targets {
-		if len(entry.core.ActiveTasks()) > 0 {
-			return s.listOpened(), false, errWebWorkspaceBusy
-		}
-	}
-	for _, entry := range targets {
-		if err := s.closeWorkspaceLocked(entry.workspace.ID, false); err != nil {
+		busy, err := workspaceHasPendingWork(entry.core)
+		if err != nil {
+			restoreWorkspaceOrder()
 			return s.listOpened(), false, err
+		}
+		if busy {
+			restoreWorkspaceOrder()
+			return s.listOpened(), false, errWebWorkspaceBusy
 		}
 	}
 
 	var opened []core.Workspace
+	reopenedTargets := 0
 	for _, entry := range targets {
+		if err := s.closeWorkspaceLocked(entry.workspace.ID, false); err != nil {
+			restoreWorkspaceOrder()
+			return s.listOpened(), false, err
+		}
 		ws, newEntry, err := s.openLocked(entry.workspace.Path, false)
 		if err != nil && !errors.Is(err, errWebConfigRequired) {
-			return s.listOpened(), len(targets) > 0, err
+			restoreWorkspaceOrder()
+			return s.listOpened(), false, err
 		}
 		if err == nil {
+			reopenedTargets++
 			if newEntry != nil && s.store != nil {
 				_, _ = s.syncEntrySessions(context.Background(), newEntry)
 			}
 			opened = append(opened, ws)
 		}
 	}
+	restoreWorkspaceOrder()
+	pendingOpened := false
 	if len(targets) == 0 && len(s.listOpened()) == 0 && pendingPath != "" {
 		if ws, newEntry, err := s.openLocked(pendingPath, true); err != nil && !errors.Is(err, errWebConfigRequired) {
 			return s.listOpened(), false, err
@@ -410,9 +495,11 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 				_, _ = s.syncEntrySessions(context.Background(), newEntry)
 			}
 			opened = append(opened, ws)
+			pendingOpened = true
 		}
 	}
-	return s.listOpened(), len(targets) > 0 || len(opened) > 0, nil
+	reloaded := pendingOpened || (len(targets) > 0 && reopenedTargets == len(targets))
+	return s.listOpened(), reloaded, nil
 }
 
 func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) {
@@ -423,6 +510,7 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 	needsSetup := s.needsSetup
 	s.mu.Unlock()
 	reloaded := false
+	reloadPending := false
 	var reconnectError string
 	if (len(opened) == 0 && pendingPath != "") || len(opened) > 0 {
 		var err error
@@ -431,16 +519,18 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 			reconnectError = err.Error()
 			reloaded = false
 			opened = s.listOpened()
+			if errors.Is(err, errWebWorkspaceBusy) {
+				reloadPending = true
+				s.deferReload(scope)
+			}
 		}
 	}
-	if reloaded {
-		s.mu.Lock()
-		initial = s.initial
-		needsSetup = s.needsSetup
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	initial = s.initial
+	needsSetup = s.needsSetup
+	s.mu.Unlock()
 	result := map[string]any{
-		"ok": true, "reloaded": reloaded, "requiresReconnect": !reloaded,
+		"ok": true, "reloaded": reloaded, "reloadPending": reloadPending, "requiresReconnect": !reloaded && !reloadPending,
 		"initial": initial, "needsSetup": needsSetup, "workspaces": opened,
 	}
 	if reconnectError != "" {
@@ -700,6 +790,8 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 				result = map[string]any{"ok": true, "sessions": sessions}
 			}
 		}
+	case "/_lune/workspaces/delegation":
+		result = map[string]any{"items": s.delegationViews(input.ID)}
 	case "/_lune/reload-workspace":
 		err = s.reloadWorkspace(input.ID)
 		result = map[string]any{"ok": err == nil}
@@ -924,4 +1016,104 @@ func (s *webWorkspaces) shutdown(ctx context.Context) error {
 		err = errors.Join(err, <-results, <-results)
 	}
 	return err
+}
+
+// webDelegationView reports the delegation limits the running Core actually uses.
+type webDelegationView struct {
+	WorkspaceID      string `json:"workspaceId"`
+	Enabled          bool   `json:"enabled"`
+	Parallel         int    `json:"parallel"`
+	ChildrenPerAgent int    `json:"childrenPerAgent"`
+	Depth            int    `json:"depth"`
+	Profiles         int    `json:"profiles"`
+	ConfigStale      bool   `json:"configStale"`
+}
+
+func (s *webWorkspaces) delegationViews(id string) []webDelegationView {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+
+	s.mu.Lock()
+	type snapshot struct {
+		id    string
+		core  *core.Core
+		stale bool
+	}
+	var snaps []snapshot
+	ids := s.order
+	if id != "" {
+		ids = []string{id}
+	}
+	for _, wid := range ids {
+		if entry := s.entries[wid]; entry != nil {
+			snaps = append(snaps, snapshot{id: wid, core: entry.core, stale: entry.stale})
+		}
+	}
+	s.mu.Unlock()
+	views := make([]webDelegationView, 0, len(snaps))
+	for _, snap := range snaps {
+		limits := snap.core.ExecutionDefaults()
+		views = append(views, webDelegationView{
+			WorkspaceID:      snap.id,
+			Enabled:          limits.MaxTeamChildrenPerAgent > 0 && limits.MaxTeamDepth > 0,
+			Parallel:         snap.core.MaxParallelAgents(),
+			ChildrenPerAgent: limits.MaxTeamChildrenPerAgent,
+			Depth:            limits.MaxTeamDepth,
+			Profiles:         len(snap.core.ListModelProfiles()),
+			ConfigStale:      snap.stale,
+		})
+	}
+	return views
+}
+
+// deferReload marks matching workspaces stale and reloads them once their
+// active, queued, and paused work has finished, so saved limits are applied.
+func (s *webWorkspaces) deferReload(scope string) {
+	canonicalScope := strings.TrimSpace(scope)
+	if canonicalScope != "" {
+		if resolved, err := filepath.EvalSymlinks(canonicalScope); err == nil {
+			canonicalScope = resolved
+		}
+		canonicalScope = filepath.Clean(canonicalScope)
+	}
+	s.mu.Lock()
+	for _, id := range s.order {
+		if entry := s.entries[id]; entry != nil && (canonicalScope == "" || entry.workspace.Path == canonicalScope) {
+			entry.stale = true
+		}
+	}
+	if s.idleReloads == nil {
+		s.idleReloads = map[string]bool{}
+	}
+	if s.idleReloads[canonicalScope] {
+		s.mu.Unlock()
+		return
+	}
+	s.idleReloads[canonicalScope] = true
+	s.mu.Unlock()
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			delete(s.idleReloads, canonicalScope)
+			s.mu.Unlock()
+		}()
+		deadline := time.Now().Add(6 * time.Hour)
+		for time.Now().Before(deadline) {
+			time.Sleep(time.Second)
+			s.mu.Lock()
+			closing := s.closing
+			s.mu.Unlock()
+			if closing {
+				return
+			}
+			if _, reloaded, err := s.reloadAffected(canonicalScope); err == nil {
+				if reloaded {
+					return
+				}
+				return
+			} else if !errors.Is(err, errWebWorkspaceBusy) {
+				return
+			}
+		}
+	}()
 }

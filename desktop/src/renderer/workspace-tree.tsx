@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Folder, FolderOpen, Plus, SquarePen, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { SessionSummary } from './harness-types'
@@ -20,6 +20,28 @@ export interface WorkspaceTreeItem {
 }
 
 const FOLDED_PREVIEW_LIMIT = 5
+const TREE_STATE_KEY = 'lune:workspace-tree:v1'
+
+interface WorkspaceTreeState {
+  expandedIds: string[]
+  showAllIds: string[]
+}
+
+function readTreeState(): WorkspaceTreeState {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(TREE_STATE_KEY) || 'null') as Partial<WorkspaceTreeState> | null
+    return {
+      expandedIds: Array.isArray(saved?.expandedIds) ? saved.expandedIds.filter((id): id is string => typeof id === 'string') : [],
+      showAllIds: Array.isArray(saved?.showAllIds) ? saved.showAllIds.filter((id): id is string => typeof id === 'string') : [],
+    }
+  } catch {
+    return { expandedIds: [], showAllIds: [] }
+  }
+}
+
+function sameIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index])
+}
 
 function workspaceLabel(item: { name?: string; path: string }): string {
   return item.name?.trim() || item.path.split(/[\\/]/).filter(Boolean).at(-1) || item.path
@@ -65,15 +87,38 @@ export function WorkspaceTree({
   renderActiveSessionActions: (session: SessionSummary) => ReactNode
 }) {
   const { t } = useTranslation()
-  const [expandedIds, setExpandedIds] = useState<string[]>(() => (activeWorkspaceId ? [activeWorkspaceId] : []))
-  const [showAllIds, setShowAllIds] = useState<string[]>([])
+  const [expandedIds, setExpandedIds] = useState<string[]>(() => {
+    const saved = readTreeState().expandedIds
+    return activeWorkspaceId && !saved.includes(activeWorkspaceId) ? [...saved, activeWorkspaceId] : saved
+  })
+  const [showAllIds, setShowAllIds] = useState<string[]>(() => readTreeState().showAllIds)
+  const hasSeenWorkspaceList = useRef(workspaces.length > 0)
+  if (workspaces.length > 0) hasSeenWorkspaceList.current = true
 
-  // Keep only the active workspace expanded when switching workspaces so multiple projects never feel crowded.
+  // Workspace expansion belongs to the tree, not the current selection.
   useEffect(() => {
-    if (!activeWorkspaceId) return
-    setExpandedIds([activeWorkspaceId])
-    setShowAllIds([])
-  }, [activeWorkspaceId])
+    // Desktop workspaces load asynchronously. An initial empty list is not a
+    // signal that persisted IDs have been removed.
+    if (!hasSeenWorkspaceList.current) return
+    const available = new Set(workspaces.map((workspace) => workspace.id))
+    setExpandedIds((prev) => {
+      const next = prev.filter((id) => available.has(id))
+      if (activeWorkspaceId && available.has(activeWorkspaceId) && !next.includes(activeWorkspaceId)) next.push(activeWorkspaceId)
+      return sameIds(prev, next) ? prev : next
+    })
+    setShowAllIds((prev) => {
+      const next = prev.filter((id) => available.has(id))
+      return sameIds(prev, next) ? prev : next
+    })
+  }, [workspaces, activeWorkspaceId])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TREE_STATE_KEY, JSON.stringify({ expandedIds, showAllIds }))
+    } catch {
+      // The tree remains usable when browser storage is unavailable.
+    }
+  }, [expandedIds, showAllIds])
 
   const searchTerm = search.trim().toLowerCase()
   const sortedActiveSessions = useMemo(

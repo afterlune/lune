@@ -78,6 +78,24 @@ export function applyUsageEvent(session: SessionSummary, event: RuntimeEvent): S
     cached: cur.cached + nums.cached,
     cache_creation: (cur.cache_creation ?? 0) + nums.cacheCreation,
   }
+  const agentKey = (event.agentId || '').trim() || 'lead'
+  const prevAgent = session.agentUsage?.[agentKey] ?? {
+    requests: 0, measured: 0, input: 0, estimated_input: 0, output: 0, reasoning: 0, total: 0, cached: 0, cache_creation: 0,
+  }
+  const agentUsage = {
+    ...(session.agentUsage ?? {}),
+    [agentKey]: {
+      requests: prevAgent.requests + 1,
+      measured: prevAgent.measured + (nums.available ? 1 : 0),
+      input: prevAgent.input + nums.input,
+      estimated_input: (prevAgent.estimated_input ?? 0) + nums.estimatedInput,
+      output: prevAgent.output + nums.output,
+      reasoning: prevAgent.reasoning + nums.reasoning,
+      total: (prevAgent.total || (prevAgent.input + prevAgent.output)) + nums.total,
+      cached: prevAgent.cached + nums.cached,
+      cache_creation: (prevAgent.cache_creation ?? 0) + nums.cacheCreation,
+    },
+  }
   const record: UsageRecord = {
     request_id: event.requestId,
     request_attempt: event.requestAttempt,
@@ -102,7 +120,7 @@ export function applyUsageEvent(session: SessionSummary, event: RuntimeEvent): S
     model_profile: event.modelProfile,
     model: event.model,
   }
-  return { ...session, sessionUsage, usageRequests: [...(session.usageRequests ?? []), record] }
+  return { ...session, sessionUsage, agentUsage, usageRequests: [...(session.usageRequests ?? []), record] }
 }
 
 export interface LiveContextOverride {

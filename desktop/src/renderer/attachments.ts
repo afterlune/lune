@@ -1,3 +1,5 @@
+import type { HistoryAttachment } from './harness-types'
+
 export type Attachment = { name: string; mediaType: string; data: string; size: number }
 
 const formats: Record<string, string> = {
@@ -11,6 +13,40 @@ const mimeToExt: Record<string, string> = {
   'text/csv': 'csv',
   'image/png': 'png',
   'image/jpeg': 'jpg',
+}
+
+function utf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
+export function restoreHistoryAttachments(files: HistoryAttachment[]): Attachment[] {
+  return files.map((file) => {
+    if (file.image) {
+      const match = /^data:(image\/(?:png|jpeg));base64,([a-zA-Z0-9+/=]+)$/.exec(file.image)
+      if (!match) throw new Error(`Cannot resend ${file.name}: the saved image data is unavailable.`)
+      const mediaType = match[1]
+      const data = match[2]
+      const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+      const size = Math.floor(data.length * 3 / 4) - padding
+      const ext = mimeToExt[mediaType]
+      const name = /\.[a-z0-9]+$/i.test(file.name) ? file.name : `${file.name || 'Image'}.${ext}`
+      return { name, mediaType, data, size }
+    }
+
+    const ext = file.name.includes('.') ? file.name.split('.').at(-1)?.toLowerCase() ?? '' : ''
+    const mediaType = formats[ext]
+    if (!mediaType || mediaType.startsWith('image/')) {
+      throw new Error(`Cannot resend ${file.name}: the saved attachment data is unavailable.`)
+    }
+    const text = file.text ?? ''
+    const data = utf8Base64(text)
+    return { name: file.name, mediaType, data, size: new TextEncoder().encode(text).length }
+  })
 }
 
 export function isSupportedClipboardFile(file: File): boolean {

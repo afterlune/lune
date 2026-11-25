@@ -12,6 +12,7 @@ export const slashCommands: SlashCommandDef[] = [
   { name: '/new', usage: '/new', description: 'Start a new conversation', category: 'session' },
   { name: '/plan', usage: '/plan [prompt]', argHint: '[prompt]', description: 'Toggle Plan mode or send a prompt in Plan mode', capability: 'turn.plan', category: 'execution' },
   { name: '/files', usage: '/files [path]', argHint: '[path]', description: 'Open workspace file tree or preview a file', capability: 'workspace.files', category: 'harness' },
+  { name: '/agents', aliases: ['/agent'], usage: '/agents [name|id]', argHint: '[name|id]', description: 'Inspect main agent and subagents', category: 'harness' },
   { name: '/goal', usage: '/goal [objective|pause|resume|budget N|edit text|clear]', argHint: '[objective | pause | resume | budget N | clear]', description: 'View or manage persistent cross-turn goal', capability: 'goal.manage', category: 'harness' },
   { name: '/ps', usage: '/ps', description: 'List background commands and processes', capability: 'command.control', category: 'harness' },
   { name: '/terminal', aliases: ['/term'], usage: '/terminal', description: 'Open interactive workspace terminal', category: 'harness' },

@@ -23,6 +23,7 @@ import type { ThemePreference } from '../shared/theme'
 import { defaultUiPreferences, type UiPreferences } from '../shared/ui-preferences'
 import { MarkdownContent } from './markdown'
 import { HarnessPanel } from './harness-panel'
+import { deriveAgentSnapshots } from './agent-state'
 import type { TerminalTarget } from './terminal-transport'
 import { TimelineView } from './timeline'
 import {
@@ -33,7 +34,7 @@ import { CommandPalette, type PaletteActionItem, type PaletteWorkspaceItem } fro
 import { matchSlashCommands, parseSlashCommand, slashCommands } from './slash-commands'
 import {
   buildTimeline, objectValue as object, timelineMessages,
-  type Activity, type CommandInfo, type HarnessTab, type HistoryMessage, type LiveAgentRun,
+  type Activity, type CommandInfo, type HarnessTab, type HistoryAttachment, type HistoryMessage, type LiveAgentRun,
   type LiveToolStep, type ModelFailure, type ModelOption, type OptimisticMessage, type Pending,
   type RuntimeEvent, type RuntimeState, type SessionSummary, type TimelineEntry,
   type UserQuestionDraft,
@@ -46,7 +47,7 @@ import {
   RotateCcw, Search, Settings, Shield, ShieldAlert, ShieldCheck, Sparkles,
   Square, SquarePen, Target, Terminal, Trash2, Wifi, WifiOff, X,
 } from 'lucide-react'
-import { downloadMarkdown, isSupportedClipboardFile, readAttachment, validateAttachments, type Attachment } from './attachments'
+import { downloadMarkdown, isSupportedClipboardFile, readAttachment, restoreHistoryAttachments, validateAttachments, type Attachment } from './attachments'
 import { connectRuntime, type RuntimeClient, type RuntimeConnection } from './runtime'
 import {
   backdropOverlay, bannerError, bannerStatus, btnIcon, btnPlain, btnPlainDanger,
@@ -138,6 +139,32 @@ function writeCursor(key: string, value: number): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function runtimeHasPendingWork(state: RuntimeState): boolean {
+  return ['running', 'queued', 'paused'].includes(state.task.status) || state.queue.length > 0
+}
+
+function runtimeHasPausedWork(state: RuntimeState): boolean {
+  return state.task.status === 'paused' || state.queue.some((turn) => turn.status === 'paused')
+}
+
+async function coreHasPendingWork(client: RuntimeClient): Promise<boolean> {
+  const pageSize = 100
+  for (let offset = 0; ; ) {
+    const sessions = await client.request<Array<{ id: string }>>('session.list', {
+      offset,
+      limit: pageSize,
+      includeArchived: true,
+    })
+    for (let start = 0; start < sessions.length; start += 20) {
+      const batch = sessions.slice(start, start + 20)
+      const states = await Promise.all(batch.map((session) => client.request<RuntimeState>('runtime.state', { sessionId: session.id })))
+      if (states.some((state) => runtimeHasPendingWork(normalizeRuntimeState(state)))) return true
+    }
+    offset += sessions.length
+    if (sessions.length < pageSize) return false
+  }
 }
 
 function messageIdentity(message: HistoryMessage): string {
@@ -328,6 +355,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [recoveryClock, setRecoveryClock] = useState(Date.now())
   const [hasActiveStream, setHasActiveStream] = useState(false)
   const [liveAgents, setLiveAgents] = useState<LiveAgentRun[]>([])
+  const [selectedAgentId, setSelectedAgentId] = useState('')
   const [liveTools, setLiveTools] = useState<LiveToolStep[]>([])
   const [latestExecutionId, setLatestExecutionId] = useState('')
   const [activity, setActivity] = useState<Activity[]>([])
@@ -371,6 +399,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [sessionDialog, setSessionDialog] = useState<null | {
     kind: 'rename' | 'delete' | 'rewind'; sessionId: string; value: string; digest?: string; removed?: number; excerpts?: string[]
   }>(null)
+  const [editResendConfirmation, setEditResendConfirmation] = useState<null | { sessionId: string; turns: number; text: string; attachments: HistoryAttachment[] }>(null)
+  const [configReloadPending, setConfigReloadPending] = useState(false)
   const [busy, setBusy] = useState(false)
   const [working, setWorking] = useState(false)
   const [actionError, setActionError] = useState('')
@@ -435,6 +465,81 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const turnBaselineEntryIdRef = useRef('')
   const streamStore = useMemo(() => new StreamStore((active) => setHasActiveStream(active)), [])
   useEffect(() => () => streamStore.dispose(), [streamStore])
+  const subagentStreamBufRef = useRef<Map<string, {
+    agentName?: string
+    activity?: string
+    reasoning: string
+    text: string
+    modelProfile?: string
+    provider?: string
+    model?: string
+  }>>(new Map())
+  const subagentStreamRafRef = useRef<number | null>(null)
+  const flushSubagentStreams = useCallback(() => {
+    if (subagentStreamRafRef.current !== null) {
+      window.cancelAnimationFrame(subagentStreamRafRef.current)
+      subagentStreamRafRef.current = null
+    }
+    const buf = subagentStreamBufRef.current
+    if (buf.size === 0) return
+    const batch = new Map(buf)
+    buf.clear()
+    const now = Date.now()
+    setLiveAgents((agents) => {
+      const next = [...agents]
+      for (const [agentKey, delta] of batch) {
+        const idx = next.findIndex((a) => a.id === agentKey)
+        if (idx >= 0) {
+          const cur = next[idx]
+          const streamStartedAt = cur.streamStartedAt || now
+          const deltaChars = delta.reasoning.length + delta.text.length
+          const streamChars = (cur.streamChars ?? 0) + deltaChars
+          const elapsed = (now - streamStartedAt) / 1000
+          const tokensPerSecond = elapsed >= 0.05 ? Math.max(1, streamChars / 4) / elapsed : cur.tokensPerSecond
+          next[idx] = {
+            ...cur,
+            name: delta.agentName || cur.name,
+            activity: delta.activity || cur.activity,
+            modelProfile: delta.modelProfile || cur.modelProfile,
+            provider: delta.provider || cur.provider,
+            model: delta.model || cur.model,
+            reasoningText: (cur.reasoningText ?? '') + delta.reasoning,
+            outputText: (cur.outputText ?? '') + delta.text,
+            streamStartedAt,
+            streamChars,
+            tokensPerSecond,
+          }
+        } else {
+          const shortName = delta.agentName || agentKey.split('/').at(-1) || 'Subagent'
+          const streamChars = delta.reasoning.length + delta.text.length
+          next.push({
+            id: agentKey,
+            name: shortName,
+            role: 'worker',
+            status: 'running',
+            activity: delta.activity || 'Working',
+            toolCount: 0,
+            tools: [],
+            startedAt: now,
+            modelProfile: delta.modelProfile,
+            provider: delta.provider,
+            model: delta.model,
+            reasoningText: delta.reasoning,
+            outputText: delta.text,
+            streamStartedAt: now,
+            streamChars,
+          })
+        }
+      }
+      return next
+    })
+  }, [])
+  useEffect(() => () => {
+    if (subagentStreamRafRef.current !== null) {
+      window.cancelAnimationFrame(subagentStreamRafRef.current)
+      subagentStreamRafRef.current = null
+    }
+  }, [])
   const sessionRefreshSequence = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
@@ -586,6 +691,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const taskIsPaused = runtime.task.status === 'paused'
   const taskHasQueuedWork = taskIsQueued || runtime.queue.some((item) => item.status === 'queued' || item.status === 'active')
   const sessionBusy = taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0
+
+  useEffect(() => {
+    setEditResendConfirmation(null)
+    setSelectedAgentId('')
+  }, [activeSessionId])
   const modelOption = models.find((option) => option.profile === selectedModel)
   const usageMetrics = useMemo(
     () => deriveSessionUsageMetrics({ session: activeSession, runtime, modelOption, liveContext: liveContextOverride }),
@@ -706,6 +816,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setClient(candidate)
       setConnection(savedOptions)
       setConnectionStatus('connected')
+      setConfigReloadPending(false)
       if (desktop && options.mode === 'local') setConfigReconnectRequired(false)
       reconnectCount.current = 0
       autoReconnect.current = true
@@ -843,7 +954,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setCommands([])
     pendingClearLiveRef.current = false
     streamStore.clear()
+    subagentStreamBufRef.current.clear()
+    if (subagentStreamRafRef.current !== null) {
+      window.cancelAnimationFrame(subagentStreamRafRef.current)
+      subagentStreamRafRef.current = null
+    }
     setLiveAgents([])
+    setSelectedAgentId('')
     setLiveTools([])
     setEditingQueueExecId('')
     setQueueEditDraft('')
@@ -1082,7 +1199,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setRuntime(emptyRuntime)
     setCommands([])
     streamStore.clear()
+    subagentStreamBufRef.current.clear()
+    if (subagentStreamRafRef.current !== null) {
+      window.cancelAnimationFrame(subagentStreamRafRef.current)
+      subagentStreamRafRef.current = null
+    }
     setLiveAgents([])
+    setSelectedAgentId('')
     setLiveTools([])
     setEditingQueueExecId('')
     setQueueEditDraft('')
@@ -1102,11 +1225,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         turnBaselineEntryIdRef.current = lastRawEntryIdRef.current
         if (event.executionId) setLatestExecutionId(event.executionId)
         streamStore.clear()
+        subagentStreamBufRef.current.clear()
         setLiveAgents([])
         setLiveTools([])
         setRuntime((state) => ({ ...state, task: { ...state.task, status: 'running', executionId: event.executionId } }))
         setActivity((items) => [{ id: `${event.taskId}-started`, label: 'Working on your request', detail: event.executionId }, ...items].slice(0, 5))
       } else if (event.kind === 'task_finished' || event.kind === 'task_discarded') {
+        flushSubagentStreams()
         if (!event.taskId && event.status === 'cancelled' && event.executionId) {
           setOptimistic((items) => items.filter((item) => item.executionId !== event.executionId))
         }
@@ -1116,6 +1241,18 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           streamStore.flushImmediate()
           pendingClearLiveRef.current = true
         }
+        const finishedAt = Date.parse(event.occurredAt || '') || Date.now()
+        setLiveAgents((agents) => agents.map((a) =>
+          a.status === 'running'
+            ? {
+                ...a,
+                status: event.status === 'cancelled' ? 'cancelled' : event.status === 'failed' ? 'failed' : 'completed',
+                activity: event.status === 'cancelled' ? 'Cancelled' : event.status === 'failed' ? 'Failed' : 'Completed',
+                currentTool: undefined,
+                durationMs: a.durationMs ?? Math.max(0, finishedAt - a.startedAt),
+              }
+            : a,
+        ))
         setActivity((items) => [{
           id: `${event.executionId}-${event.kind}`,
           label: event.kind === 'task_discarded' ? 'Run discarded' : `Run ${event.status ?? 'finished'}`,
@@ -1138,8 +1275,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             task: event.agentTask,
             teamRunId: event.teamRunId,
             status: 'running',
+            activity: 'Starting',
             toolCount: 0,
+            tools: [],
             startedAt,
+            provider: event.provider,
+            modelProfile: event.modelProfile,
+            model: event.model,
+            contextWindow: event.contextWindow,
+            reasoningText: '',
+            outputText: '',
           },
         ])
         setActivity((items) => [{
@@ -1148,17 +1293,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           detail: event.agentTask,
         }, ...items].slice(0, 5))
       } else if (event.kind === 'agent_finished') {
+        flushSubagentStreams()
         const agentKey = event.agentId || event.agentName || event.taskId || ''
-        const failed = Boolean(event.error) || event.status === 'failed' || event.status === 'cancelled'
+        const cancelledStatus = event.status === 'cancelled'
+        const failed = Boolean(event.error) || event.status === 'failed' || cancelledStatus
         const finishedAt = Date.parse(event.occurredAt || '') || Date.now()
         setLiveAgents((agents) => agents.map((a) =>
           (agentKey && a.id === agentKey) || (event.agentName && a.name === event.agentName)
             ? {
                 ...a,
-                status: failed ? 'failed' : 'completed',
+                status: cancelledStatus ? 'cancelled' : failed ? 'failed' : 'completed',
+                activity: cancelledStatus ? 'Cancelled' : failed ? 'Failed' : 'Completed',
                 currentTool: undefined,
                 durationMs: Math.max(0, finishedAt - a.startedAt),
                 error: event.error,
+                provider: event.provider || a.provider,
+                modelProfile: event.modelProfile || a.modelProfile,
+                model: event.model || a.model,
+                contextWindow: event.contextWindow || a.contextWindow,
               }
             : a,
         ))
@@ -1202,6 +1354,27 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         void refreshAll()
       } else if (event.kind === 'task_queued' || event.kind === 'goal_updated' || event.kind === 'goal_cleared' || event.kind === 'command_started' || event.kind === 'command_finished') {
         void refreshLiveState()
+      } else if (event.kind === 'model_stream' && event.agentId && event.agentId !== 'lead' && (event.stream?.type === 'text_delta' || event.stream?.type === 'reasoning_delta')) {
+        const deltaText = event.stream?.delta ?? ''
+        if (deltaText) {
+          const buf = subagentStreamBufRef.current
+          const existing = buf.get(event.agentId) ?? { reasoning: '', text: '' }
+          if (event.stream.type === 'reasoning_delta') {
+            existing.reasoning += deltaText
+            existing.activity = 'Thinking'
+          } else {
+            existing.text += deltaText
+            existing.activity = 'Generating response'
+          }
+          if (event.agentName) existing.agentName = event.agentName
+          if (event.modelProfile) existing.modelProfile = event.modelProfile
+          if (event.provider) existing.provider = event.provider
+          if (event.model) existing.model = event.model
+          buf.set(event.agentId, existing)
+          if (subagentStreamRafRef.current === null) {
+            subagentStreamRafRef.current = window.requestAnimationFrame(() => flushSubagentStreams())
+          }
+        }
       } else if (event.kind === 'model_stream' && event.stream?.type === 'text_delta' && (event.stream.purpose === 'main' || !event.stream.purpose)) {
         streamStore.appendText(event.stream?.delta ?? '')
       } else if (event.kind === 'model_stream' && event.stream?.type === 'reasoning_delta' && (event.stream.purpose === 'main' || !event.stream.purpose)) {
@@ -1213,18 +1386,29 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         if (event.kind === 'tool_started') {
           streamStore.appendReasoningBreak()
           setLiveTools((steps) => [...steps.filter((s) => s.id !== stepId), { id: stepId, name, status: 'running' as const }].slice(-8))
-          if (event.tool?.agentId) {
-            setLiveAgents((agents) => agents.map((a) =>
-              a.id === event.tool?.agentId ? { ...a, currentTool: name, toolCount: a.toolCount + 1 } : a,
-            ))
+          if (event.tool?.agentId && event.tool.agentId !== 'lead') {
+            setLiveAgents((agents) => agents.map((a) => {
+              if (a.id !== event.tool?.agentId) return a
+              const prevTools = a.tools ?? []
+              const nextTools = [...prevTools.filter((s) => s.id !== stepId), { id: stepId, name, status: 'running' as const }].slice(-40)
+              return { ...a, currentTool: name, toolCount: a.toolCount + 1, activity: `Running ${name}`, tools: nextTools }
+            }))
           }
         } else {
           const durationMs = event.tool?.duration ? Math.round(event.tool.duration / 1_000_000) : undefined
           setLiveTools((steps) => steps.map((s) => s.id === stepId ? { ...s, status: event.tool?.failed ? 'failed' : 'completed', durationMs } : s))
-          if (event.tool?.agentId) {
-            setLiveAgents((agents) => agents.map((a) =>
-              a.id === event.tool?.agentId ? { ...a, currentTool: undefined } : a,
-            ))
+          if (event.tool?.agentId && event.tool.agentId !== 'lead') {
+            setLiveAgents((agents) => agents.map((a) => {
+              if (a.id !== event.tool?.agentId) return a
+              const prevTools = a.tools ?? []
+              const nextTools = prevTools.map((s) => s.id === stepId ? { ...s, status: (event.tool?.failed ? 'failed' : 'completed') as 'failed' | 'completed', durationMs } : s)
+              return {
+                ...a,
+                currentTool: a.currentTool === name ? undefined : a.currentTool,
+                activity: event.tool?.failed ? `Failed ${name}` : `Finished ${name}`,
+                tools: nextTools,
+              }
+            }))
           }
         }
         setActivity((items) => [{
@@ -1534,6 +1718,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         return
       }
     }
+    if (configReloadPending) {
+      setActionError('Settings are being applied after the current work finishes. New turns are paused briefly.')
+      return
+    }
     if (attachments.length && !has('turn.attachments')) {
       setActionError('This Core does not support attachments. Remove them or connect to an updated Core.')
       return
@@ -1596,9 +1784,26 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     } finally { setWorking(false) }
   }
 
-  const rewindAndSubmit = async (turns: number, nextText: string) => {
+  const rewindAndSubmit = async (turns: number, nextText: string, historyAttachments: HistoryAttachment[] = [], confirmBusyWork = false) => {
     const trimmed = nextText.trim()
-    if (!client || !activeSession?.id || !activeSessionId || !trimmed || sessionBusy || working || connectionStatus !== 'connected' || !has('session.rewind')) return
+    const targetSessionId = activeSessionId
+    if (!client || !activeSession?.id || !targetSessionId || working || connectionStatus !== 'connected' || !has('session.rewind')) return
+    if (configReloadPending) {
+      setActionError('Settings are being applied after the current work finishes. Editing and resending is paused briefly.')
+      return
+    }
+    let nextAttachments: Attachment[]
+    try {
+      nextAttachments = restoreHistoryAttachments(historyAttachments)
+      if (!trimmed && nextAttachments.length === 0) return
+      if (nextAttachments.length > 0 && !has('turn.attachments')) {
+        throw new Error('This Core cannot resend the attachments from this message.')
+      }
+      validateAttachments(nextAttachments, Boolean(modelOption?.supportsInputImages))
+    } catch (error) {
+      setActionError(errorMessage(error))
+      return
+    }
     stickToBottomRef.current = true
     smoothButtonUntilRef.current = 0
     setShowScrollBottom(false)
@@ -1606,37 +1811,104 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setActionError('')
     let submittedOptimisticId = ''
     try {
-      const preview = await client.request<{ removed: number; digest: string }>('session.rewindPreview', { sessionId: activeSessionId, turns })
+      let currentRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: targetSessionId }))
+      if (runtimeHasPendingWork(currentRuntime)) {
+        if (!confirmBusyWork) {
+          setEditResendConfirmation({ sessionId: targetSessionId, turns, text: trimmed, attachments: historyAttachments })
+          return
+        }
+
+        if (runtimeHasPausedWork(currentRuntime)) {
+          for (const turn of currentRuntime.queue) {
+            if (turn.status !== 'queued') continue
+            if (!has('turn.cancelQueued')) throw new Error('This Core cannot cancel queued turns before editing this conversation.')
+            await client.request('turn.cancelQueued', { sessionId: targetSessionId, executionId: turn.executionId })
+          }
+          await client.request('turn.discardPaused', { sessionId: targetSessionId })
+          currentRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: targetSessionId }))
+        }
+
+        if (runtimeHasPendingWork(currentRuntime)) {
+          if (!has('turn.cancelPending')) throw new Error('This Core cannot stop active or queued work before editing this conversation.')
+          await client.request('turn.cancelPending', { sessionId: targetSessionId })
+        }
+        currentRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: targetSessionId }))
+        if (runtimeHasPendingWork(currentRuntime)) throw new Error('The current task is still active. Wait for it to stop, then retry the edit.')
+
+        streamingExecution.current = undefined
+        pendingClearLiveRef.current = false
+        streamStore.clear()
+        subagentStreamBufRef.current.clear()
+        if (subagentStreamRafRef.current !== null) {
+          window.cancelAnimationFrame(subagentStreamRafRef.current)
+          subagentStreamRafRef.current = null
+        }
+        setLiveAgents([])
+        setSelectedAgentId('')
+        setLiveTools([])
+        setOptimistic((items) => items.filter((item) => item.sessionId !== targetSessionId))
+        setActivity([])
+        setLatestExecutionId('')
+        setEditingQueueExecId('')
+        setQueueEditDraft('')
+      }
+
+      const preview = await client.request<{ removed: number; digest: string }>('session.rewindPreview', { sessionId: targetSessionId, turns })
       if (!preview.digest || preview.removed === 0) throw new Error('Nothing to rewind.')
-      await client.request('session.rewind', { sessionId: activeSessionId, turns, digest: preview.digest })
+      await client.request('session.rewind', { sessionId: targetSessionId, turns, digest: preview.digest })
       streamingExecution.current = undefined
       pendingClearLiveRef.current = false
       streamStore.clear()
+      subagentStreamBufRef.current.clear()
+      if (subagentStreamRafRef.current !== null) {
+        window.cancelAnimationFrame(subagentStreamRafRef.current)
+        subagentStreamRafRef.current = null
+      }
       setLiveAgents([])
       setLiveTools([])
       setOptimistic([])
-      const postRewindMessages = (await refreshSessionData(client, activeSessionId)) ?? []
-      const identity = JSON.stringify([trimmed, []])
+      const postRewindMessages = (await refreshSessionData(client, targetSessionId)) ?? []
+      const attachmentNames = nextAttachments.map((item) => item.name)
+      const identity = JSON.stringify([trimmed, attachmentNames])
       const baselineCount = postRewindMessages.filter((message) => message.role === 'user' && messageIdentity(message) === identity).length
       const submissionId = crypto.randomUUID()
       submittedOptimisticId = submissionId
       const plan = has('turn.plan') && planMode
-      setOptimistic([{ id: submissionId, role: 'user', text: trimmed, baselineCount, sessionId: activeSessionId }])
+      setOptimistic([{
+        id: submissionId,
+        role: 'user',
+        text: trimmed,
+        baselineCount,
+        sessionId: targetSessionId,
+        attachments: nextAttachments.map((item, index) => ({ ...historyAttachments[index], name: item.name })),
+      }])
       const submitted = await client.request<{ executionId: string }>('turn.submit', {
-        sessionId: activeSessionId,
+        sessionId: targetSessionId,
         submissionId,
         input: trimmed,
         mode: 'start_if_idle',
         ...(plan ? { planMode: true } : {}),
+        ...(nextAttachments.length ? { attachments: nextAttachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
       })
       setOptimistic((items) => items.map((item) => item.id === submissionId ? { ...item, executionId: submitted.executionId } : item))
-      void refreshRuntime(client, activeSessionId).catch((error) => setActionError(errorMessage(error)))
+      void refreshRuntime(client, targetSessionId).catch((error) => setActionError(errorMessage(error)))
     } catch (error) {
       if (submittedOptimisticId) setOptimistic((items) => items.filter((item) => item.id !== submittedOptimisticId))
       setActionError(errorMessage(error))
     } finally {
       setWorking(false)
     }
+  }
+
+  const confirmEditAndResend = () => {
+    const pendingEdit = editResendConfirmation
+    setEditResendConfirmation(null)
+    if (!pendingEdit) return
+    if (pendingEdit.sessionId !== activeSessionId) {
+      setActionError('The conversation changed before the edit was confirmed. Please open the message again.')
+      return
+    }
+    void rewindAndSubmit(pendingEdit.turns, pendingEdit.text, pendingEdit.attachments, true)
   }
 
   const regenerateLastResponse = async () => {
@@ -1646,7 +1918,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setActionError('Cannot regenerate an attachment-only message.')
       return
     }
-    await rewindAndSubmit(1, lastUser.text)
+    await rewindAndSubmit(1, lastUser.text, lastUser.attachments)
   }
 
   const stopRun = async () => {
@@ -1957,9 +2229,41 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (kind !== 'delete' && targetId === activeSessionId) await refreshSessionData(client, targetId)
   })
 
+  const agentSnapshots = useMemo(() => deriveAgentSnapshots({
+    session: activeSession,
+    timeline,
+    liveAgents,
+    runtime,
+    models,
+    taskIsRunning,
+    liveContext: liveContextOverride,
+  }), [activeSession, timeline, liveAgents, runtime, models, taskIsRunning, liveContextOverride])
+
   const openHarnessTab = (tab: HarnessTab) => {
     setHarnessTab(tab)
     setHarnessOpen(true)
+  }
+
+  const openAgentsInspector = (query = '') => {
+    const trimmed = query.trim()
+    if (!trimmed) {
+      setSelectedAgentId('')
+      openHarnessTab('agents')
+      return
+    }
+    const lower = trimmed.toLowerCase()
+    const match = agentSnapshots.find((a) =>
+      a.id.toLowerCase() === lower || a.name.toLowerCase() === lower,
+    ) ?? (() => {
+      const idx = Number(trimmed)
+      return Number.isInteger(idx) && idx >= 1 && idx <= agentSnapshots.length ? agentSnapshots[idx - 1] : undefined
+    })()
+    if (!match) {
+      setActionError(`Agent "${trimmed}" not found. Use /agents to list agents in this session.`)
+      return
+    }
+    setSelectedAgentId(match.id)
+    openHarnessTab('agents')
   }
 
   const insertPathReference = (path: string) => {
@@ -1994,6 +2298,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       case '/files':
         if (args) setRequestedFile(args)
         openHarnessTab('files')
+        return
+      case '/agents':
+        openAgentsInspector(args)
         return
       case '/goal': {
         if (!activeSessionId) return
@@ -2246,6 +2553,63 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     [desktop, managed],
   )
   useEffect(() => {
+    if (!configReloadPending) return
+    let cancelled = false
+    let timer = 0
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => void check(), delay)
+    }
+    const check = async () => {
+      if (cancelled) return
+      if (desktop && connection?.mode === 'local') {
+        const currentClient = clientRef.current
+        if (!currentClient) {
+          schedule(1000)
+          return
+        }
+        try {
+          if (await coreHasPendingWork(currentClient)) {
+            schedule(2500)
+            return
+          }
+        } catch {
+          schedule(5000)
+          return
+        }
+        setApplyingConfig(true)
+        await activateConnection({ mode: 'local', workspace: connection.workspace })
+        if (cancelled) {
+          setApplyingConfig(false)
+          return
+        }
+        if (clientRef.current && clientRef.current !== currentClient) {
+          setConfigReloadPending(false)
+          setConfigReconnectRequired(false)
+        } else {
+          setConfigReloadPending(false)
+          setConfigReconnectRequired(true)
+        }
+        setApplyingConfig(false)
+        return
+      }
+
+      const getStale = settingsAPI.workspaceConfigStale
+      const workspaceId = managed?.workspace.id
+      if (settingsAPI.kind !== 'web-host' || !getStale || !workspaceId) return
+      try {
+        if (await getStale(workspaceId)) schedule(1500)
+        else setConfigReloadPending(false)
+      } catch {
+        schedule(5000)
+      }
+    }
+    schedule(1000)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [activateConnection, configReloadPending, connection, desktop, managed?.workspace.id, settingsAPI])
+  useEffect(() => {
     const move = (event: PointerEvent) => {
       const drag = columnDrag.current
       if (!drag) return
@@ -2355,8 +2719,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const stableImplementPlan = useCallback((executionId: string, planModeChoice: 'same_context' | 'new_context') => {
     timelineCallbacksRef.current.implementPlan(executionId, planModeChoice)
   }, [])
-  const stableEditAndResend = useCallback((turnsFromEnd: number, nextText: string) => (
-    timelineCallbacksRef.current.rewindAndSubmit(turnsFromEnd, nextText)
+  const stableEditAndResend = useCallback((turnsFromEnd: number, nextText: string, attachments?: HistoryAttachment[]) => (
+    timelineCallbacksRef.current.rewindAndSubmit(turnsFromEnd, nextText, attachments)
   ), [])
   const stableRegenerate = useCallback(() => (
     timelineCallbacksRef.current.regenerateLastResponse()
@@ -2454,6 +2818,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       initialTab={settingsTab}
       api={settingsAPI}
       workspace={workspacePath || workspace}
+      workspaceId={managed?.workspace.id}
       theme={theme}
       onThemeChange={setTheme}
       onUiPreferencesChange={setUiPreferences}
@@ -2483,22 +2848,40 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       onReturnToLocal={managed?.onReturnToLocal}
       onSavedConfig={async (savedResult) => {
         if (desktop && connection?.mode === 'local') {
-          if (taskIsRunning || taskHasQueuedWork) {
-            setConfigReconnectRequired(true)
-            return { ...savedResult, requiresReconnect: true }
+          const currentClient = clientRef.current
+          if (currentClient) {
+            try {
+              if (await coreHasPendingWork(currentClient)) {
+                setConfigReloadPending(true)
+                setConfigReconnectRequired(false)
+                return { ...savedResult, reloadPending: true, requiresReconnect: false }
+              }
+            } catch (error) {
+              setConfigReloadPending(false)
+              setConfigReconnectRequired(true)
+              setActionError(`Could not confirm that all workspace tasks are idle: ${errorMessage(error)}`)
+              return { ...savedResult, requiresReconnect: true, reconnectError: errorMessage(error) }
+            }
           }
           await activateConnection({ mode: 'local', workspace: connection.workspace })
           if (clientRef.current) {
+            setConfigReloadPending(false)
             setConfigReconnectRequired(false)
             return { ...savedResult, reloaded: true, requiresReconnect: false }
           }
+          setConfigReloadPending(false)
           setConfigReconnectRequired(true)
           return { ...savedResult, requiresReconnect: true }
         }
-        if (settingsAPI.kind === 'web-host' && savedResult.requiresReconnect) {
+        if (settingsAPI.kind === 'web-host' && savedResult.reloadPending) {
+          setConfigReloadPending(true)
+          setConfigReconnectRequired(false)
+        } else if (settingsAPI.kind === 'web-host' && savedResult.requiresReconnect) {
+          setConfigReloadPending(false)
           setConfigReconnectRequired(true)
           if (savedResult.reconnectError) setActionError(savedResult.reconnectError)
         } else if (settingsAPI.kind === 'web-host' && savedResult.reloaded) {
+          setConfigReloadPending(false)
           setConfigReconnectRequired(false)
         }
         return savedResult
@@ -3167,6 +3550,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           <button className={btnSubtleIcon} onClick={() => setActionError('')} aria-label={t('Dismiss')}><X size={14} /></button>
         </div>
       )}
+      {configReloadPending && (
+        <div className="reconnect-banner settings-reconnect-banner mb-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary" role="status">
+          {t('Settings saved. Changes will apply when the current work finishes.')}
+        </div>
+      )}
       {configReconnectRequired && (
         <div className="reconnect-banner settings-reconnect-banner mb-2 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary" role="status">
           <span>{t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')}</span>
@@ -3636,7 +4024,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               <button
                 type="button"
                 className={composerPillCls}
-                disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'}
+                disabled={working || configReloadPending || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'}
                 onClick={() => void sendMessage(true)}
               >
                 <CornerDownRight size={14} aria-hidden="true" /><span>{t('Add to running task')}</span>
@@ -3657,7 +4045,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             <button
               type="button"
               className="send-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-accent text-accent-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'}
+              disabled={!activeSession || (!draft.trim() && !attachments.length) || working || configReloadPending || connectionStatus !== 'connected'}
               onClick={() => void sendMessage()}
               aria-label={t('Send message')}
               title={t('Send message')}
@@ -3944,6 +4332,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     onImplementPlan={stableImplementPlan}
                     onEditAndResend={stableEditAndResend}
                     onRegenerate={stableRegenerate}
+                    onInspectAgent={(id) => {
+                      setSelectedAgentId(id)
+                      openHarnessTab('agents')
+                    }}
                   />
 
                   {activity.length > 0 && taskIsRunning && !hasActiveStream && liveTools.length === 0 && liveAgents.length === 0 && (
@@ -4110,6 +4502,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           permissionMode={permissionMode}
           allowedPermissionModes={allowedPermissionModes}
           onChangePermissionMode={(mode) => void changePermissionMode(mode as PermissionMode)}
+          agents={agentSnapshots}
+          selectedAgentId={selectedAgentId}
+          onSelectAgent={setSelectedAgentId}
           onRefreshState={async () => {
             if (client && activeSessionId) await refreshSessionData(client, activeSessionId)
           }}
@@ -4170,6 +4565,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         actions={[
           { id: 'new-session', label: 'New conversation', section: 'Actions', run: () => void createSession() },
           ...(has('workspace.files') ? [{ id: 'tab-files', label: 'Open workspace files', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('files') }] : []),
+          { id: 'tab-agents', label: 'Inspect agents', hint: 'Harness', section: 'Actions' as const, run: () => { setSelectedAgentId(''); openHarnessTab('agents') } },
           ...(has('goal.manage') && activeSession ? [{ id: 'tab-goal', label: 'Inspect Goal', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('goal') }] : []),
           ...(has('command.control') && activeSession ? [{ id: 'tab-proc', label: 'Inspect Processes', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('processes') }] : []),
           ...(terminalTarget ? [{ id: 'tab-terminal', label: 'Open terminal', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('terminal') }] : []),
@@ -4224,6 +4620,23 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               >
                 {t(sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview')}
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {editResendConfirmation && (
+        <div className={cn('modal-backdrop', backdropOverlay, 'p-3 sm:p-5')}>
+          <section className="connection-modal w-[min(100%,480px)] rounded-[16px] border border-line bg-canvas p-[18px] sm:p-6 shadow-elev-lg animate-[arrive_.18s_ease_both]" role="dialog" aria-modal="true" aria-labelledby="edit-resend-title">
+            <h2 id="edit-resend-title" className="m-0 mb-2 text-[19px] font-semibold tracking-[-0.02em] text-ink">
+              {t('Replace this message and stop current work?')}
+            </h2>
+            <p className="m-0 text-[13.5px] leading-[1.6] text-ink-secondary">
+              {t('This will stop the current run, cancel queued turns, remove the selected message and everything after it, then resend your edited message.')}
+            </p>
+            {actionError && <div className={cn('form-error mt-3', bannerError)} role="alert">{actionError}</div>}
+            <div className="modal-footer mt-4 flex items-center justify-end gap-2.5 border-t border-line-subtle pt-4 text-[13px]">
+              <button className={btnPlain} disabled={working} onClick={() => setEditResendConfirmation(null)}>{t('Cancel')}</button>
+              <button className={btnPrimaryDanger} disabled={working} onClick={confirmEditAndResend}>{t('Stop & Resend')}</button>
             </div>
           </section>
         </div>

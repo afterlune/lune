@@ -13,10 +13,21 @@ export interface SaveRemoteInput {
 
 export interface SaveConfigResult {
   reloaded?: boolean
+  reloadPending?: boolean
   requiresReconnect?: boolean
   reconnectError?: string
   initial?: string
   needsSetup?: boolean
+}
+
+export interface ActiveDelegationLimits {
+  workspaceId: string
+  enabled: boolean
+  parallel: number
+  childrenPerAgent: number
+  depth: number
+  profiles: number
+  configStale: boolean
 }
 
 export interface FrontendSettingsAPI {
@@ -37,6 +48,8 @@ export interface FrontendSettingsAPI {
   forgetConnection(mode: 'local' | 'remote', address: string): Promise<void>
   getRemoteToken?(url: string): Promise<string>
   saveWorkspacePermission?(workspace: string, mode: string, workspaceId?: string): Promise<void>
+  workspaceConfigStale?(workspaceId: string): Promise<boolean>
+  activeDelegationLimits?(workspaceId: string): Promise<ActiveDelegationLimits | null>
 }
 
 export function createDesktopSettingsAPI(): FrontendSettingsAPI {
@@ -144,6 +157,14 @@ export function createWebHostSettingsAPI(
     },
     saveWorkspacePermission: async (workspace, mode, workspaceId) => {
       await request('workspaces/permission', { id: workspaceId || '', path: workspace, permissionMode: mode })
+    },
+    workspaceConfigStale: async (workspaceId) => {
+      const result = await request<{ items?: Array<{ workspaceId: string; configStale: boolean }> }>('workspaces/delegation', { id: workspaceId })
+      return result.items?.find((item) => item.workspaceId === workspaceId)?.configStale ?? false
+    },
+    activeDelegationLimits: async (workspaceId) => {
+      const result = await request<{ items?: ActiveDelegationLimits[] }>('workspaces/delegation', { id: workspaceId })
+      return result.items?.find((item) => item.workspaceId === workspaceId) ?? null
     },
   }
 }

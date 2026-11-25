@@ -13,6 +13,8 @@ import {
   saveLastSessionSettings,
   sessionDefaultsScopeKey,
 } from '../src/renderer/session-defaults.ts'
+import { deriveAgentSnapshots, parseDelegateTeamHistory } from '../src/renderer/agent-state.ts'
+import { restoreHistoryAttachments } from '../src/renderer/attachments.ts'
 
 test('formatTokenCount handles 0, raw integers, K, M boundary, and rounding', () => {
   assert.equal(formatTokenCount(undefined), '0')
@@ -169,4 +171,138 @@ test('session-defaults handles scoped memory, explicit Auto override, and delete
   assert.equal(resolved.changed, true)
   assert.equal(resolved.nextSettings.modelProfile, 'alpha')
   assert.equal(resolved.nextSettings.reasoningEffort, 'max')
+})
+
+test('parseDelegateTeamHistory & deriveAgentSnapshots aggregate live + historical subagents and usage', () => {
+  const timeline = [
+    { kind: 'message', id: 'u1', role: 'user', text: 'Inspect codebase in parallel' },
+    {
+      kind: 'tool_round',
+      id: 't1',
+      calls: [
+        {
+          callId: 'c1',
+          name: 'delegate_team',
+          arguments: JSON.stringify({
+            tasks: [
+              { id: 'research', model: 'flash', task: 'Read backend handlers' },
+              { id: 'review', model: 'pro', task: 'Check permission checks' },
+            ],
+          }),
+          output: [
+            'Team results:',
+            '',
+            '## research (model flash)',
+            'Context: task-only',
+            'Found 3 HTTP routes.',
+            '',
+            '## review (model pro)',
+            'Context: forked',
+            'Failed: request timed out',
+            'Delegation remaining for this agent: 2; maximum depth: 2.',
+          ].join('\n'),
+        },
+      ],
+    },
+  ]
+
+  const parsed = parseDelegateTeamHistory(timeline)
+  assert.equal(parsed.length, 2)
+  assert.equal(parsed[0].id, 'lead/research')
+  assert.equal(parsed[0].status, 'completed')
+  assert.equal(parsed[0].contextMode, 'task-only')
+  assert.equal(parsed[0].outputText, 'Found 3 HTTP routes.')
+  assert.equal(parsed[1].id, 'lead/review')
+  assert.equal(parsed[1].status, 'failed')
+  assert.equal(parsed[1].error, 'request timed out')
+
+  let session = {
+    id: 'sess-a',
+    updatedAt: '2026-11-25T00:00:00Z',
+    title: 'Agents test',
+    archived: false,
+    settings: { modelProfile: 'pro' },
+    sessionUsage: { requests: 1, measured: 1, input: 10_000, output: 500, reasoning: 0, total: 10_500, cached: 5_000 },
+    agentUsage: {
+      lead: { requests: 1, measured: 1, input: 10_000, output: 500, reasoning: 0, total: 10_500, cached: 5_000 },
+    },
+    usageRequests: [
+      {
+        request: 1,
+        request_id: 'lead-1',
+        available: true,
+        agent_id: 'lead',
+        purpose: 'main',
+        model_profile: 'pro',
+        context_window: 200_000,
+        usage: { input_tokens: 10_000, input_tokens_details: { cached_tokens: 5_000 }, output_tokens: 500, total_tokens: 10_500 },
+      },
+    ],
+  }
+
+  session = applyUsageEvent(session, {
+    kind: 'usage',
+    cursor: 20,
+    requestId: 'sub-1',
+    agentId: 'lead/research',
+    usagePurpose: 'team',
+    modelProfile: 'flash',
+    contextWindow: 128_000,
+    usage: { input_tokens: 32_000, input_tokens_details: { cached_tokens: 16_000 }, output_tokens: 1_200, total_tokens: 33_200 },
+  })
+
+  const snaps = deriveAgentSnapshots({
+    session,
+    timeline,
+    liveAgents: [
+      {
+        id: 'lead/research',
+        name: 'research',
+        role: 'worker',
+        task: 'Read backend handlers',
+        status: 'running',
+        activity: 'Generating response',
+        toolCount: 2,
+        tools: [{ id: 'tool-1', name: 'read_file', status: 'completed', durationMs: 42 }],
+        startedAt: Date.now() - 1000,
+        outputText: 'Live partial answer',
+        tokensPerSecond: 45.2,
+      },
+    ],
+    runtime: { task: { status: 'running', modelProfile: 'pro', contextWindow: 200_000 }, queue: [] },
+    models: [
+      { profile: 'pro', provider: 'deepseek', model: 'deepseek-pro', contextWindow: 200_000 },
+      { profile: 'flash', provider: 'deepseek', model: 'deepseek-flash', contextWindow: 128_000 },
+    ],
+    taskIsRunning: true,
+  })
+
+  assert.equal(snaps.length, 3)
+  assert.equal(snaps[0].isLead, true)
+  assert.equal(snaps[0].totalTokens, 10_500)
+  assert.equal(snaps[1].id, 'lead/research')
+  assert.equal(snaps[1].status, 'running')
+  assert.equal(snaps[1].usedContext, 32_000)
+  assert.equal(snaps[1].contextPct, 25)
+  assert.equal(snaps[1].outputText, 'Live partial answer')
+  assert.equal(snaps[1].toolCount, 2)
+  assert.equal(snaps[2].id, 'lead/review')
+  assert.equal(snaps[2].status, 'failed')
+})
+
+test('restoreHistoryAttachments preserves image bytes and UTF-8 text content', () => {
+  const restored = restoreHistoryAttachments([
+    { name: 'Image', image: 'data:image/png;base64,iVBORw0KGgo=' },
+    { name: 'notes.txt', text: '你好, Lune' },
+  ])
+  assert.deepEqual(restored[0], {
+    name: 'Image.png',
+    mediaType: 'image/png',
+    data: 'iVBORw0KGgo=',
+    size: 8,
+  })
+  assert.equal(restored[1].name, 'notes.txt')
+  assert.equal(restored[1].mediaType, 'text/plain')
+  assert.equal(Buffer.from(restored[1].data, 'base64').toString('utf8'), '你好, Lune')
+  assert.throws(() => restoreHistoryAttachments([{ name: 'archive.zip' }]), /saved attachment data is unavailable/)
 })

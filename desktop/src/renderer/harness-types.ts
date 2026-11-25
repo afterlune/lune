@@ -67,6 +67,8 @@ export interface SessionSummary {
   archived: boolean
   sessionUsage?: UsageTotals
   taskUsage?: UsageTotals
+  agentUsage?: Record<string, UsageTotals>
+  agentUsageComplete?: boolean
   usageRequests?: UsageRecord[]
   settings: {
     modelProfile: string
@@ -203,18 +205,37 @@ export interface RuntimeEvent {
   }
 }
 
+export interface LiveAgentToolStep {
+  id: string
+  name: string
+  status: 'running' | 'completed' | 'failed'
+  durationMs?: number
+  detail?: string
+}
+
 export interface LiveAgentRun {
   id: string
   name: string
   role?: string
   task?: string
   teamRunId?: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  activity?: string
   currentTool?: string
   toolCount: number
+  tools?: LiveAgentToolStep[]
   startedAt: number
   durationMs?: number
   error?: string
+  provider?: string
+  modelProfile?: string
+  model?: string
+  contextWindow?: number
+  reasoningText?: string
+  outputText?: string
+  streamStartedAt?: number
+  streamChars?: number
+  tokensPerSecond?: number
 }
 
 export interface Activity {
@@ -303,7 +324,7 @@ export interface MCPResourceTemplate {
   mimeType?: string
 }
 
-export type HarnessTab = 'files' | 'goal' | 'processes' | 'terminal' | 'mcp' | 'context'
+export type HarnessTab = 'files' | 'agents' | 'goal' | 'processes' | 'terminal' | 'mcp' | 'context'
 
 export interface HistoryAttachment {
   name: string
