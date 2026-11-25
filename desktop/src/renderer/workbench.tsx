@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { Folder, FolderOpen, KeyRound, Plus, Settings, ShieldAlert, X } from 'lucide-react'
 import type { ThemePreference } from '../shared/theme'
 import App from './App'
-import { useHostLanguage, useTranslate, WebLanguage } from './language'
+import { useTranslation } from 'react-i18next'
+import { useHostLanguage } from './language'
 import {
   clearHostToken, detectWebHost, loadLoopbackToken, loadSavedHostToken,
   loadSavedWebConnection, saveHostToken, verifyHostToken,
@@ -11,6 +12,7 @@ import type { RuntimeConnection } from './runtime'
 import { createWebHostSettingsAPI, type FrontendSettingsAPI, type SaveConfigResult } from './settings-api'
 import { SettingsModal } from './settings-modal'
 import { applyTheme } from './theme'
+import { bannerError, btnIcon, btnPlain, btnPrimary, btnPrimaryCompact, btnSecondary, cn, fieldInput } from './ui'
 
 interface Workspace { id: string; path: string }
 interface WorkspacesResponse {
@@ -75,11 +77,11 @@ async function localRequest<T>(credential: string, method: string, params: Recor
 }
 
 export default function WebApp({ theme }: { theme: ThemePreference }) {
-  return <WebLanguage><Workbench theme={theme} /></WebLanguage>
+  return <Workbench theme={theme} />
 }
 
 function Workbench({ theme }: { theme: ThemePreference }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const bindHostLanguage = useHostLanguage()
   const [currentTheme, setTheme] = useState(theme)
   const [initializing, setInitializing] = useState(true)
@@ -225,33 +227,46 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     }
   }
 
-  if (initializing) return <main className="web-launch"><p role="status">{t('Connecting to local Core…')}</p></main>
+  if (initializing) {
+    return (
+      <main className="web-launch flex min-h-screen items-center justify-center p-6 text-center text-[14px] text-ink-secondary">
+        <p role="status">{t('Connecting to local Core…')}</p>
+      </main>
+    )
+  }
 
   if (!credential) {
     if (hostAuthMode === 'token') {
       return (
-        <div className="connect-page">
-          <main className="connect-card">
-            <h1>{t('Unlock Lune Workspace')}</h1>
-            <p className="connect-intro">{t('Enter the access token for this Lune host to access workspaces and SQLite settings.')}</p>
-            <form onSubmit={unlockHost}>
-              <div className="form-field">
+        <div className="connect-page relative flex min-h-screen items-center justify-center bg-canvas px-4 py-16 sm:px-6">
+          <main className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[18px] border border-line bg-canvas px-[34px] pt-9 pb-7 shadow-elev-md animate-[arrive_.25s_ease_both]">
+            <h1 className="m-0 mb-2 text-[20px] font-semibold tracking-[-0.02em] text-ink">{t('Unlock Lune Workspace')}</h1>
+            <p className="connect-intro m-0 mb-5 text-[13.5px] leading-[1.6] text-ink-secondary">
+              {t('Enter the access token for this Lune host to access workspaces and SQLite settings.')}
+            </p>
+            <form onSubmit={unlockHost} className="space-y-4">
+              <div className="form-field flex flex-col gap-1.5 text-[13px] font-medium text-ink-secondary">
                 <label>{t('Access token')}</label>
                 <input
                   type="password"
                   autoFocus
+                  className={fieldInput}
                   value={authInput}
                   onChange={(e) => setAuthInput(e.target.value)}
                   placeholder={t('Paste your Core token')}
                   autoComplete="off"
                 />
-                <label className="remember-token">
-                  <input type="checkbox" checked={authRemember} onChange={(e) => setAuthRemember(e.target.checked)} />
+                <label className="remember-token mt-1 flex cursor-pointer items-center gap-2 text-[12.5px] font-normal text-ink-secondary">
+                  <input type="checkbox" className="accent-ink" checked={authRemember} onChange={(e) => setAuthRemember(e.target.checked)} />
                   {t('Remember token in this browser')}
                 </label>
               </div>
-              {authError && <div className="form-error" role="alert"><ShieldAlert size={16} /><span>{authError}</span></div>}
-              <button type="submit" className="primary-button connect-button" disabled={!authInput.trim()}>
+              {authError && (
+                <div className={cn('form-error flex items-center gap-2', bannerError)} role="alert">
+                  <ShieldAlert size={16} /><span>{authError}</span>
+                </div>
+              )}
+              <button type="submit" className={cn('primary-button connect-button w-full', btnPrimary)} disabled={!authInput.trim()}>
                 <KeyRound size={16} />{t('Connect')}
               </button>
             </form>
@@ -265,12 +280,12 @@ function Workbench({ theme }: { theme: ThemePreference }) {
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws'
 
   const navigation = (
-    <section className="workspace-list" aria-label={t('Workspaces')}>
-      <div className="workspace-list-heading">
+    <section className="workspace-list mb-3 grid gap-0.5 border-b border-line-subtle pb-2.5" aria-label={t('Workspaces')}>
+      <div className="workspace-list-heading flex select-none items-center justify-between px-2.5 pt-0.5 pb-1 text-[11.5px] font-medium text-ink-muted">
         <span>{t('Workspaces')}</span>
         <button
           type="button"
-          className="icon-button"
+          className={cn('icon-button', btnIcon)}
           aria-label={t('Open workspace')}
           title={t('Open workspace')}
           onClick={() => openDirectoryPicker(false)}
@@ -278,34 +293,59 @@ function Workbench({ theme }: { theme: ThemePreference }) {
           <Plus size={16} />
         </button>
       </div>
-      {pairingError && <div className="form-error workspace-list-error" role="alert"><ShieldAlert size={15} /><span>{t(pairingError)}</span></div>}
-      {workspaces.map((item) => (
-        <div className={`workspace-row${!remoteOverride && item.id === selected ? ' selected' : ''}`} key={item.id}>
-          <button
-            type="button"
-            className="workspace-row-btn"
-            aria-pressed={!remoteOverride && item.id === selected}
-            title={item.path}
-            onClick={() => select(item.id)}
-          >
-            <Folder size={15} />
-            <span>{nameOf(item.path)}</span>
-            {activity[item.id] && <small className="workspace-activity"><i aria-hidden="true" />{t(activity[item.id])}</small>}
-          </button>
-          <button
-            type="button"
-            className="workspace-close-btn"
-            aria-label={`${t('Close')} ${nameOf(item.path)}`}
-            title={t('Close workspace')}
-            onClick={(e) => { e.stopPropagation(); void handleCloseWorkspace(item.id) }}
-          >
-            <X size={13} />
-          </button>
+      {pairingError && (
+        <div className={cn('form-error workspace-list-error mx-2 mb-2 flex items-center gap-1.5 px-2 py-[7px] text-[11px]', bannerError)} role="alert">
+          <ShieldAlert size={15} className="shrink-0" /><span>{t(pairingError)}</span>
         </div>
-      ))}
+      )}
+      {workspaces.map((item) => {
+        const isSelected = !remoteOverride && item.id === selected
+        return (
+          <div
+            className={cn(
+              'workspace-row group/ws flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
+              isSelected && 'selected bg-active',
+            )}
+            key={item.id}
+          >
+            <button
+              type="button"
+              className={cn(
+                'workspace-row-btn flex min-h-[33px] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[9px] border-0 bg-transparent px-2.5 py-[5px] text-left text-[13.5px] text-ink',
+                isSelected && 'font-medium',
+              )}
+              aria-pressed={isSelected}
+              title={item.path}
+              onClick={() => select(item.id)}
+            >
+              <Folder size={15} className={cn('shrink-0', isSelected ? 'text-ink' : 'text-ink-secondary')} />
+              <span className="min-w-0 flex-1 truncate">{nameOf(item.path)}</span>
+              {activity[item.id] && (
+                <small className="workspace-activity inline-flex items-center gap-[5px] whitespace-nowrap text-[11.5px] font-normal text-ink-muted">
+                  <i className="h-1.5 w-1.5 rounded-full bg-ink animate-[pulse_1.5s_infinite]" aria-hidden="true" />
+                  {t(activity[item.id])}
+                </small>
+              )}
+            </button>
+            <button
+              type="button"
+              className="workspace-close-btn mr-1 inline-grid h-6 w-6 cursor-pointer place-items-center rounded-[6px] border-0 bg-transparent text-ink-muted opacity-0 transition-[opacity,background,color] duration-120 hover:bg-active hover:text-ink group-hover/ws:opacity-100 group-focus-within/ws:opacity-100"
+              aria-label={`${t('Close')} ${nameOf(item.path)}`}
+              title={t('Close workspace')}
+              onClick={(e) => { e.stopPropagation(); void handleCloseWorkspace(item.id) }}
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )
+      })}
       {!workspaces.length && (
-        <button type="button" className="workspace-row-btn" onClick={() => openDirectoryPicker(true)}>
-          <FolderOpen size={15} /><span>{t('Choose a workspace')}</span>
+        <button
+          type="button"
+          className="workspace-row-btn flex min-h-[33px] w-full cursor-pointer items-center gap-2 rounded-[9px] border-0 bg-transparent px-2.5 py-[5px] text-left text-[13.5px] text-ink hover:bg-hover"
+          onClick={() => openDirectoryPicker(true)}
+        >
+          <FolderOpen size={15} className="shrink-0 text-ink-secondary" /><span className="min-w-0 flex-1 truncate">{t('Choose a workspace')}</span>
         </button>
       )}
     </section>
@@ -366,28 +406,34 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     ))}
 
     {!remoteOverride && activeWorkspaces.length === 0 && (
-      <div className="app-shell web-workbench">
-        <aside className="sidebar" aria-label={t('Conversations')}>
-          <div className="sidebar-scroll-region">{navigation}</div>
-          <div className="sidebar-bottom">
-            <button type="button" className="settings-button" onClick={() => setSetupSettingsOpen(true)}>
+      <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+          <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>
+          <div className="sidebar-bottom mt-2 border-t border-line-subtle pt-2">
+            <button
+              type="button"
+              className="settings-button flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:bg-hover"
+              onClick={() => setSetupSettingsOpen(true)}
+            >
               <Settings size={15} /><span>{t('Settings')}</span>
             </button>
           </div>
         </aside>
-        <main className="chat-area">
-          <div className="empty-stage">
-            <h1 className="empty-headline">{needsSetup ? t('Configure models to start') : t('Choose a workspace')}</h1>
-            <p className="connect-intro">
+        <main className="chat-area flex min-h-0 min-w-0 flex-col bg-canvas">
+          <div className="empty-stage m-auto flex max-w-[560px] flex-col items-center px-6 py-10 text-center">
+            <h1 className="empty-headline m-0 mb-4 text-[26px] font-semibold tracking-[-0.025em] text-ink">
+              {needsSetup ? t('Configure models to start') : t('Choose a workspace')}
+            </h1>
+            <p className="connect-intro m-0 mb-6 text-[13.5px] leading-[1.6] text-ink-secondary">
               {needsSetup
                 ? t('Model providers, API keys, models, and remote connections are stored in your Web SQLite database (TUI/CLI config.json stays separate).')
                 : t('Select a local project directory to start conversations and inspect files.')}
             </p>
-            <div className="suggestion-row">
-              <button type="button" onClick={() => setSetupSettingsOpen(true)}>
+            <div className="suggestion-row flex flex-wrap items-center justify-center gap-2.5">
+              <button type="button" className={btnSecondary} onClick={() => setSetupSettingsOpen(true)}>
                 <Settings size={14} />{t('Open Settings')}
               </button>
-              <button type="button" onClick={() => openDirectoryPicker(true)}>
+              <button type="button" className={btnSecondary} onClick={() => openDirectoryPicker(true)}>
                 <FolderOpen size={14} />{t('Open workspace')}
               </button>
             </div>
@@ -434,7 +480,7 @@ function WorkspacePicker({ initial, credential, close, onOpenSettings, opened }:
   onOpenSettings: () => void
   opened: (workspace: Workspace) => void
 }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const dialog = useRef<HTMLDialogElement>(null)
   const [path, setPath] = useState(initial)
   const [result, setResult] = useState<Directories>()
@@ -482,47 +528,63 @@ function WorkspacePicker({ initial, credential, close, onOpenSettings, opened }:
   }
 
   return (
-    <dialog className="workspace-picker" ref={dialog} aria-labelledby="workspace-picker-title"
-      onCancel={(event) => { if (busy) event.preventDefault() }} onClose={close}>
-      <header>
-        <h2 id="workspace-picker-title">{t('Choose a workspace')}</h2>
-        <button className="icon-button" aria-label={t('Close')} disabled={busy} onClick={close}><X size={18} /></button>
+    <dialog
+      className="workspace-picker m-auto max-h-[calc(100dvh-24px)] w-[min(560px,calc(100vw-24px))] rounded-[16px] border border-line bg-canvas p-6 text-ink shadow-elev-lg"
+      ref={dialog}
+      aria-labelledby="workspace-picker-title"
+      onCancel={(event) => { if (busy) event.preventDefault() }}
+      onClose={close}
+    >
+      <header className="flex items-center justify-between gap-2.5">
+        <h2 id="workspace-picker-title" className="m-0 text-[18px] font-semibold text-ink">{t('Choose a workspace')}</h2>
+        <button className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={close}><X size={18} /></button>
       </header>
-      <form className="workspace-path" onSubmit={submit}>
-        <label>{t('Folder path')}<input autoFocus value={path} disabled={busy} onChange={(event) => setPath(event.target.value)} /></label>
-        <button className="secondary-button" disabled={busy || !path.trim()}>{t('Go')}</button>
+      <form className="workspace-path my-4 flex items-end gap-2" onSubmit={submit}>
+        <label className="grid min-w-0 flex-1 gap-1.5 text-[13px] font-medium text-ink">
+          {t('Folder path')}
+          <input autoFocus className={fieldInput} value={path} disabled={busy} onChange={(event) => setPath(event.target.value)} />
+        </label>
+        <button className={cn('secondary-button h-[36px]', btnSecondary)} disabled={busy || !path.trim()}>{t('Go')}</button>
       </form>
       {Boolean(result?.recent.length) && (
-        <div className="workspace-recent">
+        <div className="workspace-recent my-2 mb-3 flex flex-wrap items-center gap-1 text-[12.5px] text-ink-muted">
           <span>{t('Recent folders')}</span>
           {result!.recent.map((item) => (
-            <button className="plain-button" key={item} title={item} disabled={busy} onClick={() => void browse(item)}>{nameOf(item)}</button>
+            <button className={btnPlain} key={item} title={item} disabled={busy} onClick={() => void browse(item)}>{nameOf(item)}</button>
           ))}
         </div>
       )}
-      <div className="workspace-directory">
-        <div className="workspace-current">
-          <button className="plain-button" disabled={busy || !result?.parent} onClick={() => void browse(result!.parent)}>↑ {t('Parent folder')}</button>
-          <span title={result?.path}>{result?.path}</span>
+      <div className="workspace-directory overflow-hidden rounded-[10px] border border-line">
+        <div className="workspace-current flex items-center gap-2 border-b border-line-subtle bg-subtle px-2.5 py-1.5 font-mono text-[12px] text-ink-secondary">
+          <button className={btnPlain} disabled={busy || !result?.parent} onClick={() => void browse(result!.parent)}>↑ {t('Parent folder')}</button>
+          <span className="truncate" title={result?.path}>{result?.path}</span>
         </div>
-        <div className="workspace-directory-rows" aria-busy={busy}>
+        <div className="workspace-directory-rows max-h-[min(245px,28vh)] min-h-[72px] overflow-auto p-1.5" aria-busy={busy}>
           {result?.directories.map((item) => (
-            <button key={item} disabled={busy} onClick={() => void browse(item)}><Folder size={16} />{nameOf(item)}</button>
+            <button
+              key={item}
+              disabled={busy}
+              className="flex min-h-[33px] w-full cursor-pointer items-center gap-2 rounded-[9px] border-0 bg-transparent px-2.5 py-[5px] text-left text-[13.5px] text-ink transition-[background] duration-120 hover:bg-hover"
+              onClick={() => void browse(item)}
+            >
+              <Folder size={16} className="shrink-0 text-ink-secondary" />
+              <span className="min-w-0 flex-1 truncate">{nameOf(item)}</span>
+            </button>
           ))}
-          {!busy && result?.directories.length === 0 && <p>{t('No subfolders.')}</p>}
+          {!busy && result?.directories.length === 0 && <p className="m-0 pl-2 text-[13px] text-ink-muted">{t('No subfolders.')}</p>}
         </div>
       </div>
       {error && (
-        <div className="form-error" role="alert">
+        <div className={cn('form-error mt-3 flex items-center justify-between gap-2', bannerError)} role="alert">
           <span>{t(error)}</span>
           {requiresSetup && (
-            <button type="button" className="plain-button" onClick={onOpenSettings}>{t('Open Settings')}</button>
+            <button type="button" className={btnPlain} onClick={onOpenSettings}>{t('Open Settings')}</button>
           )}
         </div>
       )}
-      <footer>
-        <button className="plain-button" disabled={busy} onClick={close}>{t('Cancel')}</button>
-        <button className="primary-button compact" disabled={busy || !path.trim()} onClick={() => void confirm()}>
+      <footer className="mt-4 flex items-center justify-end gap-2.5">
+        <button className={btnPlain} disabled={busy} onClick={close}>{t('Cancel')}</button>
+        <button className={cn('primary-button compact', btnPrimaryCompact)} disabled={busy || !path.trim()} onClick={() => void confirm()}>
           <FolderOpen size={16} />{t('Open workspace')}
         </button>
       </footer>

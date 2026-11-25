@@ -298,6 +298,7 @@ export type TimelineEntry =
       kind: 'reasoning'
       id: string
       text: string
+      durationMs?: number
     }
   | {
       kind: 'tool_round'

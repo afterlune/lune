@@ -17,7 +17,7 @@ type UIPreferences struct {
 
 func DefaultUIPreferences() UIPreferences {
 	return UIPreferences{
-		Theme: "system", Language: "en", BodyFontSize: 14, CodeFontSize: 12,
+		Theme: "light", Language: "en", BodyFontSize: 14, CodeFontSize: 12,
 		RunningEnter: "queue", TimelineDetailsExpanded: false, UsageDensity: "comfortable",
 	}
 }

@@ -1,6 +1,7 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
@@ -18,7 +19,7 @@ export default defineConfig({
   renderer: {
     root: resolve(root, 'renderer'),
     base: './',
-    plugins: [react()],
+    plugins: [tailwindcss(), react()],
     resolve: { alias: { '@': resolve(root, 'renderer') } },
     build: { outDir: resolve(currentDirectory, 'out/renderer'), emptyOutDir: true, rolldownOptions: { input: resolve(root, 'renderer/index.html') } },
   },

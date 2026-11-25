@@ -11,7 +11,7 @@ export type UiPreferences = {
 }
 
 export const defaultUiPreferences: UiPreferences = {
-  theme: 'system',
+  theme: 'light',
   language: 'en',
   bodyFontSize: 14,
   codeFontSize: 12,

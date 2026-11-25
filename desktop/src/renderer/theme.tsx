@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, Monitor, Moon, Sun } from 'lucide-react'
 import { isThemePreference, windowColors, type ThemePreference } from '../shared/theme'
-import { useTranslate } from './language'
+import { useTranslation } from 'react-i18next'
 
 const storageKey = 'lune:appearance'
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)')
@@ -9,9 +9,9 @@ const systemDark = window.matchMedia('(prefers-color-scheme: dark)')
 export async function loadTheme(): Promise<ThemePreference> {
   try {
     const stored = window.luneDesktop ? await window.luneDesktop.getTheme() : localStorage.getItem(storageKey)
-    return isThemePreference(stored) ? stored : 'system'
+    return isThemePreference(stored) ? stored : 'light'
   } catch {
-    return 'system'
+    return 'light'
   }
 }
 
@@ -29,7 +29,7 @@ function updateThemeColor(): void {
 systemDark.addEventListener('change', updateThemeColor)
 
 export function ThemePicker({ value, onChange }: { value: ThemePreference; onChange: (value: ThemePreference) => void }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(false)
   const Icon = value === 'system' ? Monitor : value === 'dark' ? Moon : Sun
@@ -54,16 +54,32 @@ export function ThemePicker({ value, onChange }: { value: ThemePreference; onCha
     onChange(next)
   }
 
-  return <div className="appearance">
-    <label className="theme-picker" title={t('Appearance')}>
-      <Icon size={15} aria-hidden="true" />
-      <select aria-label={t('Appearance')} value={value} disabled={saving} onChange={(event) => void choose(event.currentTarget.value)}>
+  return <div className="appearance relative flex">
+    <label
+      className="theme-picker inline-flex h-[32px] cursor-pointer items-center gap-1.5 rounded-[8px] border border-line bg-canvas px-2 text-ink-secondary transition-[border-color,background-color] duration-150 hover:border-line-strong focus-within:border-line-strong"
+      title={t('Appearance')}
+    >
+      <Icon size={15} className="shrink-0" aria-hidden="true" />
+      <select
+        className="min-w-0 flex-1 appearance-none border-0 bg-transparent text-[12.5px] font-medium text-ink outline-none cursor-pointer"
+        aria-label={t('Appearance')}
+        value={value}
+        disabled={saving}
+        onChange={(event) => void choose(event.currentTarget.value)}
+      >
         <option value="system">{t('System')}</option>
         <option value="light">{t('Light')}</option>
         <option value="dark">{t('Dark')}</option>
       </select>
-      <ChevronDown size={13} className="select-chevron" aria-hidden="true" />
+      <ChevronDown size={13} className="select-chevron shrink-0 text-ink-muted pointer-events-none" aria-hidden="true" />
     </label>
-    {error && <span className="theme-error" role="alert">Could not save appearance.</span>}
+    {error && (
+      <span
+        className="theme-error absolute top-[calc(100%+4px)] right-0 z-[6] w-max max-w-[220px] rounded-[7px] border border-danger-border bg-canvas px-2.5 py-1.5 text-[12px] text-danger"
+        role="alert"
+      >
+        Could not save appearance.
+      </span>
+    )}
   </div>
 }

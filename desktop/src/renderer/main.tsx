@@ -1,11 +1,16 @@
 import { createRoot } from 'react-dom/client'
+import { I18nextProvider } from 'react-i18next'
+import i18n from './i18n'
 import App from './App'
 import WebApp from './workbench'
 import { applyTheme, loadTheme } from './theme'
 import './styles.css'
-import './workbench.css'
 
 void loadTheme().then((theme) => {
   applyTheme(theme)
-  createRoot(document.getElementById('root')!).render(window.luneDesktop ? <App initialTheme={theme} /> : <WebApp theme={theme} />)
+  createRoot(document.getElementById('root')!).render(
+    <I18nextProvider i18n={i18n}>
+      {window.luneDesktop ? <App initialTheme={theme} /> : <WebApp theme={theme} />}
+    </I18nextProvider>,
+  )
 })

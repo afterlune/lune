@@ -3,7 +3,8 @@ import { createDesktopSettingsAPI, createRemoteOnlySettingsAPI } from './setting
 import { formatCapacity, SettingsModal, type SettingsTab } from './settings-modal'
 import type { SavedConnection } from '../shared/desktop-settings'
 import { lastLoopbackSession, rememberLoopbackSession } from './loopback'
-import { LanguagePicker, useLanguage, useTranslate } from './language'
+import { useTranslation } from 'react-i18next'
+import { LanguagePicker, useLanguage } from './language'
 import type { ManagedWorkspace, WorkspaceActivity } from './workbench'
 import { type WorkspaceInfo } from './workspace-files'
 import { applyTheme, ThemePicker } from './theme'
@@ -12,6 +13,10 @@ import { defaultUiPreferences, type UiPreferences } from '../shared/ui-preferenc
 import { MarkdownContent } from './markdown'
 import { HarnessPanel } from './harness-panel'
 import { TimelineView } from './timeline'
+import {
+  clearCapturedReasoning, mergeCapturedReasoning, readCapturedReasoning,
+  StreamStore, writeCapturedReasoning,
+} from './stream-store'
 import { CommandPalette, type PaletteActionItem, type PaletteWorkspaceItem } from './command-palette'
 import { matchSlashCommands, parseSlashCommand, slashCommands } from './slash-commands'
 import {
@@ -31,6 +36,11 @@ import {
 } from 'lucide-react'
 import { downloadMarkdown, isSupportedClipboardFile, readAttachment, validateAttachments, type Attachment } from './attachments'
 import { connectRuntime, type RuntimeClient, type RuntimeConnection } from './runtime'
+import {
+  backdropOverlay, bannerError, bannerStatus, btnIcon, btnPlain, btnPlainDanger,
+  btnPrimary, btnPrimaryCompact, btnPrimaryDanger, btnSecondary, btnSubtleIcon,
+  cn, fieldInput, fieldTextarea, popoverSurface, statusPill,
+} from './ui'
 import { filterMentionItems, indexWorkspaceFiles, matchMentionQuery, type MentionItem } from './workspace-mentions'
 
 const sessionPageSize = 50
@@ -242,7 +252,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [privateTheme, setPrivateTheme] = useState(initialTheme)
   const theme = onThemeChange ? initialTheme : privateTheme
   const setTheme = onThemeChange ?? setPrivateTheme
-  const t = useTranslate()
+  const { t } = useTranslation()
   const { setLanguage } = useLanguage()
   const accessibilityId = useId()
   const desktop = Boolean(window.luneDesktop)
@@ -283,8 +293,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [pending, setPending] = useState<Pending[]>([])
   const [modelFailure, setModelFailure] = useState<ModelFailure | null>(null)
   const [recoveryClock, setRecoveryClock] = useState(Date.now())
-  const [streamingReasoning, setStreamingReasoning] = useState('')
-  const [streamingText, setStreamingText] = useState('')
+  const [hasActiveStream, setHasActiveStream] = useState(false)
   const [liveAgents, setLiveAgents] = useState<LiveAgentRun[]>([])
   const [liveTools, setLiveTools] = useState<LiveToolStep[]>([])
   const [latestExecutionId, setLatestExecutionId] = useState('')
@@ -353,12 +362,27 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const initializedClient = useRef<RuntimeClient | null>(null)
   const activeSessionIdRef = useRef(activeSessionId)
   const streamingExecution = useRef<string | undefined>(undefined)
+  const pendingClearLiveRef = useRef(false)
+  const reasoningStartTsRef = useRef(0)
+  const lastRawEntryIdRef = useRef('')
+  const turnBaselineEntryIdRef = useRef('')
+  const streamStore = useMemo(() => new StreamStore((active) => setHasActiveStream(active)), [])
+  useEffect(() => () => streamStore.dispose(), [streamStore])
   const sessionRefreshSequence = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const conversationColumnRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
-  const lastScrollTopRef = useRef(0)
-  const programmaticScrollRef = useRef(false)
+  const initialScrollSnapRef = useRef(true)
+  const virtualScrollTopRef = useRef<number | null>(null)
+  const scrollRafRef = useRef<number | null>(null)
+  const scrollLastTsRef = useRef(0)
+  const smoothButtonUntilRef = useRef(0)
+  const touchStartYRef = useRef<number | null>(null)
+  const [activeTurnId, setActiveTurnId] = useState('')
+  const activeTurnIdRef = useRef('')
+  const activeTurnRafRef = useRef<number | null>(null)
+  const jumpFlashTimerRef = useRef<number | null>(null)
   const mentionCacheRef = useRef<{ key: string; items: MentionItem[]; loaded: boolean }>({ key: '', items: [], loaded: false })
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const drawerRef = useRef<HTMLDialogElement>(null)
@@ -669,8 +693,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setModelFailure(null)
     setRuntime(emptyRuntime)
     setCommands([])
-    setStreamingReasoning('')
-    setStreamingText('')
+    pendingClearLiveRef.current = false
+    streamStore.clear()
     setLiveAgents([])
     setLiveTools([])
     setEditingQueueExecId('')
@@ -680,7 +704,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setShowConnection(true)
     if (active) await active.close(true).catch(() => undefined)
     else if (window.luneDesktop) await window.luneDesktop.close(true).catch(() => undefined)
-  }, [])
+  }, [streamStore])
 
   useEffect(() => () => {
     autoReconnect.current = false
@@ -720,8 +744,49 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     ])
     if (clientRef.current !== targetClient || activeSessionIdRef.current !== sessionId || sequence !== sessionRefreshSequence.current) return
     const entries = buildTimeline(rawHistory)
+    lastRawEntryIdRef.current = entries.at(-1)?.id ?? ''
     const messages = timelineMessages(entries)
-    setTimeline(entries)
+    const normalized = normalizeRuntimeState(nextRuntime)
+    const taskDone = ['completed', 'failed', 'cancelled', 'discarded', 'idle'].includes(normalized.task.status)
+
+    const capturedMap = readCapturedReasoning(sessionId)
+    let capturedMapChanged = false
+    if (pendingClearLiveRef.current || (taskDone && !streamingExecution.current)) {
+      const capturedReasoning = streamStore.getTargetReasoning().trim()
+      if (capturedReasoning) {
+        const baselineIdx = turnBaselineEntryIdRef.current
+          ? entries.findIndex((e) => e.id === turnBaselineEntryIdRef.current)
+          : -1
+        const newEntries = baselineIdx >= 0 ? entries.slice(baselineIdx + 1) : entries
+        const anchor =
+          [...newEntries].reverse().find((e) => e.kind === 'message' && e.role === 'assistant') ??
+          [...newEntries].reverse().find((e) => e.kind === 'tool_round')
+        if (anchor && !Object.hasOwn(capturedMap, anchor.id)) {
+          const durationMs = reasoningStartTsRef.current ? Math.max(0, Date.now() - reasoningStartTsRef.current) : undefined
+          capturedMap[anchor.id] = { text: capturedReasoning, ...(durationMs !== undefined ? { durationMs } : {}) }
+          capturedMapChanged = true
+        }
+      }
+      reasoningStartTsRef.current = 0
+      pendingClearLiveRef.current = false
+      streamStore.clear()
+      setLiveAgents([])
+      setLiveTools([])
+    }
+    if (entries.length > 0) {
+      const validIds = new Set(entries.map((e) => e.id))
+      for (const k of Object.keys(capturedMap)) {
+        if (!validIds.has(k)) {
+          delete capturedMap[k]
+          capturedMapChanged = true
+        }
+      }
+    }
+    if (capturedMapChanged) {
+      writeCapturedReasoning(sessionId, capturedMap)
+    }
+    const mergedEntries = mergeCapturedReasoning(entries, capturedMap)
+    setTimeline(mergedEntries)
     setActiveSession(summary)
     setHistory(messages)
     setOptimistic((items) => {
@@ -740,17 +805,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         return count <= item.baselineCount + alreadySeen
       })
     })
-    const normalized = normalizeRuntimeState(nextRuntime)
     setRuntime(normalized)
     setCommands(nextCommands ?? [])
     if (normalized.task.executionId) setLatestExecutionId(normalized.task.executionId)
     setPending(nextPending ?? [])
     const recoveredFailure = (nextPending ?? []).find((item) => item.kind === 'model_recovery')?.modelRecovery?.failure
     if (recoveredFailure) setModelFailure(recoveredFailure)
-    else if (['completed', 'failed', 'cancelled', 'discarded', 'idle'].includes(normalized.task.status)) setModelFailure(null)
+    else if (taskDone) setModelFailure(null)
     setSessions((items) => items.map((item) => item.id === summary.id ? summary : item))
     return messages
-  }, [])
+  }, [streamStore])
 
   const refreshRuntime = useCallback(async (targetClient: RuntimeClient, sessionId: string) => {
     const canCommands = capabilitiesRef.current.includes('command.control')
@@ -813,12 +877,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setTimeline([])
     setHistory([])
     streamingExecution.current = undefined
+    pendingClearLiveRef.current = false
     setPending([])
     setModelFailure(null)
     setRuntime(emptyRuntime)
     setCommands([])
-    setStreamingReasoning('')
-    setStreamingText('')
+    streamStore.clear()
     setLiveAgents([])
     setLiveTools([])
     setEditingQueueExecId('')
@@ -834,9 +898,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (event.cursor && event.cursor > readCursor(cursorKeyRef.current)) writeCursor(cursorKeyRef.current, event.cursor)
       if (event.kind === 'task_started') {
         streamingExecution.current = event.executionId
+        pendingClearLiveRef.current = false
+        reasoningStartTsRef.current = 0
+        turnBaselineEntryIdRef.current = lastRawEntryIdRef.current
         if (event.executionId) setLatestExecutionId(event.executionId)
-        setStreamingReasoning('')
-        setStreamingText('')
+        streamStore.clear()
         setLiveAgents([])
         setLiveTools([])
         setRuntime((state) => ({ ...state, task: { ...state.task, status: 'running', executionId: event.executionId } }))
@@ -848,10 +914,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         if (event.executionId) setLatestExecutionId(event.executionId)
         if (event.executionId === streamingExecution.current) {
           streamingExecution.current = undefined
-          setStreamingReasoning('')
-          setStreamingText('')
-          setLiveAgents([])
-          setLiveTools([])
+          streamStore.flushImmediate()
+          pendingClearLiveRef.current = true
         }
         setActivity((items) => [{
           id: `${event.executionId}-${event.kind}`,
@@ -926,13 +990,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       } else if (event.kind === 'task_queued' || event.kind === 'goal_updated' || event.kind === 'goal_cleared' || event.kind === 'command_started' || event.kind === 'command_finished') {
         void refreshLiveState()
       } else if (event.kind === 'model_stream' && event.stream?.type === 'text_delta' && (event.stream.purpose === 'main' || !event.stream.purpose)) {
-        setStreamingText((text) => text + (event.stream?.delta ?? ''))
+        streamStore.appendText(event.stream?.delta ?? '')
       } else if (event.kind === 'model_stream' && event.stream?.type === 'reasoning_delta' && (event.stream.purpose === 'main' || !event.stream.purpose)) {
-        setStreamingReasoning((text) => text + (event.stream?.delta ?? ''))
+        if (!reasoningStartTsRef.current) reasoningStartTsRef.current = Date.now()
+        streamStore.appendReasoning(event.stream?.delta ?? '')
       } else if (event.kind === 'tool_started' || event.kind === 'tool_finished') {
         const name = event.tool?.name ?? 'tool'
         const stepId = event.tool?.invocationId || event.tool?.id || `${event.taskId}-${name}`
         if (event.kind === 'tool_started') {
+          streamStore.appendReasoningBreak()
           setLiveTools((steps) => [...steps.filter((s) => s.id !== stepId), { id: stepId, name, status: 'running' as const }].slice(-8))
           if (event.tool?.agentId) {
             setLiveAgents((agents) => agents.map((a) =>
@@ -980,62 +1046,185 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     }
   }, [client, activeSessionId, connection, refreshRuntime, refreshSessionData])
 
+  const stopScrollRaf = useCallback(() => {
+    if (scrollRafRef.current !== null) {
+      window.cancelAnimationFrame(scrollRafRef.current)
+      scrollRafRef.current = null
+    }
+    scrollLastTsRef.current = 0
+    virtualScrollTopRef.current = null
+  }, [])
+
+  useEffect(() => stopScrollRaf, [stopScrollRaf])
+
+  const scheduleScrollCatchup = useCallback((instant = false) => {
+    if (!stickToBottomRef.current) return
+    const el = messagesScrollRef.current
+    if (!el) return
+    if (performance.now() < smoothButtonUntilRef.current) return
+
+    const reducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+    if (instant || reducedMotion) {
+      stopScrollRaf()
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      el.scrollTop = maxTop
+      return
+    }
+
+    if (scrollRafRef.current !== null) return
+
+    const step = (ts: number) => {
+      scrollRafRef.current = null
+      const scroller = messagesScrollRef.current
+      if (!scroller || !stickToBottomRef.current || performance.now() < smoothButtonUntilRef.current) {
+        scrollLastTsRef.current = 0
+        virtualScrollTopRef.current = null
+        return
+      }
+
+      // Unified Read phase
+      const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+      const domTop = scroller.scrollTop
+      const cur = virtualScrollTopRef.current !== null && Math.abs(virtualScrollTopRef.current - domTop) <= 2
+        ? virtualScrollTopRef.current
+        : domTop
+      const gap = maxTop - cur
+
+      if (gap <= 0.5) {
+        if (gap > 0) scroller.scrollTop = maxTop
+        scrollLastTsRef.current = 0
+        virtualScrollTopRef.current = null
+        return
+      }
+
+      if (gap > 640) {
+        scroller.scrollTop = maxTop
+        scrollLastTsRef.current = 0
+        virtualScrollTopRef.current = null
+        return
+      }
+
+      const dt = scrollLastTsRef.current ? Math.min(0.05, Math.max(0.001, (ts - scrollLastTsRef.current) / 1000)) : 1 / 120
+      scrollLastTsRef.current = ts
+      const alpha = 1 - Math.exp(-18 * dt)
+      const next = Math.min(maxTop, cur + Math.max(0.5, gap * alpha))
+
+      // Unified Write phase
+      virtualScrollTopRef.current = next
+      scroller.scrollTop = next
+      scrollRafRef.current = window.requestAnimationFrame(step)
+    }
+
+    scrollRafRef.current = window.requestAnimationFrame(step)
+  }, [stopScrollRaf])
+
+  const syncActiveTurn = useCallback(() => {
+    if (activeTurnRafRef.current !== null) return
+    activeTurnRafRef.current = window.requestAnimationFrame(() => {
+      activeTurnRafRef.current = null
+      const scroller = messagesScrollRef.current
+      if (!scroller) return
+      const nodes = scroller.querySelectorAll<HTMLElement>('article.message.user[data-turn-id]')
+      if (nodes.length === 0) return
+
+      let nextId = nodes[0].dataset.turnId ?? ''
+      const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 24
+      if (nearBottom) {
+        nextId = nodes[nodes.length - 1].dataset.turnId ?? nextId
+      } else {
+        const scrollerRect = scroller.getBoundingClientRect()
+        const threshold = scroller.scrollTop + Math.min(180, scroller.clientHeight * 0.3)
+        for (const node of nodes) {
+          const offsetTop = node.getBoundingClientRect().top - scrollerRect.top + scroller.scrollTop
+          if (offsetTop <= threshold) {
+            nextId = node.dataset.turnId ?? nextId
+          } else {
+            break
+          }
+        }
+      }
+      if (nextId && nextId !== activeTurnIdRef.current) {
+        activeTurnIdRef.current = nextId
+        setActiveTurnId(nextId)
+      }
+    })
+  }, [])
+
+  const jumpToTurn = useCallback((turnId: string) => {
+    const scroller = messagesScrollRef.current
+    if (!scroller) return
+    stickToBottomRef.current = false
+    smoothButtonUntilRef.current = 0
+    stopScrollRaf()
+    const target = scroller.querySelector<HTMLElement>(`article.message.user[data-turn-id="${CSS.escape(turnId)}"]`)
+    if (!target) return
+    const top = Math.max(0, target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 16)
+    scroller.scrollTo({ top, behavior: 'smooth' })
+    activeTurnIdRef.current = turnId
+    setActiveTurnId(turnId)
+    scroller.querySelectorAll('.turn-jump-flash').forEach((el) => el.classList.remove('turn-jump-flash'))
+    target.classList.add('turn-jump-flash')
+    if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current)
+    jumpFlashTimerRef.current = window.setTimeout(() => {
+      target.classList.remove('turn-jump-flash')
+      jumpFlashTimerRef.current = null
+    }, 800)
+    if (scroller.scrollHeight > scroller.clientHeight + 60) {
+      setShowScrollBottom(true)
+    }
+  }, [stopScrollRaf])
+
+  useEffect(() => () => {
+    if (activeTurnRafRef.current !== null) window.cancelAnimationFrame(activeTurnRafRef.current)
+    if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current)
+  }, [])
+
   const handleMessagesScroll = useCallback(() => {
     const el = messagesScrollRef.current
     if (!el) return
-    const currentTop = el.scrollTop
-    const distance = el.scrollHeight - currentTop - el.clientHeight
-    const nearBottom = distance <= 80
-    if (nearBottom) {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distance <= 48) {
       stickToBottomRef.current = true
+      smoothButtonUntilRef.current = 0
       setShowScrollBottom(false)
-      programmaticScrollRef.current = false
-    } else if (!programmaticScrollRef.current && currentTop < lastScrollTopRef.current - 2) {
-      stickToBottomRef.current = false
-      setShowScrollBottom(el.scrollHeight > el.clientHeight + 80)
     } else if (!stickToBottomRef.current) {
-      setShowScrollBottom(el.scrollHeight > el.clientHeight + 80)
+      setShowScrollBottom(el.scrollHeight > el.clientHeight + 60)
     }
-    lastScrollTopRef.current = currentTop
-  }, [])
+    syncActiveTurn()
+  }, [syncActiveTurn])
 
   const scrollToBottom = useCallback((smooth = true) => {
     stickToBottomRef.current = true
     setShowScrollBottom(false)
     const el = messagesScrollRef.current
     if (el) {
+      stopScrollRaf()
       if (smooth) {
+        smoothButtonUntilRef.current = performance.now() + 450
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
       } else {
-        programmaticScrollRef.current = true
-        el.scrollTop = el.scrollHeight
-        lastScrollTopRef.current = el.scrollTop
-        window.requestAnimationFrame(() => { programmaticScrollRef.current = false })
+        smoothButtonUntilRef.current = 0
+        el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
       }
     } else {
       bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
     }
-  }, [])
+  }, [stopScrollRaf])
 
   useEffect(() => {
     stickToBottomRef.current = true
-    lastScrollTopRef.current = 0
-    programmaticScrollRef.current = false
+    initialScrollSnapRef.current = true
+    smoothButtonUntilRef.current = 0
+    stopScrollRaf()
     setShowScrollBottom(false)
-  }, [activeSessionId])
+    activeTurnIdRef.current = ''
+    setActiveTurnId('')
+  }, [activeSessionId, stopScrollRaf])
 
   useEffect(() => {
     if (!stickToBottomRef.current) return
-    const el = messagesScrollRef.current
-    if (el) {
-      programmaticScrollRef.current = true
-      el.scrollTop = el.scrollHeight
-      lastScrollTopRef.current = el.scrollTop
-      window.requestAnimationFrame(() => { programmaticScrollRef.current = false })
-    } else {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-    }
-  }, [timeline.length, optimistic.length, streamingText, streamingReasoning, liveTools.length, pending.length])
+    scheduleScrollCatchup(false)
+  }, [timeline.length, optimistic.length, liveTools.length, liveAgents.length, pending.length, scheduleScrollCatchup])
 
   const connectFromForm = async () => {
     setBusy(true)
@@ -1084,8 +1273,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setLiveTools([])
       setEditingQueueExecId('')
       setQueueEditDraft('')
-      setStreamingReasoning('')
-      setStreamingText('')
+      pendingClearLiveRef.current = false
+      streamStore.clear()
       setLatestExecutionId('')
       setSlashNotice('')
       setRowMenuId('')
@@ -1116,6 +1305,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const submissionMode = canRetry ? existing.mode : requestedMode
     submissionRetry.current = { key, id: submissionId, mode: submissionMode }
     stickToBottomRef.current = true
+    smoothButtonUntilRef.current = 0
     setShowScrollBottom(false)
     setWorking(true)
     setActionError('')
@@ -1157,6 +1347,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const trimmed = nextText.trim()
     if (!client || !activeSession?.id || !activeSessionId || !trimmed || sessionBusy || working || connectionStatus !== 'connected' || !has('session.rewind')) return
     stickToBottomRef.current = true
+    smoothButtonUntilRef.current = 0
     setShowScrollBottom(false)
     setWorking(true)
     setActionError('')
@@ -1166,8 +1357,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (!preview.digest || preview.removed === 0) throw new Error('Nothing to rewind.')
       await client.request('session.rewind', { sessionId: activeSessionId, turns, digest: preview.digest })
       streamingExecution.current = undefined
-      setStreamingReasoning('')
-      setStreamingText('')
+      pendingClearLiveRef.current = false
+      streamStore.clear()
       setLiveAgents([])
       setLiveTools([])
       setOptimistic([])
@@ -1427,6 +1618,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       await client.request('session.setTitle', { sessionId: targetId, title: value })
     } else if (kind === 'delete') {
       await client.request('session.delete', { sessionId: targetId })
+      clearCapturedReasoning(targetId)
       if (targetId === activeSessionId) {
         const next = (await client.request<SessionSummary[]>('session.list', { limit: 1 }))[0]
         const selected = next ?? await client.request<SessionSummary>('session.create')
@@ -1787,6 +1979,126 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     }, 1000)
     return () => window.clearInterval(timer)
   }, [modelFailure])
+
+  const isEmptyConversation = displayedMessages.length === 0 && timeline.length === 0 && !hasActiveStream && liveTools.length === 0 && pending.length === 0 && !taskIsPaused && runtime.queue.length === 0
+  const queuedItems = useMemo(
+    () => runtime.queue.filter((item) => item.status === 'queued'),
+    [runtime.queue],
+  )
+  const queuedExecutionIds = useMemo(
+    () => new Set(queuedItems.map((item) => item.executionId).filter(Boolean)),
+    [queuedItems],
+  )
+  const sessionOptimistic = useMemo(
+    () => optimistic.filter((item) => item.sessionId === activeSessionId && (!item.executionId || !queuedExecutionIds.has(item.executionId))),
+    [optimistic, activeSessionId, queuedExecutionIds],
+  )
+  const userTurns = useMemo(() => {
+    const list: Array<{ id: string; label: string }> = []
+    for (const entry of timeline) {
+      if (entry.kind === 'message' && entry.role === 'user') {
+        const raw = entry.text.replace(/\s+/g, ' ').trim()
+        const fallback = entry.attachments?.[0]?.name || t('Attachment')
+        list.push({ id: entry.id, label: raw || fallback })
+      }
+    }
+    for (const msg of sessionOptimistic) {
+      if (msg.role === 'user') {
+        const raw = msg.text.replace(/\s+/g, ' ').trim()
+        list.push({ id: msg.id, label: raw || msg.attachments?.[0]?.name || t('Attachment') })
+      }
+    }
+    return list
+  }, [timeline, sessionOptimistic, t])
+  const resolvedActiveTurnId = activeTurnId || userTurns[userTurns.length - 1]?.id || ''
+  const outlineTicks = useMemo(() => {
+    if (userTurns.length <= 24) return userTurns
+    const maxTicks = 24
+    const activeIdx = Math.max(0, userTurns.findIndex((item) => item.id === resolvedActiveTurnId))
+    const picked = new Set<number>([0, userTurns.length - 1, activeIdx])
+    const step = (userTurns.length - 1) / (maxTicks - 1)
+    for (let i = 0; i < maxTicks && picked.size < maxTicks; i++) {
+      picked.add(Math.round(i * step))
+    }
+    return [...picked].sort((a, b) => a - b).map((idx) => userTurns[idx])
+  }, [userTurns, resolvedActiveTurnId])
+  useEffect(() => {
+    syncActiveTurn()
+  }, [userTurns.length, activeSessionId, syncActiveTurn])
+  const timelineCallbacksRef = useRef({ implementPlan, rewindAndSubmit, regenerateLastResponse })
+  timelineCallbacksRef.current = { implementPlan, rewindAndSubmit, regenerateLastResponse }
+  const stableImplementPlan = useCallback((executionId: string, planModeChoice: 'same_context' | 'new_context') => {
+    timelineCallbacksRef.current.implementPlan(executionId, planModeChoice)
+  }, [])
+  const stableEditAndResend = useCallback((turnsFromEnd: number, nextText: string) => (
+    timelineCallbacksRef.current.rewindAndSubmit(turnsFromEnd, nextText)
+  ), [])
+  const stableRegenerate = useCallback(() => (
+    timelineCallbacksRef.current.regenerateLastResponse()
+  ), [])
+
+  const isChatMounted = Boolean(client) && !showConnection && !isEmptyConversation
+  useEffect(() => {
+    if (!isChatMounted) return
+    const scroller = messagesScrollRef.current
+    const column = conversationColumnRef.current
+    if (!scroller || !column) return
+
+    const detachSticky = () => {
+      stickToBottomRef.current = false
+      smoothButtonUntilRef.current = 0
+      stopScrollRaf()
+      if (scroller.scrollHeight > scroller.clientHeight + 60) {
+        setShowScrollBottom(true)
+      }
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) detachSticky()
+    }
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartYRef.current = e.touches[0]?.clientY ?? null
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY
+      if (touchStartYRef.current !== null && y !== undefined && y > touchStartYRef.current + 4) {
+        detachSticky()
+      }
+    }
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.clientX >= scroller.getBoundingClientRect().right - 16) {
+        detachSticky()
+      }
+    }
+
+    scroller.addEventListener('wheel', onWheel, { passive: true })
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true })
+    scroller.addEventListener('touchmove', onTouchMove, { passive: true })
+    scroller.addEventListener('pointerdown', onPointerDown, { passive: true })
+
+    let observer: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => {
+        if (stickToBottomRef.current) {
+          const snap = initialScrollSnapRef.current
+          if (snap) initialScrollSnapRef.current = false
+          scheduleScrollCatchup(snap)
+        } else {
+          setShowScrollBottom(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 60)
+        }
+      })
+      observer.observe(column)
+      observer.observe(scroller)
+    }
+
+    return () => {
+      scroller.removeEventListener('wheel', onWheel)
+      scroller.removeEventListener('touchstart', onTouchStart)
+      scroller.removeEventListener('touchmove', onTouchMove)
+      scroller.removeEventListener('pointerdown', onPointerDown)
+      observer?.disconnect()
+    }
+  }, [isChatMounted, scheduleScrollCatchup, stopScrollRaf])
   const openWorkspaceAsFileTree = async (openFilesAfter = true) => {
     if (managed?.openDirectoryPicker) {
       managed.openDirectoryPicker(openFilesAfter)
@@ -1887,128 +2199,284 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   }
   const connectDisabled = busy || (mode === 'local' ? !workspace.trim() : !remoteURL.trim() || (!token.trim() && !canReuseDesktopRemote))
 
+  const statusDotCls =
+    connectionStatus === 'connected'
+      ? 'bg-ok'
+      : connectionStatus === 'reconnecting'
+        ? 'bg-warn animate-[pulse_1.2s_infinite]'
+        : 'bg-ink-faint'
+  const formFieldCls = 'form-field flex flex-col gap-1.5 text-[13px] font-medium text-ink-secondary mb-3.5'
+  const compactTabsCls = 'connection-tabs compact-tabs flex gap-1 rounded-[9px] border border-line-subtle bg-muted p-1 mb-4'
+  const tabBtnCls = (active: boolean) =>
+    cn(
+      'flex flex-1 min-h-[34px] cursor-pointer items-center justify-center gap-1.5 rounded-[7px] border-0 px-3 text-[13px] font-medium transition-[background,color,box-shadow] duration-120',
+      active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
+    )
+
   if (managed && (!client || showConnection)) {
-    return <div className="web-workbench web-workbench-loading">
-      <header className="workbench-top"><span className="workbench-brand"><Sparkles size={19} /> Lune</span><LanguagePicker /></header>
-      <aside className="sidebar" aria-label={t('Conversations')}>
-        <div className="sidebar-scroll-region">{managed.navigation}</div>
-        <div className="sidebar-bottom">
-          <div className="core-card">
-            <div className="core-card-icon"><Code2 size={15} /></div>
-            <div className="core-card-copy">
-              <strong>{managed.isRemoteOverride ? t('Remote Core') : t('Local Core')}</strong>
-              <span>{workspacePath || workspaceName || 'Workspace'}</span>
+    return (
+      <div className="web-workbench web-workbench-loading grid h-dvh min-h-0 grid-cols-1 grid-rows-[52px_auto_minmax(0,1fr)] bg-canvas md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-[52px_minmax(0,1fr)]">
+        <header className="workbench-top col-span-full flex items-center gap-3 border-b border-line-subtle bg-canvas px-[18px]">
+          <span className="workbench-brand flex items-center gap-2 text-[15px] font-semibold tracking-[-0.02em] text-ink">
+            <Sparkles size={19} /> Lune
+          </span>
+          <div className="ml-auto"><LanguagePicker /></div>
+        </header>
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+          <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{managed.navigation}</div>
+          <div className="sidebar-bottom mt-2 flex flex-col gap-2 border-t border-line-subtle pt-2">
+            <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-canvas px-2.5 py-2">
+              <div className="core-card-icon grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={15} /></div>
+              <div className="core-card-copy min-w-0 flex-1">
+                <strong className="block truncate text-[12px] font-semibold text-ink">{managed.isRemoteOverride ? t('Remote Core') : t('Local Core')}</strong>
+                <span className="block truncate font-mono text-[11px] text-ink-muted">{workspacePath || workspaceName || 'Workspace'}</span>
+              </div>
+              <span className={cn('connection-light h-2 w-2 shrink-0 rounded-full', connectionStatus, statusDotCls)} />
             </div>
-            <span className={`connection-light ${connectionStatus}`} />
+            <button
+              type="button"
+              className="settings-button flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:bg-hover"
+              onClick={() => {
+                setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
+                setSettingsOpen(true)
+              }}
+            >
+              <Settings size={15} />
+              <span>{t('Settings')}</span>
+            </button>
           </div>
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => {
-              setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
-              setSettingsOpen(true)
-            }}
-          >
-            <Settings size={15} />
-            <span>{t('Settings')}</span>
-          </button>
-        </div>
-      </aside>
-      <main className="web-launch">
-        {connectionError || actionError ? <><p role="alert">{t(connectionError || actionError)}</p><button className="secondary-button"
-          onClick={() => void activateConnection(managed.options)}>{t('Retry')}</button></> :
-          <p role="status">{t('Connecting to local Core…')}</p>}
-      </main>
-      {settingsDialogNode}
-    </div>
+        </aside>
+        <main className="web-launch m-auto flex flex-col items-center gap-3 p-6 text-center text-[14px] text-ink-secondary">
+          {connectionError || actionError ? (
+            <>
+              <p className="m-0 text-danger" role="alert">{t(connectionError || actionError)}</p>
+              <button className={btnSecondary} onClick={() => void activateConnection(managed.options)}>{t('Retry')}</button>
+            </>
+          ) : (
+            <p className="m-0" role="status">{t('Connecting to local Core…')}</p>
+          )}
+        </main>
+        {settingsDialogNode}
+      </div>
+    )
   }
   if (!client || showConnection) {
     if (!desktop && autoRestoring && !connectionError) {
-      return <div className="connect-page"><main className="web-launch"><p role="status">{t('Connecting…')}</p></main></div>
+      return (
+        <div className="connect-page relative flex min-h-screen items-center justify-center bg-canvas px-6 py-20">
+          <main className="web-launch m-auto p-6 text-center text-[14px] text-ink-secondary"><p role="status">{t('Connecting…')}</p></main>
+        </div>
+      )
     }
     return (
-      <div className="connect-page">
-        <div className="connect-top"><div className="brand-mark"><Sparkles size={16} /></div><span>Lune</span>{desktop && <span className="build-label">CORE CLIENT</span>}</div>
-        <div className="connect-appearance">{!desktop && <LanguagePicker />}<ThemePicker value={theme} onChange={setTheme} /></div>
-        <main className="connect-card" onKeyDown={(event) => {
-          if (event.key === 'Enter' && !connectDisabled && event.target instanceof HTMLInputElement && event.target.type !== 'checkbox') {
-            event.preventDefault()
-            void connectFromForm()
-          }
-        }}>
-          {desktop ? <><div className="eyebrow"><span className="eyebrow-dot" /> YOUR WORKSPACE, YOUR CORE</div>
-            <h1>A quiet place<br />to think with AI.</h1>
-            <p className="connect-intro">Connect to a Lune Core. Your sessions, tools, and permissions stay with the Core you choose.</p></> :
-            <h1>{t('Link a remote Core')}</h1>}
-          {desktop && <div className="connection-tabs">
-            <button className={mode === 'local' ? 'active' : ''} onClick={() => setMode('local')}><Laptop size={16} /> This computer</button>
-            <button className={mode === 'remote' ? 'active' : ''} onClick={() => setMode('remote')}><Radio size={16} /> Remote Core</button>
-          </div>}
-          {desktop && savedConnections.length > 0 && <div className="recent-connections" aria-label="Saved connections">
-            {savedConnections.filter((saved) => saved.mode === mode).map((saved) =>
-              <div className="recent-connection" key={saved.address}>
-                <button type="button" className="secondary-button" title={saved.address} disabled={busy}
-                  onClick={() => void useSavedConnection(saved)}>{saved.mode === 'local' ? saved.address.split(/[\\/]/).filter(Boolean).at(-1) ?? saved.address : saved.name}</button>
-                <button type="button" className="icon-button" aria-label={`Remove saved connection ${saved.name}`} disabled={busy}
-                  onClick={() => void window.luneDesktop?.forgetConnection(saved.mode, saved.address).then(reloadSavedConnections).catch((error) => setConnectionError(errorMessage(error)))}><X size={13} /></button>
-              </div>)}
-          </div>}
-          {mode === 'local' && desktop ? <div className="form-field">
-            <label>Workspace folder</label>
-            <div className="input-with-action"><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" /><button onClick={() => void chooseWorkspace()} aria-label="Browse folders"><FolderOpen size={17} /></button></div>
-            <small>Core uses your desktop settings. Sessions are stored in this workspace’s <code>.lune</code> folder.</small>
-          </div> : <>
-            <div className="form-field">
-              <label>{t("Core WebSocket URL")}</label>
-              <input value={remoteURL} onChange={(event) => setRemoteURL(event.target.value)} placeholder={`wss://${typeof location !== 'undefined' && location.host ? location.host : 'core.example.com:18092'}/v1/runtime`} autoCapitalize="none" spellCheck={false} />
+      <div className="connect-page relative flex min-h-screen items-center justify-center bg-canvas px-4 pt-[72px] pb-[60px] sm:px-6 sm:pt-[88px] sm:pb-[72px]">
+        <div className="connect-top absolute top-[18px] left-4 z-[1] flex items-center gap-2.5 text-[16px] font-semibold tracking-[-0.02em] text-ink sm:top-6 sm:left-8">
+          <div className="brand-mark grid h-[30px] w-[30px] place-items-center rounded-[8px] bg-accent text-accent-fg"><Sparkles size={16} /></div>
+          <span>Lune</span>
+          {desktop && <span className="build-label ml-1 rounded-[5px] border border-line px-[7px] py-0.5 font-mono text-[11px] font-medium tracking-[0.06em] text-ink-muted">CORE CLIENT</span>}
+        </div>
+        <div className="connect-appearance absolute top-[18px] right-4 z-[2] flex items-center gap-2 sm:top-6 sm:right-8">
+          {!desktop && <LanguagePicker />}<ThemePicker value={theme} onChange={setTheme} />
+        </div>
+        <main
+          className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[16px] border border-line bg-canvas px-5 pt-[26px] pb-[22px] shadow-elev-md animate-[arrive_.25s_ease_both] sm:rounded-[18px] sm:px-[34px] sm:pt-9 sm:pb-7"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !connectDisabled && event.target instanceof HTMLInputElement && event.target.type !== 'checkbox') {
+              event.preventDefault()
+              void connectFromForm()
+            }
+          }}
+        >
+          {desktop ? (
+            <>
+              <div className="eyebrow mb-2 flex items-center gap-2 font-mono text-[11px] tracking-[0.06em] text-ink-muted">
+                <span className="eyebrow-dot h-1.5 w-1.5 rounded-full bg-ink" /> YOUR WORKSPACE, YOUR CORE
+              </div>
+              <h1 className="m-0 mb-2 text-[24px] font-semibold leading-[1.2] tracking-[-0.03em] text-ink">A quiet place<br />to think with AI.</h1>
+              <p className="connect-intro m-0 mb-5 text-[13.5px] leading-[1.6] text-ink-secondary">
+                Connect to a Lune Core. Your sessions, tools, and permissions stay with the Core you choose.
+              </p>
+            </>
+          ) : (
+            <h1 className="m-0 mb-4 text-[21px] font-semibold tracking-[-0.025em] text-ink">{t('Link a remote Core')}</h1>
+          )}
+          {desktop && (
+            <div className={compactTabsCls}>
+              <button type="button" className={tabBtnCls(mode === 'local')} onClick={() => setMode('local')}><Laptop size={16} /> This computer</button>
+              <button type="button" className={tabBtnCls(mode === 'remote')} onClick={() => setMode('remote')}><Radio size={16} /> Remote Core</button>
             </div>
-            <div className="form-field">
-              <label>{t("Access token")}</label>
-              <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("Paste your Core token")} autoComplete="off" />
-              {!desktop && <label className="remember-token"><input type="checkbox" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> {t("Remember token in this browser")}</label>}
-              {!desktop && <small><LockKeyhole size={13} />{t("Automatically reconnects on refresh. Uncheck to keep for this tab only.")}</small>}
-              {desktop && <label className="remember-token"><input type="checkbox" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> Remember token with system credentials</label>}
+          )}
+          {desktop && savedConnections.length > 0 && (
+            <div className="recent-connections mb-3.5 flex flex-wrap gap-1.5" aria-label="Saved connections">
+              {savedConnections.filter((saved) => saved.mode === mode).map((saved) => (
+                <div className="recent-connection inline-flex items-center gap-1" key={saved.address}>
+                  <button type="button" className={btnSecondary} title={saved.address} disabled={busy} onClick={() => void useSavedConnection(saved)}>
+                    {saved.mode === 'local' ? saved.address.split(/[\\/]/).filter(Boolean).at(-1) ?? saved.address : saved.name}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn('icon-button', btnIcon, 'h-7 w-7')}
+                    aria-label={`Remove saved connection ${saved.name}`}
+                    disabled={busy}
+                    onClick={() => void window.luneDesktop?.forgetConnection(saved.mode, saved.address).then(reloadSavedConnections).catch((error) => setConnectionError(errorMessage(error)))}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
             </div>
-            {desktop && <label className="form-field">Connection name<input value={remoteName} onChange={(event) => setRemoteName(event.target.value)} maxLength={120} /></label>}
-          </>}
-          {desktop && mode === 'local' && <button type="button" className="secondary-button" disabled={busy} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>{t('Settings')}</button>}
-          {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
-          {(connectionError || pairingError) && <div className="form-error" role="alert"><ShieldAlert size={16} /> <span>{t(connectionError || pairingError || '')}</span></div>}
-          {!connectionError && connectionStatus === 'reconnecting' && <div className="form-status"><LoaderCircle size={15} className="spin" /> The connection dropped. Lune is trying again automatically.</div>}
-          <button className="primary-button connect-button" disabled={connectDisabled} onClick={() => void connectFromForm()}>
+          )}
+          {mode === 'local' && desktop ? (
+            <div className={formFieldCls}>
+              <label>Workspace folder</label>
+              <div className="input-with-action flex items-center gap-2">
+                <input className={cn(fieldInput, 'flex-1')} value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Choose a workspace folder" />
+                <button type="button" className={btnSecondary} onClick={() => void chooseWorkspace()} aria-label="Browse folders"><FolderOpen size={17} /></button>
+              </div>
+              <small className="text-[11.5px] font-normal text-ink-muted">
+                Core uses your desktop settings. Sessions are stored in this workspace’s <code className="font-mono">.lune</code> folder.
+              </small>
+            </div>
+          ) : (
+            <>
+              <div className={formFieldCls}>
+                <label>{t('Core WebSocket URL')}</label>
+                <input
+                  className={fieldInput}
+                  value={remoteURL}
+                  onChange={(event) => setRemoteURL(event.target.value)}
+                  placeholder={`wss://${typeof location !== 'undefined' && location.host ? location.host : 'core.example.com:18092'}/v1/runtime`}
+                  autoCapitalize="none"
+                  spellCheck={false}
+                />
+              </div>
+              <div className={formFieldCls}>
+                <label>{t('Access token')}</label>
+                <input
+                  type="password"
+                  className={fieldInput}
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                  placeholder={t('Paste your Core token')}
+                  autoComplete="off"
+                />
+                {!desktop && (
+                  <label className="remember-token mt-1 flex cursor-pointer items-center gap-2 text-[12.5px] font-normal text-ink-secondary">
+                    <input type="checkbox" className="accent-ink" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> {t('Remember token in this browser')}
+                  </label>
+                )}
+                {!desktop && (
+                  <small className="mt-1 flex items-center gap-1.5 text-[11.5px] font-normal text-ink-muted">
+                    <LockKeyhole size={13} className="shrink-0" />
+                    {t('Automatically reconnects on refresh. Uncheck to keep for this tab only.')}
+                  </small>
+                )}
+                {desktop && (
+                  <label className="remember-token mt-1 flex cursor-pointer items-center gap-2 text-[12.5px] font-normal text-ink-secondary">
+                    <input type="checkbox" className="accent-ink" checked={rememberToken} onChange={(event) => setRememberToken(event.target.checked)} /> Remember token with system credentials
+                  </label>
+                )}
+              </div>
+              {desktop && (
+                <label className={formFieldCls}>Connection name
+                  <input className={fieldInput} value={remoteName} onChange={(event) => setRemoteName(event.target.value)} maxLength={120} />
+                </label>
+              )}
+            </>
+          )}
+          {desktop && mode === 'local' && (
+            <button type="button" className={cn(btnSecondary, 'mb-3')} disabled={busy} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>
+              {t('Settings')}
+            </button>
+          )}
+          {connectionNotice && <div className={cn('form-status mb-3', bannerStatus)} role="status">{connectionNotice}</div>}
+          {(connectionError || pairingError) && (
+            <div className={cn('form-error mb-3 flex items-center gap-2', bannerError)} role="alert">
+              <ShieldAlert size={16} className="shrink-0" /> <span>{t(connectionError || pairingError || '')}</span>
+            </div>
+          )}
+          {!connectionError && connectionStatus === 'reconnecting' && (
+            <div className={cn('form-status mb-3 flex items-center gap-2', bannerStatus)}>
+              <LoaderCircle size={15} className="spin" /> The connection dropped. Lune is trying again automatically.
+            </div>
+          )}
+          <button className={cn('primary-button connect-button w-full', btnPrimary)} disabled={connectDisabled} onClick={() => void connectFromForm()}>
             {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}{t(busy ? 'Connecting…' : 'Connect to Core')}
           </button>
-          {desktop && connection && <button className="forget-connection" onClick={() => void disconnect()}>{t("Disconnect")}</button>}
-          <div className="connect-footnote"><span><LockKeyhole size={13} /> End-to-end transport security</span><span>Runtime Protocol v1</span></div>
+          {desktop && connection && (
+            <button className={cn(btnPlain, 'mt-2 w-full')} onClick={() => void disconnect()}>{t('Disconnect')}</button>
+          )}
+          <div className="connect-footnote mt-4 flex items-center justify-between gap-2 border-t border-line-subtle pt-3 text-[11px] sm:text-[11.5px] text-ink-muted">
+            <span className="inline-flex items-center gap-1.5"><LockKeyhole size={13} /> End-to-end transport security</span>
+            <span className="font-mono">Runtime Protocol v1</span>
+          </div>
         </main>
         {settingsDialogNode}
-        {desktop && <div className="connect-bottom"><span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span></div>}
+        {desktop && (
+          <div className="connect-bottom absolute right-4 bottom-[18px] left-4 flex items-center justify-between font-mono text-[10.5px] tracking-[0.06em] text-ink-faint sm:right-8 sm:bottom-6 sm:left-8 sm:text-[11px]">
+            <span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span>
+          </div>
+        )}
       </div>
     )
   }
 
   const showSearchBlock = searchOpen || Boolean(search.trim()) || showArchived || compactLayout
 
+  const rowActionBtnCls =
+    'row-action-btn inline-grid h-6 w-6 cursor-pointer place-items-center rounded-[6px] border-0 bg-transparent p-0 text-ink-muted transition-[background,color] duration-120 hover:not-disabled:bg-active hover:not-disabled:text-ink disabled:opacity-40'
+  const popoverBtnCls =
+    'flex w-full cursor-pointer items-center gap-2 rounded-[7px] border-0 bg-transparent px-[9px] py-1.5 text-left text-[12.5px] text-ink hover:not-disabled:bg-hover disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:shrink-0 [&_svg]:text-ink-secondary'
+
   const sessionNavigation = <>
-    <button className="new-chat-button" disabled={working} onClick={() => void createSession()}><SquarePen size={16} aria-hidden="true" /><span>{t("New conversation")}</span></button>
-    {showSearchBlock && <div className="sidebar-search-block">
-      <div className="session-search">
-        <Search size={14} aria-hidden="true" />
-        <input autoFocus={searchOpen && !compactLayout} aria-label={t("Search conversations")} value={search} disabled={working} onChange={(event) => setSearch(event.target.value)} placeholder={t(serverSearch ? 'Search titles and messages' : 'Find a conversation')} />
-        {search && <button type="button" className="subtle-icon" aria-label={t('Dismiss')} onClick={() => setSearch('')}><X size={13} /></button>}
+    <button
+      className="new-chat-button mb-2.5 flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-left text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:not-disabled:bg-hover disabled:opacity-45"
+      disabled={working}
+      onClick={() => void createSession()}
+    >
+      <SquarePen size={16} aria-hidden="true" /><span>{t('New conversation')}</span>
+    </button>
+    {showSearchBlock && (
+      <div className="sidebar-search-block mb-2.5">
+        <div className="session-search flex h-[34px] items-center gap-2 rounded-[9px] border border-line bg-canvas px-2.5 text-ink-muted">
+          <Search size={14} aria-hidden="true" />
+          <input
+            autoFocus={searchOpen && !compactLayout}
+            className="min-w-0 w-full border-0 bg-transparent p-0 text-[13px] text-ink outline-none placeholder:text-ink-faint"
+            aria-label={t('Search conversations')}
+            value={search}
+            disabled={working}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t(serverSearch ? 'Search titles and messages' : 'Find a conversation')}
+          />
+          {search && (
+            <button type="button" className={btnSubtleIcon} aria-label={t('Dismiss')} onClick={() => setSearch('')}><X size={13} /></button>
+          )}
+        </div>
+        <div className="sidebar-filter-row flex items-center justify-between px-1 pt-1.5 pb-0.5">
+          <label className="archived-toggle flex cursor-pointer select-none items-center gap-[7px] text-[12px] text-ink-muted">
+            <input type="checkbox" className="accent-ink" checked={showArchived} disabled={working} onChange={(event) => setShowArchived(event.target.checked)} />
+            {t('Include archived')}
+          </label>
+          <button
+            className={btnSubtleIcon}
+            title={t('Refresh sessions')}
+            aria-label={t('Refresh sessions')}
+            disabled={working || listLoading}
+            onClick={() => setListRevision((revision) => revision + 1)}
+          >
+            <RefreshCw size={13} />
+          </button>
+        </div>
       </div>
-      <div className="sidebar-filter-row">
-        <label className="archived-toggle"><input type="checkbox" checked={showArchived} disabled={working} onChange={(event) => setShowArchived(event.target.checked)} />{t("Include archived")}</label>
-        <button className="subtle-icon" title={t("Refresh sessions")} aria-label={t("Refresh sessions")} disabled={working || listLoading} onClick={() => setListRevision((revision) => revision + 1)}><RefreshCw size={13} /></button>
-      </div>
-    </div>}
+    )}
     {managed?.navigation ?? (desktop && (
-      <section className="workspace-list" aria-label={t('Workspaces')}>
-        <div className="workspace-list-heading">
+      <section className="workspace-list mb-3 grid gap-0.5 border-b border-line-subtle pb-2.5" aria-label={t('Workspaces')}>
+        <div className="workspace-list-heading flex select-none items-center justify-between px-2.5 pt-0.5 pb-1 text-[11.5px] font-medium text-ink-muted">
           <span>{t('Workspaces')}</span>
           <button
             type="button"
-            className="icon-button"
+            className={cn('icon-button', btnIcon)}
             aria-label={t('Open workspace')}
             title={t('Open workspace')}
             onClick={() => void openWorkspaceAsFileTree(false)}
@@ -2020,10 +2488,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           const selectedWs = connection?.mode === 'local' && connection.workspace === item.address
           const label = item.address.split(/[\\/]/).filter(Boolean).at(-1) || item.address
           return (
-            <div className={`workspace-row${selectedWs ? ' selected' : ''}`} key={item.address}>
+            <div className={cn('workspace-row flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover', selectedWs && 'selected bg-active')} key={item.address}>
               <button
                 type="button"
-                className="workspace-row-btn"
+                className={cn('workspace-row-btn flex min-h-[33px] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[9px] border-0 bg-transparent px-2.5 py-[5px] text-left text-[13.5px] text-ink', selectedWs && 'font-medium')}
                 aria-pressed={selectedWs}
                 title={item.address}
                 disabled={busy}
@@ -2033,30 +2501,51 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                   void activateConnection({ mode: 'local', workspace: item.address })
                 }}
               >
-                <Folder size={15} />
-                <span>{label}</span>
+                <Folder size={15} className="shrink-0 text-ink-secondary" />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
               </button>
             </div>
           )
         })}
       </section>
     ))}
-    <div className="session-list" aria-busy={listLoading}>
+    <div className="session-list min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-0.5" aria-busy={listLoading}>
       {sessionGroups.map((group) => (
-        <div className="session-group" key={group.label}>
-          <div className="session-group-label">{t(group.label)}</div>
+        <div className="session-group mb-3" key={group.label}>
+          <div className="session-group-label px-2.5 pt-1 pb-1 text-[11px] font-medium text-ink-muted">{t(group.label)}</div>
           {group.items.map((session) => {
             const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
             const menuOpen = rowMenuId === session.id
+            const selected = session.id === activeSessionId
             return (
-              <div key={session.id} className={`session-row${session.id === activeSessionId ? ' selected' : ''}${menuOpen ? ' menu-open' : ''}`}>
-                <button className="session-item" disabled={working} aria-current={session.id === activeSessionId ? 'true' : undefined} onClick={() => chooseSession(session.id)}>
-                  <span>{preview}{session.archived ? t(' (archived)') : ''}</span>
+              <div
+                key={session.id}
+                className={cn(
+                  'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
+                  selected && 'selected bg-active',
+                  menuOpen && 'menu-open bg-hover',
+                )}
+              >
+                <button
+                  className={cn(
+                    'session-item m-0 min-h-[34px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent px-2.5 py-1.5 text-left text-[13.5px] text-ink',
+                    selected && 'font-medium',
+                  )}
+                  disabled={working}
+                  aria-current={selected ? 'true' : undefined}
+                  onClick={() => chooseSession(session.id)}
+                >
+                  <span className="block truncate">{preview}{session.archived ? t(' (archived)') : ''}</span>
                 </button>
-                <div className="session-row-actions">
+                <div
+                  className={cn(
+                    'session-row-actions flex items-center gap-[1px] pr-1 transition-opacity duration-120',
+                    menuOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none group-hover/srow:opacity-100 group-hover/srow:pointer-events-auto group-focus-within/srow:opacity-100 group-focus-within/srow:pointer-events-auto',
+                  )}
+                >
                   <button
                     type="button"
-                    className="row-action-btn"
+                    className={rowActionBtnCls}
                     aria-label={t('Rename')}
                     title={t('Rename')}
                     disabled={working}
@@ -2070,7 +2559,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                   </button>
                   <button
                     type="button"
-                    className="row-action-btn danger"
+                    className={cn(rowActionBtnCls, 'hover:not-disabled:bg-danger-bg hover:not-disabled:text-danger')}
                     aria-label={t('Delete…')}
                     title={t('Delete…')}
                     disabled={working || (session.id === activeSessionId && sessionBusy)}
@@ -2082,10 +2571,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                   >
                     <Trash2 size={13} aria-hidden="true" />
                   </button>
-                  <div className="session-row-menu">
+                  <div className="session-row-menu relative">
                     <button
                       type="button"
-                      className="row-action-btn"
+                      className={rowActionBtnCls}
                       aria-label={t('Conversation actions')}
                       title={t('Conversation actions')}
                       aria-expanded={menuOpen}
@@ -2098,33 +2587,38 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                       <MoreHorizontal size={13} aria-hidden="true" />
                     </button>
                     {menuOpen && (
-                      <div className="session-row-popover" role="menu">
-                        <button type="button" disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
+                      <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-composer p-[5px] shadow-elev-md" role="menu">
+                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
                           <Pencil size={13} aria-hidden="true" /><span>{t('Rename')}</span>
                         </button>
-                        <button type="button" disabled={working} onClick={() => { setRowMenuId(''); changeArchived(session) }}>
+                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); changeArchived(session) }}>
                           <Archive size={13} aria-hidden="true" /><span>{t(session.archived ? 'Unarchive' : 'Archive')}</span>
                         </button>
                         {has('session.fork') && (
-                          <button type="button" disabled={working || (session.id === activeSessionId && taskIsRunning)} onClick={() => { setRowMenuId(''); forkSession(session.id) }}>
+                          <button type="button" className={popoverBtnCls} disabled={working || (session.id === activeSessionId && taskIsRunning)} onClick={() => { setRowMenuId(''); forkSession(session.id) }}>
                             <GitFork size={13} aria-hidden="true" /><span>{t('Fork conversation')}</span>
                           </button>
                         )}
-                        <button type="button" disabled={working} onClick={() => { setRowMenuId(''); saveConversation(session) }}>
+                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); saveConversation(session) }}>
                           <Download size={13} aria-hidden="true" /><span>{t('Export Markdown')}</span>
                         </button>
                         {session.id === activeSessionId && has('session.compact') && (
-                          <button type="button" disabled={sessionBusy || working} onClick={() => { setRowMenuId(''); compactSession() }}>
+                          <button type="button" className={popoverBtnCls} disabled={sessionBusy || working} onClick={() => { setRowMenuId(''); compactSession() }}>
                             <Minimize2 size={13} aria-hidden="true" /><span>{t('Compact context')}</span>
                           </button>
                         )}
                         {session.id === activeSessionId && has('session.rewind') && (
-                          <button type="button" disabled={sessionBusy || working || !history.length} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rewind', sessionId: session.id, value: '1' }) }}>
+                          <button type="button" className={popoverBtnCls} disabled={sessionBusy || working || !history.length} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rewind', sessionId: session.id, value: '1' }) }}>
                             <RotateCcw size={13} aria-hidden="true" /><span>{t('Rewind…')}</span>
                           </button>
                         )}
-                        <hr className="menu-divider" />
-                        <button type="button" className="danger" disabled={working || (session.id === activeSessionId && sessionBusy)} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' }) }}>
+                        <hr className="menu-divider my-1 h-[1px] border-0 bg-line-subtle" />
+                        <button
+                          type="button"
+                          className={cn(popoverBtnCls, 'text-danger hover:not-disabled:bg-danger-bg [&_svg]:text-danger')}
+                          disabled={working || (session.id === activeSessionId && sessionBusy)}
+                          onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' }) }}
+                        >
                           <Trash2 size={13} aria-hidden="true" /><span>{t('Delete…')}</span>
                         </button>
                       </div>
@@ -2136,22 +2630,26 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           })}
         </div>
       ))}
-      {moreSessions && <button className="plain-button sidebar-load-more" disabled={working || listLoading} onClick={loadMoreSessions}>{t("Load more")}</button>}
-      {!filteredSessions.length && <div className="empty-sessions">{t(listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.')}</div>}
-    </div>
-    {drawerOpen && actionError && <div className="action-error" role="alert">{actionError}</div>}
-    <div className="sidebar-bottom">
-      <div className="core-card">
-        <div className="core-card-icon"><Code2 size={15} /></div>
-        <div className="core-card-copy">
-          <strong>{managed?.isRemoteOverride || connection?.mode === 'remote' ? t('Remote Core') : t('Local Core')}</strong>
-          <span>{workspaceName || (connection?.mode === 'remote' ? connection.url : connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : workspacePath || 'Workspace')}</span>
+      {moreSessions && <button className={cn(btnPlain, 'sidebar-load-more mt-1 w-full')} disabled={working || listLoading} onClick={loadMoreSessions}>{t('Load more')}</button>}
+      {!filteredSessions.length && (
+        <div className="empty-sessions px-2.5 py-6 text-center text-[12.5px] text-ink-muted">
+          {t(listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.')}
         </div>
-        <span className={`connection-light ${connectionStatus}`} />
+      )}
+    </div>
+    {drawerOpen && actionError && <div className={cn('action-error my-2 flex items-center gap-2', bannerError)} role="alert">{actionError}</div>}
+    <div className="sidebar-bottom mt-2 flex flex-col gap-2 border-t border-line-subtle pt-2">
+      <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-canvas px-2.5 py-2">
+        <div className="core-card-icon grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={15} /></div>
+        <div className="core-card-copy min-w-0 flex-1">
+          <strong className="block truncate text-[12px] font-semibold text-ink">{managed?.isRemoteOverride || connection?.mode === 'remote' ? t('Remote Core') : t('Local Core')}</strong>
+          <span className="block truncate font-mono text-[11px] text-ink-muted">{workspaceName || (connection?.mode === 'remote' ? connection.url : connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : workspacePath || 'Workspace')}</span>
+        </div>
+        <span className={cn('connection-light h-2 w-2 shrink-0 rounded-full', connectionStatus, statusDotCls)} />
       </div>
       <button
         type="button"
-        className="settings-button"
+        className="settings-button flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:bg-hover"
         onClick={() => {
           closeDrawer()
           setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote')
@@ -2196,15 +2694,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     })
   }
 
-  const isEmptyConversation = displayedMessages.length === 0 && timeline.length === 0 && !streamingText && !streamingReasoning && liveTools.length === 0 && pending.length === 0 && !taskIsPaused && runtime.queue.length === 0
   const runningCommandsCount = commands.filter((cmd) => cmd.status === 'running').length
 
+  const composerPillCls =
+    'composer-pill-btn inline-flex h-[30px] sm:h-[32px] cursor-pointer items-center gap-[5px] whitespace-nowrap rounded-full border border-line bg-subtle px-[10px] sm:px-[11px] text-[12px] sm:text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:not-disabled:border-line-strong hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40'
+  const composerPopoverCls =
+    'composer-popover absolute bottom-[calc(100%+8px)] right-0 z-30 flex w-[min(320px,calc(100vw-24px))] sm:w-[300px] flex-col gap-1.5 rounded-[14px] border border-line bg-composer p-2 shadow-elev-md'
+  const composerItemCls = (active: boolean) =>
+    cn(
+      'composer-popover-item flex w-full cursor-pointer items-center justify-between gap-2 rounded-[9px] border-0 px-2.5 py-2 text-left transition-[background] duration-100',
+      active ? 'active bg-muted text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover hover:text-ink',
+    )
+
   const composerNode = (
-    <div className="composer-wrap">
+    <div className="composer-wrap relative mx-auto w-[min(100%-20px,720px)] sm:w-[min(100%-40px,720px)] pb-[max(12px,env(safe-area-inset-bottom))]">
       {!isEmptyConversation && showScrollBottom && slashMatches.length === 0 && !activeMention && (
         <button
           type="button"
-          className="scroll-bottom-btn"
+          className="scroll-bottom-btn absolute -top-[46px] left-1/2 z-25 grid h-[34px] w-[34px] -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line-strong bg-canvas text-ink shadow-elev-sm transition-[background,transform] duration-120 hover:bg-hover"
           aria-label={t('Scroll to bottom')}
           title={t('Scroll to bottom')}
           onClick={() => scrollToBottom(true)}
@@ -2212,50 +2719,65 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           <ArrowDown size={16} aria-hidden="true" />
         </button>
       )}
-      {connectionNotice && <div className="form-status" role="status">{connectionNotice}</div>}
-      {info && <div className="form-status" role="status">{info}</div>}
+      {connectionNotice && <div className={cn('form-status mb-2', bannerStatus)} role="status">{connectionNotice}</div>}
+      {info && <div className={cn('form-status mb-2', bannerStatus)} role="status">{info}</div>}
       {slashNotice && (
-        <div className="slash-notice" role="status">
-          <div className="slash-notice-body"><div className="markdown-body"><MarkdownContent text={slashNotice} /></div></div>
-          <button type="button" className="subtle-icon" onClick={() => setSlashNotice('')} aria-label={t('Dismiss')}><X size={14} /></button>
+        <div className="slash-notice mb-2 flex items-start justify-between gap-2 rounded-[12px] border border-line bg-subtle px-3.5 py-2.5" role="status">
+          <div className="slash-notice-body min-w-0 flex-1"><div className="markdown-body text-[13px]"><MarkdownContent text={slashNotice} /></div></div>
+          <button type="button" className={btnSubtleIcon} onClick={() => setSlashNotice('')} aria-label={t('Dismiss')}><X size={14} /></button>
         </div>
       )}
-      {!drawerOpen && actionError && <div className="action-error"><ShieldAlert size={15} /><span>{t(actionError)}</span><button onClick={() => setActionError('')} aria-label={t("Dismiss")}><X size={14} /></button></div>}
-      {configReconnectRequired && <div className="reconnect-banner settings-reconnect-banner" role="status">
-        <span>{t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')}</span>
-        <button type="button" onClick={() => void applySavedConfig()} disabled={applyingConfig || taskIsRunning || taskHasQueuedWork}>
-          {t(applyingConfig ? 'Applying…' : 'Apply settings')}
-        </button>
-      </div>}
-      {connectionStatus !== 'connected' && <div className="reconnect-banner"><LoaderCircle className="spin" size={14} /> {t(connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.')}</div>}
+      {!drawerOpen && actionError && (
+        <div className={cn('action-error mb-2 flex items-center gap-2', bannerError)}>
+          <ShieldAlert size={15} className="shrink-0" />
+          <span className="min-w-0 flex-1">{t(actionError)}</span>
+          <button className={btnSubtleIcon} onClick={() => setActionError('')} aria-label={t('Dismiss')}><X size={14} /></button>
+        </div>
+      )}
+      {configReconnectRequired && (
+        <div className="reconnect-banner settings-reconnect-banner mb-2 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary" role="status">
+          <span>{t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')}</span>
+          <button type="button" className={btnSecondary} onClick={() => void applySavedConfig()} disabled={applyingConfig || taskIsRunning || taskHasQueuedWork}>
+            {t(applyingConfig ? 'Applying…' : 'Apply settings')}
+          </button>
+        </div>
+      )}
+      {connectionStatus !== 'connected' && (
+        <div className="reconnect-banner mb-2 flex items-center gap-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary">
+          <LoaderCircle className="spin shrink-0" size={14} /> {t(connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.')}
+        </div>
+      )}
       {slashMatches.length > 0 && activeSession && !working && (
-        <div className="slash-popover" role="listbox" aria-label={t('Slash commands')}>
+        <div className={cn('slash-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Slash commands')}>
           {slashMatches.map((cmd, index) => (
             <button
               key={cmd.name}
               type="button"
               role="option"
               aria-selected={index === slashIndex}
-              className={`slash-item${index === slashIndex ? ' active' : ''}`}
+              className={cn(
+                'slash-item flex w-full cursor-pointer items-center gap-2.5 rounded-[8px] border-0 px-2.5 py-[7px] text-left text-[12.5px]',
+                index === slashIndex ? 'active bg-hover text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover',
+              )}
               onMouseEnter={() => setSlashIndex(index)}
               onMouseDown={(event) => {
                 event.preventDefault()
                 applySlashMatch(cmd)
               }}
             >
-              <span className="slash-name">{cmd.name}</span>
-              {cmd.argHint && <span className="slash-arg">{cmd.argHint}</span>}
-              <span className="slash-desc">{t(cmd.description)}</span>
+              <span className="slash-name font-mono font-semibold text-ink">{cmd.name}</span>
+              {cmd.argHint && <span className="slash-arg font-mono text-[11.5px] text-ink-muted">{cmd.argHint}</span>}
+              <span className="slash-desc ml-auto truncate text-[12px] text-ink-muted">{t(cmd.description)}</span>
             </button>
           ))}
         </div>
       )}
       {activeMention && activeSession && !working && slashMatches.length === 0 && (mentionLoading || mentionMatches.length > 0 || activeMention.query.length > 0) && (
-        <div className="slash-popover mention-popover" role="listbox" aria-label={t('Files matching @')}>
+        <div className={cn('slash-popover mention-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Files matching @')}>
           {mentionLoading && mentionMatches.length === 0 ? (
-            <div className="mention-empty">{t('Loading files…')}</div>
+            <div className="mention-empty px-3 py-3 text-[12.5px] text-ink-muted">{t('Loading files…')}</div>
           ) : mentionMatches.length === 0 ? (
-            <div className="mention-empty">{t('No matching files.')}</div>
+            <div className="mention-empty px-3 py-3 text-[12.5px] text-ink-muted">{t('No matching files.')}</div>
           ) : (
             mentionMatches.map((item, index) => {
               const slashAt = item.path.lastIndexOf('/')
@@ -2266,42 +2788,132 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                   type="button"
                   role="option"
                   aria-selected={index === mentionIndex}
-                  className={`slash-item mention-item${index === mentionIndex ? ' active' : ''}`}
+                  className={cn(
+                    'slash-item mention-item flex w-full cursor-pointer items-center gap-2 rounded-[8px] border-0 px-2.5 py-[7px] text-left text-[12.5px]',
+                    index === mentionIndex ? 'active bg-hover text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover',
+                  )}
                   onMouseEnter={() => setMentionIndex(index)}
                   onMouseDown={(event) => {
                     event.preventDefault()
                     applyMentionMatch(item)
                   }}
                 >
-                  <span className="mention-icon" aria-hidden="true">
+                  <span className="mention-icon shrink-0 text-ink-muted" aria-hidden="true">
                     {item.kind === 'directory' ? <Folder size={14} /> : <FileIcon size={14} />}
                   </span>
-                  <span className="mention-name">{item.name}</span>
-                  {dirPart && <span className="mention-path">{dirPart}</span>}
+                  <span className="mention-name font-mono font-medium text-ink">{item.name}</span>
+                  {dirPart && <span className="mention-path ml-auto truncate font-mono text-[11.5px] text-ink-muted">{dirPart}</span>}
                 </button>
               )
             })
           )}
         </div>
       )}
-      <div className="composer" onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }} onDrop={(event) => {
-        if (!has('turn.attachments')) return
-        event.preventDefault()
-        if (!working) addFiles(Array.from(event.dataTransfer.files))
-      }}>
+      {!isEmptyConversation && queuedItems.length > 0 && (
+        <div className="composer-queue mb-2 rounded-[14px] border border-line bg-subtle px-3 py-2" aria-label={t('Message queue')}>
+          <div className="composer-queue-head mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-ink-secondary">
+            <Command size={12} aria-hidden="true" />
+            <span>{t('Message queue')} ({queuedItems.length})</span>
+            {has('turn.cancelPending') && (
+              <button type="button" className={cn(btnPlain, 'ml-auto min-h-[24px] px-2 text-[11.5px]')} disabled={working} onClick={cancelAllPending}>{t('Cancel all')}</button>
+            )}
+          </div>
+          <ol className="composer-queue-list m-0 flex max-h-[120px] list-none flex-col gap-1 overflow-y-auto p-0">
+            {queuedItems.map((item, idx) => {
+              const queuedMsg = optimistic.find((m) => m.sessionId === activeSessionId && m.executionId === item.executionId)
+              const isEditing = editingQueueExecId === item.executionId
+              return (
+                <li key={item.executionId} className="queue-item-row flex items-center gap-2 rounded-[8px] border border-line-subtle bg-canvas px-2.5 py-1 text-[12.5px]">
+                  {isEditing ? (
+                    <form
+                      className="queue-edit-form flex w-full items-center gap-1.5"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        replaceQueued(item.executionId, queueEditDraft)
+                      }}
+                    >
+                      <input
+                        type="text"
+                        className={cn(fieldInput, 'h-[28px] flex-1 px-2 text-[12.5px]')}
+                        value={queueEditDraft}
+                        disabled={working}
+                        autoFocus
+                        onChange={(event) => setQueueEditDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            event.preventDefault()
+                            setEditingQueueExecId('')
+                            setQueueEditDraft('')
+                          }
+                        }}
+                      />
+                      <button type="button" className={cn(btnPlain, 'min-h-[26px] text-[12px]')} disabled={working} onClick={() => { setEditingQueueExecId(''); setQueueEditDraft('') }}>{t('Cancel')}</button>
+                      <button type="submit" className={cn(btnPrimaryCompact, 'min-h-[26px] px-2.5 text-[12px]')} disabled={working || !queueEditDraft.trim()}>{t('Save')}</button>
+                    </form>
+                  ) : (
+                    <>
+                      <span className="queue-item-idx shrink-0 font-mono text-[11px] text-ink-muted">#{idx + 1}</span>
+                      {queuedMsg?.text ? (
+                        <small className="queue-item-preview min-w-0 flex-1 truncate text-[12.5px] text-ink" title={queuedMsg.text}>{queuedMsg.text}</small>
+                      ) : (
+                        <small className="queue-item-preview min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">{t(item.status)}</small>
+                      )}
+                      <span className="queue-item-actions flex shrink-0 items-center gap-1">
+                        {has('turn.replaceQueued') && (
+                          <button
+                            type="button"
+                            className={cn(btnPlain, 'min-h-[24px] px-2 text-[11.5px]')}
+                            disabled={working}
+                            onClick={() => {
+                              setEditingQueueExecId(item.executionId)
+                              setQueueEditDraft(queuedMsg?.text || '')
+                            }}
+                          >
+                            {t('Edit')}
+                          </button>
+                        )}
+                        {has('turn.cancelQueued') && (
+                          <button type="button" className={cn(btnPlain, 'min-h-[24px] px-2 text-[11.5px]')} disabled={working} onClick={() => cancelQueued(item.executionId)}>{t('Cancel')}</button>
+                        )}
+                      </span>
+                    </>
+                  )}
+                </li>
+              )
+            })}
+          </ol>
+        </div>
+      )}
+      <div
+        className="composer flex flex-col gap-2 rounded-[22px] sm:rounded-[24px] border border-line bg-composer px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 shadow-composer transition-[border-color,box-shadow] duration-150"
+        onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }}
+        onDrop={(event) => {
+          if (!has('turn.attachments')) return
+          event.preventDefault()
+          if (!working) addFiles(Array.from(event.dataTransfer.files))
+        }}
+      >
         {planMode && (
-          <div className="plan-active-strip" role="status">
+          <div className="plan-active-strip flex items-center gap-1.5 rounded-[10px] bg-subtle px-2.5 py-1 text-[12px] font-medium text-ink-secondary" role="status">
             <Compass size={13} aria-hidden="true" />
             <span>{t('Plan mode active (read-only)')}</span>
-            <button type="button" className="plan-active-exit" disabled={working} onClick={() => setPlanMode(false)}>{t('Exit Plan')}</button>
+            <button type="button" className="plan-active-exit ml-auto cursor-pointer border-0 bg-transparent text-[11.5px] font-medium text-ink underline" disabled={working} onClick={() => setPlanMode(false)}>{t('Exit Plan')}</button>
           </div>
         )}
-        {attachments.length > 0 && <ul className="attachment-list">{attachments.map((file, index) => <li key={`${file.name}-${index}`}>
-          {file.mediaType.startsWith('image/') && <img alt="" src={`data:${file.mediaType};base64,${file.data}`} />}
-          <span>{file.name}</span><button aria-label={`Remove ${file.name}`} disabled={working} onClick={() => setAttachments((items) => items.filter((_, at) => at !== index))}>×</button>
-        </li>)}</ul>}
+        {attachments.length > 0 && (
+          <ul className="attachment-list m-0 flex list-none flex-wrap gap-1.5 p-0">
+            {attachments.map((file, index) => (
+              <li key={`${file.name}-${index}`} className="inline-flex items-center gap-1.5 rounded-[10px] border border-line bg-subtle px-2 py-1 text-[12px] text-ink">
+                {file.mediaType.startsWith('image/') && <img className="h-5 w-5 rounded object-cover" alt="" src={`data:${file.mediaType};base64,${file.data}`} />}
+                <span className="max-w-[160px] truncate">{file.name}</span>
+                <button className="cursor-pointer border-0 bg-transparent p-0 text-ink-muted hover:text-ink" aria-label={`Remove ${file.name}`} disabled={working} onClick={() => setAttachments((items) => items.filter((_, at) => at !== index))}>×</button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={textareaRef}
+          className="max-h-[200px] min-h-[24px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.55] text-ink outline-none placeholder:text-ink-faint sm:text-[15px]"
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value)
@@ -2389,21 +3001,41 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           rows={1}
           disabled={!client || !activeSession || working}
         />
-        <div className="composer-footer">
-          <div className="composer-options">
+        <div className="composer-footer flex items-center justify-between gap-1.5 sm:gap-2">
+          <div className="composer-options flex shrink-0 flex-nowrap items-center gap-1 sm:gap-1.5">
             {has('turn.attachments') && <>
               <input type="file" ref={fileInput} hidden multiple accept=".txt,.md,.markdown,.csv,.png,.jpg,.jpeg" onChange={(event) => {
                 addFiles(Array.from(event.target.files ?? []))
                 event.target.value = ''
               }} />
-              <button type="button" className="composer-icon-btn" disabled={working} onClick={() => fileInput.current?.click()} aria-label={t("Attach")} title={t("Attach")}><Plus size={18} aria-hidden="true" /></button>
-              {desktop && modelOption?.supportsInputImages && <button type="button" className="composer-icon-btn" disabled={working} onClick={captureScreenshot} aria-label="Screenshot" title="Screenshot"><Camera size={16} aria-hidden="true" /></button>}
-            </>}
-            {has('permission.manage') && (
-              <div className="composer-perm-wrap">
+              <button
+                type="button"
+                className="composer-icon-btn inline-grid h-[30px] w-[30px] sm:h-[32px] sm:w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-transparent text-ink-secondary transition-[background,color] duration-120 hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={working}
+                onClick={() => fileInput.current?.click()}
+                aria-label={t('Attach')}
+                title={t('Attach')}
+              >
+                <Plus size={18} aria-hidden="true" />
+              </button>
+              {desktop && modelOption?.supportsInputImages && (
                 <button
                   type="button"
-                  className="composer-pill-btn composer-perm-btn"
+                  className="composer-icon-btn inline-grid h-[30px] w-[30px] sm:h-[32px] sm:w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-transparent text-ink-secondary transition-[background,color] duration-120 hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={working}
+                  onClick={captureScreenshot}
+                  aria-label="Screenshot"
+                  title="Screenshot"
+                >
+                  <Camera size={16} aria-hidden="true" />
+                </button>
+              )}
+            </>}
+            {has('permission.manage') && (
+              <div className="composer-perm-wrap relative">
+                <button
+                  type="button"
+                  className={cn(composerPillCls, 'composer-perm-btn max-w-[116px] sm:max-w-none')}
                   data-perm={permissionMode}
                   aria-haspopup="listbox"
                   aria-expanded={composerMenu === 'permission'}
@@ -2415,13 +3047,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     : permissionMode === 'auto' ? <ShieldCheck size={13} aria-hidden="true" />
                       : permissionMode === 'full-access' ? <ShieldAlert size={13} aria-hidden="true" />
                         : <Shield size={13} aria-hidden="true" />}
-                  <span>{t(PERM_LABEL[permissionMode])}</span>
-                  <ChevronDown size={13} aria-hidden="true" />
+                  <span className="truncate">{t(PERM_LABEL[permissionMode])}</span>
+                  <ChevronDown size={13} className="shrink-0" aria-hidden="true" />
                 </button>
                 {composerMenu === 'permission' && (
-                  <div className="composer-popover composer-popover-left" role="listbox" aria-label={t('Permission mode')}>
-                    <div className="composer-popover-head">{t('Permission mode')}</div>
-                    <div className="composer-popover-list">
+                  <div className={cn(composerPopoverCls, 'composer-popover-left left-0 right-auto sm:left-0')} role="listbox" aria-label={t('Permission mode')}>
+                    <div className="composer-popover-head px-[9px] pt-[5px] pb-1 text-[11px] font-semibold uppercase tracking-[0.03em] text-ink-muted">{t('Permission mode')}</div>
+                    <div className="composer-popover-list flex max-h-[340px] flex-col gap-0.5 overflow-y-auto">
                       {allowedPermissionModes.map((mode) => {
                         const active = permissionMode === mode
                         return (
@@ -2430,17 +3062,19 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                             type="button"
                             role="option"
                             aria-selected={active}
-                            className={`composer-popover-item${active ? ' active' : ''}`}
+                            className={composerItemCls(active)}
                             onClick={() => {
                               setComposerMenu(null)
                               void changePermissionMode(mode)
                             }}
                           >
-                            <div className="composer-popover-item-main">
-                              <span>{t(PERM_LABEL[mode])}<code className="composer-perm-code">{mode}</code></span>
-                              <small className="composer-perm-desc">{t(PERM_DESC[mode])}</small>
+                            <div className="composer-popover-item-main min-w-0 flex-1">
+                              <span className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink">
+                                {t(PERM_LABEL[mode])}<code className="composer-perm-code rounded bg-muted px-1 font-mono text-[10.5px] font-normal text-ink-muted">{mode}</code>
+                              </span>
+                              <small className="composer-perm-desc mt-0.5 block text-[11px] leading-[1.35] text-ink-muted">{t(PERM_DESC[mode])}</small>
                             </div>
-                            {active && <Check size={14} aria-hidden="true" />}
+                            {active && <Check size={14} className="shrink-0 text-ink" aria-hidden="true" />}
                           </button>
                         )
                       })}
@@ -2450,17 +3084,21 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               </div>
             )}
           </div>
-          <div className="composer-actions">
+          <div className="composer-actions flex min-w-0 items-center gap-[5px] sm:gap-1.5">
             {(() => {
               const currentEffort = activeSession?.settings.reasoningEffort || ''
               const effortInfo = effortDisplayInfo(currentEffort)
               const isMaxEffort = models.length > 0 && Boolean(selectedModel) && effortInfo.isMax
               return (
-                <div className="composer-picker-group">
-                  <div className="composer-picker-wrap">
+                <div className="composer-picker-group min-w-0">
+                  <div className="composer-picker-wrap relative">
                     <button
                       type="button"
-                      className={`composer-pill-btn composer-picker-btn${isMaxEffort ? ' is-max' : ''}`}
+                      className={cn(
+                        composerPillCls,
+                        'composer-picker-btn max-w-[196px] sm:max-w-[260px]',
+                        isMaxEffort && 'is-max border-ink bg-canvas text-ink',
+                      )}
                       aria-haspopup="listbox"
                       aria-expanded={composerMenu === 'model'}
                       title={t(models.length > 0 ? 'MODEL' : 'Configure models')}
@@ -2474,22 +3112,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                         setComposerMenu((current) => current === 'model' ? null : 'model')
                       }}
                     >
-                      <span className="composer-picker-label">
+                      <span className="composer-picker-label min-w-0 truncate">
                         {models.length > 0
                           ? (modelOption?.displayName || modelOption?.model || selectedModel || t('Select model'))
                           : t('Configure models')}
                       </span>
                       {models.length > 0 && Boolean(selectedModel) && currentEffort !== '' && (
-                        <span className={`composer-effort-inline${isMaxEffort ? ' is-max' : ''}`}>
+                        <span className={cn('composer-effort-inline inline-flex shrink-0 items-center gap-1 text-[11px]', isMaxEffort && 'is-max')}>
                           <EffortBars bars={effortInfo.bars} max={isMaxEffort} />
-                          <span className={isMaxEffort ? 'effort-max-tag' : undefined}>{effortInfo.label}</span>
+                          <span className={isMaxEffort ? 'effort-max-tag rounded-full bg-accent px-1.5 py-[1px] text-[10.5px] leading-[1.35] font-bold tracking-[0.04em] text-accent-fg' : undefined}>
+                            {effortInfo.label}
+                          </span>
                         </span>
                       )}
-                      <ChevronDown size={13} aria-hidden="true" />
+                      <ChevronDown size={13} className="shrink-0" aria-hidden="true" />
                     </button>
                     {composerMenu === 'model' && models.length > 0 && (
-                      <div className="composer-popover" role="listbox" aria-label={t('MODEL')}>
-                        <div className="composer-popover-list">
+                      <div className={composerPopoverCls} role="listbox" aria-label={t('MODEL')}>
+                        <div className="composer-popover-list flex max-h-[340px] flex-col gap-0.5 overflow-y-auto">
                           {models.map((m) => {
                             const active = m.profile === selectedModel
                             const cap = formatCapacity(m.contextWindow)
@@ -2499,14 +3139,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                                 type="button"
                                 role="option"
                                 aria-selected={active}
-                                className={`composer-popover-item${active ? ' active' : ''}`}
+                                className={composerItemCls(active)}
                                 onClick={() => { void changeModel(m.profile) }}
                               >
-                                <div className="composer-popover-item-main">
-                                  <span>{m.displayName || m.model}</span>
-                                  <small>{m.provider}{cap ? ` · ${cap}` : ''}</small>
+                                <div className="composer-popover-item-main min-w-0 flex-1">
+                                  <span className="block truncate text-[12.5px] font-medium text-ink">{m.displayName || m.model}</span>
+                                  <small className="block truncate font-mono text-[11px] text-ink-muted">{m.provider}{cap ? ` · ${cap}` : ''}</small>
                                 </div>
-                                {active && <Check size={14} aria-hidden="true" />}
+                                {active && <Check size={14} className="shrink-0 text-ink" aria-hidden="true" />}
                               </button>
                             )
                           })}
@@ -2520,10 +3160,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                           />
                         )}
                         {settingsAPI.supportsModelConfig && (
-                          <div className="composer-popover-footer">
+                          <div className="composer-popover-footer border-t border-line-subtle pt-1.5">
                             <button
                               type="button"
-                              className="plain-button"
+                              className={cn(btnPlain, 'w-full justify-start')}
                               onClick={() => {
                                 setComposerMenu(null)
                                 setSettingsTab('models')
@@ -2541,16 +3181,49 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                 </div>
               )
             })()}
-            {taskIsRunning && runtime.task.executionId && !planMode && <button type="button" className="composer-pill-btn" disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'} onClick={() => void sendMessage(true)}><CornerDownRight size={14} aria-hidden="true" /><span>{t("Add to running task")}</span></button>}
-            {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && <button type="button" className="stop-button" disabled={working} onClick={() => void stopRun()} aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')} title={t(taskIsQueued ? 'Cancel queued' : 'Stop')}><Square size={12} fill="currentColor" aria-hidden="true" /></button>}
-            <button type="button" className="send-button" disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'} onClick={() => void sendMessage()} aria-label={t("Send message")} title={t("Send message")}>{working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}</button>
+            {taskIsRunning && runtime.task.executionId && !planMode && (
+              <button
+                type="button"
+                className={composerPillCls}
+                disabled={working || (!draft.trim() && !attachments.length) || connectionStatus !== 'connected'}
+                onClick={() => void sendMessage(true)}
+              >
+                <CornerDownRight size={14} aria-hidden="true" /><span>{t('Add to running task')}</span>
+              </button>
+            )}
+            {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && (
+              <button
+                type="button"
+                className="stop-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-canvas text-ink transition-[background,border-color,opacity] duration-120 hover:not-disabled:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={working}
+                onClick={() => void stopRun()}
+                aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')}
+                title={t(taskIsQueued ? 'Cancel queued' : 'Stop')}
+              >
+                <Square size={12} fill="currentColor" aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              className="send-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-accent text-accent-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={!activeSession || (!draft.trim() && !attachments.length) || working || connectionStatus !== 'connected'}
+              onClick={() => void sendMessage()}
+              aria-label={t('Send message')}
+              title={t('Send message')}
+            >
+              {working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}
+            </button>
           </div>
         </div>
       </div>
-      {(activeSession?.sessionUsage || runtime.goal || runningCommandsCount > 0) && (
-        <div className="composer-telemetry">
+      {!isEmptyConversation && (
+        <div className="composer-telemetry mt-1.5 flex min-h-[28px] flex-wrap items-center justify-center gap-2">
           {activeSession?.sessionUsage && (
-            <button type="button" className="telemetry-chip" onClick={() => openHarnessTab('context')}>
+            <button
+              type="button"
+              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              onClick={() => openHarnessTab('context')}
+            >
               <span>
                 {activeSession.sessionUsage.input.toLocaleString()} {t('input')} · {activeSession.sessionUsage.output.toLocaleString()} {t('output')}
                 {contextLimit ? ` · ${contextLimit.toLocaleString()} ${t('context limit')}` : ''}
@@ -2558,13 +3231,21 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             </button>
           )}
           {runtime.goal && (
-            <button type="button" className="telemetry-chip" onClick={() => openHarnessTab('goal')}>
+            <button
+              type="button"
+              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              onClick={() => openHarnessTab('goal')}
+            >
               <Target size={11} aria-hidden="true" />
               <span>{t('Goal')}: {t(runtime.goal.status)}</span>
             </button>
           )}
           {runningCommandsCount > 0 && (
-            <button type="button" className="telemetry-chip" onClick={() => openHarnessTab('processes')}>
+            <button
+              type="button"
+              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              onClick={() => openHarnessTab('processes')}
+            >
               <Terminal size={11} aria-hidden="true" />
               <span>{runningCommandsCount} {t('running')}</span>
             </button>
@@ -2574,83 +3255,137 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     </div>
   )
 
+  const isSidebarCollapsed = sidebarCollapsed && !compactLayout
+  const pendingHeadingCls = 'pending-heading flex items-center gap-3'
+  const pendingIconCls = 'pending-icon grid h-8 w-8 shrink-0 place-items-center rounded-[9px] border border-line bg-canvas text-ink-secondary'
+  const pendingCardCls = 'pending-card mb-4 flex flex-col gap-3 rounded-[14px] border border-line bg-subtle p-4 shadow-elev-sm'
+
   return (
     <div
-      className={`app-shell${quick ? ' quick-mode' : ''}${!desktop ? ' web-workbench' : ''}${sidebarCollapsed && !compactLayout ? ' sidebar-collapsed' : ''}${harnessOpen ? ' files-open' : ''}${harnessOpen && harnessOverlay ? ' harness-overlay' : ''}${draggingColumn ? ' resizing' : ''}`}
+      className={cn(
+        'app-shell relative grid h-dvh min-h-0 bg-canvas',
+        quick && 'quick-mode',
+        !desktop && 'web-workbench',
+        isSidebarCollapsed && 'sidebar-collapsed',
+        harnessOpen && 'files-open',
+        harnessOpen && harnessOverlay && 'harness-overlay',
+        draggingColumn && 'resizing',
+      )}
       style={{ '--sidebar-width': `${sidebarWidth}px`, '--sidebar-edge': `${sidebarCollapsed ? 56 : sidebarWidth}px`, '--harness-width': `${harnessWidth}px` } as CSSProperties}
     >
-      {compactLayout ? <dialog id={accessibilityId + '-drawer'} className="session-drawer" aria-labelledby={accessibilityId + '-drawer-title'} ref={drawerRef}
-        onClose={() => {
-          if (drawerRef.current?.open) return
-          setDrawerOpen(false)
-          drawerButtonRef.current?.focus()
-        }}
-        onClick={(event) => { if (event.target === event.currentTarget) closeDrawer() }}>
-        <div className="drawer-panel">
-          <div className="drawer-heading"><h2 id={accessibilityId + '-drawer-title'}>{t('Conversations')}</h2><button type="button" className="icon-button" aria-label={t('Close conversations')} onClick={closeDrawer}><X size={18} /></button></div>
-          {sessionNavigation}
-        </div>
-      </dialog> : <aside className="sidebar" aria-label={t('Conversations')} aria-hidden={sidebarCollapsed || undefined}>
-        <div className="sidebar-top">
-          <button type="button" className="icon-button" aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
-          <div className="sidebar-top-actions">
-            <button type="button" className="icon-button" aria-label={t('Search conversations')} title={t('Search conversations')} aria-pressed={searchOpen} onClick={() => setSearchOpen((open) => !open)}><Search size={17} /></button>
-            <button type="button" className="icon-button" aria-label={t('New conversation')} title={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
+      {compactLayout ? (
+        <dialog
+          id={accessibilityId + '-drawer'}
+          className="session-drawer m-0 h-dvh max-h-none w-[min(300px,calc(100%-36px))] max-w-none border-0 border-r border-line bg-sidebar p-0 text-ink shadow-elev-lg"
+          aria-labelledby={accessibilityId + '-drawer-title'}
+          ref={drawerRef}
+          onClose={() => {
+            if (drawerRef.current?.open) return
+            setDrawerOpen(false)
+            drawerButtonRef.current?.focus()
+          }}
+          onClick={(event) => { if (event.target === event.currentTarget) closeDrawer() }}
+        >
+          <div className="drawer-panel flex h-full min-h-0 flex-col px-2.5 pt-[max(12px,env(safe-area-inset-top))] pb-[max(12px,env(safe-area-inset-bottom))]">
+            <div className="drawer-heading flex items-center justify-between px-1 pb-2">
+              <h2 id={accessibilityId + '-drawer-title'} className="m-0 text-[15px] font-semibold text-ink">{t('Conversations')}</h2>
+              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close conversations')} onClick={closeDrawer}><X size={18} /></button>
+            </div>
+            {sessionNavigation}
           </div>
-        </div>
-        {sessionNavigation}
-      </aside>}
-      {!compactLayout && sidebarCollapsed && <nav className="sidebar-rail" aria-label={t('Quick navigation')}>
-        <button type="button" className="icon-button" title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
-        <button type="button" className="icon-button" title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
-        <button type="button" className="icon-button sidebar-rail-settings" title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>
-      </nav>}
-      {!compactLayout && !sidebarCollapsed && <div
-        className="column-resizer sidebar-resizer" role="separator" aria-orientation="vertical" aria-label={t('Resize conversation sidebar')}
-        aria-valuemin={200} aria-valuemax={420} aria-valuenow={sidebarWidth} tabIndex={0}
-        onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('sidebar'); columnDrag.current = { side: 'sidebar', x: event.clientX, width: sidebarWidth } }}
-        onDoubleClick={() => setSidebarWidth(260)}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-          event.preventDefault(); setSidebarWidth((width) => Math.max(200, Math.min(420, width + (event.key === 'ArrowRight' ? 16 : -16))))
-        }}
-      />}
-      {!compactLayout && harnessOpen && !harnessFullScreen && <div
-        className="column-resizer harness-resizer" role="separator" aria-orientation="vertical" aria-label={t('Resize Harness panel')}
-        aria-valuemin={320} aria-valuemax={760} aria-valuenow={harnessWidth} tabIndex={0}
-        onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('harness'); columnDrag.current = { side: 'harness', x: event.clientX, width: harnessWidth } }}
-        onDoubleClick={() => setHarnessWidth(420)}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-          event.preventDefault(); setHarnessWidth((width) => Math.max(320, Math.min(760, width + (event.key === 'ArrowLeft' ? 16 : -16))))
-        }}
-      />}
+        </dialog>
+      ) : (
+        <aside
+          className={cn(
+            'sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar transition-opacity duration-150',
+            isSidebarCollapsed ? 'pointer-events-none border-r-0 p-0 opacity-0' : 'border-r border-line-subtle px-2.5 pt-2.5 pb-3',
+          )}
+          aria-label={t('Conversations')}
+          aria-hidden={sidebarCollapsed || undefined}
+        >
+          <div className="sidebar-top mb-1.5 flex min-h-[36px] items-center justify-between">
+            <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
+            <div className="sidebar-top-actions flex items-center gap-0.5">
+              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Search conversations')} title={t('Search conversations')} aria-pressed={searchOpen} onClick={() => setSearchOpen((open) => !open)}><Search size={17} /></button>
+              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('New conversation')} title={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
+            </div>
+          </div>
+          {sessionNavigation}
+        </aside>
+      )}
+      {!compactLayout && sidebarCollapsed && (
+        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] border-r border-line-subtle bg-sidebar pt-[9px] pb-3" aria-label={t('Quick navigation')}>
+          <button type="button" className={cn('icon-button', btnIcon)} title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
+          <button type="button" className={cn('icon-button', btnIcon)} title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
+          <button type="button" className={cn('icon-button sidebar-rail-settings mt-auto', btnIcon)} title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>
+        </nav>
+      )}
+      {!compactLayout && !sidebarCollapsed && (
+        <div
+          className="column-resizer sidebar-resizer absolute inset-y-0 left-[var(--sidebar-edge,260px)] z-18 w-2 -translate-x-1 touch-none cursor-col-resize outline-none select-none"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('Resize conversation sidebar')}
+          aria-valuemin={200}
+          aria-valuemax={420}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('sidebar'); columnDrag.current = { side: 'sidebar', x: event.clientX, width: sidebarWidth } }}
+          onDoubleClick={() => setSidebarWidth(260)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault(); setSidebarWidth((width) => Math.max(200, Math.min(420, width + (event.key === 'ArrowRight' ? 16 : -16))))
+          }}
+        />
+      )}
+      {!compactLayout && harnessOpen && !harnessFullScreen && (
+        <div
+          className="column-resizer harness-resizer absolute inset-y-0 right-[var(--harness-width,420px)] z-18 w-2 translate-x-1 touch-none cursor-col-resize outline-none select-none"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('Resize Harness panel')}
+          aria-valuemin={320}
+          aria-valuemax={760}
+          aria-valuenow={harnessWidth}
+          tabIndex={0}
+          onPointerDown={(event) => { event.preventDefault(); setDraggingColumn('harness'); columnDrag.current = { side: 'harness', x: event.clientX, width: harnessWidth } }}
+          onDoubleClick={() => setHarnessWidth(420)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+            event.preventDefault(); setHarnessWidth((width) => Math.max(320, Math.min(760, width + (event.key === 'ArrowLeft' ? 16 : -16))))
+          }}
+        />
+      )}
 
-      <main className="chat-area">
-        <header className="chat-header">
-          <div className="header-left">
+      <main className="chat-area flex h-dvh min-h-0 min-w-0 flex-col bg-canvas">
+        <header className="chat-header flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between gap-1.5 sm:gap-3 px-2.5 sm:px-4">
+          <div className="header-left flex min-w-0 flex-1 items-center gap-2">
             {compactLayout && (
-              <button type="button" className="icon-button drawer-toggle" title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={18} /></button>
+              <button type="button" className={cn('icon-button drawer-toggle', btnIcon)} title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={18} /></button>
             )}
             {workspaceName ? (
-              <span className="header-workspace" title={workspacePath}>{workspaceName}</span>
+              <span className="header-workspace hidden truncate text-[13.5px] font-medium text-ink-secondary sm:inline" title={workspacePath}>{workspaceName}</span>
             ) : (
-              <span className="header-brand-title">Lune</span>
+              <span className="header-brand-title text-[14.5px] font-semibold tracking-[-0.015em] text-ink">Lune</span>
             )}
             {activeSession?.title && (
               <>
-                <span className="header-crumb-sep" aria-hidden="true">/</span>
-                <span className="header-session-title" title={activeSession.title}>{activeSession.title}</span>
+                <span className="header-crumb-sep hidden text-ink-faint sm:inline" aria-hidden="true">/</span>
+                <span className="header-session-title truncate text-[13.5px] font-medium text-ink" title={activeSession.title}>{activeSession.title}</span>
               </>
             )}
           </div>
-          <div className="header-actions">
-            {connectionStatus !== 'connected' && <span className={`connection-pill ${connectionStatus}`}>{statusIcon}{t(statusLabel)}</span>}
-            {quick && <button className="plain-button" onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
+          <div className="header-actions flex shrink-0 items-center gap-1">
+            {connectionStatus !== 'connected' && (
+              <span className={cn('connection-pill mr-1 inline-flex items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-0.5 text-[11.5px] text-ink-secondary', connectionStatus)}>
+                {statusIcon}{t(statusLabel)}
+              </span>
+            )}
+            {quick && <button className={btnPlain} onClick={() => void window.luneDesktop?.toggleQuick()}>Main window</button>}
             <button
               ref={fileButtonRef}
               type="button"
-              className="icon-button header-files-toggle"
+              className={cn('icon-button header-files-toggle', btnIcon)}
               aria-label={t('Open folder as file tree')}
               title={t('Open folder as file tree')}
               onClick={() => void openWorkspaceAsFileTree(true)}
@@ -2659,7 +3394,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             </button>
             <button
               type="button"
-              className="icon-button header-files-toggle"
+              className={cn('icon-button header-files-toggle', btnIcon)}
               aria-expanded={harnessOpen}
               aria-label={t('Harness')}
               title={`${t('Harness')} (Ctrl+B)`}
@@ -2671,19 +3406,25 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </header>
 
         {activeSession && runtime.goal && (
-          <div className="goal-bar">
-            <button type="button" className="goal-bar-main" onClick={() => openHarnessTab('goal')}>
-              <Target size={14} aria-hidden="true" />
-              <span className={`status-pill${runtime.goal.status === 'active' ? ' active' : ''}`}>{t(runtime.goal.status)}</span>
-              <span className="goal-bar-text">{runtime.goal.objective}</span>
+          <div className="goal-bar flex items-center gap-1.5 border-b border-line-subtle bg-subtle px-4 py-1.5">
+            <button
+              type="button"
+              className="goal-bar-main flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[6px] border-0 bg-transparent px-1 py-0.5 text-left text-[12.5px] text-ink hover:bg-hover"
+              onClick={() => openHarnessTab('goal')}
+            >
+              <Target size={14} className="shrink-0" aria-hidden="true" />
+              <span className={cn(statusPill, runtime.goal.status === 'active' && 'border-accent bg-accent text-accent-fg')}>{t(runtime.goal.status)}</span>
+              <span className="goal-bar-text min-w-0 flex-1 truncate text-ink-secondary">{runtime.goal.objective}</span>
               {runtime.goal.token_budget ? (
-                <span className="goal-bar-budget">{(runtime.goal.tokens_used ?? 0).toLocaleString()} / {runtime.goal.token_budget.toLocaleString()}</span>
+                <span className="goal-bar-budget whitespace-nowrap font-mono text-[11px] text-ink-muted">
+                  {(runtime.goal.tokens_used ?? 0).toLocaleString()} / {runtime.goal.token_budget.toLocaleString()}
+                </span>
               ) : null}
             </button>
             {has('goal.manage') && (runtime.goal.status === 'active' || runtime.goal.status === 'paused') && (
               <button
                 type="button"
-                className="row-action-btn"
+                className={rowActionBtnCls}
                 disabled={working}
                 aria-label={t(runtime.goal.status === 'active' ? 'Pause goal' : 'Resume goal')}
                 title={t(runtime.goal.status === 'active' ? 'Pause goal' : 'Resume goal')}
@@ -2700,139 +3441,179 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         )}
 
         {isEmptyConversation ? (
-          <div className="empty-stage">
-            <h1 className="empty-headline">{t('What would you like to work through?')}</h1>
+          <div className="empty-stage flex flex-1 flex-col items-center justify-center px-3 pb-10">
+            <h1 className="empty-headline m-0 mb-5 sm:mb-7 text-center text-[22px] sm:text-[28px] font-semibold tracking-[-0.025em] text-ink">
+              {t('What would you like to work through?')}
+            </h1>
             {composerNode}
-            <div className="suggestion-row">
-              <button type="button" onClick={() => setDraft(t('Help me understand this project.'))}>{t("Understand a project")}<ArrowUpRight size={14} aria-hidden="true" /></button>
-              <button type="button" onClick={() => setDraft(t('Help me make a plan for…'))}>{t("Make a plan")}<ArrowUpRight size={14} aria-hidden="true" /></button>
+            <div className="suggestion-row mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-canvas px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line-strong hover:bg-hover hover:text-ink"
+                onClick={() => setDraft(t('Help me understand this project.'))}
+              >
+                {t('Understand a project')}<ArrowUpRight size={14} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-canvas px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line-strong hover:bg-hover hover:text-ink"
+                onClick={() => setDraft(t('Help me make a plan for…'))}
+              >
+                {t('Make a plan')}<ArrowUpRight size={14} aria-hidden="true" />
+              </button>
             </div>
           </div>
         ) : (
           <>
-            <div className="conversation-scroll" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
-              <div className="conversation-column">
-                <TimelineView
-                  entries={timeline}
-                  optimistic={optimistic.filter((item) => item.sessionId === activeSessionId)}
-                  liveAgents={liveAgents}
-                  liveTools={liveTools}
-                  streamingReasoning={streamingReasoning}
-                  streamingText={streamingText}
-                  canImplementPlan={has('turn.implementPlan')}
-                  canRewind={has('session.rewind')}
-                  sessionBusy={sessionBusy}
-                  working={working}
-                  latestExecutionId={latestExecutionId}
-                  detailsExpanded={uiPreferences.timelineDetailsExpanded}
-                  onImplementPlan={(executionId, planModeChoice) => implementPlan(executionId, planModeChoice)}
-                  onEditAndResend={rewindAndSubmit}
-                  onRegenerate={regenerateLastResponse}
-                />
+            <div className="conversation-stage relative flex min-h-0 flex-1 flex-col">
+              <div className="conversation-scroll min-h-0 flex-1 overflow-y-auto" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
+                <div className="conversation-column mx-auto flex min-h-full w-[calc(100%-24px)] sm:w-[min(100%-40px,720px)] flex-col items-stretch pt-3.5 pb-6 sm:pt-5 sm:pb-9" ref={conversationColumnRef}>
+                  <TimelineView
+                    entries={timeline}
+                    optimistic={sessionOptimistic}
+                    liveAgents={liveAgents}
+                    liveTools={liveTools}
+                    streamStore={streamStore}
+                    hasActiveStream={hasActiveStream}
+                    canImplementPlan={has('turn.implementPlan')}
+                    canRewind={has('session.rewind')}
+                    sessionBusy={sessionBusy}
+                    working={working}
+                    latestExecutionId={latestExecutionId}
+                    detailsExpanded={uiPreferences.timelineDetailsExpanded}
+                    onImplementPlan={stableImplementPlan}
+                    onEditAndResend={stableEditAndResend}
+                    onRegenerate={stableRegenerate}
+                  />
 
-                {activity.length > 0 && (taskIsRunning || runtime.queue.length > 0) && <div className="activity-tray">{activity.slice(0, 3).map((item) => <div className={`activity-item ${item.failed ? 'failed' : ''}`} key={item.id}><span className="activity-dot" /> <span>{item.label}</span>{item.detail && <small>{item.detail}</small>}</div>)}</div>}
-
-                {taskIsPaused && modelFailure && <div className="model-recovery-card">
-                  <div className="pending-heading"><div className="pending-icon"><RefreshCw size={16} /></div><div><strong>{t('Model request paused')}</strong><span>{t('The saved task can resume after the retry delay.')}</span></div></div>
-                  <p className="pending-reason">
-                    {t(modelFailure.category)}
-                    {modelFailure.status_code ? ` · HTTP ${modelFailure.status_code}` : ''}
-                    {modelFailure.code ? ` · ${modelFailure.code}` : ''}
-                    {modelFailure.attempts ? ` · ${t('Attempts')}: ${modelFailure.attempts}` : ''}
-                  </p>
-                  {Number.isFinite(Date.parse(modelFailure.retry_not_before || '')) && recoveryClock < Date.parse(modelFailure.retry_not_before || '')
-                    ? <p className="retry-countdown">{t('Retry available in')} {Math.ceil((Date.parse(modelFailure.retry_not_before || '') - recoveryClock) / 1000)}s</p>
-                    : <p className="retry-countdown">{t('Retry is available now.')}</p>}
-                  <div className="pending-actions">
-                    <button className="plain-button danger" disabled={working} onClick={() => void discardPaused()}>{t('Discard')}</button>
-                    <button className="secondary-button" disabled={working} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>{t('Open model settings')}</button>
-                    <button className="primary-button compact" disabled={working || (Number.isFinite(Date.parse(modelFailure.retry_not_before || '')) && recoveryClock < Date.parse(modelFailure.retry_not_before || ''))} onClick={() => void resumeRun()}><RefreshCw size={14} />{t('Resume run')}</button>
-                  </div>
-                </div>}
-
-                {pending.filter((item) => item.kind !== 'model_recovery').map((item, index) => <div className="pending-card" key={`${item.kind}-${item.approval?.id ?? item.userQuestion?.id ?? item.interaction?.id ?? item.toolRecovery?.invocationId ?? index}`}>
-                  <div className="pending-heading"><div className="pending-icon"><CircleHelp size={17} /></div><div><strong>{t(item.kind === 'approval' ? 'Permission needed' : item.kind === 'user_question' ? 'A question for you' : item.kind === 'user_interaction' ? 'Input requested' : item.kind === 'tool_recovery' ? 'Tool needs attention' : item.kind === 'model_recovery' ? 'Run paused' : 'Execution blocked')}</strong><span>{item.kind === 'approval' ? `${t('Lune wants to use')} ${item.approval?.tool ?? t('a tool')}` : t('Your response will continue this run.')}</span></div></div>
-                  {item.approval && <>
-                    {item.approval.autoReviewReason && <p className="pending-reason">{item.approval.autoReviewReason}</p>}
-                    <pre className="json-preview">{JSON.stringify(item.approval.arguments, null, 2)}</pre>
-                    <div className="pending-actions"><button className="plain-button danger" disabled={working} onClick={() => void resolveApproval(item.approval!, 'deny')}>{t("Deny")}</button><button className="secondary-button" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_once')}>{t("Allow once")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_session')}>{t("Allow this session")}</button></div>
-                  </>}
-                  {item.userQuestion && (
-                    <QuestionForm
-                      request={item.userQuestion}
-                      disabled={working}
-                      canSaveDraft={has('question.draft')}
-                      onSaveDraft={(draftValue) => saveQuestionDraft(item.userQuestion!, draftValue)}
-                      onSubmit={(answers) => resolveQuestion(item.userQuestion!, answers)}
-                    />
+                  {activity.length > 0 && taskIsRunning && !hasActiveStream && liveTools.length === 0 && liveAgents.length === 0 && (
+                    <div className="activity-tray -mt-1.5 mb-[22px] flex flex-col gap-1.5 border-l-2 border-line px-3.5 py-2">
+                      {activity.slice(0, 3).map((item) => (
+                        <div className={cn('activity-item flex items-center gap-2 text-[13px]', item.failed ? 'failed text-danger' : 'text-ink-secondary')} key={item.id}>
+                          <span className={cn('activity-dot h-[5px] w-[5px] shrink-0 rounded-full', item.failed ? 'bg-danger' : 'bg-ink')} />
+                          <span>{item.label}</span>
+                          {item.detail && <small className="max-w-[280px] truncate font-mono text-[11.5px] text-ink-muted">{item.detail}</small>}
+                        </div>
+                      ))}
+                    </div>
                   )}
-                  {item.interaction && <InteractionForm request={item.interaction} disabled={working} onSubmit={(value) => resolveInteraction(item.interaction!, value)} />}
-                  {item.toolRecovery && <><p className="pending-reason"><strong>{item.toolRecovery.tool}</strong> · {t('You can retry this tool or skip it.')}</p><pre className="json-preview">{JSON.stringify(item.toolRecovery.arguments, null, 2)}</pre><div className="pending-actions"><button className="secondary-button" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'skip' })}>{t("Skip")}</button><button className="primary-button compact" disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'retry' })}>{t("Retry tool")}</button></div></>}
-                  {item.blocker && <p className="pending-reason">{item.blocker.reason}</p>}
-                </div>)}
 
-                {taskIsPaused && !modelFailure && <div className="paused-banner"><div><strong>{t("This run is paused")}</strong><span>{t("Resume from its saved checkpoint, or discard it.")}</span></div><button className="plain-button danger" disabled={working} onClick={() => void discardPaused()}>{t("Discard")}</button><button className="primary-button compact" disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} />{t("Resume run")}</button></div>}
-                {runtime.queue.length > 0 && <div className="queue-banner"><Command size={15} /><div><div className="queue-banner-head"><strong>{t("Message queue")}</strong>{has('turn.cancelPending') && <button type="button" className="plain-button" disabled={working} onClick={cancelAllPending}>{t("Cancel all")}</button>}</div>
-                  <ol>{runtime.queue.map((item) => {
-                    const queuedMsg = optimistic.find((m) => m.sessionId === activeSessionId && m.executionId === item.executionId)
-                    const isEditing = editingQueueExecId === item.executionId
-                    return (
-                      <li key={item.executionId} className="queue-item-row">
-                        {isEditing ? (
-                          <form
-                            className="queue-edit-form"
-                            onSubmit={(event) => {
-                              event.preventDefault()
-                              replaceQueued(item.executionId, queueEditDraft)
-                            }}
-                          >
-                            <input
-                              type="text"
-                              value={queueEditDraft}
-                              disabled={working}
-                              autoFocus
-                              onChange={(event) => setQueueEditDraft(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Escape') {
-                                  event.preventDefault()
-                                  setEditingQueueExecId('')
-                                  setQueueEditDraft('')
-                                }
-                              }}
-                            />
-                            <button type="button" className="plain-button" disabled={working} onClick={() => { setEditingQueueExecId(''); setQueueEditDraft('') }}>{t('Cancel')}</button>
-                            <button type="submit" className="primary-button compact" disabled={working || !queueEditDraft.trim()}>{t('Save')}</button>
-                          </form>
-                        ) : (
-                          <>
-                            <span>#{item.position} · {t(item.status)}</span>
-                            {queuedMsg?.text && <small className="queue-item-preview" title={queuedMsg.text}>{queuedMsg.text}</small>}
-                            <span className="queue-item-actions">
-                              {has('turn.replaceQueued') && item.status === 'queued' && (
-                                <button
-                                  type="button"
-                                  className="plain-button"
-                                  disabled={working}
-                                  onClick={() => {
-                                    setEditingQueueExecId(item.executionId)
-                                    setQueueEditDraft(queuedMsg?.text || '')
-                                  }}
-                                >
-                                  {t('Edit')}
-                                </button>
-                              )}
-                              {has('turn.cancelQueued') && item.status === 'queued' && (
-                                <button type="button" className="plain-button" disabled={working} onClick={() => cancelQueued(item.executionId)}>{t("Cancel")}</button>
-                              )}
-                            </span>
-                          </>
-                        )}
-                      </li>
-                    )
-                  })}</ol>
-                </div></div>}
-                <div ref={bottomRef} />
+                  {taskIsPaused && modelFailure && (
+                    <div className={cn('model-recovery-card', pendingCardCls)}>
+                      <div className={pendingHeadingCls}>
+                        <div className={pendingIconCls}><RefreshCw size={16} /></div>
+                        <div className="flex flex-col text-[13px]"><strong className="text-ink">{t('Model request paused')}</strong><span className="text-ink-secondary">{t('The saved task can resume after the retry delay.')}</span></div>
+                      </div>
+                      <p className="pending-reason m-0 text-[13px] text-ink-secondary">
+                        {t(modelFailure.category)}
+                        {modelFailure.status_code ? ` · HTTP ${modelFailure.status_code}` : ''}
+                        {modelFailure.code ? ` · ${modelFailure.code}` : ''}
+                        {modelFailure.attempts ? ` · ${t('Attempts')}: ${modelFailure.attempts}` : ''}
+                      </p>
+                      {Number.isFinite(Date.parse(modelFailure.retry_not_before || '')) && recoveryClock < Date.parse(modelFailure.retry_not_before || '')
+                        ? <p className="retry-countdown m-0 font-mono text-[12px] text-ink-muted">{t('Retry available in')} {Math.ceil((Date.parse(modelFailure.retry_not_before || '') - recoveryClock) / 1000)}s</p>
+                        : <p className="retry-countdown m-0 font-mono text-[12px] text-ink-muted">{t('Retry is available now.')}</p>}
+                      <div className="pending-actions flex flex-wrap items-center justify-end gap-2">
+                        <button className={btnPlainDanger} disabled={working} onClick={() => void discardPaused()}>{t('Discard')}</button>
+                        <button className={btnSecondary} disabled={working} onClick={() => { setSettingsTab('models'); setSettingsOpen(true) }}>{t('Open model settings')}</button>
+                        <button className={btnPrimaryCompact} disabled={working || (Number.isFinite(Date.parse(modelFailure.retry_not_before || '')) && recoveryClock < Date.parse(modelFailure.retry_not_before || ''))} onClick={() => void resumeRun()}><RefreshCw size={14} />{t('Resume run')}</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {pending.filter((item) => item.kind !== 'model_recovery').map((item, index) => (
+                    <div className={pendingCardCls} key={`${item.kind}-${item.approval?.id ?? item.userQuestion?.id ?? item.interaction?.id ?? item.toolRecovery?.invocationId ?? index}`}>
+                      <div className={pendingHeadingCls}>
+                        <div className={pendingIconCls}><CircleHelp size={17} /></div>
+                        <div className="flex flex-col text-[13px]">
+                          <strong className="text-ink">{t(item.kind === 'approval' ? 'Permission needed' : item.kind === 'user_question' ? 'A question for you' : item.kind === 'user_interaction' ? 'Input requested' : item.kind === 'tool_recovery' ? 'Tool needs attention' : item.kind === 'model_recovery' ? 'Run paused' : 'Execution blocked')}</strong>
+                          <span className="text-ink-secondary">{item.kind === 'approval' ? `${t('Lune wants to use')} ${item.approval?.tool ?? t('a tool')}` : t('Your response will continue this run.')}</span>
+                        </div>
+                      </div>
+                      {item.approval && <>
+                        {item.approval.autoReviewReason && <p className="pending-reason m-0 text-[13px] text-ink-secondary">{item.approval.autoReviewReason}</p>}
+                        <pre className="json-preview m-0 max-h-[240px] overflow-auto rounded-[9px] border border-line-subtle bg-code p-3 font-mono text-[12px] leading-[1.55] text-ink-secondary">{JSON.stringify(item.approval.arguments, null, 2)}</pre>
+                        <div className="pending-actions flex flex-wrap items-center justify-end gap-2">
+                          <button className={btnPlainDanger} disabled={working} onClick={() => void resolveApproval(item.approval!, 'deny')}>{t('Deny')}</button>
+                          <button className={btnSecondary} disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_once')}>{t('Allow once')}</button>
+                          <button className={btnPrimaryCompact} disabled={working} onClick={() => void resolveApproval(item.approval!, 'allow_session')}>{t('Allow this session')}</button>
+                        </div>
+                      </>}
+                      {item.userQuestion && (
+                        <QuestionForm
+                          request={item.userQuestion}
+                          disabled={working}
+                          canSaveDraft={has('question.draft')}
+                          onSaveDraft={(draftValue) => saveQuestionDraft(item.userQuestion!, draftValue)}
+                          onSubmit={(answers) => resolveQuestion(item.userQuestion!, answers)}
+                        />
+                      )}
+                      {item.interaction && <InteractionForm request={item.interaction} disabled={working} onSubmit={(value) => resolveInteraction(item.interaction!, value)} />}
+                      {item.toolRecovery && <>
+                        <p className="pending-reason m-0 text-[13px] text-ink-secondary"><strong>{item.toolRecovery.tool}</strong> · {t('You can retry this tool or skip it.')}</p>
+                        <pre className="json-preview m-0 max-h-[240px] overflow-auto rounded-[9px] border border-line-subtle bg-code p-3 font-mono text-[12px] leading-[1.55] text-ink-secondary">{JSON.stringify(item.toolRecovery.arguments, null, 2)}</pre>
+                        <div className="pending-actions flex flex-wrap items-center justify-end gap-2">
+                          <button className={btnSecondary} disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'skip' })}>{t('Skip')}</button>
+                          <button className={btnPrimaryCompact} disabled={working} onClick={() => void resolvePending('toolRecovery.resolve', { sessionId: activeSessionId, invocationId: item.toolRecovery!.invocationId, decision: 'retry' })}>{t('Retry tool')}</button>
+                        </div>
+                      </>}
+                      {item.blocker && <p className="pending-reason m-0 text-[13px] text-ink-secondary">{item.blocker.reason}</p>}
+                    </div>
+                  ))}
+
+                  {taskIsPaused && !modelFailure && (
+                    <div className="paused-banner mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[14px] border border-line bg-subtle p-4 text-[13px]">
+                      <div className="flex flex-col"><strong className="text-ink">{t('This run is paused')}</strong><span className="text-ink-secondary">{t('Resume from its saved checkpoint, or discard it.')}</span></div>
+                      <div className="flex items-center gap-2">
+                        <button className={btnPlainDanger} disabled={working} onClick={() => void discardPaused()}>{t('Discard')}</button>
+                        <button className={btnPrimaryCompact} disabled={working} onClick={() => void resumeRun()}><RefreshCw size={14} />{t('Resume run')}</button>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={bottomRef} />
+                </div>
               </div>
+              {userTurns.length >= 2 && (
+                <nav className="turn-outline group/outline absolute top-1/2 right-3 z-15 flex -translate-y-1/2 items-center py-3.5 pr-1 pl-4" aria-label={t('Conversation outline')}>
+                  <div className="turn-outline-ticks flex max-h-[min(260px,46vh)] cursor-pointer flex-col items-end gap-1.5 overflow-hidden" aria-hidden="true">
+                    {outlineTicks.map((turn) => (
+                      <span
+                        key={turn.id}
+                        className={cn(
+                          'turn-outline-tick h-[2.5px] w-[11px] rounded-full bg-line-strong opacity-60 transition-[width,background,opacity] duration-150',
+                          turn.id === resolvedActiveTurnId && 'active',
+                        )}
+                      />
+                    ))}
+                  </div>
+                  <div className="turn-outline-popover absolute top-1/2 right-6 flex max-h-[min(380px,60vh)] w-[256px] flex-col overflow-hidden rounded-[12px] border border-line bg-canvas shadow-elev-md" role="region" aria-label={t('Conversation outline')}>
+                    <div className="turn-outline-head flex items-center justify-between border-b border-line-subtle px-3 pt-[9px] pb-[7px] text-[11.5px] font-semibold text-ink-muted">
+                      <span>{t('Conversation outline')}</span>
+                      <small className="font-mono text-[11px] text-ink-faint">{userTurns.length}</small>
+                    </div>
+                    <div className="turn-outline-list flex flex-col gap-0.5 overflow-y-auto p-[5px]">
+                      {userTurns.map((turn, idx) => {
+                        const active = turn.id === resolvedActiveTurnId
+                        return (
+                          <button
+                            key={turn.id}
+                            type="button"
+                            className={cn(
+                              'turn-outline-item group/oitem flex w-full cursor-pointer items-center gap-2 rounded-[7px] border-0 px-2 py-1.5 text-left text-[12.5px] transition-[background,color] duration-120',
+                              active ? 'active bg-muted font-medium text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover hover:text-ink',
+                            )}
+                            title={turn.label}
+                            onClick={() => jumpToTurn(turn.id)}
+                          >
+                            <span className={cn('turn-outline-num shrink-0 font-mono text-[10.5px] tabular-nums', active ? 'text-ink-secondary' : 'text-ink-faint')}>{String(idx + 1).padStart(2, '0')}</span>
+                            <span className="turn-outline-text min-w-0 flex-1 truncate">{turn.label}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </nav>
+              )}
             </div>
             {composerNode}
           </>
@@ -2935,22 +3716,48 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           { id: 'set-general', label: 'General', hint: 'Settings', section: 'Settings', run: () => { setSettingsTab('general'); setSettingsOpen(true) } },
         ] satisfies PaletteActionItem[]}
       />
-      {sessionDialog && <div className="modal-backdrop">
-        <section className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
-          <h2 id="session-dialog-title">{t(sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation')}</h2>
-          {sessionDialog.kind === 'delete' ? <p>{t("This removes the conversation and its saved history.")}</p> :
-            <label className="form-field">{t(sessionDialog.kind === 'rename' ? 'Title' : 'User turns to remove')}
-              <input value={sessionDialog.value} type={sessionDialog.kind === 'rewind' ? 'number' : 'text'} min={1}
-                onChange={(event) => setSessionDialog({ ...sessionDialog, value: event.target.value })} />
-            </label>}
-          {Boolean(sessionDialog.excerpts?.length) && <ol className="rewind-excerpts">{sessionDialog.excerpts?.map((excerpt, index) => <li key={index}>{excerpt}</li>)}</ol>}
-          {sessionDialog.removed !== undefined && <p>{sessionDialog.removed} {t('turn(s) will be removed from the end of the conversation.')}</p>}
-          {actionError && <div className="form-error" role="alert">{actionError}</div>}
-          <div className="modal-footer"><button className="plain-button" disabled={working} onClick={() => setSessionDialog(null)}>{t("Cancel")}</button><button className={`primary-button compact${sessionDialog.kind === 'delete' ? ' danger' : ''}`} disabled={working || sessionDialog.removed === 0} onClick={confirmSessionDialog}>
-            {t(sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview')}
-          </button></div>
-        </section>
-      </div>}
+      {sessionDialog && (
+        <div className={cn('modal-backdrop', backdropOverlay, 'p-3 sm:p-5')}>
+          <section className="connection-modal w-[min(100%,440px)] rounded-[16px] border border-line bg-canvas p-[18px] sm:p-6 shadow-elev-lg animate-[arrive_.18s_ease_both]" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">
+            <h2 id="session-dialog-title" className="m-0 mb-2 text-[19px] font-semibold tracking-[-0.02em] text-ink">
+              {t(sessionDialog.kind === 'rename' ? 'Rename conversation' : sessionDialog.kind === 'delete' ? 'Delete conversation?' : 'Rewind conversation')}
+            </h2>
+            {sessionDialog.kind === 'delete' ? (
+              <p className="m-0 mb-3 text-[13.5px] leading-[1.6] text-ink-secondary">{t('This removes the conversation and its saved history.')}</p>
+            ) : (
+              <label className="form-field mb-3 flex flex-col gap-1.5 text-[13px] font-medium text-ink-secondary">
+                {t(sessionDialog.kind === 'rename' ? 'Title' : 'User turns to remove')}
+                <input
+                  className={cn(fieldInput, 'h-[38px]')}
+                  value={sessionDialog.value}
+                  type={sessionDialog.kind === 'rewind' ? 'number' : 'text'}
+                  min={1}
+                  onChange={(event) => setSessionDialog({ ...sessionDialog, value: event.target.value })}
+                />
+              </label>
+            )}
+            {Boolean(sessionDialog.excerpts?.length) && (
+              <ol className="rewind-excerpts m-0 mb-3 max-h-[160px] overflow-auto pl-6 text-[13px] leading-[1.55] text-ink-secondary [overflow-wrap:anywhere]">
+                {sessionDialog.excerpts?.map((excerpt, index) => <li key={index} className="mb-1.5">{excerpt}</li>)}
+              </ol>
+            )}
+            {sessionDialog.removed !== undefined && (
+              <p className="m-0 mb-3 text-[13px] text-ink-secondary">{sessionDialog.removed} {t('turn(s) will be removed from the end of the conversation.')}</p>
+            )}
+            {actionError && <div className={cn('form-error mb-3', bannerError)} role="alert">{actionError}</div>}
+            <div className="modal-footer mt-4 flex items-center justify-end gap-2.5 border-t border-line-subtle pt-4 text-[13px]">
+              <button className={btnPlain} disabled={working} onClick={() => setSessionDialog(null)}>{t('Cancel')}</button>
+              <button
+                className={sessionDialog.kind === 'delete' ? btnPrimaryDanger : btnPrimaryCompact}
+                disabled={working || sessionDialog.removed === 0}
+                onClick={confirmSessionDialog}
+              >
+                {t(sessionDialog.kind === 'rename' ? 'Save' : sessionDialog.kind === 'delete' ? 'Delete' : sessionDialog.digest ? 'Rewind' : 'Preview')}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }
@@ -2962,7 +3769,7 @@ function QuestionForm({ request, disabled, canSaveDraft, onSaveDraft, onSubmit }
   onSaveDraft?: (draft: UserQuestionDraft) => Promise<void>
   onSubmit: (answers: Array<{ question_id: string; answer: string }>) => void
 }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const questions = request.questions ?? []
   const [answers, setAnswers] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {}
@@ -3015,16 +3822,61 @@ function QuestionForm({ request, disabled, canSaveDraft, onSaveDraft, onSubmit }
   }, [answers, canSaveDraft, request.id])
 
   const complete = questions.length > 0 && questions.every((question) => (answers[question.id] ?? '').trim())
-  return <div className="question-form">
-    {questions.map((question) => <fieldset className="question-item" key={question.id}><legend>{question.question}</legend>
-      {question.options?.length ? <div className="question-options">{question.options.map((option) => <label className={`question-option ${answers[question.id] === option.label ? 'chosen' : ''}`} key={option.label}><input type="radio" name={question.id} value={option.label} checked={answers[question.id] === option.label} onChange={() => setAnswers((value) => ({ ...value, [question.id]: option.label }))} /><span><strong>{option.label}{option.recommended && <em>{t("Suggested")}</em>}</strong><small>{option.description}</small></span></label>)}</div> : <input className="text-answer" value={answers[question.id] ?? ''} onChange={(event) => setAnswers((value) => ({ ...value, [question.id]: event.target.value }))} placeholder={t("Your answer")} />}
-    </fieldset>)}
-    {!questions.length && <p className="pending-reason">{t("This clarification needs an answer, but Core did not provide question details.")}</p>}
-    <div className="pending-actions">
-      {canSaveDraft && draftState === 'saved' && <small className="draft-saved-note">{t('Draft saved')}</small>}
-      <button className="primary-button compact" disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}><Check size={14} />{t("Send answer")}</button>
+  return (
+    <div className="question-form flex flex-col gap-3">
+      {questions.map((question) => (
+        <fieldset className="question-item m-0 flex flex-col gap-2 border-0 p-0" key={question.id}>
+          <legend className="mb-1.5 text-[13.5px] font-semibold text-ink">{question.question}</legend>
+          {question.options?.length ? (
+            <div className="question-options flex flex-col gap-1.5">
+              {question.options.map((option) => {
+                const chosen = answers[question.id] === option.label
+                return (
+                  <label
+                    className={cn(
+                      'question-option flex cursor-pointer items-start gap-2.5 rounded-[9px] border px-3 py-2 text-[13px] transition-[background,border-color] duration-120',
+                      chosen ? 'chosen border-accent bg-canvas' : 'border-line-subtle bg-canvas hover:border-line hover:bg-hover',
+                    )}
+                    key={option.label}
+                  >
+                    <input
+                      type="radio"
+                      className="mt-1 accent-ink"
+                      name={question.id}
+                      value={option.label}
+                      checked={chosen}
+                      onChange={() => setAnswers((value) => ({ ...value, [question.id]: option.label }))}
+                    />
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <strong className="flex items-center gap-2 text-[13px] font-medium text-ink">
+                        {option.label}
+                        {option.recommended && <em className="rounded bg-muted px-1.5 py-[1px] text-[10.5px] font-semibold not-italic text-ink-secondary">{t('Suggested')}</em>}
+                      </strong>
+                      {option.description && <small className="text-[12px] text-ink-muted">{option.description}</small>}
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <input
+              className={cn('text-answer', fieldInput)}
+              value={answers[question.id] ?? ''}
+              onChange={(event) => setAnswers((value) => ({ ...value, [question.id]: event.target.value }))}
+              placeholder={t('Your answer')}
+            />
+          )}
+        </fieldset>
+      ))}
+      {!questions.length && <p className="pending-reason m-0 text-[13px] text-ink-secondary">{t('This clarification needs an answer, but Core did not provide question details.')}</p>}
+      <div className="pending-actions flex items-center justify-end gap-2">
+        {canSaveDraft && draftState === 'saved' && <small className="draft-saved-note font-mono text-[11.5px] text-ink-muted">{t('Draft saved')}</small>}
+        <button className={btnPrimaryCompact} disabled={disabled || !complete} onClick={() => onSubmit(questions.map((question) => ({ question_id: question.id, answer: answers[question.id].trim() })))}>
+          <Check size={14} />{t('Send answer')}
+        </button>
+      </div>
     </div>
-  </div>
+  )
 }
 
 function InteractionForm({ request, disabled, onSubmit }: {
@@ -3032,16 +3884,34 @@ function InteractionForm({ request, disabled, onSubmit }: {
   disabled: boolean
   onSubmit: (value: unknown) => void
 }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const [value, setValue] = useState('{\n  "action": "accept",\n  "content": {}\n}')
   const [error, setError] = useState('')
-  return <div className="interaction-form"><p className="pending-reason">{request.serverName} {t('is asking for input.')}</p><pre className="json-preview">{JSON.stringify(request.request, null, 2)}</pre><label className="interaction-label">{t("Response JSON")}</label><textarea value={value} onChange={(event) => { setValue(event.target.value); setError('') }} spellCheck={false} /><div className="pending-actions">{error && <small className="inline-error">{t(error)}</small>}<button className="primary-button compact" disabled={disabled} onClick={() => { try { onSubmit(JSON.parse(value)) } catch { setError('Enter a valid JSON response.') } }}><Check size={14} />{t("Send response")}</button></div></div>
+  return (
+    <div className="interaction-form flex flex-col gap-2.5">
+      <p className="pending-reason m-0 text-[13px] text-ink-secondary">{request.serverName} {t('is asking for input.')}</p>
+      <pre className="json-preview m-0 max-h-[200px] overflow-auto rounded-[9px] border border-line-subtle bg-code p-3 font-mono text-[12px] text-ink-secondary">{JSON.stringify(request.request, null, 2)}</pre>
+      <label className="interaction-label text-[12.5px] font-medium text-ink-secondary">{t('Response JSON')}</label>
+      <textarea
+        className={cn(fieldTextarea, 'min-h-[96px] font-mono text-[12px]')}
+        value={value}
+        onChange={(event) => { setValue(event.target.value); setError('') }}
+        spellCheck={false}
+      />
+      <div className="pending-actions flex items-center justify-end gap-2">
+        {error && <small className="inline-error text-[12px] text-danger">{t(error)}</small>}
+        <button className={btnPrimaryCompact} disabled={disabled} onClick={() => { try { onSubmit(JSON.parse(value)) } catch { setError('Enter a valid JSON response.') } }}>
+          <Check size={14} />{t('Send response')}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function EffortBars({ bars, max = false }: { bars: number; max?: boolean }) {
   const heights = [3, 5.5, 8, 10.5]
   return (
-    <svg className={`effort-bars${max ? ' is-max' : ''}`} width="13" height="12" viewBox="0 0 13 12" aria-hidden="true">
+    <svg className={cn('effort-bars block shrink-0', max && 'is-max')} width="13" height="12" viewBox="0 0 13 12" aria-hidden="true">
       {heights.map((h, i) => (
         <rect
           key={i}
@@ -3093,10 +3963,22 @@ function EffortSlider({
   }
 
   return (
-    <div className={`effort-slider-section${isMax ? ' is-max' : ''}`}>
-      <div className="effort-slider-head">
+    <div
+      className={cn(
+        'effort-slider-section mt-0.5 flex flex-col gap-[7px] rounded-[10px] border border-transparent border-t-line-subtle px-3 pt-2.5 pb-[9px] transition-[background,border-color] duration-180',
+        isMax ? 'is-max border-line-strong bg-[light-dark(#f8f8f9,#1b1b20)]' : 'bg-subtle',
+      )}
+    >
+      <div className="effort-slider-head flex items-center justify-between gap-2 text-[12px] font-semibold text-ink-secondary">
         <span>{label}</span>
-        <span className={`effort-value-pill${isMax ? ' is-max-pill' : ''}`}>
+        <span
+          className={cn(
+            'effort-value-pill inline-flex items-center gap-[5px] rounded-full border px-2 py-0.5 text-[11px] font-semibold',
+            isMax
+              ? 'is-max-pill border-accent bg-accent tracking-[0.04em] text-accent-fg animate-[detentLock_220ms_cubic-bezier(.22,1,.36,1)_1]'
+              : 'border-line bg-canvas text-ink',
+          )}
+        >
           <EffortBars bars={displayBars} max={isMax} />
           <span>{displayLabel}</span>
         </span>
@@ -3111,7 +3993,11 @@ function EffortSlider({
         aria-valuenow={activeIdx}
         aria-valuetext={displayLabel}
         aria-disabled={disabled || undefined}
-        className={`effort-track-hit${dragging ? ' dragging' : ''}${disabled ? ' disabled' : ''}`}
+        className={cn(
+          'effort-track-hit relative flex h-6 select-none touch-none items-center px-[7px]',
+          dragging && 'dragging',
+          disabled ? 'disabled cursor-not-allowed opacity-50' : 'cursor-pointer',
+        )}
         onPointerDown={(event) => {
           if (disabled) return
           event.preventDefault()
@@ -3152,40 +4038,63 @@ function EffortSlider({
           }
         }}
       >
-        <div className="effort-track">
-          <div className="effort-track-fill" style={{ width: `${pct}%` }} />
+        <div className="effort-track relative h-[3px] w-full rounded-full bg-line">
+          <div className="effort-track-fill absolute inset-y-0 left-0 rounded-[inherit] bg-ink transition-[width] duration-180 ease-out" style={{ width: `${pct}%` }} />
           {EFFORT_TIERS.map((tier, index) => {
             const passed = clampedPos >= index - 0.05
             return (
               <span
                 key={tier.value || 'auto'}
-                className={`effort-detent${passed ? ' passed' : ''}${index === maxIndex ? ' is-end' : ''}`}
+                className={cn(
+                  'effort-detent pointer-events-none absolute top-1/2 h-[5px] w-[5px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px] transition-[border-color,background] duration-140',
+                  passed ? 'passed border-ink bg-ink' : 'border-line-strong bg-canvas',
+                  index === maxIndex && 'is-end',
+                )}
                 style={{ left: `${(index / maxIndex) * 100}%` }}
                 aria-hidden="true"
               />
             )
           })}
           <span
-            className={`effort-thumb${dragging ? ' grabbing' : ''}${isMax ? ' is-max' : ''}`}
+            className={cn(
+              'effort-thumb pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-[left,transform,box-shadow] duration-180 ease-out',
+              dragging && 'grabbing',
+              isMax
+                ? 'is-max h-[15px] w-[15px] border-2 border-canvas bg-ink shadow-[0_0_0_1.5px_var(--ink-primary)]'
+                : 'h-[14px] w-[14px] border-2 border-ink bg-canvas shadow-elev-sm',
+            )}
             style={{ left: `${pct}%` }}
             aria-hidden="true"
           />
         </div>
       </div>
-      <div className="effort-ticks">
-        {EFFORT_TIERS.map((tier, index) => (
-          <button
-            key={tier.value || 'auto'}
-            type="button"
-            disabled={disabled}
-            className={`effort-tick${index === activeIdx ? ' active' : ''}${tier.value === 'max' ? ' is-max-tick' : ''}`}
-            onClick={() => {
-              if (tier.value !== value) onCommit(tier.value)
-            }}
-          >
-            {tier.label}
-          </button>
-        ))}
+      <div className="effort-ticks grid grid-cols-5 gap-0.5">
+        {EFFORT_TIERS.map((tier, index) => {
+          const active = index === activeIdx
+          const isMaxTick = tier.value === 'max'
+          return (
+            <button
+              key={tier.value || 'auto'}
+              type="button"
+              disabled={disabled}
+              className={cn(
+                'effort-tick cursor-pointer whitespace-nowrap rounded-[6px] border-0 px-0.5 py-1 text-center text-[11px] transition-[background,color] duration-120',
+                active && isMaxTick
+                  ? 'active is-max-tick bg-accent font-semibold text-accent-fg'
+                  : active
+                    ? 'active bg-active font-semibold text-ink'
+                    : isMaxTick
+                      ? 'is-max-tick bg-transparent font-medium text-ink-muted hover:not-disabled:bg-hover hover:not-disabled:text-ink'
+                      : 'bg-transparent font-medium text-ink-muted hover:not-disabled:bg-hover hover:not-disabled:text-ink',
+              )}
+              onClick={() => {
+                if (tier.value !== value) onCommit(tier.value)
+              }}
+            >
+              {tier.label}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

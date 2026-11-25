@@ -6,10 +6,15 @@ import {
 } from 'lucide-react'
 import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, ProviderModelInfo, ProviderTestInput, SavedConnection, UiPreferences } from '../shared/desktop-settings'
 import type { ThemePreference } from '../shared/theme'
-import { useLanguage, useTranslate } from './language'
+import { useTranslation } from 'react-i18next'
+import { useLanguage } from './language'
 import type { FrontendSettingsAPI, SaveConfigResult } from './settings-api'
 import { ThemePicker } from './theme'
 import { defaultUiPreferences } from '../shared/ui-preferences'
+import {
+  bannerError, bannerStatus, btnIcon, btnPlain, btnPlainDanger, btnPrimaryCompact,
+  btnSecondary, btnSubtleIcon, cn, fieldInput, fieldSelect, fieldTextarea, statusPill,
+} from './ui'
 
 function normalizeRemoteInput(raw: string): string {
   let value = raw.trim()
@@ -31,6 +36,37 @@ export type SettingsTab = 'models' | 'providers' | 'mcp' | 'runtime' | 'remote' 
 function normalizeTab(tab?: SettingsTab): Exclude<SettingsTab, 'providers'> | undefined {
   if (!tab) return undefined
   return tab === 'providers' ? 'models' : tab
+}
+
+function ToggleSwitch({
+  checked,
+  disabled,
+  label,
+  ariaLabel,
+  onChange,
+}: {
+  checked: boolean
+  disabled?: boolean
+  label?: string
+  ariaLabel?: string
+  onChange: (checked: boolean) => void
+}) {
+  return (
+    <label className="settings-toggle inline-flex cursor-pointer select-none items-center gap-[9px] text-[13px] text-ink">
+      <span className="toggle-control relative inline-flex h-5 w-[34px] flex-none items-center">
+        <input
+          type="checkbox"
+          className="absolute m-0 h-0 w-0 opacity-0"
+          checked={checked}
+          disabled={disabled}
+          aria-label={ariaLabel || label}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="toggle-track" aria-hidden="true" />
+      </span>
+      {label ? <span className="toggle-label text-[13px] text-ink-secondary">{label}</span> : null}
+    </label>
+  )
 }
 
 interface ProviderEntry {
@@ -193,7 +229,7 @@ export function SettingsModal({
   onSavedConfig?: (result: SaveConfigResult) => SaveConfigResult | void | Promise<SaveConfigResult | void>
   onClose: () => void
 }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const { language, setLanguage } = useLanguage()
   const dialogRef = useRef<HTMLDialogElement>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -898,47 +934,66 @@ export function SettingsModal({
       || (m.displayName || '').toLowerCase().includes(modelFilter.trim().toLowerCase()),
     )
 
+    const formFieldCls = 'form-field flex flex-col gap-1.5 text-[12.5px] font-medium text-ink-secondary'
+    const formGridCls = 'settings-form-grid grid grid-cols-1 gap-3 sm:grid-cols-2'
+    const compactTabsCls = 'connection-tabs compact-tabs flex gap-1 rounded-[9px] border border-line-subtle bg-muted p-1'
+    const compactTabBtnCls = (active: boolean) =>
+      cn(
+        'min-h-[28px] cursor-pointer rounded-[6px] border-0 px-3 text-[12.5px] font-medium transition-[background,color,box-shadow] duration-120 disabled:cursor-not-allowed disabled:opacity-45',
+        active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
+      )
+
     return (
-      <form className="provider-editor-card" onSubmit={submitUnifiedProvider}>
-        <div className="settings-form-head">
-          <div className="provider-editor-title">
+      <form
+        className="provider-editor-card flex flex-col gap-4 rounded-[12px] border border-line bg-canvas p-4 shadow-elev-sm"
+        onSubmit={submitUnifiedProvider}
+      >
+        <div className="settings-form-head flex flex-wrap items-center justify-between gap-2.5">
+          <div className="provider-editor-title flex items-center gap-2 text-ink">
             <KeyRound size={15} aria-hidden="true" />
-            <h3>{isEdit ? `${t('Edit provider')}: ${editingProviderId}` : t('Add provider')}</h3>
+            <h3 className="m-0 text-[14px] font-semibold">{isEdit ? `${t('Edit provider')}: ${editingProviderId}` : t('Add provider')}</h3>
           </div>
           {!isEdit && (
-            <div className="connection-tabs compact-tabs">
-              <button type="button" className={addKind === 'preset' ? 'active' : ''} disabled={busy} onClick={() => {
+            <div className={compactTabsCls}>
+              <button type="button" className={compactTabBtnCls(addKind === 'preset')} disabled={busy} onClick={() => {
                 setAddKind('preset')
                 const p = PROVIDER_PRESETS.find((item) => item.id === (selectedPreset || 'openai')) ?? PROVIDER_PRESETS[0]
                 applyPreset(p, providerNames)
               }}>{t('Presets')}</button>
-              <button type="button" className={addKind === 'custom' ? 'active' : ''} disabled={busy} onClick={openCustomAdd}>{t('Custom endpoint')}</button>
+              <button type="button" className={compactTabBtnCls(addKind === 'custom')} disabled={busy} onClick={openCustomAdd}>{t('Custom endpoint')}</button>
             </div>
           )}
-          <button type="button" className="icon-button" aria-label={t('Close')} disabled={busy} onClick={closeEditor}><X size={15} /></button>
+          <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={closeEditor}><X size={15} /></button>
         </div>
 
         {!isEdit && addKind === 'preset' && (
-          <div className="preset-grid" role="radiogroup" aria-label={t('Preset providers')}>
-            {PROVIDER_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className={`preset-chip${selectedPreset === preset.id ? ' active' : ''}`}
-                disabled={busy}
-                onClick={() => applyPreset(preset, providerNames)}
-              >
-                <strong>{preset.name}</strong>
-                <span>{preset.hint}</span>
-              </button>
-            ))}
+          <div className="preset-grid grid grid-cols-2 gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t('Preset providers')}>
+            {PROVIDER_PRESETS.map((preset) => {
+              const active = selectedPreset === preset.id
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={cn(
+                    'preset-chip flex cursor-pointer flex-col gap-0.5 rounded-[9px] border px-3 py-2 text-left transition-[background,border-color] duration-120 disabled:opacity-50',
+                    active ? 'active border-accent bg-subtle text-ink' : 'border-line-subtle bg-canvas text-ink-secondary hover:border-line hover:bg-hover',
+                  )}
+                  disabled={busy}
+                  onClick={() => applyPreset(preset, providerNames)}
+                >
+                  <strong className="text-[12.5px] font-semibold text-ink">{preset.name}</strong>
+                  <span className="truncate text-[11px] text-ink-muted">{preset.hint}</span>
+                </button>
+              )
+            })}
           </div>
         )}
 
-        <div className="settings-form-grid">
-          <label className="form-field">{t('Provider ID')}
+        <div className={formGridCls}>
+          <label className={formFieldCls}>{t('Provider ID')}
             <input
               required
+              className={fieldInput}
               disabled={isEdit || busy}
               value={provId}
               onChange={(e) => setProvId(e.target.value)}
@@ -946,14 +1001,20 @@ export function SettingsModal({
             />
           </label>
           {provAuthMode === 'key' ? (
-            <div className="form-field">
-              <div className="field-label-row">
+            <div className={formFieldCls}>
+              <div className="field-label-row flex items-center justify-between gap-2">
                 <span>{t('API key')}</span>
-                {isEdit && hasSavedKey && !provClearKey && <span className="cred-inline-ok"><span className="cred-dot ok" aria-hidden="true" />{t('Key saved in DB')}</span>}
+                {isEdit && hasSavedKey && !provClearKey && (
+                  <span className="cred-inline-ok inline-flex items-center gap-1.5 text-[11.5px] text-ok">
+                    <span className="cred-dot ok h-2 w-2 rounded-full bg-ok" aria-hidden="true" />
+                    {t('Key saved in DB')}
+                  </span>
+                )}
               </div>
-              <div className="secret-input-wrap">
+              <div className="secret-input-wrap relative flex items-center">
                 <input
                   type={showAPIKey ? 'text' : 'password'}
+                  className={cn(fieldInput, 'pr-9')}
                   autoComplete="new-password"
                   disabled={busy || provClearKey}
                   value={provAPIKey}
@@ -962,7 +1023,7 @@ export function SettingsModal({
                 />
                 <button
                   type="button"
-                  className="subtle-icon"
+                  className={cn(btnSubtleIcon, 'absolute right-1.5')}
                   aria-label={t(showAPIKey ? 'Hide key' : 'Show key')}
                   onClick={() => setShowAPIKey((v) => !v)}
                 >
@@ -971,62 +1032,63 @@ export function SettingsModal({
               </div>
             </div>
           ) : (
-            <label className="form-field">{t('Environment variable name')}
-              <input required disabled={busy} value={provAPIKeyEnv} onChange={(e) => setProvAPIKeyEnv(e.target.value)} placeholder="OPENAI_API_KEY" />
+            <label className={formFieldCls}>{t('Environment variable name')}
+              <input required className={fieldInput} disabled={busy} value={provAPIKeyEnv} onChange={(e) => setProvAPIKeyEnv(e.target.value)} placeholder="OPENAI_API_KEY" />
             </label>
           )}
         </div>
 
         {(isEdit || addKind === 'custom') && (
-          <div className="settings-form-grid">
-            <label className="form-field">{t('Protocol')}
-              <select value={provProtocol} disabled={busy} onChange={(e) => setProvProtocol(e.target.value as 'responses' | 'anthropic-messages')}>
+          <div className={formGridCls}>
+            <label className={formFieldCls}>{t('Protocol')}
+              <select className={fieldSelect} value={provProtocol} disabled={busy} onChange={(e) => setProvProtocol(e.target.value as 'responses' | 'anthropic-messages')}>
                 <option value="responses">OpenAI Responses</option>
                 <option value="anthropic-messages">Anthropic Messages</option>
               </select>
             </label>
-            <label className="form-field">{t('Base URL')}
-              <input required type="url" disabled={busy} value={provBaseURL} onChange={(e) => setProvBaseURL(e.target.value)} placeholder={provProtocol === 'responses' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'} />
+            <label className={formFieldCls}>{t('Base URL')}
+              <input required type="url" className={fieldInput} disabled={busy} value={provBaseURL} onChange={(e) => setProvBaseURL(e.target.value)} placeholder={provProtocol === 'responses' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'} />
             </label>
           </div>
         )}
 
-        <div className="provider-models-block">
-          <div className="provider-models-head">
-            <div className="provider-models-label">
+        <div className="provider-models-block flex flex-col gap-2.5 border-t border-line-subtle pt-3">
+          <div className="provider-models-head flex flex-wrap items-center justify-between gap-2">
+            <div className="provider-models-label flex items-center gap-2 text-[13px] text-ink">
               <strong>{t('Enabled models')}</strong>
-              <span className="status-pill">{draftModels.length}</span>
+              <span className={statusPill}>{draftModels.length}</span>
             </div>
-            <div className="provider-models-actions">
+            <div className="provider-models-actions flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                className="secondary-button"
+                className={btnSecondary}
                 disabled={busy || testingProvider}
                 onClick={() => void testAndFetchModels()}
               >
                 <RefreshCw size={12} className={testingProvider ? 'spin' : undefined} aria-hidden="true" />
                 {t(testingProvider ? 'Fetching models…' : 'Test & fetch models')}
               </button>
-              <button type="button" className="secondary-button" disabled={busy} onClick={addManualModelRow}>
+              <button type="button" className={btnSecondary} disabled={busy} onClick={addManualModelRow}>
                 <Plus size={12} aria-hidden="true" />{t('Add model')}
               </button>
             </div>
           </div>
 
           {providerTestMessage && (
-            <p className={providerTestOK ? 'form-status' : 'form-error'} role={providerTestOK ? 'status' : 'alert'}>
+            <p className={providerTestOK ? bannerStatus : bannerError} role={providerTestOK ? 'status' : 'alert'}>
               {providerTestMessage}
             </p>
           )}
 
           {pickerOpen && (
-            <div className="model-picker-drawer">
-              <div className="model-fetch-head">
-                <span>{t('Select models to enable')}</span>
-                <div className="model-fetch-actions">
-                  <div className="model-fetch-search">
+            <div className="model-picker-drawer flex flex-col gap-2.5 rounded-[10px] border border-line bg-subtle p-3">
+              <div className="model-fetch-head flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[12.5px] font-medium text-ink">{t('Select models to enable')}</span>
+                <div className="model-fetch-actions flex flex-wrap items-center gap-1.5">
+                  <div className="model-fetch-search flex h-[29px] items-center gap-1.5 rounded-[7px] border border-line bg-canvas px-2 text-ink-muted">
                     <Search size={12} aria-hidden="true" />
                     <input
+                      className="w-[150px] border-0 bg-transparent text-[12px] text-ink outline-none placeholder:text-ink-faint"
                       value={modelFilter}
                       onChange={(e) => setModelFilter(e.target.value)}
                       placeholder={t('Search fetched models…')}
@@ -1035,7 +1097,7 @@ export function SettingsModal({
                   </div>
                   <button
                     type="button"
-                    className="plain-button"
+                    className={btnPlain}
                     onClick={() => setCheckedModelIds((prev) => {
                       const next = new Set(prev)
                       for (const m of filteredDiscovered) next.add(m.id)
@@ -1044,18 +1106,24 @@ export function SettingsModal({
                   >
                     {t('Select all')}
                   </button>
-                  <button type="button" className="plain-button" onClick={() => setCheckedModelIds(new Set())}>{t('Clear')}</button>
+                  <button type="button" className={btnPlain} onClick={() => setCheckedModelIds(new Set())}>{t('Clear')}</button>
                 </div>
               </div>
               {filteredDiscovered.length === 0 ? (
-                <small className="inspector-hint">{t('No models returned by provider.')}</small>
+                <small className="text-[12px] text-ink-muted">{t('No models returned by provider.')}</small>
               ) : (
-                <div className="model-checklist">
+                <div className="model-checklist flex max-h-[184px] flex-col gap-[3px] overflow-y-auto">
                   {filteredDiscovered.map((m) => {
                     const checked = checkedModelIds.has(m.id)
                     const cap = formatCapacity(m.contextWindow)
                     return (
-                      <label key={m.id} className={`model-check-row${checked ? ' checked' : ''}`}>
+                      <label
+                        key={m.id}
+                        className={cn(
+                          'model-check-row flex cursor-pointer items-center gap-2 rounded-[7px] px-2 py-[5px] text-[12px] hover:bg-hover',
+                          checked && 'checked bg-muted',
+                        )}
+                      >
                         <input
                           type="checkbox"
                           checked={checked}
@@ -1066,9 +1134,11 @@ export function SettingsModal({
                             return next
                           })}
                         />
-                        <span className="model-check-id">{m.id}</span>
-                        {m.displayName && m.displayName !== m.id && <span className="model-check-name">{m.displayName}</span>}
-                        <span className="model-check-meta">
+                        <span className="model-check-id truncate font-mono text-[12px] text-ink">{m.id}</span>
+                        {m.displayName && m.displayName !== m.id && (
+                          <span className="model-check-name truncate text-[11.5px] text-ink-secondary">{m.displayName}</span>
+                        )}
+                        <span className="model-check-meta ml-auto whitespace-nowrap font-mono text-[11px] text-ink-muted">
                           {cap ? `${cap}` : ''}
                           {m.supportsInputImages ? (cap ? ` · ${t('Images')}` : t('Images')) : ''}
                         </span>
@@ -1077,9 +1147,9 @@ export function SettingsModal({
                   })}
                 </div>
               )}
-              <div className="model-picker-footer">
-                <button type="button" className="plain-button" onClick={() => setPickerOpen(false)}>{t('Cancel')}</button>
-                <button type="button" className="primary-button compact" onClick={applyCheckedModels}>
+              <div className="model-picker-footer flex items-center justify-end gap-2 border-t border-line-subtle pt-2">
+                <button type="button" className={btnPlain} onClick={() => setPickerOpen(false)}>{t('Cancel')}</button>
+                <button type="button" className={btnPrimaryCompact} onClick={applyCheckedModels}>
                   <Check size={13} aria-hidden="true" />
                   {t('Apply selection')} ({checkedModelIds.size})
                 </button>
@@ -1088,17 +1158,20 @@ export function SettingsModal({
           )}
 
           {draftModels.length === 0 ? (
-            <p className="inspector-hint">{t('No models enabled yet. Click "Test & fetch models" to multi-select, or "Add model" manually.')}</p>
+            <p className="m-0 text-[12.5px] leading-[1.55] text-ink-muted">{t('No models enabled yet. Click "Test & fetch models" to multi-select, or "Add model" manually.')}</p>
           ) : (
-            <div className="model-draft-list">
+            <div className="model-draft-list flex flex-col gap-2">
               {draftModels.map((row, index) => {
                 const isDefault = draftDefaultProfile === row.profileId
                 return (
-                  <div key={`${row.originalProfileId || 'new'}-${index}`} className="model-draft-item">
-                    <div className="model-draft-main">
+                  <div key={`${row.originalProfileId || 'new'}-${index}`} className="model-draft-item flex flex-col gap-2 rounded-[9px] border border-line-subtle bg-subtle p-2">
+                    <div className="model-draft-main flex flex-wrap items-center gap-1.5 sm:flex-nowrap">
                       <button
                         type="button"
-                        className={`row-action-btn star-btn${isDefault ? ' active' : ''}`}
+                        className={cn(
+                          'inline-grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-[6px] border-0 bg-transparent transition-[background,color] duration-120 hover:bg-hover',
+                          isDefault ? 'text-ink' : 'text-ink-muted hover:text-ink',
+                        )}
                         title={t('Set as default model')}
                         aria-label={t('Set as default model')}
                         aria-pressed={isDefault}
@@ -1107,7 +1180,7 @@ export function SettingsModal({
                         <Star size={13} fill={isDefault ? 'currentColor' : 'none'} aria-hidden="true" />
                       </button>
                       <input
-                        className="model-draft-id"
+                        className={cn(fieldInput, 'h-[32px] min-w-[140px] flex-1 font-mono text-[12.5px]')}
                         value={row.model}
                         disabled={busy}
                         placeholder={t('Model ID')}
@@ -1118,7 +1191,7 @@ export function SettingsModal({
                         }}
                       />
                       <input
-                        className="model-draft-display"
+                        className={cn(fieldInput, 'h-[32px] min-w-[120px] flex-1 text-[12.5px]')}
                         value={row.displayName}
                         disabled={busy}
                         placeholder={t('Display name (optional)')}
@@ -1130,16 +1203,16 @@ export function SettingsModal({
                       />
                       <button
                         type="button"
-                        className="row-action-btn"
+                        className={btnSubtleIcon}
                         aria-expanded={Boolean(row.expanded)}
                         title={t('Model capacities & options')}
                         onClick={() => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, expanded: !item.expanded } : item))}
                       >
-                        <ChevronDown size={13} className={row.expanded ? 'rotated-180' : undefined} />
+                        <ChevronDown size={13} className={cn('transition-transform duration-150', row.expanded && 'rotate-180')} />
                       </button>
                       <button
                         type="button"
-                        className="row-action-btn danger"
+                        className={cn(btnSubtleIcon, 'hover:not-disabled:bg-danger-bg hover:not-disabled:text-danger')}
                         aria-label={t('Delete')}
                         title={t('Delete')}
                         disabled={busy}
@@ -1157,10 +1230,11 @@ export function SettingsModal({
                       </button>
                     </div>
                     {row.expanded && (
-                      <div className="model-draft-extra">
-                        <div className="settings-form-grid">
-                          <label className="form-field">{t('Profile ID')}
+                      <div className="model-draft-extra flex flex-col gap-2 border-t border-line-subtle pt-2">
+                        <div className={formGridCls}>
+                          <label className={formFieldCls}>{t('Profile ID')}
                             <input
+                              className={cn(fieldInput, 'h-[32px] text-[12.5px]')}
                               value={row.profileId}
                               disabled={busy}
                               onChange={(e) => {
@@ -1170,8 +1244,9 @@ export function SettingsModal({
                               }}
                             />
                           </label>
-                          <label className="form-field">{t('Context window (e.g. 128K, 1M)')}
+                          <label className={formFieldCls}>{t('Context window (e.g. 128K, 1M)')}
                             <input
+                              className={cn(fieldInput, 'h-[32px] text-[12.5px]')}
                               value={row.contextWindow}
                               disabled={busy}
                               placeholder={t('Auto')}
@@ -1179,24 +1254,29 @@ export function SettingsModal({
                             />
                           </label>
                         </div>
-                        <div className="settings-form-grid">
-                          <label className="form-field">{t('Max output tokens (e.g. 16K, 128K)')}
+                        <div className={formGridCls}>
+                          <label className={formFieldCls}>{t('Max output tokens (e.g. 16K, 128K)')}
                             <input
+                              className={cn(fieldInput, 'h-[32px] text-[12.5px]')}
                               value={row.maxOutputTokens}
                               disabled={busy}
                               placeholder={provProtocol === 'anthropic-messages' ? '8192' : t('Auto')}
                               onChange={(e) => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, maxOutputTokens: e.target.value } : item))}
                             />
                           </label>
-                          <div className="settings-checkboxes model-draft-caps">
-                            <label className="remember-token">
-                              <input type="checkbox" checked={row.supportsInputImages} disabled={busy} onChange={(e) => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, supportsInputImages: e.target.checked } : item))} />
-                              {t('Images')}
-                            </label>
-                            <label className="remember-token">
-                              <input type="checkbox" checked={row.supportsInputAudio} disabled={busy} onChange={(e) => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, supportsInputAudio: e.target.checked } : item))} />
-                              {t('Audio')}
-                            </label>
+                          <div className="settings-checkboxes model-draft-caps flex flex-wrap items-center gap-4 pt-3">
+                            <ToggleSwitch
+                              label={t('Images')}
+                              checked={row.supportsInputImages}
+                              disabled={busy}
+                              onChange={(checked) => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, supportsInputImages: checked } : item))}
+                            />
+                            <ToggleSwitch
+                              label={t('Audio')}
+                              checked={row.supportsInputAudio}
+                              disabled={busy}
+                              onChange={(checked) => setDraftModels((prev) => prev.map((item, idx) => idx === index ? { ...item, supportsInputAudio: checked } : item))}
+                            />
                           </div>
                         </div>
                       </div>
@@ -1208,50 +1288,54 @@ export function SettingsModal({
           )}
         </div>
 
-        <details className="settings-subdetails">
-          <summary>{t('Advanced options')}</summary>
-          <div className="settings-subdetails-body">
+        <details className="settings-subdetails rounded-[9px] border border-line-subtle bg-subtle px-3 py-2">
+          <summary className="cursor-pointer select-none text-[12.5px] font-medium text-ink-secondary hover:text-ink">{t('Advanced options')}</summary>
+          <div className="settings-subdetails-body mt-2.5 flex flex-col gap-2.5">
             {!isEdit && addKind === 'preset' && (
-              <div className="settings-form-grid">
-                <label className="form-field">{t('Protocol')}
-                  <select value={provProtocol} disabled={busy} onChange={(e) => setProvProtocol(e.target.value as 'responses' | 'anthropic-messages')}>
+              <div className={formGridCls}>
+                <label className={formFieldCls}>{t('Protocol')}
+                  <select className={fieldSelect} value={provProtocol} disabled={busy} onChange={(e) => setProvProtocol(e.target.value as 'responses' | 'anthropic-messages')}>
                     <option value="responses">OpenAI Responses</option>
                     <option value="anthropic-messages">Anthropic Messages</option>
                   </select>
                 </label>
-                <label className="form-field">{t('Base URL')}
-                  <input required type="url" disabled={busy} value={provBaseURL} onChange={(e) => setProvBaseURL(e.target.value)} />
+                <label className={formFieldCls}>{t('Base URL')}
+                  <input required type="url" className={fieldInput} disabled={busy} value={provBaseURL} onChange={(e) => setProvBaseURL(e.target.value)} />
                 </label>
               </div>
             )}
-            <div className="settings-form-grid">
-              <label className="form-field">{t('Credential source')}
-                <select value={provAuthMode} disabled={busy} onChange={(e) => setProvAuthMode(e.target.value as 'key' | 'env')}>
+            <div className={formGridCls}>
+              <label className={formFieldCls}>{t('Credential source')}
+                <select className={fieldSelect} value={provAuthMode} disabled={busy} onChange={(e) => setProvAuthMode(e.target.value as 'key' | 'env')}>
                   <option value="key">{t('API Key (save in SQLite DB)')}</option>
                   <option value="env">{t('Environment variable (apiKeyEnv)')}</option>
                 </select>
               </label>
-              <div className="settings-checkboxes model-draft-caps">
+              <div className="settings-checkboxes model-draft-caps flex flex-wrap items-center gap-4 pt-3">
                 {provProtocol === 'responses' && (
-                  <label className="remember-token">
-                    <input type="checkbox" checked={provCompaction} disabled={busy} onChange={(e) => setProvCompaction(e.target.checked)} />
-                    {t('Enable server compaction')}
-                  </label>
+                  <ToggleSwitch
+                    label={t('Enable server compaction')}
+                    checked={provCompaction}
+                    disabled={busy}
+                    onChange={(checked) => setProvCompaction(checked)}
+                  />
                 )}
                 {provAuthMode === 'key' && isEdit && hasSavedKey && (
-                  <label className="remember-token">
-                    <input type="checkbox" checked={provClearKey} disabled={busy} onChange={(e) => setProvClearKey(e.target.checked)} />
-                    {t('Remove saved API key')}
-                  </label>
+                  <ToggleSwitch
+                    label={t('Remove saved API key')}
+                    checked={provClearKey}
+                    disabled={busy}
+                    onChange={(checked) => setProvClearKey(checked)}
+                  />
                 )}
               </div>
             </div>
           </div>
         </details>
 
-        <div className="settings-form-footer">
-          <button type="button" className="secondary-button" disabled={busy} onClick={closeEditor}>{t('Cancel')}</button>
-          <button type="submit" className="primary-button compact" disabled={busy}>
+        <div className="settings-form-footer flex items-center justify-end gap-2 border-t border-line-subtle pt-3">
+          <button type="button" className={btnSecondary} disabled={busy} onClick={closeEditor}>{t('Cancel')}</button>
+          <button type="submit" className={btnPrimaryCompact} disabled={busy}>
             <Check size={14} aria-hidden="true" />
             {t('Save')}
           </button>
@@ -1260,54 +1344,91 @@ export function SettingsModal({
     )
   }
 
+  const formFieldCls = 'form-field flex flex-col gap-1.5 text-[12.5px] font-medium text-ink-secondary'
+  const formGridCls = 'settings-form-grid grid grid-cols-1 gap-3 sm:grid-cols-2'
+  const compactTabsCls = 'connection-tabs compact-tabs flex gap-1 rounded-[9px] border border-line-subtle bg-muted p-1'
+  const compactTabBtnCls = (active: boolean) =>
+    cn(
+      'min-h-[28px] cursor-pointer rounded-[6px] border-0 px-3 text-[12.5px] font-medium transition-[background,color,box-shadow] duration-120 disabled:cursor-not-allowed disabled:opacity-45',
+      active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
+    )
+  const settingsCardCls = 'settings-card flex items-center justify-between gap-3 rounded-[11px] border border-line-subtle bg-subtle px-[15px] py-[13px] transition-[border-color] duration-150 hover:border-line'
+  const settingsRowCls = 'settings-row flex min-h-[50px] flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 sm:gap-4 px-3.5 py-2.5 text-[13px]'
+  const settingsRowControlCls = 'settings-row-control flex w-full sm:w-auto flex-none items-center justify-start sm:justify-end'
+  const settingsGroupCls = 'settings-group divide-y divide-line-subtle overflow-hidden rounded-[11px] border border-line-subtle bg-subtle'
+  const settingsSectionTitleCls = 'settings-section-title m-0 pl-0.5 text-[11.5px] font-semibold tracking-[0.02em] text-ink-muted'
+
   return (
     <dialog
       ref={dialogRef}
-      className="settings-modal"
+      className="settings-modal m-auto h-[min(700px,calc(100dvh-36px))] max-h-[calc(100dvh-24px)] w-[min(880px,calc(100vw-32px))] max-w-[calc(100vw-24px)] overflow-hidden rounded-[14px] border border-line bg-canvas p-0 text-ink shadow-elev-lg animate-[arrive_.18s_cubic-bezier(.22,1,.36,1)_both]"
       aria-labelledby="settings-modal-title"
       onClose={onClose}
       onCancel={(event) => { if (busy) event.preventDefault() }}
     >
-      <header className="settings-modal-head">
-        <div>
-          <h2 id="settings-modal-title">{t('Settings')}</h2>
-          <span className="settings-db-badge">
-            <Database size={12} aria-hidden="true" />
-            {api.kind === 'web-host' ? t('Web SQLite DB (settings.db)') : api.kind === 'desktop' ? t('Electron SQLite DB (settings.sqlite)') : t('Browser storage')}
-          </span>
-        </div>
-        <button type="button" className="icon-button" aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} /></button>
+      <header className="settings-modal-head flex h-[52px] flex-none items-center justify-between gap-3 border-b border-line-subtle bg-canvas pr-4 pl-[22px]">
+        <h2 id="settings-modal-title" className="m-0 text-[15px] font-semibold tracking-[-0.015em] text-ink">{t('Settings')}</h2>
+        <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} /></button>
       </header>
 
-      <div className="settings-shell">
-        <nav className="settings-nav" aria-label={t('Settings sections')}>
-          {navItems.filter((item) => !item.hidden).map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={tab === item.id ? 'active' : ''}
-                onClick={() => { setError(''); setStatus(''); setTab(item.id) }}
-              >
-                <Icon size={15} aria-hidden="true" />
-                <span>{t(item.label)}</span>
-              </button>
-            )
-          })}
-        </nav>
+      <div className="settings-shell grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[218px_minmax(0,1fr)] sm:grid-rows-none">
+        <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b border-line-subtle bg-sidebar px-2.5 py-2 sm:border-r sm:border-b-0 sm:pt-3 sm:pb-2.5">
+          <nav className="settings-nav flex flex-row gap-1 overflow-x-auto sm:flex-col sm:gap-0.5" aria-label={t('Settings sections')}>
+            {navItems.filter((item) => !item.hidden).map((item) => {
+              const Icon = item.icon
+              const active = tab === item.id
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={cn(
+                    'flex h-[30px] sm:h-[34px] flex-none sm:w-full cursor-pointer items-center gap-[9px] whitespace-nowrap rounded-[8px] border-0 px-2.5 text-left text-[12.5px] sm:text-[13px] transition-[background,color,box-shadow] duration-120',
+                    active
+                      ? 'active bg-canvas font-semibold text-ink shadow-[0_1px_2px_light-dark(rgb(0_0_0/.05),rgb(0_0_0/.28)),inset_0_0_0_1px_var(--border-subtle)]'
+                      : 'bg-transparent font-medium text-ink-secondary hover:bg-hover hover:text-ink',
+                  )}
+                  onClick={() => { setError(''); setStatus(''); setTab(item.id) }}
+                >
+                  <Icon size={15} aria-hidden="true" />
+                  <span>{t(item.label)}</span>
+                </button>
+              )
+            })}
+          </nav>
+          <div
+            className="settings-storage-foot hidden sm:flex items-start gap-2 border-t border-line-subtle px-2 pt-2.5 pb-0.5 text-[11px] leading-[1.35] text-ink-muted"
+            title={api.kind === 'web-host' ? t('Web SQLite DB (settings.db)') : api.kind === 'desktop' ? t('Electron SQLite DB (settings.sqlite)') : t('Browser storage')}
+          >
+            <Database size={12} className="mt-0.5 shrink-0 opacity-75" aria-hidden="true" />
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+              {api.kind === 'web-host' ? (
+                <>
+                  <span>{t('Web SQLite DB')}</span>
+                  <code className="rounded bg-muted px-1 py-[1px] font-mono text-[10px] text-ink-secondary">settings.db</code>
+                </>
+              ) : api.kind === 'desktop' ? (
+                <>
+                  <span>{t('Electron SQLite DB')}</span>
+                  <code className="rounded bg-muted px-1 py-[1px] font-mono text-[10px] text-ink-secondary">settings.sqlite</code>
+                </>
+              ) : (
+                <span>{t('Browser storage')}</span>
+              )}
+            </div>
+          </div>
+        </aside>
 
-        <div className="settings-body">
-          {error && <p className="form-error" role="alert">{error}</p>}
-          {status && <p className="form-status" role="status">{status}</p>}
+        <div className="settings-body flex min-h-0 flex-col gap-4 overflow-y-auto bg-canvas px-3.5 pt-3.5 pb-5 sm:px-6 sm:pt-5 sm:pb-7">
+          {error && <p className={cn('form-error', bannerError)} role="alert">{error}</p>}
+          {status && <p className={cn('form-status', bannerStatus)} role="status">{status}</p>}
 
           {(tab === 'models' || tab === 'mcp' || tab === 'runtime') && api.supportsModelConfig && (
-            <div className="settings-scope-row">
-              <div className="connection-tabs compact-tabs">
-                <button type="button" className={!scope ? 'active' : ''} disabled={busy} onClick={() => { closeEditor(); setScope('') }}>{t('Defaults')}</button>
-                <button type="button" className={scope ? 'active' : ''} disabled={busy || !workspace.trim()} onClick={() => { closeEditor(); setScope(workspace.trim()) }}>{t('This workspace')}</button>
+            <div className="settings-scope-row flex flex-wrap items-center justify-between gap-2.5 border-b border-line-subtle pb-3">
+              <div className={compactTabsCls}>
+                <button type="button" className={compactTabBtnCls(!scope)} disabled={busy} onClick={() => { closeEditor(); setScope('') }}>{t('Defaults')}</button>
+                <button type="button" className={compactTabBtnCls(Boolean(scope))} disabled={busy || !workspace.trim()} onClick={() => { closeEditor(); setScope(workspace.trim()) }}>{t('This workspace')}</button>
               </div>
-              <div className="settings-scope-actions">
+              <div className="settings-scope-actions flex items-center gap-2">
                 <input
                   ref={importInputRef}
                   type="file"
@@ -1326,13 +1447,13 @@ export function SettingsModal({
                     }).catch((err) => setError(err instanceof Error ? err.message : String(err))).finally(() => setBusy(false))
                   }}
                 />
-                <button type="button" className="secondary-button" disabled={busy} onClick={() => void handleImportConfig()}>
+                <button type="button" className={btnSecondary} disabled={busy} onClick={() => void handleImportConfig()}>
                   <Upload size={13} aria-hidden="true" />{t('Import config.json…')}
                 </button>
                 {scope && (
                   <button
                     type="button"
-                    className="plain-button"
+                    className={btnPlain}
                     disabled={busy}
                     onClick={() => void api.resetWorkspaceConfig(scope).then(async (result) => {
                       closeEditor()
@@ -1352,15 +1473,18 @@ export function SettingsModal({
           )}
 
           {tab === 'models' && api.supportsModelConfig && (
-            <div className="settings-pane">
-              <div className="models-top-bar">
-                <p className="inspector-hint">
-                  {view?.secretStorage === 'encrypted'
-                    ? t('API keys are encrypted and stored in this frontend SQLite database.')
-                    : t('API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.')}
-                </p>
-                {editorMode !== 'add' && (
-                  <button type="button" className="primary-button compact" disabled={busy} onClick={openAddProvider}>
+            <div className="settings-pane flex flex-col gap-4">
+              <div className="settings-tab-head flex flex-wrap items-center justify-between gap-4 sm:flex-nowrap">
+                <div className="min-w-0 flex-1">
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.02em] text-ink">{t('Models')}</h3>
+                  <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">
+                    {view?.secretStorage === 'encrypted'
+                      ? t('API keys are encrypted and stored in this frontend SQLite database.')
+                      : t('API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.')}
+                  </p>
+                </div>
+                {editorMode !== 'add' && providerNames.length > 0 && (
+                  <button type="button" className={cn(btnPrimaryCompact, 'flex-none')} disabled={busy} onClick={openAddProvider}>
                     <Plus size={14} aria-hidden="true" />{t('Add provider')}
                   </button>
                 )}
@@ -1368,11 +1492,12 @@ export function SettingsModal({
 
               {editorMode === 'add' && renderUnifiedEditor()}
 
-              <div className="provider-cards">
+              <div className="provider-cards flex flex-col gap-2.5">
                 {providerNames.length === 0 && editorMode !== 'add' && (
-                  <div className="provider-empty-card">
-                    <p>{t('No providers configured in this scope yet.')}</p>
-                    <button type="button" className="primary-button compact" disabled={busy} onClick={openAddProvider}>
+                  <div className="provider-empty-card flex flex-col items-center gap-3 rounded-[12px] border border-dashed border-line bg-subtle px-6 py-8 text-center">
+                    <div className="empty-card-icon grid h-10 w-10 place-items-center rounded-[10px] border border-line-subtle bg-canvas text-ink-secondary"><Cpu size={20} aria-hidden="true" /></div>
+                    <p className="m-0 text-[13px] text-ink-muted">{t('No providers configured in this scope yet.')}</p>
+                    <button type="button" className={btnPrimaryCompact} disabled={busy} onClick={openAddProvider}>
                       <Plus size={14} aria-hidden="true" />{t('Add provider')}
                     </button>
                   </div>
@@ -1389,39 +1514,39 @@ export function SettingsModal({
                   }
 
                   return (
-                    <div className="provider-card" key={name}>
-                      <div className="provider-card-head">
-                        <div className="provider-card-main">
-                          <div className="provider-card-title">
+                    <div className="provider-card flex flex-col gap-3 rounded-[12px] border border-line-subtle bg-subtle p-3.5 transition-[border-color] duration-150 hover:border-line" key={name}>
+                      <div className="provider-card-head flex items-start justify-between gap-3">
+                        <div className="provider-card-main min-w-0 flex-1">
+                          <div className="provider-card-title flex flex-wrap items-center gap-2">
                             <span
-                              className={`cred-dot ${hasCred ? 'ok' : 'missing'}`}
+                              className={cn('cred-dot h-2 w-2 shrink-0 rounded-full', hasCred ? 'ok bg-ok' : 'missing bg-warn')}
                               title={t(hasCred ? 'Credential configured' : 'Credential missing')}
                               aria-label={t(hasCred ? 'Credential configured' : 'Credential missing')}
                             />
-                            <strong>{name}</strong>
-                            <span className="status-pill">{protocolBadge(entry.protocol)}</span>
-                            {entry.apiKeyEnv && <span className="status-pill">env:{entry.apiKeyEnv}</span>}
+                            <strong className="text-[13.5px] font-semibold text-ink">{name}</strong>
+                            <span className={statusPill}>{protocolBadge(entry.protocol)}</span>
+                            {entry.apiKeyEnv && <span className={statusPill}>env:{entry.apiKeyEnv}</span>}
                           </div>
-                          <small>{entry.baseURL}</small>
+                          <small className="mt-1 block truncate font-mono text-[11.5px] text-ink-muted">{entry.baseURL}</small>
                         </div>
-                        <div className="settings-card-actions">
+                        <div className="settings-card-actions flex shrink-0 items-center gap-1.5">
                           {confirmDeleteId === name ? (
                             <>
-                              <button type="button" className="plain-button" disabled={busy} onClick={() => setConfirmDeleteId('')}>{t('Cancel')}</button>
-                              <button type="button" className="plain-button danger" disabled={busy} onClick={() => void deleteProvider(name)}>{t('Confirm delete')}</button>
+                              <button type="button" className={btnPlain} disabled={busy} onClick={() => setConfirmDeleteId('')}>{t('Cancel')}</button>
+                              <button type="button" className={btnPlainDanger} disabled={busy} onClick={() => void deleteProvider(name)}>{t('Confirm delete')}</button>
                             </>
                           ) : (
                             <>
-                              <button type="button" className="secondary-button" disabled={busy} onClick={() => openEditProvider(name)}>{t('Edit')}</button>
-                              <button type="button" className="icon-button" disabled={busy} aria-label={t('Delete')} onClick={() => setConfirmDeleteId(name)}><Trash2 size={14} /></button>
+                              <button type="button" className={btnSecondary} disabled={busy} onClick={() => openEditProvider(name)}>{t('Edit')}</button>
+                              <button type="button" className={cn('icon-button', btnIcon)} disabled={busy} aria-label={t('Delete')} onClick={() => setConfirmDeleteId(name)}><Trash2 size={14} /></button>
                             </>
                           )}
                         </div>
                       </div>
 
-                      <div className="provider-model-chips">
+                      <div className="provider-model-chips flex flex-wrap gap-1.5">
                         {providerProfiles.length === 0 ? (
-                          <button type="button" className="plain-button" onClick={() => openEditProvider(name)}>
+                          <button type="button" className={btnPlain} onClick={() => openEditProvider(name)}>
                             <Plus size={12} aria-hidden="true" />{t('Add models to this provider')}
                           </button>
                         ) : (
@@ -1429,10 +1554,19 @@ export function SettingsModal({
                             const isDefault = catalog.defaultProfile === profIdKey
                             const cap = formatCapacity(prof.contextWindow)
                             return (
-                              <div key={profIdKey} className={`provider-model-chip${isDefault ? ' default' : ''}`}>
+                              <div
+                                key={profIdKey}
+                                className={cn(
+                                  'provider-model-chip inline-flex items-center gap-1.5 rounded-[8px] border px-2 py-1 text-[12px]',
+                                  isDefault ? 'default border-line-strong bg-canvas font-medium text-ink' : 'border-line-subtle bg-canvas text-ink-secondary',
+                                )}
+                              >
                                 <button
                                   type="button"
-                                  className="chip-star-btn"
+                                  className={cn(
+                                    'chip-star-btn inline-grid h-4 w-4 cursor-pointer place-items-center border-0 bg-transparent p-0 disabled:cursor-default',
+                                    isDefault ? 'text-ink' : 'text-ink-muted hover:text-ink',
+                                  )}
                                   disabled={busy || isDefault}
                                   title={t(isDefault ? 'Default model' : 'Set as default model')}
                                   aria-label={t(isDefault ? 'Default model' : 'Set as default model')}
@@ -1440,9 +1574,9 @@ export function SettingsModal({
                                 >
                                   <Star size={12} fill={isDefault ? 'currentColor' : 'none'} aria-hidden="true" />
                                 </button>
-                                <span className="chip-model-label">{prof.displayName || prof.model}</span>
-                                {cap && <small>{cap}</small>}
-                                {isDefault && <span className="chip-default-tag">{t('Default')}</span>}
+                                <span className="chip-model-label text-ink">{prof.displayName || prof.model}</span>
+                                {cap && <small className="font-mono text-[10.5px] text-ink-muted">{cap}</small>}
+                                {isDefault && <span className="chip-default-tag rounded bg-muted px-1.5 py-[1px] text-[10px] font-semibold text-ink-secondary">{t('Default')}</span>}
                               </div>
                             )
                           })
@@ -1454,63 +1588,76 @@ export function SettingsModal({
               </div>
 
               {profileNames.some((key) => !Object.hasOwn(catalog.providers, catalog.profiles[key].provider)) && (
-                <div className="settings-card">
-                  <div className="settings-card-main">
-                    <strong>{t('Unlinked model profiles')}</strong>
-                    <small>{profileNames.filter((key) => !Object.hasOwn(catalog.providers, catalog.profiles[key].provider)).join(', ')}</small>
+                <div className={settingsCardCls}>
+                  <div className="settings-card-main min-w-0 flex flex-col gap-[3px]">
+                    <strong className="text-[13px] font-medium text-ink">{t('Unlinked model profiles')}</strong>
+                    <small className="truncate font-mono text-[11.5px] text-ink-muted">{profileNames.filter((key) => !Object.hasOwn(catalog.providers, catalog.profiles[key].provider)).join(', ')}</small>
                   </div>
                 </div>
               )}
 
-              <details className="settings-advanced">
-                <summary>{t('Advanced JSON editor')}</summary>
-                <div className="settings-advanced-body">
-                  <textarea rows={10} value={rawJSON} disabled={busy} spellCheck={false} onChange={(e) => setRawJSON(e.target.value)} />
-                  <button
-                    type="button"
-                    className="secondary-button"
+              <details className="settings-advanced rounded-[10px] border border-line-subtle bg-subtle px-3.5 py-2.5">
+                <summary className="cursor-pointer select-none text-[12.5px] font-medium text-ink-secondary hover:text-ink">{t('Advanced JSON editor')}</summary>
+                <div className="settings-advanced-body mt-2.5 flex flex-col gap-2.5">
+                  <textarea
+                    rows={10}
+                    className={cn(fieldTextarea, 'font-mono text-[12px]')}
+                    value={rawJSON}
                     disabled={busy}
-                    onClick={() => {
-                      let parsed: ConfigDocument
-                      try { parsed = JSON.parse(rawJSON) as ConfigDocument }
-                      catch { setError(t('Enter valid JSON.')); return }
-                      void commitDocument(parsed, imported?.id)
-                    }}
-                  >
-                    {t('Save JSON')}
-                  </button>
+                    spellCheck={false}
+                    onChange={(e) => setRawJSON(e.target.value)}
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      className={btnSecondary}
+                      disabled={busy}
+                      onClick={() => {
+                        let parsed: ConfigDocument
+                        try { parsed = JSON.parse(rawJSON) as ConfigDocument }
+                        catch { setError(t('Enter valid JSON.')); return }
+                        void commitDocument(parsed, imported?.id)
+                      }}
+                    >
+                      {t('Save JSON')}
+                    </button>
+                  </div>
                 </div>
               </details>
             </div>
           )}
 
           {tab === 'mcp' && api.supportsModelConfig && (
-            <div className="settings-pane">
-              <div className="models-top-bar">
-                <p className="inspector-hint">
-                  {t('Configure local stdio or remote streamable-http MCP servers. Environment variable values stay encrypted in SQLite.')}
-                </p>
-                {mcpEditorMode === 'closed' && (
-                  <button type="button" className="primary-button compact" disabled={busy} onClick={openAddMCP}>
+            <div className="settings-pane flex flex-col gap-4">
+              <div className="settings-tab-head flex flex-wrap items-center justify-between gap-4 sm:flex-nowrap">
+                <div className="min-w-0 flex-1">
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.02em] text-ink">{t('MCP')}</h3>
+                  <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">
+                    {t('Configure local stdio or remote streamable-http MCP servers. Environment variable values stay encrypted in SQLite.')}
+                  </p>
+                </div>
+                {mcpEditorMode === 'closed' && mcpServerNames.length > 0 && (
+                  <button type="button" className={cn(btnPrimaryCompact, 'flex-none')} disabled={busy} onClick={openAddMCP}>
                     <Plus size={14} aria-hidden="true" />{t('Add server')}
                   </button>
                 )}
               </div>
 
               {mcpEditorMode !== 'closed' && (
-                <form className="provider-editor-card" onSubmit={submitMCPServer}>
-                  <div className="settings-form-head">
-                    <div className="provider-editor-title">
+                <form className="provider-editor-card flex flex-col gap-4 rounded-[12px] border border-line bg-canvas p-4 shadow-elev-sm" onSubmit={submitMCPServer}>
+                  <div className="settings-form-head flex items-center justify-between gap-2.5">
+                    <div className="provider-editor-title flex items-center gap-2 text-ink">
                       <Plug size={15} aria-hidden="true" />
-                      <h3>{mcpEditorMode === 'edit' ? `${t('Edit MCP server')}: ${editingMcpName}` : t('Add MCP server')}</h3>
+                      <h3 className="m-0 text-[14px] font-semibold">{mcpEditorMode === 'edit' ? `${t('Edit MCP server')}: ${editingMcpName}` : t('Add MCP server')}</h3>
                     </div>
-                    <button type="button" className="icon-button" aria-label={t('Close')} disabled={busy} onClick={() => setMcpEditorMode('closed')}><X size={15} /></button>
+                    <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={() => setMcpEditorMode('closed')}><X size={15} /></button>
                   </div>
 
-                  <div className="settings-form-grid">
-                    <label className="form-field">{t('Server name')}
+                  <div className={formGridCls}>
+                    <label className={formFieldCls}>{t('Server name')}
                       <input
                         required
+                        className={fieldInput}
                         disabled={busy || mcpEditorMode === 'edit'}
                         value={mcpName}
                         placeholder="filesystem"
@@ -1519,8 +1666,8 @@ export function SettingsModal({
                         onChange={(e) => setMcpName(e.target.value)}
                       />
                     </label>
-                    <label className="form-field">{t('Transport')}
-                      <select value={mcpTransport} disabled={busy} onChange={(e) => setMcpTransport(e.target.value as 'stdio' | 'streamable-http')}>
+                    <label className={formFieldCls}>{t('Transport')}
+                      <select className={fieldSelect} value={mcpTransport} disabled={busy} onChange={(e) => setMcpTransport(e.target.value as 'stdio' | 'streamable-http')}>
                         <option value="stdio">stdio</option>
                         <option value="streamable-http">streamable-http</option>
                       </select>
@@ -1529,9 +1676,10 @@ export function SettingsModal({
 
                   {mcpTransport === 'stdio' ? (
                     <>
-                      <label className="form-field">{t('Command')}
+                      <label className={formFieldCls}>{t('Command')}
                         <input
                           required
+                          className={fieldInput}
                           disabled={busy}
                           value={mcpCommand}
                           placeholder="npx"
@@ -1541,35 +1689,36 @@ export function SettingsModal({
                         />
                       </label>
 
-                      <div className="mcp-editor-block">
-                        <div className="provider-models-head">
-                          <span className="provider-models-label"><strong>{t('Arguments')}</strong></span>
-                          <button type="button" className="plain-button" disabled={busy} onClick={() => setMcpArgs((prev) => [...prev, ''])}>
+                      <div className="mcp-editor-block flex flex-col gap-2">
+                        <div className="provider-models-head flex items-center justify-between gap-2">
+                          <span className="text-[12.5px] font-semibold text-ink">{t('Arguments')}</span>
+                          <button type="button" className={btnPlain} disabled={busy} onClick={() => setMcpArgs((prev) => [...prev, ''])}>
                             <Plus size={12} />{t('Add argument')}
                           </button>
                         </div>
                         {mcpArgs.map((arg, idx) => (
-                          <div className="mcp-kv-row" key={idx}>
+                          <div className="mcp-kv-row flex items-center gap-2" key={idx}>
                             <input
+                              className={cn(fieldInput, 'h-[32px] font-mono text-[12.5px]')}
                               value={arg}
                               disabled={busy}
                               placeholder={`arg ${idx + 1}`}
                               spellCheck={false}
                               onChange={(e) => setMcpArgs((prev) => prev.map((v, i) => (i === idx ? e.target.value : v)))}
                             />
-                            <button type="button" className="icon-button" aria-label={t('Delete')} disabled={busy} onClick={() => setMcpArgs((prev) => prev.filter((_, i) => i !== idx))}>
+                            <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Delete')} disabled={busy} onClick={() => setMcpArgs((prev) => prev.filter((_, i) => i !== idx))}>
                               <Trash2 size={13} />
                             </button>
                           </div>
                         ))}
                       </div>
 
-                      <div className="mcp-editor-block">
-                        <div className="provider-models-head">
-                          <span className="provider-models-label"><strong>{t('Environment variables')}</strong></span>
+                      <div className="mcp-editor-block flex flex-col gap-2">
+                        <div className="provider-models-head flex items-center justify-between gap-2">
+                          <span className="text-[12.5px] font-semibold text-ink">{t('Environment variables')}</span>
                           <button
                             type="button"
-                            className="plain-button"
+                            className={btnPlain}
                             disabled={busy}
                             onClick={() => setMcpEnvRows((prev) => [...prev, { id: `new:${Date.now()}:${prev.length}`, key: '', value: '', saved: false }])}
                           >
@@ -1577,8 +1726,9 @@ export function SettingsModal({
                           </button>
                         </div>
                         {mcpEnvRows.map((row) => (
-                          <div className="mcp-kv-row env" key={row.id}>
+                          <div className="mcp-kv-row env grid grid-cols-[minmax(120px,0.9fr)_minmax(0,1.2fr)_auto] items-center gap-2" key={row.id}>
                             <input
+                              className={cn(fieldInput, 'h-[32px] font-mono text-[12.5px]')}
                               value={row.key}
                               disabled={busy}
                               placeholder="ENV_KEY"
@@ -1588,13 +1738,14 @@ export function SettingsModal({
                             />
                             <input
                               type="password"
+                              className={cn(fieldInput, 'h-[32px] text-[12.5px]')}
                               value={row.value}
                               disabled={busy}
                               autoComplete="off"
                               placeholder={row.saved ? t('Saved — leave blank to keep') : t('Value')}
                               onChange={(e) => setMcpEnvRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, value: e.target.value } : r)))}
                             />
-                            <button type="button" className="icon-button" aria-label={t('Delete')} disabled={busy} onClick={() => setMcpEnvRows((prev) => prev.filter((r) => r.id !== row.id))}>
+                            <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Delete')} disabled={busy} onClick={() => setMcpEnvRows((prev) => prev.filter((r) => r.id !== row.id))}>
                               <Trash2 size={13} />
                             </button>
                           </div>
@@ -1603,10 +1754,11 @@ export function SettingsModal({
                     </>
                   ) : (
                     <>
-                      <label className="form-field">{t('Endpoint URL')}
+                      <label className={formFieldCls}>{t('Endpoint URL')}
                         <input
                           required
                           type="url"
+                          className={fieldInput}
                           disabled={busy}
                           value={mcpURL}
                           placeholder="https://mcp.example.com/mcp"
@@ -1615,9 +1767,10 @@ export function SettingsModal({
                           onChange={(e) => setMcpURL(e.target.value)}
                         />
                       </label>
-                      <label className="form-field">{t('OAuth client metadata URL (optional)')}
+                      <label className={formFieldCls}>{t('OAuth client metadata URL (optional)')}
                         <input
                           type="url"
+                          className={fieldInput}
                           disabled={busy}
                           value={mcpClientMetadataURL}
                           placeholder="https://app.example.com/oauth/client.json"
@@ -1629,18 +1782,19 @@ export function SettingsModal({
                     </>
                   )}
 
-                  <div className="settings-form-footer">
-                    <button type="button" className="secondary-button" disabled={busy} onClick={() => setMcpEditorMode('closed')}>{t('Cancel')}</button>
-                    <button type="submit" className="primary-button compact" disabled={busy}><Check size={14} />{t('Save')}</button>
+                  <div className="settings-form-footer flex items-center justify-end gap-2 border-t border-line-subtle pt-3">
+                    <button type="button" className={btnSecondary} disabled={busy} onClick={() => setMcpEditorMode('closed')}>{t('Cancel')}</button>
+                    <button type="submit" className={btnPrimaryCompact} disabled={busy}><Check size={14} />{t('Save')}</button>
                   </div>
                 </form>
               )}
 
-              <div className="provider-cards">
+              <div className="provider-cards flex flex-col gap-2.5">
                 {mcpServerNames.length === 0 && mcpEditorMode === 'closed' && (
-                  <div className="provider-empty-card">
-                    <p>{t('No custom MCP servers configured in this scope.')}</p>
-                    <button type="button" className="primary-button compact" disabled={busy} onClick={openAddMCP}>
+                  <div className="provider-empty-card flex flex-col items-center gap-3 rounded-[12px] border border-dashed border-line bg-subtle px-6 py-8 text-center">
+                    <div className="empty-card-icon grid h-10 w-10 place-items-center rounded-[10px] border border-line-subtle bg-canvas text-ink-secondary"><Plug size={20} aria-hidden="true" /></div>
+                    <p className="m-0 text-[13px] text-ink-muted">{t('No custom MCP servers configured in this scope.')}</p>
+                    <button type="button" className={btnPrimaryCompact} disabled={busy} onClick={openAddMCP}>
                       <Plus size={14} aria-hidden="true" />{t('Add server')}
                     </button>
                   </div>
@@ -1652,28 +1806,28 @@ export function SettingsModal({
                     ? [s.command || '', ...(s.args ?? [])].filter(Boolean).join(' ')
                     : (s.url || '')
                   return (
-                    <div className="provider-card mcp-config-card" key={name}>
-                      <div className="provider-card-head">
-                        <div className="provider-card-main">
-                          <div className="provider-card-title">
-                            <strong>{name}</strong>
-                            <span className="status-pill">{s.transport}</span>
+                    <div className="provider-card mcp-config-card flex flex-col gap-3 rounded-[12px] border border-line-subtle bg-subtle p-3.5 transition-[border-color] duration-150 hover:border-line" key={name}>
+                      <div className="provider-card-head flex items-start justify-between gap-3">
+                        <div className="provider-card-main min-w-0 flex-1">
+                          <div className="provider-card-title flex flex-wrap items-center gap-2">
+                            <strong className="text-[13.5px] font-semibold text-ink">{name}</strong>
+                            <span className={statusPill}>{s.transport}</span>
                             {Boolean(s.envKeys?.length) && (
-                              <span className="status-pill mcp-env-saved-tag">{s.envKeys!.length} {t('env')}</span>
+                              <span className={cn(statusPill, 'mcp-env-saved-tag')}>{s.envKeys!.length} {t('env')}</span>
                             )}
                           </div>
-                          <small>{cmdLine}</small>
+                          <small className="mt-1 block truncate font-mono text-[11.5px] text-ink-muted">{cmdLine}</small>
                         </div>
-                        <div className="settings-card-actions">
+                        <div className="settings-card-actions flex shrink-0 items-center gap-1.5">
                           {confirmDeleteMcp === name ? (
                             <>
-                              <button type="button" className="plain-button" disabled={busy} onClick={() => setConfirmDeleteMcp('')}>{t('Cancel')}</button>
-                              <button type="button" className="plain-button danger" disabled={busy} onClick={() => void deleteMCPServer(name)}>{t('Confirm delete')}</button>
+                              <button type="button" className={btnPlain} disabled={busy} onClick={() => setConfirmDeleteMcp('')}>{t('Cancel')}</button>
+                              <button type="button" className={btnPlainDanger} disabled={busy} onClick={() => void deleteMCPServer(name)}>{t('Confirm delete')}</button>
                             </>
                           ) : (
                             <>
-                              <button type="button" className="secondary-button" disabled={busy} onClick={() => openEditMCP(name)}>{t('Edit')}</button>
-                              <button type="button" className="icon-button" disabled={busy} aria-label={t('Delete')} onClick={() => setConfirmDeleteMcp(name)}><Trash2 size={14} /></button>
+                              <button type="button" className={btnSecondary} disabled={busy} onClick={() => openEditMCP(name)}>{t('Edit')}</button>
+                              <button type="button" className={cn('icon-button', btnIcon)} disabled={busy} aria-label={t('Delete')} onClick={() => setConfirmDeleteMcp(name)}><Trash2 size={14} /></button>
                             </>
                           )}
                         </div>
@@ -1686,181 +1840,316 @@ export function SettingsModal({
           )}
 
           {tab === 'runtime' && api.supportsModelConfig && (
-            <div className="settings-pane">
-              <div className="settings-form">
-                <div className="settings-form-head"><h3>{t('Runtime & Agents')}</h3></div>
-                <p className="inspector-hint">{t('These limits apply to new tasks. Running tasks keep their current settings.')}</p>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Parallel agents (0 = automatic)')}
-                    <input type="number" min={0} value={Number(asObject(doc.runtime).maxParallelAgents) || ''} onChange={(e) => updateConfigField('runtime', 'maxParallelAgents', e.target.value ? Number(e.target.value) : '')} />
+            <div className="settings-pane flex flex-col gap-4">
+              <div className="settings-tab-head flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.02em] text-ink">{t('Runtime & Agents')}</h3>
+                  <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">{t('These limits apply to new tasks. Running tasks keep their current settings.')}</p>
+                </div>
+              </div>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Concurrency & context')}</h4>
+                <div className="settings-group-card flex flex-col gap-3 rounded-[11px] border border-line-subtle bg-subtle px-4 py-3.5">
+                  <div className={formGridCls}>
+                    <label className={formFieldCls}>{t('Parallel agents (0 = automatic)')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).maxParallelAgents) || ''} onChange={(e) => updateConfigField('runtime', 'maxParallelAgents', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                    <label className={formFieldCls}>{t('Context window (0 = automatic)')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).contextWindow) || ''} onChange={(e) => updateConfigField('runtime', 'contextWindow', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                    <label className={formFieldCls}>{t('Children per agent (0 = default)')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).maxTeamChildrenPerAgent) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamChildrenPerAgent', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                    <label className={formFieldCls}>{t('Delegation depth (0 = default)')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).maxTeamDepth) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamDepth', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Context compaction')}</h4>
+                <div className={settingsGroupCls}>
+                  <label className={cn(settingsRowCls, 'settings-row-interactive cursor-pointer transition-[background] duration-120 hover:bg-hover')}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Automatically compact context')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <span className="toggle-control relative inline-flex h-5 w-[34px] flex-none items-center">
+                        <input
+                          type="checkbox"
+                          className="absolute m-0 h-0 w-0 opacity-0"
+                          checked={asObject(doc.runtime).autoCompact !== false}
+                          onChange={(e) => updateConfigField('runtime', 'autoCompact', e.target.checked)}
+                        />
+                        <span className="toggle-track" aria-hidden="true" />
+                      </span>
+                    </span>
                   </label>
-                  <label className="form-field">{t('Context window (0 = automatic)')}
-                    <input type="number" min={0} value={Number(asObject(doc.runtime).contextWindow) || ''} onChange={(e) => updateConfigField('runtime', 'contextWindow', e.target.value ? Number(e.target.value) : '')} />
+                  <div className="settings-group-inner px-4 py-3.5">
+                    <div className={formGridCls}>
+                      <label className={formFieldCls}>{t('Compaction threshold (0.1–1.0)')}
+                        <input type="number" className={fieldInput} min="0.1" max="1" step="0.05" placeholder="0.85" value={Number(asObject(doc.runtime).autoCompactThreshold) || ''} onChange={(e) => updateConfigField('runtime', 'autoCompactThreshold', e.target.value ? Number(e.target.value) : '')} />
+                      </label>
+                      <label className={formFieldCls}>{t('Reserve output tokens (0 = default)')}
+                        <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).reserveOutputTokens) || ''} onChange={(e) => updateConfigField('runtime', 'reserveOutputTokens', e.target.value ? Number(e.target.value) : '')} />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Attachment limits')}</h4>
+                <div className="settings-group-card flex flex-col gap-3 rounded-[11px] border border-line-subtle bg-subtle px-4 py-3.5">
+                  <div className={formGridCls}>
+                    <label className={formFieldCls}>{t('Maximum files')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.attachments).maxFiles) || ''} onChange={(e) => updateConfigField('attachments', 'maxFiles', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                    <label className={formFieldCls}>{t('Maximum size per file (bytes)')}
+                      <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.attachments).maxFileBytes) || ''} onChange={(e) => updateConfigField('attachments', 'maxFileBytes', e.target.value ? Number(e.target.value) : '')} />
+                    </label>
+                  </div>
+                  <label className={formFieldCls}>{t('Maximum combined attachment size (bytes)')}
+                    <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.attachments).maxTotalBytes) || ''} onChange={(e) => updateConfigField('attachments', 'maxTotalBytes', e.target.value ? Number(e.target.value) : '')} />
                   </label>
                 </div>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Children per agent (0 = default)')}
-                    <input type="number" min={0} value={Number(asObject(doc.runtime).maxTeamChildrenPerAgent) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamChildrenPerAgent', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                  <label className="form-field">{t('Delegation depth (0 = default)')}
-                    <input type="number" min={0} value={Number(asObject(doc.runtime).maxTeamDepth) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamDepth', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                </div>
-                <label className="remember-token"><input type="checkbox" checked={asObject(doc.runtime).autoCompact !== false} onChange={(e) => updateConfigField('runtime', 'autoCompact', e.target.checked)} />{t('Automatically compact context')}</label>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Compaction threshold (0.1–1.0)')}
-                    <input type="number" min="0.1" max="1" step="0.05" value={Number(asObject(doc.runtime).autoCompactThreshold) || ''} onChange={(e) => updateConfigField('runtime', 'autoCompactThreshold', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                  <label className="form-field">{t('Reserve output tokens (0 = default)')}
-                    <input type="number" min={0} value={Number(asObject(doc.runtime).reserveOutputTokens) || ''} onChange={(e) => updateConfigField('runtime', 'reserveOutputTokens', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                </div>
-                <h3>{t('Attachment limits')}</h3>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Maximum files')}
-                    <input type="number" min={0} value={Number(asObject(doc.attachments).maxFiles) || ''} onChange={(e) => updateConfigField('attachments', 'maxFiles', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                  <label className="form-field">{t('Maximum size per file (bytes)')}
-                    <input type="number" min={0} value={Number(asObject(doc.attachments).maxFileBytes) || ''} onChange={(e) => updateConfigField('attachments', 'maxFileBytes', e.target.value ? Number(e.target.value) : '')} />
-                  </label>
-                </div>
-                <label className="form-field">{t('Maximum combined attachment size (bytes)')}
-                  <input type="number" min={0} value={Number(asObject(doc.attachments).maxTotalBytes) || ''} onChange={(e) => updateConfigField('attachments', 'maxTotalBytes', e.target.value ? Number(e.target.value) : '')} />
-                </label>
-                <div className="settings-form-footer">
-                  <button type="button" className="primary-button compact" disabled={busy} onClick={() => void commitDocument(doc, imported?.id, t('Runtime settings saved to SQLite database.'))}><Check size={14} />{t('Save runtime settings')}</button>
-                </div>
+              </section>
+
+              <div className="settings-save-bar flex justify-end pt-0.5">
+                <button type="button" className={btnPrimaryCompact} disabled={busy} onClick={() => void commitDocument(doc, imported?.id, t('Runtime settings saved to SQLite database.'))}>
+                  <Check size={14} aria-hidden="true" />{t('Save runtime settings')}
+                </button>
               </div>
             </div>
           )}
 
           {tab === 'remote' && (
-            <div className="settings-pane">
+            <div className="settings-pane flex flex-col gap-4">
+              <div className="settings-tab-head flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.02em] text-ink">{t('Remote & Token')}</h3>
+                  <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">{t('Connect to a remote Lune Core endpoint over WebSocket and manage saved tokens.')}</p>
+                </div>
+              </div>
+
               {isRemoteActive && (
-                <div className="settings-card">
-                  <div className="settings-card-main">
-                    <div className="settings-card-title">
-                      <strong>{t('Connected to Remote Core')}</strong>
-                      <span className="status-pill active">{t('Connected')}</span>
+                <div className={settingsCardCls}>
+                  <div className="settings-card-main flex min-w-0 flex-col gap-[3px]">
+                    <div className="settings-card-title flex items-center gap-2">
+                      <strong className="text-[13px] font-medium text-ink">{t('Connected to Remote Core')}</strong>
+                      <span className={cn(statusPill, 'border-accent bg-accent text-accent-fg')}>{t('Connected')}</span>
                     </div>
-                    <small>{activeRemoteURL}</small>
+                    <small className="truncate font-mono text-[11.5px] text-ink-muted">{activeRemoteURL}</small>
                   </div>
-                  <div className="settings-card-actions">
+                  <div className="settings-card-actions flex shrink-0 items-center gap-1.5">
                     {hasLocalHost && onReturnToLocal && (
-                      <button type="button" className="secondary-button" disabled={busy} onClick={() => void onReturnToLocal().then(onClose)}>
+                      <button type="button" className={btnSecondary} disabled={busy} onClick={() => void onReturnToLocal().then(onClose)}>
                         <FolderGit2 size={14} aria-hidden="true" />{t('Return to local workspaces')}
                       </button>
                     )}
                     {onDisconnectRemote && (
-                      <button type="button" className="plain-button" disabled={busy} onClick={() => void onDisconnectRemote().then(onClose)}>{t('Disconnect')}</button>
+                      <button type="button" className={btnPlain} disabled={busy} onClick={() => void onDisconnectRemote().then(onClose)}>{t('Disconnect')}</button>
                     )}
                   </div>
                 </div>
               )}
 
-              <div className="settings-cards">
-                {connections.length === 0 && <p className="inspector-hint">{t('No saved remote Core endpoints yet.')}</p>}
-                {connections.map((saved) => (
-                  <div className="settings-card" key={saved.address}>
-                    <div className="settings-card-main">
-                      <div className="settings-card-title">
-                        <strong>{saved.name || saved.address}</strong>
-                        {saved.remembered && <span className="status-pill active">{t('Token saved in DB')}</span>}
+              {connections.length > 0 ? (
+                <div className="settings-cards flex flex-col gap-2">
+                  {connections.map((saved) => (
+                    <div className={settingsCardCls} key={saved.address}>
+                      <div className="settings-card-main flex min-w-0 flex-col gap-[3px]">
+                        <div className="settings-card-title flex items-center gap-2">
+                          <strong className="text-[13px] font-medium text-ink">{saved.name || saved.address}</strong>
+                          {saved.remembered && <span className={cn(statusPill, 'border-accent bg-accent text-accent-fg')}>{t('Token saved in DB')}</span>}
+                        </div>
+                        <small className="truncate font-mono text-[11.5px] text-ink-muted">{saved.address}</small>
                       </div>
-                      <small>{saved.address}</small>
+                      <div className="settings-card-actions flex shrink-0 items-center gap-1.5">
+                        <button type="button" className={btnSecondary} disabled={busy} onClick={() => void connectSavedRemote(saved)}>{t('Connect')}</button>
+                        <button
+                          type="button"
+                          className={cn('icon-button', btnIcon)}
+                          disabled={busy}
+                          aria-label={t('Delete')}
+                          onClick={() => void api.forgetConnection('remote', saved.address).then(loadConnections).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="settings-card-actions">
-                      <button type="button" className="secondary-button" disabled={busy} onClick={() => void connectSavedRemote(saved)}>{t('Connect')}</button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        disabled={busy}
-                        aria-label={t('Delete')}
-                        onClick={() => void api.forgetConnection('remote', saved.address).then(loadConnections).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="m-0 text-[13px] text-ink-muted">{t('No saved remote Core endpoints yet.')}</p>
+              )}
 
-              <form className="settings-form" onSubmit={(e) => { e.preventDefault(); void saveRemoteForm(true) }}>
+              <form className="settings-group-card flex flex-col gap-3 rounded-[11px] border border-line-subtle bg-subtle px-4 py-3.5" onSubmit={(e) => { e.preventDefault(); void saveRemoteForm(true) }}>
                 <div className="settings-form-head">
-                  <h3>{t('Remote Core endpoint')}</h3>
+                  <h3 className="m-0 text-[14px] font-semibold text-ink">{t('Remote Core endpoint')}</h3>
                 </div>
-                <label className="form-field">{t('Core WebSocket URL')}
-                  <input required disabled={busy} value={remoteURL} onChange={(e) => setRemoteURL(e.target.value)} placeholder="wss://core.example.com:18092/v1/runtime" autoCapitalize="none" spellCheck={false} />
+                <label className={formFieldCls}>{t('Core WebSocket URL')}
+                  <input required className={fieldInput} disabled={busy} value={remoteURL} onChange={(e) => setRemoteURL(e.target.value)} placeholder="wss://core.example.com:18092/v1/runtime" autoCapitalize="none" spellCheck={false} />
                 </label>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Connection name')}
-                    <input disabled={busy} value={remoteName} onChange={(e) => setRemoteName(e.target.value)} placeholder={t('Optional label')} />
+                <div className={formGridCls}>
+                  <label className={formFieldCls}>{t('Connection name')}
+                    <input className={fieldInput} disabled={busy} value={remoteName} onChange={(e) => setRemoteName(e.target.value)} placeholder={t('Optional label')} />
                   </label>
-                  <label className="form-field">{t('Access token')}
-                    <input type="password" autoComplete="off" disabled={busy} value={remoteToken} onChange={(e) => setRemoteToken(e.target.value)} placeholder={t('Paste your Core token')} />
+                  <label className={formFieldCls}>{t('Access token')}
+                    <input type="password" className={fieldInput} autoComplete="off" disabled={busy} value={remoteToken} onChange={(e) => setRemoteToken(e.target.value)} placeholder={t('Paste your Core token')} />
                   </label>
                 </div>
-                <label className="remember-token">
-                  <input type="checkbox" checked={rememberToken} disabled={busy} onChange={(e) => setRememberToken(e.target.checked)} />
-                  {t('Save token in SQLite database')}
-                </label>
-                <div className="settings-form-footer">
-                  <button type="button" className="secondary-button" disabled={busy || !remoteURL.trim()} onClick={() => void saveRemoteForm(false)}>{t('Save only')}</button>
-                  <button type="submit" className="primary-button compact" disabled={busy || !remoteURL.trim()}>
-                    <RefreshCw size={14} aria-hidden="true" />{t('Save & Connect')}
-                  </button>
+                <div className="settings-form-footer settings-form-footer-split flex flex-wrap items-center justify-between gap-2.5 border-t border-line-subtle pt-3">
+                  <ToggleSwitch
+                    label={t('Save token in SQLite database')}
+                    checked={rememberToken}
+                    disabled={busy}
+                    onChange={(checked) => setRememberToken(checked)}
+                  />
+                  <div className="settings-footer-btns flex items-center gap-2">
+                    <button type="button" className={btnSecondary} disabled={busy || !remoteURL.trim()} onClick={() => void saveRemoteForm(false)}>{t('Save only')}</button>
+                    <button type="submit" className={btnPrimaryCompact} disabled={busy || !remoteURL.trim()}>
+                      <RefreshCw size={14} aria-hidden="true" />{t('Save & Connect')}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
           )}
 
           {tab === 'general' && (
-            <div className="settings-pane">
-              <div className="settings-form">
-                <div className="kv-row">
-                  <span>{t('Appearance')}</span>
-                  <ThemePicker value={theme} onChange={(value) => void saveUiPreference({ theme: value })} />
+            <div className="settings-pane flex flex-col gap-4">
+              <div className="settings-tab-head flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="m-0 text-[16px] font-semibold tracking-[-0.02em] text-ink">{t('General')}</h3>
+                  <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">{t('Configure personal appearance, typography, and interaction preferences.')}</p>
                 </div>
-                <label className="kv-row">{t('Interface language')}
-                  <select value={language} onChange={(event) => void saveUiPreference({ language: event.target.value as UiPreferences['language'] })}>
-                    <option value="en">English</option><option value="zh">简体中文</option>
-                  </select>
-                </label>
-                <div className="settings-form-grid">
-                  <label className="form-field">{t('Message text size')}
-                    <select value={uiPreferences.bodyFontSize} onChange={(event) => void saveUiPreference({ bodyFontSize: Number(event.target.value) })}>{[12, 13, 14, 15, 16, 17, 18].map((size) => <option key={size} value={size}>{size} px</option>)}</select>
-                  </label>
-                  <label className="form-field">{t('Code text size')}
-                    <select value={uiPreferences.codeFontSize} onChange={(event) => void saveUiPreference({ codeFontSize: Number(event.target.value) })}>{[10, 11, 12, 13, 14, 15, 16].map((size) => <option key={size} value={size}>{size} px</option>)}</select>
-                  </label>
-                </div>
-                <label className="form-field">{t('Pressing Enter while a task is running')}
-                  <select value={uiPreferences.runningEnter} onChange={(event) => void saveUiPreference({ runningEnter: event.target.value as UiPreferences['runningEnter'] })}>
-                    <option value="queue">{t('Queue a follow-up')}</option><option value="steer">{t('Interrupt with this message')}</option>
-                  </select>
-                </label>
-                <label className="remember-token"><input type="checkbox" checked={uiPreferences.timelineDetailsExpanded} onChange={(event) => void saveUiPreference({ timelineDetailsExpanded: event.target.checked })} />{t('Expand tool and reasoning details by default')}</label>
-                <label className="form-field">{t('Usage display density')}
-                  <select value={uiPreferences.usageDensity} onChange={(event) => void saveUiPreference({ usageDensity: event.target.value as UiPreferences['usageDensity'] })}>
-                    <option value="comfortable">{t('Comfortable')}</option><option value="compact">{t('Compact')}</option>
-                  </select>
-                </label>
-                {api.supportsShortcut && window.luneDesktop && (
-                  <div className="form-field">
-                    <label htmlFor="settings-quick-shortcut">{t('Quick window shortcut')}</label>
-                    <div className="input-with-action">
-                      <input id="settings-quick-shortcut" value={shortcut} onChange={(e) => setShortcut(e.target.value)} />
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => void window.luneDesktop?.setShortcut(shortcut).then(setShortcut).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-                      >
-                        {t('Apply')}
-                      </button>
+              </div>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Appearance & language')}</h4>
+                <div className={settingsGroupCls}>
+                  <div className={settingsRowCls}>
+                    <div className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Appearance')}</strong>
+                    </div>
+                    <div className={cn(settingsRowControlCls, '[&_.theme-picker]:w-full sm:[&_.theme-picker]:w-[176px]')}>
+                      <ThemePicker value={theme} onChange={(value) => void saveUiPreference({ theme: value })} />
                     </div>
                   </div>
-                )}
-              </div>
+                  <label className={settingsRowCls}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Interface language')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <select
+                        className={cn(fieldSelect, 'h-[32px] w-full sm:w-[176px] text-[12.5px]')}
+                        value={language}
+                        onChange={(event) => void saveUiPreference({ language: event.target.value as UiPreferences['language'] })}
+                      >
+                        <option value="en">English</option>
+                        <option value="zh">简体中文</option>
+                      </select>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Typography & display')}</h4>
+                <div className={settingsGroupCls}>
+                  <label className={settingsRowCls}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Message text size')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <select
+                        className={cn(fieldSelect, 'h-[32px] w-full sm:w-[176px] text-[12.5px]')}
+                        value={uiPreferences.bodyFontSize}
+                        onChange={(event) => void saveUiPreference({ bodyFontSize: Number(event.target.value) })}
+                      >
+                        {[12, 13, 14, 15, 16, 17, 18].map((size) => <option key={size} value={size}>{size} px</option>)}
+                      </select>
+                    </span>
+                  </label>
+                  <label className={settingsRowCls}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Code text size')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <select
+                        className={cn(fieldSelect, 'h-[32px] w-full sm:w-[176px] text-[12.5px]')}
+                        value={uiPreferences.codeFontSize}
+                        onChange={(event) => void saveUiPreference({ codeFontSize: Number(event.target.value) })}
+                      >
+                        {[10, 11, 12, 13, 14, 15, 16].map((size) => <option key={size} value={size}>{size} px</option>)}
+                      </select>
+                    </span>
+                  </label>
+                  <label className={settingsRowCls}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Usage display density')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <select
+                        className={cn(fieldSelect, 'h-[32px] w-full sm:w-[176px] text-[12.5px]')}
+                        value={uiPreferences.usageDensity}
+                        onChange={(event) => void saveUiPreference({ usageDensity: event.target.value as UiPreferences['usageDensity'] })}
+                      >
+                        <option value="comfortable">{t('Comfortable')}</option>
+                        <option value="compact">{t('Compact')}</option>
+                      </select>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section className="settings-section flex flex-col gap-[7px]">
+                <h4 className={settingsSectionTitleCls}>{t('Behavior')}</h4>
+                <div className={settingsGroupCls}>
+                  <label className={settingsRowCls}>
+                    <span className="settings-row-info flex min-w-0 flex-col gap-0.5">
+                      <strong className="text-[13px] font-medium text-ink">{t('Pressing Enter while a task is running')}</strong>
+                    </span>
+                    <span className={settingsRowControlCls}>
+                      <select
+                        className={cn(fieldSelect, 'h-[32px] w-full sm:w-[176px] text-[12.5px]')}
+                        value={uiPreferences.runningEnter}
+                        onChange={(event) => void saveUiPreference({ runningEnter: event.target.value as UiPreferences['runningEnter'] })}
+                      >
+                        <option value="queue">{t('Queue a follow-up')}</option>
+                        <option value="steer">{t('Interrupt with this message')}</option>
+                      </select>
+                    </span>
+                  </label>
+                  {api.supportsShortcut && window.luneDesktop && (
+                    <div className={settingsRowCls}>
+                      <label className="settings-row-info flex min-w-0 flex-col gap-0.5" htmlFor="settings-quick-shortcut">
+                        <strong className="text-[13px] font-medium text-ink">{t('Quick window shortcut')}</strong>
+                      </label>
+                      <div className={settingsRowControlCls}>
+                        <div className="input-with-action compact-action flex w-[240px] max-w-full items-center gap-1.5">
+                          <input
+                            id="settings-quick-shortcut"
+                            className={cn(fieldInput, 'h-[32px] flex-1 px-2.5 text-[12.5px]')}
+                            value={shortcut}
+                            onChange={(e) => setShortcut(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className={btnSecondary}
+                            onClick={() => void window.luneDesktop?.setShortcut(shortcut).then(setShortcut).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                          >
+                            {t('Apply')}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
             </div>
           )}
         </div>

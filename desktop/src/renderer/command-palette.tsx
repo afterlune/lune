@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CornerDownLeft, File, Folder, MessageSquare, Search, Settings, Sparkles } from 'lucide-react'
-import { useTranslate } from './language'
+import { useTranslation } from 'react-i18next'
 import type { SessionSummary } from './harness-types'
+import { backdropOverlay, badgeMono, cn } from './ui'
 import { filterMentionItems, type MentionItem } from './workspace-mentions'
 
 export interface PaletteActionItem {
@@ -50,7 +51,7 @@ export function CommandPalette({
   onOpenFile: (path: string) => void
   actions: PaletteActionItem[]
 }) {
-  const t = useTranslate()
+  const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const [query, setQuery] = useState('')
@@ -149,13 +150,13 @@ export function CommandPalette({
 
   return (
     <div
-      className="command-palette-backdrop"
+      className={cn('command-palette-backdrop', backdropOverlay, 'z-50 items-start pt-[12vh]')}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
     >
       <section
-        className="command-palette"
+        className="command-palette flex w-[min(600px,calc(100vw-24px))] max-h-[min(520px,74dvh)] flex-col overflow-hidden rounded-[14px] border border-line bg-canvas shadow-elev-lg animate-[arrive_.14s_ease_both]"
         role="dialog"
         aria-modal="true"
         aria-label={t('Quick switcher')}
@@ -182,28 +183,31 @@ export function CommandPalette({
           }
         }}
       >
-        <div className="palette-input-row">
+        <div className="palette-input-row flex items-center gap-2.5 border-b border-line-subtle px-3.5 py-2.5 text-ink-muted">
           <Search size={16} aria-hidden="true" />
           <input
             ref={inputRef}
             type="text"
+            className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-faint"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('Jump to conversation, file, workspace, or setting…')}
             aria-label={t('Quick switcher')}
           />
-          <kbd className="palette-kbd">Esc</kbd>
+          <kbd className={cn('palette-kbd', badgeMono, 'px-1.5 py-0.5 text-[10.5px]')}>Esc</kbd>
         </div>
 
-        <div className="palette-list" ref={listRef} role="listbox">
+        <div className="palette-list flex-1 overflow-y-auto p-1.5" ref={listRef} role="listbox">
           {sections.length === 0 ? (
-            <div className="palette-empty">
+            <div className="palette-empty px-3 py-8 text-center text-[13px] text-ink-muted">
               {filesLoading ? t('Indexing workspace files…') : t('No matching results.')}
             </div>
           ) : (
             sections.map((section) => (
-              <div className="palette-group" key={section.title}>
-                <div className="palette-group-label">{t(section.title)}</div>
+              <div className="palette-group mb-1.5 last:mb-0" key={section.title}>
+                <div className="palette-group-label px-2.5 pt-1.5 pb-1 text-[11px] font-semibold tracking-[0.02em] text-ink-muted">
+                  {t(section.title)}
+                </div>
                 {section.items.map(({ item, index }) => {
                   const active = index === selectedIndex
                   return (
@@ -212,11 +216,14 @@ export function CommandPalette({
                       type="button"
                       role="option"
                       aria-selected={active}
-                      className={`palette-item${active ? ' active' : ''}`}
+                      className={cn(
+                        'palette-item flex w-full cursor-pointer items-center gap-2.5 rounded-[8px] border-0 px-2.5 py-[7px] text-left text-[13px] transition-[background,color] duration-100',
+                        active ? 'active bg-hover text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover hover:text-ink',
+                      )}
                       onMouseEnter={() => setSelectedIndex(index)}
                       onClick={() => runItem(item)}
                     >
-                      <span className="palette-item-icon" aria-hidden="true">
+                      <span className="palette-item-icon grid h-5 w-5 shrink-0 place-items-center text-ink-muted" aria-hidden="true">
                         {item.kind === 'action' ? (
                           item.section === 'Settings' ? <Settings size={14} /> : <Sparkles size={14} />
                         ) : item.kind === 'session' ? (
@@ -229,7 +236,7 @@ export function CommandPalette({
                           <File size={14} />
                         )}
                       </span>
-                      <span className="palette-item-title">
+                      <span className="palette-item-title min-w-0 flex-1 truncate font-medium text-ink">
                         {item.kind === 'action'
                           ? t(item.action.label)
                           : item.kind === 'session'
@@ -238,7 +245,7 @@ export function CommandPalette({
                               ? item.workspace.name
                               : item.file.name}
                       </span>
-                      <span className="palette-item-meta">
+                      <span className="palette-item-meta max-w-[44%] truncate font-mono text-[11.5px] text-ink-muted">
                         {item.kind === 'action'
                           ? (item.action.hint ? t(item.action.hint) : '')
                           : item.kind === 'session'
@@ -247,7 +254,7 @@ export function CommandPalette({
                               ? (item.workspace.active ? t('Active') : item.workspace.path)
                               : item.file.path}
                       </span>
-                      {active && <CornerDownLeft size={13} className="palette-enter-icon" aria-hidden="true" />}
+                      {active && <CornerDownLeft size={13} className="palette-enter-icon shrink-0 text-ink-muted" aria-hidden="true" />}
                     </button>
                   )
                 })}

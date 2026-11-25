@@ -13,21 +13,25 @@
     "build": "electron-vite build",
     "build:web": "vite build --config vite.web.config.ts",
     "build:core": "node scripts/build-core.mjs",
+    "i18n:check": "node scripts/check-i18n.mjs",
     "package": "npm run build && npm run build:core && node scripts/package-electron.mjs",
     "package:linux": "npm run build && node scripts/build-core.mjs linux && node scripts/package-electron.mjs linux",
     "package:windows": "npm run build && node scripts/build-core.mjs win32 && node scripts/package-electron.mjs win32",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json"
   },
   "dependencies": {
+    "i18next": "^27.2.7",
     "lucide-react": "^1.77.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "react-i18next": "^18.0.3",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
     "ws": "^8.23.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -36,6 +40,7 @@
     "electron": "^45.4.1",
     "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
   }

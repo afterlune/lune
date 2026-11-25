@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { X } from 'lucide-react'
 import type { ConfigDocument, ConfigImport, ConfigView } from '../shared/desktop-settings'
+import { bannerError, bannerStatus, btnIcon, btnPrimaryCompact, btnSecondary, cn, fieldInput, fieldSelect, fieldTextarea } from './ui'
 
 export function ConfigSettings({ workspace, onClose }: { workspace: string; onClose: () => void }) {
   const api = window.luneDesktop!
@@ -69,25 +70,37 @@ export function ConfigSettings({ workspace, onClose }: { workspace: string; onCl
     })
   }
 
-  return <dialog className="desktop-config" ref={dialog} aria-labelledby="desktop-config-title" onClose={onClose}
-    onCancel={(event) => { if (pending) event.preventDefault() }}>
-    <header className="drawer-heading">
-      <h2 id="desktop-config-title">Core configuration</h2>
-      <button type="button" className="icon-button" aria-label="Close configuration" disabled={pending} onClick={() => dialog.current?.close()}><X size={16} /></button>
+  const tabBtnCls = (active: boolean) =>
+    cn(
+      'min-h-[32px] flex-1 cursor-pointer rounded-[7px] border-0 px-3 text-[13px] font-medium transition-[background,color,box-shadow] duration-120 disabled:cursor-not-allowed disabled:opacity-45',
+      active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
+    )
+  const labelCls = 'flex flex-col gap-1.5 text-[12.5px] font-medium text-ink-secondary mb-3'
+
+  return <dialog
+    className="desktop-config m-auto w-[min(640px,calc(100vw-24px))] max-h-[calc(100dvh-28px)] overflow-y-auto rounded-[16px] border border-line bg-canvas p-6 text-ink shadow-elev-lg backdrop:bg-black/45"
+    ref={dialog}
+    aria-labelledby="desktop-config-title"
+    onClose={onClose}
+    onCancel={(event) => { if (pending) event.preventDefault() }}
+  >
+    <header className="drawer-heading mb-4 flex items-center justify-between gap-2">
+      <h2 id="desktop-config-title" className="m-0 text-[16px] font-semibold text-ink">Core configuration</h2>
+      <button type="button" className={cn('icon-button', btnIcon)} aria-label="Close configuration" disabled={pending} onClick={() => dialog.current?.close()}><X size={16} /></button>
     </header>
-    <div className="connection-tabs compact-tabs">
-      <button type="button" className={!scope ? 'active' : ''} disabled={pending} onClick={() => setScope('')}>Defaults</button>
-      <button type="button" className={scope ? 'active' : ''} disabled={pending || !workspace.trim()} onClick={() => setScope(workspace.trim())}>This workspace</button>
+    <div className="connection-tabs compact-tabs mb-4 flex gap-1 rounded-[9px] border border-line-subtle bg-muted p-1">
+      <button type="button" className={tabBtnCls(!scope)} disabled={pending} onClick={() => setScope('')}>Defaults</button>
+      <button type="button" className={tabBtnCls(Boolean(scope))} disabled={pending || !workspace.trim()} onClick={() => setScope(workspace.trim())}>This workspace</button>
     </div>
-    {error && <p className="form-error" role="alert">{error}</p>}
-    {status && <p className="form-status" role="status">{status}</p>}
+    {error && <p className={cn('form-error mb-3', bannerError)} role="alert">{error}</p>}
+    {status && <p className={cn('form-status mb-3', bannerStatus)} role="status">{status}</p>}
     {view && <>
-      {scope && <p className="modal-copy">This directory inherits the default configuration. Save only the entries or fields you want to override.</p>}
-      {!view.canSaveSecrets && <p className="form-status">The system credential store is unavailable. Use an environment variable or re-enter the key next time.</p>}
-      {view.savedKeys.length > 0 && <p className="modal-copy">Keys available for {view.savedKeys.join(', ')}.</p>}
-      {view.hasMCP && <p className="modal-copy">MCP settings are stored separately from editable configuration.</p>}
-      <div className="config-actions">
-        <button type="button" className="secondary-button" disabled={pending} onClick={() => void perform(async () => {
+      {scope && <p className="modal-copy m-0 mb-3 text-[13px] leading-[1.55] text-ink-secondary">This directory inherits the default configuration. Save only the entries or fields you want to override.</p>}
+      {!view.canSaveSecrets && <p className={cn('form-status mb-3', bannerStatus)}>The system credential store is unavailable. Use an environment variable or re-enter the key next time.</p>}
+      {view.savedKeys.length > 0 && <p className="modal-copy m-0 mb-3 text-[13px] leading-[1.55] text-ink-secondary">Keys available for {view.savedKeys.join(', ')}.</p>}
+      {view.hasMCP && <p className="modal-copy m-0 mb-3 text-[13px] leading-[1.55] text-ink-secondary">MCP settings are stored separately from editable configuration.</p>}
+      <div className="config-actions mb-4 flex flex-wrap gap-2">
+        <button type="button" className={cn('secondary-button', btnSecondary)} disabled={pending} onClick={() => void perform(async () => {
           const candidate = await api.chooseConfigImport()
           if (!candidate) return
           setImported(candidate)
@@ -95,20 +108,20 @@ export function ConfigSettings({ workspace, onClose }: { workspace: string; onCl
           setShowStarter(false)
           setStatus('Import preview. Save to apply this configuration.')
         })}>Import config.json…</button>
-        <button type="button" className="secondary-button" disabled={pending} onClick={() => { setImported(null); setShowStarter(!showStarter) }}>{showStarter ? 'Edit JSON' : 'Model setup'}</button>
+        <button type="button" className={cn('secondary-button', btnSecondary)} disabled={pending} onClick={() => { setImported(null); setShowStarter(!showStarter) }}>{showStarter ? 'Edit JSON' : 'Model setup'}</button>
       </div>
-      {showStarter ? <form onSubmit={submitStarter}>
-        <label className="form-field">Protocol<select value={protocol} onChange={(event) => setProtocol(event.target.value)}>
+      {showStarter ? <form onSubmit={submitStarter} className="space-y-2">
+        <label className={labelCls}>Protocol<select className={fieldSelect} value={protocol} onChange={(event) => setProtocol(event.target.value)}>
           <option value="responses">Responses</option><option value="anthropic-messages">Anthropic Messages</option>
         </select></label>
-        <label className="form-field">Provider base URL<input required type="url" value={baseURL} onChange={(event) => setBaseURL(event.target.value)} /></label>
-        <label className="form-field">Model ID<input required value={modelID} onChange={(event) => setModelID(event.target.value)} /></label>
-        <label className="form-field">API key<input type="password" autoComplete="new-password" disabled={Boolean(apiKeyEnv.trim())} value={apiKey} onChange={(event) => setAPIKey(event.target.value)} /></label>
-        <label className="form-field">API key environment variable<input value={apiKeyEnv} onChange={(event) => setAPIKeyEnv(event.target.value)} /></label>
-        <button className="primary-button compact" disabled={pending}>Save model configuration</button>
+        <label className={labelCls}>Provider base URL<input className={fieldInput} required type="url" value={baseURL} onChange={(event) => setBaseURL(event.target.value)} /></label>
+        <label className={labelCls}>Model ID<input className={fieldInput} required value={modelID} onChange={(event) => setModelID(event.target.value)} /></label>
+        <label className={labelCls}>API key<input className={fieldInput} type="password" autoComplete="new-password" disabled={Boolean(apiKeyEnv.trim())} value={apiKey} onChange={(event) => setAPIKey(event.target.value)} /></label>
+        <label className={labelCls}>API key environment variable<input className={fieldInput} value={apiKeyEnv} onChange={(event) => setAPIKeyEnv(event.target.value)} /></label>
+        <button className={cn('primary-button compact', btnPrimaryCompact)} disabled={pending}>Save model configuration</button>
       </form> : <>
-        {view.inheritedProfiles.length > 0 && <label className="form-field">Use a default model from this app
-          <select value="" onChange={(event) => {
+        {view.inheritedProfiles.length > 0 && <label className={labelCls}>Use a default model from this app
+          <select className={fieldSelect} value="" onChange={(event) => {
             const defaultProfile = event.target.value
             if (!defaultProfile) return
             try {
@@ -117,25 +130,25 @@ export function ConfigSettings({ workspace, onClose }: { workspace: string; onCl
             } catch { setError('Fix the JSON before choosing a default model.') }
           }}><option value="">Choose model…</option>{view.inheritedProfiles.map((profile) => <option key={profile}>{profile}</option>)}</select>
         </label>}
-        {imported && <p className="modal-copy">
+        {imported && <p className="modal-copy m-0 mb-3 text-[13px] leading-[1.55] text-ink-secondary">
           {imported.suppliedKeys.length ? `Import supplies keys for ${imported.suppliedKeys.join(', ')}. ` : ''}
           {imported.unresolvedKeys.length ? `Re-enter keys or configure apiKeyEnv for ${imported.unresolvedKeys.join(', ')}. ` : ''}
           {imported.hasMCP ? 'Import includes MCP settings. ' : ''}
           Keys are hidden in the preview.
         </p>}
-        <label className="form-field">Configuration JSON
-          <textarea rows={12} value={draft} disabled={pending} spellCheck={false} onChange={(event) => setDraft(event.target.value)} />
-          <small>Omit existing API keys to keep them. Set apiKey to an empty string to remove it, or set apiKeyEnv to use an environment variable.</small>
+        <label className={labelCls}>Configuration JSON
+          <textarea className={cn(fieldTextarea, 'font-mono text-[12px]')} rows={12} value={draft} disabled={pending} spellCheck={false} onChange={(event) => setDraft(event.target.value)} />
+          <small className="text-[11.5px] font-normal text-ink-muted">Omit existing API keys to keep them. Set apiKey to an empty string to remove it, or set apiKeyEnv to use an environment variable.</small>
         </label>
-        <button type="button" className="primary-button compact" disabled={pending} onClick={() => {
+        <button type="button" className={cn('primary-button compact', btnPrimaryCompact)} disabled={pending} onClick={() => {
           let config: ConfigDocument
           try { config = JSON.parse(draft) as ConfigDocument }
           catch { setError('Enter valid JSON.'); return }
           void save(config, imported?.id)
         }}>{imported ? 'Save imported configuration' : 'Save configuration'}</button>
       </>}
-      {scope && <div className="config-actions">
-        <button type="button" className="secondary-button" disabled={pending} onClick={() => {
+      {scope && <div className="config-actions mt-4 border-t border-line-subtle pt-3">
+        <button type="button" className={cn('secondary-button', btnSecondary)} disabled={pending} onClick={() => {
           if (!confirmReset) { setConfirmReset(true); return }
           void perform(async () => {
             await api.resetWorkspaceConfig(scope)

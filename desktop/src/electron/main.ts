@@ -633,7 +633,7 @@ ipcMain.handle('runtime:close', async (event, forget = false) => {
 app.whenReady().then(() => {
   settings = new DesktopSettings()
   const theme = settings.preference('theme')
-  if (isThemePreference(theme)) nativeTheme.themeSource = theme
+  nativeTheme.themeSource = isThemePreference(theme) ? theme : 'light'
   quickShortcut = settings.preference('shortcut') || defaultShortcut
   registerQuickShortcut(quickShortcut)
   createMainWindow()
