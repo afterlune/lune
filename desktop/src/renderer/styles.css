@@ -51,7 +51,7 @@
     font-family: var(--lune-font-sans);
     font-size: 14px;
     line-height: 1.5;
-    color-scheme: light dark;
+    color-scheme: light;
     color: var(--ink-primary);
     background: var(--bg-canvas);
     font-synthesis: none;
@@ -109,13 +109,16 @@
 
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"] { color-scheme: dark; }
+  :root[data-theme="system"] { color-scheme: light dark; }
 
-  body {
+  html, body {
     margin: 0;
-    min-width: 360px;
-    min-height: 100vh;
     background: var(--bg-canvas);
     color: var(--ink-primary);
+  }
+  body {
+    min-width: 360px;
+    min-height: 100vh;
   }
   button, input, textarea, select { font: inherit; }
   button:focus, button:focus-visible,

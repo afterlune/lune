@@ -17,6 +17,13 @@ export async function loadTheme(): Promise<ThemePreference> {
 
 export function applyTheme(preference: ThemePreference): void {
   document.documentElement.dataset.theme = preference
+  if (!window.luneDesktop) {
+    try { localStorage.setItem(storageKey, preference) } catch { /* keep the choice for this page */ }
+  }
+  document.querySelector('meta[name="color-scheme"]')?.setAttribute(
+    'content',
+    preference === 'dark' ? 'dark' : preference === 'system' ? 'light dark' : 'light',
+  )
   updateThemeColor()
 }
 
