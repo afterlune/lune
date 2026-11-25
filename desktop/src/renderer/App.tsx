@@ -3,6 +3,12 @@ import { createDesktopSettingsAPI, createRemoteOnlySettingsAPI } from './setting
 import { formatCapacity, SettingsModal, type SettingsTab } from './settings-modal'
 import type { SavedConnection } from '../shared/desktop-settings'
 import { lastLoopbackSession, rememberLoopbackSession } from './loopback'
+import {
+  loadLastSessionSettings,
+  resolveNewSessionSettings,
+  saveLastSessionSettings,
+  sessionDefaultsScopeKey,
+} from './session-defaults'
 import { useTranslation } from 'react-i18next'
 import { LanguagePicker, useLanguage } from './language'
 import type { ManagedWorkspace, WorkspaceActivity } from './workbench'
@@ -361,6 +367,36 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const eventHandler = useRef<(event: RuntimeEvent) => void>(() => {})
   const initializedClient = useRef<RuntimeClient | null>(null)
   const activeSessionIdRef = useRef(activeSessionId)
+  const sessionsRef = useRef<SessionSummary[]>(sessions)
+  sessionsRef.current = sessions
+  const modelsRef = useRef<ModelOption[]>(models)
+  modelsRef.current = models
+  const activeSessionRef = useRef<SessionSummary | null>(activeSession)
+  activeSessionRef.current = activeSession
+  const currentDefaultsScopeKey = useCallback(() => {
+    const conn = connectionRef.current
+    return sessionDefaultsScopeKey({
+      mode: conn?.mode,
+      workspace: managed?.workspace.path || (conn?.mode === 'local' ? conn.workspace : undefined),
+      workspaceId: managed?.workspace.id ?? '',
+      url: conn?.mode === 'remote' ? conn.url : undefined,
+    })
+  }, [managed?.workspace.id, managed?.workspace.path])
+  const createSessionWithDefaults = useCallback(async (
+    targetClient: RuntimeClient,
+    availableModels: ModelOption[],
+  ): Promise<SessionSummary> => {
+    const created = await targetClient.request<SessionSummary>('session.create')
+    const saved = loadLastSessionSettings(currentDefaultsScopeKey())
+    const { nextSettings, changed } = resolveNewSessionSettings(created, saved, availableModels)
+    if (!changed) return created
+    try {
+      await targetClient.request('session.setSettings', { sessionId: created.id, settings: nextSettings })
+      return { ...created, settings: nextSettings }
+    } catch {
+      return created
+    }
+  }, [currentDefaultsScopeKey])
   const streamingExecution = useRef<string | undefined>(undefined)
   const pendingClearLiveRef = useRef(false)
   const reasoningStartTsRef = useRef(0)
@@ -681,8 +717,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (!desktop) clearWebConnection()
     setAutoRestoring(false)
     setConnectionStatus('offline')
+    sessionsRef.current = []
     setSessions([])
+    modelsRef.current = []
     setModels([])
+    activeSessionRef.current = null
     setActiveSession(null)
     setActiveSessionId('')
     setTimeline([])
@@ -787,6 +826,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     }
     const mergedEntries = mergeCapturedReasoning(entries, capturedMap)
     setTimeline(mergedEntries)
+    activeSessionRef.current = summary
     setActiveSession(summary)
     setHistory(messages)
     setOptimistic((items) => {
@@ -812,7 +852,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const recoveredFailure = (nextPending ?? []).find((item) => item.kind === 'model_recovery')?.modelRecovery?.failure
     if (recoveredFailure) setModelFailure(recoveredFailure)
     else if (taskDone) setModelFailure(null)
-    setSessions((items) => items.map((item) => item.id === summary.id ? summary : item))
+    setSessions((items) => {
+      const next = items.map((item) => item.id === summary.id ? summary : item)
+      sessionsRef.current = next
+      return next
+    })
     return messages
   }, [streamStore])
 
@@ -840,8 +884,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       client.request<ModelOption[]>('model.list'),
     ]).then(async ([nextSessions, nextModels]) => {
       if (cancelled) return
-      setSessions(nextSessions ?? [])
-      setModels(nextModels ?? [])
+      sessionsRef.current = nextSessions ?? []
+      setSessions(sessionsRef.current)
+      modelsRef.current = nextModels ?? []
+      setModels(modelsRef.current)
       const previousID = window.luneDesktop
         ? await window.luneDesktop.lastSession().catch(() => null)
         : connectionRef.current?.mode === 'loopback'
@@ -854,8 +900,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (cancelled) return
       if (existing) setActiveSessionId(existing.id)
       else {
-        const created = await client.request<SessionSummary>('session.create')
+        const created = await createSessionWithDefaults(client, nextModels ?? [])
         if (!cancelled) {
+          activeSessionRef.current = created
+          setActiveSession(created)
+          sessionsRef.current = [created]
           setSessions([created])
           setActiveSessionId(created.id)
         }
@@ -865,7 +914,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (!cancelled) setActionError(errorMessage(error))
     })
     return () => { cancelled = true }
-  }, [client, workspaceId])
+  }, [client, workspaceId, createSessionWithDefaults])
 
   useEffect(() => {
     if (!client || !activeSessionId) return
@@ -873,7 +922,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     let subscriptionId = ''
     const targetClient = client
     const sessionId = activeSessionId
-    setActiveSession(null)
+    const cachedSession =
+      sessionsRef.current.find((item) => item.id === sessionId) ??
+      (activeSessionRef.current?.id === sessionId ? activeSessionRef.current : null)
+    activeSessionRef.current = cachedSession
+    setActiveSession(cachedSession)
     setTimeline([])
     setHistory([])
     streamingExecution.current = undefined
@@ -1259,10 +1312,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setWorking(true)
     setActionError('')
     try {
-      const created = await client.request<SessionSummary>('session.create')
+      const created = await createSessionWithDefaults(client, modelsRef.current)
       if (clientRef.current !== client) return
       setSearch('')
-      setSessions((items) => [created, ...items])
+      activeSessionRef.current = created
+      setActiveSession(created)
+      setSessions((items) => {
+        const next = [created, ...items]
+        sessionsRef.current = next
+        return next
+      })
       setActiveSessionId(created.id)
       setListRevision((revision) => revision + 1)
       setHistory([])
@@ -1428,17 +1487,47 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   const changeModel = async (profile: string) => changeSettings({ modelProfile: profile })
   const changeSettings = async (settings: Partial<SessionSummary['settings']>) => {
-    if (!client || !activeSessionId || !activeSession) return
-    const targetSessionId = activeSessionId
-    const previousSettings = activeSession.settings
+    const currentId = activeSessionIdRef.current || activeSessionId
+    const latestSession =
+      activeSessionRef.current?.id === currentId
+        ? activeSessionRef.current
+        : (activeSession?.id === currentId
+            ? activeSession
+            : (sessionsRef.current.find((item) => item.id === currentId) ?? null))
+    if (!client || !currentId || !latestSession) return
+    const targetSessionId = currentId
+    const previousSettings = latestSession.settings
     const nextSettings = { ...previousSettings, ...settings }
-    setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, settings: nextSettings } : prev))
-    setSessions((items) => items.map((item) => (item.id === targetSessionId ? { ...item, settings: nextSettings } : item)))
+    const optimisticSession: SessionSummary = { ...latestSession, settings: nextSettings }
+    activeSessionRef.current = optimisticSession
+    setActiveSession((prev) => (prev && prev.id === targetSessionId ? optimisticSession : prev))
+    setSessions((items) => {
+      const next = items.map((item) => (item.id === targetSessionId ? { ...item, settings: nextSettings } : item))
+      sessionsRef.current = next
+      return next
+    })
     try {
       await client.request('session.setSettings', { sessionId: targetSessionId, settings: nextSettings })
+      const defaultsPatch: { modelProfile?: string; reasoningEffort?: string } = {}
+      if (Object.prototype.hasOwnProperty.call(settings, 'modelProfile') && settings.modelProfile !== undefined) {
+        defaultsPatch.modelProfile = settings.modelProfile
+      }
+      if (Object.prototype.hasOwnProperty.call(settings, 'reasoningEffort') && settings.reasoningEffort !== undefined) {
+        defaultsPatch.reasoningEffort = settings.reasoningEffort
+      }
+      if (Object.keys(defaultsPatch).length > 0) {
+        saveLastSessionSettings(currentDefaultsScopeKey(), defaultsPatch)
+      }
     } catch (error) {
-      setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, settings: previousSettings } : prev))
-      setSessions((items) => items.map((item) => (item.id === targetSessionId ? { ...item, settings: previousSettings } : item)))
+      if (activeSessionRef.current?.id === targetSessionId && activeSessionRef.current.settings === nextSettings) {
+        activeSessionRef.current = { ...activeSessionRef.current, settings: previousSettings }
+      }
+      setActiveSession((prev) => (prev && prev.id === targetSessionId && prev.settings === nextSettings ? { ...prev, settings: previousSettings } : prev))
+      setSessions((items) => {
+        const next = items.map((item) => (item.id === targetSessionId && item.settings === nextSettings ? { ...item, settings: previousSettings } : item))
+        sessionsRef.current = next
+        return next
+      })
       setActionError(errorMessage(error))
     }
   }
@@ -1621,8 +1710,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       clearCapturedReasoning(targetId)
       if (targetId === activeSessionId) {
         const next = (await client.request<SessionSummary[]>('session.list', { limit: 1 }))[0]
-        const selected = next ?? await client.request<SessionSummary>('session.create')
-        setActiveSessionId(selected.id)
+        if (next) {
+          setActiveSessionId(next.id)
+        } else {
+          const created = await createSessionWithDefaults(client, modelsRef.current)
+          activeSessionRef.current = created
+          setActiveSession(created)
+          sessionsRef.current = [created]
+          setSessions([created])
+          setActiveSessionId(created.id)
+        }
       }
     } else if (!digest) {
       const turns = Number(value)
