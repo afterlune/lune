@@ -35,15 +35,14 @@ func RunOneShot(client *core.Core, prompt string, flags CLIFlags, stdout, stderr
 		return fmt.Errorf("set default reasoning effort: %w", err)
 	}
 
-	// Apply permission mode if provided
-	if flags.PermissionMode != "" {
-		if err := client.SetPermissionMode(flags.PermissionMode); err != nil {
-			return fmt.Errorf("set permission mode: %w", err)
-		}
-	} else {
-		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
-			return fmt.Errorf("set default terminal permission mode: %w", err)
-		}
+	// An unspecified mode falls back to workspace rather than full-access: this run
+	// is unattended, so an approval prompt would only stall the task.
+	mode := flags.PermissionMode
+	if mode == "" {
+		mode = core.PermissionWorkspace
+	}
+	if err := client.SetPermissionMode(mode); err != nil {
+		return fmt.Errorf("set permission mode: %w", err)
 	}
 
 	// Open session runtime

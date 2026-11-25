@@ -15,7 +15,7 @@ export type ConfigView = {
   hasMCP: boolean
   mcpServers?: Record<string, MCPServerSummary>
   canSaveSecrets: boolean
-  secretStorage?: 'encrypted' | 'sqlite'
+  secretStorage?: 'encrypted' | 'memory'
   inheritedProfiles: string[]
 }
 

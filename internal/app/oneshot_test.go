@@ -387,7 +387,7 @@ func (p burstOneShotProvider) StreamResponse(ctx context.Context, request public
 	return p.CreateResponse(ctx, request, profile)
 }
 
-func TestRunOneShotPlanPreservesSelectedPermissions(t *testing.T) {
+func TestRunOneShotPermissionModes(t *testing.T) {
 	for _, mode := range []core.PermissionMode{"", core.PermissionReadOnly, core.PermissionWorkspace, core.PermissionAuto, core.PermissionFullAccess} {
 		t.Run(string(mode), func(t *testing.T) {
 			client, err := core.New(core.Config{Workspace: t.TempDir(), StateDir: t.TempDir(), ModelConfig: &publicmodel.Config{
@@ -400,9 +400,10 @@ func TestRunOneShotPlanPreservesSelectedPermissions(t *testing.T) {
 			if err := RunOneShot(client, "hello", CLIFlags{PlanMode: true, PermissionMode: mode}, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
+			// An unattended run cannot answer approvals, so it defaults to workspace.
 			want := mode
 			if want == "" {
-				want = core.PermissionFullAccess
+				want = core.PermissionWorkspace
 			}
 			if got := client.PermissionMode(); got != want {
 				t.Fatalf("permission=%q, want %q", got, want)

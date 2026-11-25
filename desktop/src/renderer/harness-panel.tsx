@@ -1183,7 +1183,6 @@ function ContextInspector({
   onChangePermissionMode?: (mode: string) => void
 }) {
   const { t } = useTranslation()
-  const usage = activeSession?.sessionUsage
   const selectedProfile = activeSession?.settings.modelProfile || models[0]?.profile || ''
   const modelOption = models.find((m) => m.profile === selectedProfile)
   const metrics = deriveSessionUsageMetrics({ session: activeSession, runtime, modelOption, liveContext })
@@ -1247,14 +1246,18 @@ function ContextInspector({
         <div className={kvRowCls}><span>{t('Queued turns')}</span><code>{runtime.queue.length}</code></div>
       </div>
 
-      {usage && (
+      {metrics.hasUsage && (
         <div className={cn('inspector-section flex flex-col gap-2 p-3', subtleCard, 'bg-canvas')}>
           <div className="kv-title flex items-center gap-1.5 text-[12px] font-semibold text-ink"><Cpu size={13} aria-hidden="true" /><span>{t('Token usage')}</span></div>
           {contextLimit > 0 && (
             <>
               <div className={kvRowCls}>
                 <span>{t('Context window')}</span>
-                <code title={`${metrics.usedContext.toLocaleString()} / ${contextLimit.toLocaleString()}`}>{formatTokenCount(metrics.usedContext)} / {formatTokenCount(contextLimit)} ({contextPct}%)</code>
+                {metrics.compacting ? (
+                  <code>{t('Compacting')}…</code>
+                ) : (
+                  <code title={`${metrics.usedContext.toLocaleString()} / ${contextLimit.toLocaleString()}`}>{formatTokenCount(metrics.usedContext)} / {formatTokenCount(contextLimit)} ({contextPct}%)</code>
+                )}
               </div>
               <div className="meter-track h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
                 <div className="meter-fill h-full rounded-full bg-ink transition-[width] duration-200" style={{ width: `${contextPct}%` }} />
@@ -1264,7 +1267,7 @@ function ContextInspector({
           <div className={kvRowCls}><span>{t('Input tokens')}</span><code title={metrics.input.toLocaleString()}>{formatTokenCount(metrics.input)}</code></div>
           <div className={kvRowCls}><span>{t('Output tokens')}</span><code title={metrics.output.toLocaleString()}>{formatTokenCount(metrics.output)}</code></div>
           <div className={kvRowCls}><span>{t('Cached input')}</span><code title={metrics.cached.toLocaleString()}>{formatTokenCount(metrics.cached)} ({metrics.cachePct}%)</code></div>
-          {usage.reasoning > 0 && <div className={kvRowCls}><span>{t('Reasoning tokens')}</span><code title={usage.reasoning.toLocaleString()}>{formatTokenCount(usage.reasoning)}</code></div>}
+          {metrics.reasoning > 0 && <div className={kvRowCls}><span>{t('Reasoning tokens')}</span><code title={metrics.reasoning.toLocaleString()}>{formatTokenCount(metrics.reasoning)}</code></div>}
           <div className={kvRowCls}><span>{t('Total tokens')}</span><code title={metrics.total.toLocaleString()}>{formatTokenCount(metrics.total)}</code></div>
         </div>
       )}

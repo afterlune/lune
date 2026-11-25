@@ -44,7 +44,9 @@ npm run dev
 
 Electron 通过 **Configure Core** 配置供应商和模型。默认配置、可选的工作区覆盖、外观、快捷键及最近连接保存在应用用户目录的 `settings.sqlite`。本机 Core 通过私有 stdin 接收配置，会话状态仍保存在工作区的 `.lune/`。远程模式由服务端管理模型配置。
 
-可通过 **Import config.json…** 预览并导入旧配置。用户目录或工作区的原文件保留。供应商 API Key 和选中记住的远程令牌仅以系统保护的密文写入 SQLite。系统凭据存储不可用时，它们可在本次运行使用；也可用 `apiKeyEnv` 引用 Electron 继承的环境变量。修改配置后，下次启动本机 Core 时生效。
+渲染层新增或改动 Runtime Protocol 调用后运行 `npm run methods:check`：它校验 `src/renderer` 请求的每个方法都在 `src/electron/main.ts` 的 `allowedRuntimeMethods` 白名单内。缺少时会话只在桌面端运行时失败，打包与类型检查都发现不了。
+
+可通过 **Import config.json…** 预览并导入旧配置。用户目录或工作区的原文件保留。供应商 API Key 和选中记住的远程令牌仅以系统保护的密文写入 SQLite；系统凭据存储不可用时它们只保留在本次运行的内存中，不写入磁盘（旧版本留下的明文行仍可读取，但不再新增）。也可用 `apiKeyEnv` 引用 Electron 继承的环境变量。修改配置后，下次启动本机 Core 时生效。
 
 单独开发 Web 页面：
 

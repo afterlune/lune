@@ -1480,7 +1480,7 @@ export function SettingsModal({
                   <p className="settings-tab-desc mt-[3px] mb-0 text-[12.5px] leading-[1.5] text-ink-muted">
                     {view?.secretStorage === 'encrypted'
                       ? t('API keys are encrypted and stored in this frontend SQLite database.')
-                      : t('API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.')}
+                      : t('API keys stay in memory for this run because the system credential store is unavailable.')}
                   </p>
                 </div>
                 {editorMode !== 'add' && providerNames.length > 0 && (

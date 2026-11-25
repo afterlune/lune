@@ -237,7 +237,7 @@ func fetchModelsFromEndpoint(ctx context.Context, client *http.Client, protocol,
 		}
 
 		var parsed struct {
-			Data []rawProviderModel `json:"data"`
+			Data   []rawProviderModel `json:"data"`
 			Models []rawProviderModel `json:"models"`
 		}
 		if err := json.Unmarshal(body, &parsed); err != nil {

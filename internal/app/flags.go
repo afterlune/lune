@@ -220,7 +220,7 @@ Usage:
 Flags:
   -C, --workspace <dir>      Set working directory (default: current directory)
   -m, --model <profile>      Set model profile for session
-  -p, --permission <mode>    Set permission mode: %s (CLI/TUI default: full-access)
+  -p, --permission <mode>    Set permission mode: %s (TUI/CLI default: full-access; one-shot default: workspace)
   -s, --session <id|prefix>  Resume or open an existing session
       --prompt <text>        Instruction prompt (can also be passed as positional arguments)
       --plan                 Start in Plan mode (read-only exploration)

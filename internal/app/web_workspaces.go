@@ -367,22 +367,22 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		ID            string                  `json:"id"`
-		Path          string                  `json:"path"`
-		Language      string                  `json:"language"`
-		Theme         string                  `json:"theme"`
-		Scope         string                  `json:"scope"`
-		Document      map[string]any          `json:"document"`
-		ImportID      string                  `json:"importId"`
-		Text          string                  `json:"text"`
-		Mode          string                  `json:"mode"`
-		Address       string                  `json:"address"`
-		Name          string                  `json:"name"`
-		Token         *string                 `json:"token"`
-		RememberToken bool                    `json:"rememberToken"`
-		Provider      string                  `json:"provider"`
-		Protocol      string                  `json:"protocol"`
-		BaseURL       string                  `json:"baseURL"`
+		ID             string                  `json:"id"`
+		Path           string                  `json:"path"`
+		Language       string                  `json:"language"`
+		Theme          string                  `json:"theme"`
+		Scope          string                  `json:"scope"`
+		Document       map[string]any          `json:"document"`
+		ImportID       string                  `json:"importId"`
+		Text           string                  `json:"text"`
+		Mode           string                  `json:"mode"`
+		Address        string                  `json:"address"`
+		Name           string                  `json:"name"`
+		Token          *string                 `json:"token"`
+		RememberToken  bool                    `json:"rememberToken"`
+		Provider       string                  `json:"provider"`
+		Protocol       string                  `json:"protocol"`
+		BaseURL        string                  `json:"baseURL"`
 		APIKey         *string                 `json:"apiKey"`
 		APIKeyEnv      string                  `json:"apiKeyEnv"`
 		PermissionMode string                  `json:"permissionMode"`

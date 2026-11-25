@@ -26,7 +26,7 @@
   "API key": "API key",
   "API Key (save in SQLite DB)": "API Key (save in SQLite DB)",
   "API keys are encrypted and stored in this frontend SQLite database.": "API keys are encrypted and stored in this frontend SQLite database.",
-  "API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.": "API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.",
+  "API keys stay in memory for this run because the system credential store is unavailable.": "API keys stay in memory for this run because the system credential store is unavailable.",
   "Appearance": "Appearance",
   "Appearance & language": "Appearance & language",
   "Apply": "Apply",
@@ -107,7 +107,6 @@
   "Context": "Context",
   "Context & runtime": "Context & runtime",
   "Context compaction": "Context compaction",
-  "context limit": "context limit",
   "Context window": "Context window",
   "Context window (0 = auto)": "Context window (0 = auto)",
   "Context window (0 = automatic)": "Context window (0 = automatic)",
@@ -486,7 +485,6 @@
   "timeout": "timeout",
   "Title": "Title",
   "Today": "Today",
-  "Toggle Plan mode (read-only exploration)": "Toggle Plan mode (read-only exploration)",
   "Toggle sidebar": "Toggle sidebar",
   "Token budget (optional)": "Token budget (optional)",
   "Token budget must be a positive integer.": "Token budget must be a positive integer.",
@@ -536,6 +534,5 @@
   "Compacting": "Compacting",
   "In": "In",
   "Out": "Out",
-  "/plan [prompt]": "/plan [prompt]",
   "Context usage": "Context"
 }

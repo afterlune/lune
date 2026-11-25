@@ -7,7 +7,9 @@ import { defaultUiPreferences, normalizeUiPreferences, type UiPreferences } from
 
 export const startupConfigLimit = 1024 * 1024
 type Json = Record<string, unknown>
-type Secret = { text: string; encrypted: Buffer; encoding: 'safeStorage' | 'plain' }
+// A secret is either persisted as safeStorage ciphertext or kept in memory for this
+// run only. Plaintext never reaches the settings database.
+type Secret = { text: string; encrypted?: Buffer }
 type Catalog = {
   models: Json
   providers: Record<string, Json>
@@ -200,6 +202,8 @@ export class DesktopSettings {
     const saved = this.database.prepare('SELECT encoding, encrypted FROM secrets WHERE scope = ? AND name = ?').get(scope, name)
     if (!saved) return undefined
     const buf = Buffer.from(saved.encrypted as Uint8Array)
+    // 'plain' rows are legacy: older builds wrote plaintext when no credential store
+    // existed. They stay readable, but nothing writes plaintext any more.
     if (saved.encoding === 'plain') return buf.toString('utf8')
     if (!canEncrypt()) throw new Error('The system credential store is unavailable. Unlock it or enter the credential for this run.')
     try {
@@ -209,26 +213,27 @@ export class DesktopSettings {
   }
 
   private async protect(text: string): Promise<Secret> {
-    if (canEncrypt()) {
-      try {
-        return { text, encrypted: await safeStorage.encryptStringAsync(text), encoding: 'safeStorage' }
-      } catch { /* fallback to sqlite persistence */ }
+    if (!canEncrypt()) return { text }
+    try {
+      return { text, encrypted: await safeStorage.encryptStringAsync(text) }
+    } catch {
+      throw new Error('The system credential store rejected the credential. Re-enter it, or configure an API key environment variable.')
     }
-    return { text, encrypted: Buffer.from(text, 'utf8'), encoding: 'plain' }
   }
 
   private writeSecret(scope: string, name: string, value: Secret | null) {
-    if (value) {
+    // Values kept for this run only have no ciphertext, so any stored copy is dropped.
+    if (value?.encrypted) {
       this.database.prepare('INSERT INTO secrets(scope, name, encoding, encrypted) VALUES(?,?,?,?) ON CONFLICT(scope,name) DO UPDATE SET encoding = excluded.encoding, encrypted = excluded.encrypted')
-        .run(scope, name, value.encoding, value.encrypted)
+        .run(scope, name, 'safeStorage', value.encrypted)
     } else {
       this.database.prepare('DELETE FROM secrets WHERE scope = ? AND name = ?').run(scope, name)
     }
   }
 
   private updateMemory(scope: string, name: string, value: Secret | null) {
-    this.runSecrets.delete(this.secretKey(scope, name))
-    void value
+    if (value) this.runSecrets.set(this.secretKey(scope, name), value.text)
+    else this.runSecrets.delete(this.secretKey(scope, name))
   }
 
   async config(scope: string): Promise<ConfigView> {
@@ -241,7 +246,7 @@ export class DesktopSettings {
       hasMCP: this.hasSecret(scope, 'mcp'),
       ...(mcpServers ? { mcpServers } : {}),
       canSaveSecrets: true,
-      secretStorage: canEncrypt() ? 'encrypted' : 'sqlite',
+      secretStorage: canEncrypt() ? 'encrypted' : 'memory',
       inheritedProfiles: scope ? Object.keys(catalog(this.document('')).profiles) : [],
     }
   }

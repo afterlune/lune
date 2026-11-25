@@ -180,6 +180,9 @@ export interface RuntimeEvent {
   agentRole?: string
   agentTask?: string
   teamRunId?: string
+  provider?: string
+  modelProfile?: string
+  model?: string
   usage?: ModelUsage & Partial<UsageTotals>
   usagePurpose?: string
   requestId?: string

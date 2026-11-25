@@ -11,7 +11,7 @@ import {
 } from './session-defaults'
 import {
   applyUsageEvent, deriveSessionUsageMetrics, formatTokenCount, isLeadMainUsage,
-  seedAppliedUsageKeys, usageEventDedupKey, type LiveContextOverride,
+  mergeAppliedUsageKeys, usageEventDedupKey, type LiveContextOverride,
 } from './usage-metrics'
 import { useTranslation } from 'react-i18next'
 import { LanguagePicker, useLanguage } from './language'
@@ -379,11 +379,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   modelsRef.current = models
   const activeSessionRef = useRef<SessionSummary | null>(activeSession)
   activeSessionRef.current = activeSession
+  const workspacePathRef = useRef(workspaceInfo?.path ?? '')
+  workspacePathRef.current = workspaceInfo?.path ?? ''
   const currentDefaultsScopeKey = useCallback(() => {
     const conn = connectionRef.current
     return sessionDefaultsScopeKey({
       mode: conn?.mode,
-      workspace: managed?.workspace.path || (conn?.mode === 'local' ? conn.workspace : undefined),
+      workspace: managed?.workspace.path || workspacePathRef.current || (conn?.mode === 'local' ? conn.workspace : undefined),
       workspaceId: managed?.workspace.id ?? '',
       url: conn?.mode === 'remote' ? conn.url : undefined,
     })
@@ -733,6 +735,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     activeSessionRef.current = null
     setActiveSession(null)
     setActiveSessionId('')
+    setLiveContextOverride({ compacting: false })
+    appliedUsageKeysRef.current = new Set()
     setTimeline([])
     setHistory([])
     setAttachments([])
@@ -837,7 +841,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setTimeline(mergedEntries)
     activeSessionRef.current = summary
     setActiveSession(summary)
-    appliedUsageKeysRef.current = seedAppliedUsageKeys(summary)
+    appliedUsageKeysRef.current = mergeAppliedUsageKeys(appliedUsageKeysRef.current, summary)
     setHistory(messages)
     setOptimistic((items) => {
       const counts = new Map<string, number>()
@@ -908,8 +912,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (cancelled) return
       const existing = (previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]
       if (cancelled) return
-      if (existing) setActiveSessionId(existing.id)
-      else {
+      if (existing) {
+        activeSessionRef.current = existing
+        setActiveSession(existing)
+        setActiveSessionId(existing.id)
+      } else {
         const created = await createSessionWithDefaults(client, nextModels ?? [])
         if (!cancelled) {
           activeSessionRef.current = created
@@ -938,7 +945,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     activeSessionRef.current = cachedSession
     setActiveSession(cachedSession)
     setLiveContextOverride({ compacting: false })
-    appliedUsageKeysRef.current = cachedSession ? seedAppliedUsageKeys(cachedSession) : new Set()
+    appliedUsageKeysRef.current = cachedSession ? mergeAppliedUsageKeys(new Set(), cachedSession) : new Set()
     setTimeline([])
     setHistory([])
     streamingExecution.current = undefined
@@ -988,6 +995,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           detail: event.error,
           failed: ['failed', 'cancelled'].includes(event.status ?? ''),
         }, ...items].slice(0, 5))
+        setLiveContextOverride((prev) => (prev.compacting ? { ...prev, compacting: false } : prev))
         void refreshAll()
       } else if (event.kind === 'agent_started') {
         const agentKey = event.agentId || event.agentName || event.taskId || `agent-${Date.now()}`
@@ -1055,11 +1063,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         const afterTokens = event.compaction?.afterTokens
         if (stage === 'started' || stage === 'running') {
           setLiveContextOverride((prev) => ({ ...prev, compacting: true }))
-        } else if (stage === 'completed' || stage === 'finished' || stage === 'failed' || stage === 'skipped') {
-          setLiveContextOverride({
+        } else if (stage) {
+          setLiveContextOverride((prev) => ({
             compacting: false,
-            ...(typeof afterTokens === 'number' && afterTokens > 0 ? { afterTokens } : {}),
-          })
+            afterTokens: typeof afterTokens === 'number' && afterTokens > 0 ? afterTokens : prev.afterTokens,
+          }))
+        } else {
+          setLiveContextOverride((prev) => (prev.compacting ? { ...prev, compacting: false } : prev))
         }
         void refreshAll()
       } else if (event.kind === 'task_queued' || event.kind === 'goal_updated' || event.kind === 'goal_cleared' || event.kind === 'command_started' || event.kind === 'command_finished') {
@@ -1368,9 +1378,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const sendMessage = async (steer = false, options?: { textOverride?: string; forcePlanMode?: boolean; restoreDraftOnError?: string }) => {
     let text = (options?.textOverride !== undefined ? options.textOverride : draft).trim()
     let forcePlan = Boolean(options?.forcePlanMode)
+    let steerMode = steer
     let restoreDraft = options?.restoreDraftOnError
     if (!client || activeSession?.id !== activeSessionId || !activeSessionId || (!text && !attachments.length) || working || connectionStatus !== 'connected') return
-    if (!steer && options?.textOverride === undefined) {
+    if (options?.textOverride === undefined) {
       const parsed = parseSlashCommand(text)
       if (parsed?.command.name === '/plan' && (parsed.args || attachments.length)) {
         if (!has('turn.plan')) {
@@ -1380,6 +1391,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         restoreDraft = draft
         text = parsed.args
         forcePlan = true
+        steerMode = false
       } else if (parsed && !attachments.length) {
         await executeSlashCommand(text)
         return
@@ -1390,9 +1402,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       return
     }
     try { validateAttachments(attachments, Boolean(modelOption?.supportsInputImages)) } catch (error) { setActionError(errorMessage(error)); return }
-    const plan = has('turn.plan') && (forcePlan || planMode) && !steer
-    const requestedMode = steer ? 'steer_input' : taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0 ? 'queue_input' : 'start_if_idle'
-    const key = JSON.stringify([activeSessionId, text, attachments, plan, steer])
+    const plan = has('turn.plan') && (forcePlan || planMode) && !steerMode
+    const requestedMode = steerMode ? 'steer_input' : taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0 ? 'queue_input' : 'start_if_idle'
+    const key = JSON.stringify([activeSessionId, text, attachments, plan, steerMode])
     const existing = submissionRetry.current
     const canRetry = existing?.key === key
     const submissionId = canRetry ? existing.id : crypto.randomUUID()
@@ -1411,13 +1423,23 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       attachments: attachments.map(({ name, mediaType, data }) => ({ name, image: mediaType.startsWith('image/') ? `data:${mediaType};base64,${data}` : undefined })),
     }])
     try {
-      if (activeSession && !activeSession.title && !history.some((message) => message.role === 'user')) {
+      const currentSession = activeSessionRef.current ?? activeSession
+      if (currentSession && !currentSession.title && !history.some((message) => message.role === 'user')) {
         const title = Array.from(text.replace(/\s+/g, ' ').trim()).slice(0, 64).join('')
         if (title) {
           try {
             await client.request('session.setTitle', { sessionId: activeSessionId, title })
-            setActiveSession({ ...activeSession, title })
-            setSessions((items) => items.map((item) => item.id === activeSessionId ? { ...item, title } : item))
+            setActiveSession((prev) => {
+              if (!prev || prev.id !== activeSessionId) return prev
+              const updated = { ...prev, title }
+              activeSessionRef.current = updated
+              return updated
+            })
+            setSessions((items) => {
+              const next = items.map((item) => item.id === activeSessionId ? { ...item, title } : item)
+              sessionsRef.current = next
+              return next
+            })
           } catch { /* session titles are cosmetic; do not block a turn */ }
         }
       }
@@ -1628,6 +1650,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (!client || !targetId) return
     const forked = await client.request<SessionSummary>('session.fork', { sessionId: targetId })
     setSearch('')
+    activeSessionRef.current = forked
+    setActiveSession(forked)
+    setSessions((items) => {
+      const next = [forked, ...items.filter((item) => item.id !== forked.id)]
+      sessionsRef.current = next
+      return next
+    })
     setActiveSessionId(forked.id)
     setListRevision((revision) => revision + 1)
   })
@@ -1636,10 +1665,19 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (!client) return
     setInfo('Compacting context…')
     try {
-      const result = await client.request<{ compacted: boolean; backend?: string }>('session.compact', { sessionId: activeSessionId })
+      const result = await client.request<{ compacted: boolean; backend?: string; after_tokens?: number }>('session.compact', { sessionId: activeSessionId })
+      if (result.compacted && typeof result.after_tokens === 'number' && result.after_tokens > 0) {
+        setLiveContextOverride({ compacting: false, afterTokens: result.after_tokens })
+      } else {
+        setLiveContextOverride((prev) => (prev.compacting ? { ...prev, compacting: false } : prev))
+      }
       setInfo(result.compacted ? (result.backend ? `Context compacted (${result.backend}).` : 'Context compacted.') : 'Context is already within its budget.')
       await refreshSessionData(client, activeSessionId)
-    } catch (error) { setInfo(''); throw error }
+    } catch (error) {
+      setLiveContextOverride((prev) => (prev.compacting ? { ...prev, compacting: false } : prev))
+      setInfo('')
+      throw error
+    }
   })
 
   const cancelQueued = (executionId: string) => void sessionAction(async () => {

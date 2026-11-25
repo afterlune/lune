@@ -26,7 +26,7 @@
   "API key": "API Key",
   "API Key (save in SQLite DB)": "API Key（存入 SQLite 数据库）",
   "API keys are encrypted and stored in this frontend SQLite database.": "API Key 已加密保存在当前前端 SQLite 数据库中。",
-  "API keys are persisted in this frontend SQLite database (0600); TUI/CLI config.json is untouched.": "API Key 已持久化保存在当前前端 SQLite 数据库（0600）；TUI/CLI 的 config.json 完全独立不受影响。",
+  "API keys stay in memory for this run because the system credential store is unavailable.": "系统凭据存储不可用，API Key 仅在本次运行内存中保留，不写入磁盘。",
   "Appearance": "外观",
   "Appearance & language": "外观与语言",
   "Apply": "应用",
@@ -107,7 +107,6 @@
   "Context": "状态",
   "Context & runtime": "上下文与运行态",
   "Context compaction": "上下文自动压缩",
-  "context limit": "上下文上限",
   "Context window": "上下文窗口",
   "Context window (0 = auto)": "上下文窗口（0 表示自动）",
   "Context window (0 = automatic)": "上下文窗口（0 = 自动）",
@@ -486,7 +485,6 @@
   "timeout": "请求超时",
   "Title": "标题",
   "Today": "今天",
-  "Toggle Plan mode (read-only exploration)": "切换 Plan 只读模式",
   "Toggle sidebar": "折叠或展开侧栏",
   "Token budget (optional)": "Token 预算（可选）",
   "Token budget must be a positive integer.": "Token 预算必须是正整数。",
@@ -536,6 +534,5 @@
   "Compacting": "压缩中",
   "In": "输入",
   "Out": "输出",
-  "/plan [prompt]": "/plan [内容]",
   "Context usage": "上下文"
 }

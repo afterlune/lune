@@ -14,6 +14,8 @@
     "build:web": "vite build --config vite.web.config.ts",
     "build:core": "node scripts/build-core.mjs",
     "i18n:check": "node scripts/check-i18n.mjs",
+    "test:utils": "node --experimental-strip-types --test scripts/test-frontend-utils.mjs",
+    "methods:check": "node scripts/check-runtime-methods.mjs",
     "package": "npm run build && npm run build:core && node scripts/package-electron.mjs",
     "package:linux": "npm run build && node scripts/build-core.mjs linux && node scripts/package-electron.mjs linux",
     "package:windows": "npm run build && node scripts/build-core.mjs win32 && node scripts/package-electron.mjs win32",

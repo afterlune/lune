@@ -25,6 +25,7 @@ const allowedRuntimeMethods = new Set([
   'mcp.servers', 'mcp.enable', 'mcp.disable', 'mcp.listPrompts', 'mcp.getPrompt',
   'mcp.listResources', 'mcp.listResourceTemplates', 'mcp.readResource',
   'model.list', 'turn.submit', 'turn.interrupt', 'turn.recover', 'turn.discardPaused',
+  'permission.get', 'permission.set',
   'turn.cancelQueued', 'turn.cancelPending', 'turn.replaceQueued', 'turn.implementPlan',
   'approval.resolve', 'question.resolve', 'question.saveDraft', 'interaction.resolve', 'toolRecovery.resolve',
 ])

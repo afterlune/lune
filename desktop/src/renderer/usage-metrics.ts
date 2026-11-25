@@ -55,6 +55,14 @@ export function seedAppliedUsageKeys(session: SessionSummary): Set<string> {
   return keys
 }
 
+export function mergeAppliedUsageKeys(existing: Set<string>, session: SessionSummary): Set<string> {
+  const merged = seedAppliedUsageKeys(session)
+  for (const key of existing) {
+    if (key.startsWith('cursor:')) merged.add(key)
+  }
+  return merged
+}
+
 export function applyUsageEvent(session: SessionSummary, event: RuntimeEvent): SessionSummary {
   const nums = extractEventUsageNumbers(event)
   const cur = session.sessionUsage ?? { requests: 0, measured: 0, input: 0, output: 0, reasoning: 0, total: 0, cached: 0 }
@@ -90,6 +98,9 @@ export function applyUsageEvent(session: SessionSummary, event: RuntimeEvent): S
     context_window: event.contextWindow && event.contextWindow > 0 ? event.contextWindow : undefined,
     agent_id: event.agentId,
     purpose: event.usagePurpose,
+    provider: event.provider,
+    model_profile: event.modelProfile,
+    model: event.model,
   }
   return { ...session, sessionUsage, usageRequests: [...(session.usageRequests ?? []), record] }
 }

@@ -372,6 +372,38 @@ func TestRunWithStreamsPipedStdin(t *testing.T) {
 	}
 }
 
+// TestRunWithStreamsOneShotPermissionDefault pins the unattended default: a one-shot
+// run has nobody to answer approvals, so it must not inherit the interactive
+// full-access default.
+func TestRunWithStreamsOneShotPermissionDefault(t *testing.T) {
+	var got core.PermissionMode
+	var gotFlag core.PermissionMode
+	origRunOneShot := runOneShot
+	runOneShot = func(client *core.Core, prompt string, flags CLIFlags, stdout, stderr io.Writer) error {
+		got, gotFlag = client.PermissionMode(), flags.PermissionMode
+		return nil
+	}
+	defer func() { runOneShot = origRunOneShot }()
+
+	tmpDir := createTestWorkspace(t)
+	var stdout, stderr strings.Builder
+	if err := RunWithStreams([]string{"-C", tmpDir, "summarize the diff"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != core.PermissionWorkspace || gotFlag != "" {
+		t.Fatalf("one-shot permission=%q flag=%q, want %q with no flag", got, gotFlag, core.PermissionWorkspace)
+	}
+
+	// An explicit flag reaches runOneShot, which applies it (see
+	// TestRunOneShotPermissionModes for the applied mode).
+	if err := RunWithStreams([]string{"-C", tmpDir, "-p", "full-access", "summarize the diff"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotFlag != core.PermissionFullAccess {
+		t.Fatalf("one-shot flag=%q, want %q", gotFlag, core.PermissionFullAccess)
+	}
+}
+
 func TestConfigExampleIncludesAllTeamLimits(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "config.example.json"))
 	if err != nil {

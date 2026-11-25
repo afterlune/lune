@@ -140,14 +140,16 @@ func RunWithStreams(args []string, stdin *os.File, stdout, stderr io.Writer) (ru
 		fmt.Fprintf(stderr, "Lune A2A server listening on %s\n", flags.A2AListen)
 		return runA2AServer(client, flags.A2AListen, token)
 	}
+	// An unattended run has nobody to answer an approval prompt, so it must not
+	// inherit the interactive default: runOneShot applies its own conservative
+	// default instead. Interactive terminal sessions keep full-access.
+	if isOneShot {
+		return runOneShot(client, effectivePrompt, flags, stdout, stderr)
+	}
 	if flags.PermissionMode == "" {
 		if err := client.SetPermissionMode(core.PermissionFullAccess); err != nil {
 			return fmt.Errorf("set default terminal permission mode: %w", err)
 		}
-	}
-
-	if isOneShot {
-		return runOneShot(client, effectivePrompt, flags, stdout, stderr)
 	}
 
 	if interactive {
