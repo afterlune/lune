@@ -230,6 +230,23 @@ function storedWidth(key: string, fallback: number, min: number, max: number): n
   return fallback
 }
 
+function keepOptionInView(container: HTMLElement | null, index: number): void {
+  if (!container) return
+  const items = container.querySelectorAll<HTMLElement>('[role="option"]')
+  const item = items[index]
+  if (!item) return
+  const pad = 6 // matches p-1.5 container padding
+  const cRect = container.getBoundingClientRect()
+  const iRect = item.getBoundingClientRect()
+  const itemTop = iRect.top - cRect.top + container.scrollTop
+  const itemBottom = itemTop + iRect.height
+  if (itemTop - pad < container.scrollTop) {
+    container.scrollTop = Math.max(0, itemTop - pad)
+  } else if (itemBottom + pad > container.scrollTop + container.clientHeight) {
+    container.scrollTop = itemBottom + pad - container.clientHeight
+  }
+}
+
 function loadSavedWebConnection(): { url: string; token: string; remembered: boolean } | null {
   const fromLocal = typeof localStorage !== 'undefined' ? readStoredConnection(localStorage, webRememberedConnKey) : null
   const fromSession = typeof sessionStorage !== 'undefined' ? readStoredConnection(sessionStorage, webSessionConnKey) : null
@@ -433,12 +450,17 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const drawerButtonRef = useRef<HTMLButtonElement>(null)
   const fileButtonRef = useRef<HTMLButtonElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const slashPopoverRef = useRef<HTMLDivElement | null>(null)
+  const mentionPopoverRef = useRef<HTMLDivElement | null>(null)
+  const slashScrollByKeyRef = useRef(false)
+  const mentionScrollByKeyRef = useRef(false)
+  const popoverPointerRef = useRef<{ x: number; y: number }>({ x: -1, y: -1 })
 
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+    el.style.height = `${Math.max(48, Math.min(el.scrollHeight, 200))}px`
   }, [draft])
 
   useEffect(() => {
@@ -490,7 +512,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   }, [sessions, search, showArchived, serverSearch])
   const sessionGroups = useMemo(() => groupSessionsByTime(filteredSessions), [filteredSessions])
   const slashMatches = useMemo(() => matchSlashCommands(draft, capabilities), [draft, capabilities])
-  useEffect(() => { setSlashIndex(0) }, [slashMatches.length, draft])
+  useEffect(() => {
+    setSlashIndex(0)
+    if (slashPopoverRef.current) slashPopoverRef.current.scrollTop = 0
+  }, [slashMatches.length, draft])
+  useEffect(() => {
+    if (slashMatches.length === 0 || !slashScrollByKeyRef.current) return
+    slashScrollByKeyRef.current = false
+    keepOptionInView(slashPopoverRef.current, slashIndex)
+  }, [slashIndex, slashMatches.length])
   const mentionWorkspaceKey = workspaceInfo?.path || managed?.workspace.path || (connection?.mode === 'local' ? connection.workspace : connection?.mode === 'remote' ? connection.url : '')
   useEffect(() => {
     mentionCacheRef.current = { key: mentionWorkspaceKey, items: [], loaded: false }
@@ -529,7 +559,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     () => (activeMention ? filterMentionItems(mentionItems, activeMention.query, 12) : []),
     [activeMention, mentionItems],
   )
-  useEffect(() => { setMentionIndex(0) }, [activeMention?.query])
+  useEffect(() => {
+    setMentionIndex(0)
+    if (mentionPopoverRef.current) mentionPopoverRef.current.scrollTop = 0
+  }, [activeMention?.query])
+  useEffect(() => {
+    if (!activeMention || mentionMatches.length === 0 || !mentionScrollByKeyRef.current) return
+    mentionScrollByKeyRef.current = false
+    keepOptionInView(mentionPopoverRef.current, mentionIndex)
+  }, [mentionIndex, mentionMatches.length, activeMention])
   const displayedMessages = useMemo(() => [...history, ...optimistic.filter((message) => message.sessionId === activeSessionId)], [history, optimistic, activeSessionId])
   const selectedModel = activeSession?.settings.modelProfile || models[0]?.profile || ''
   const taskIsRunning = runtime.task.status === 'running'
@@ -2923,7 +2961,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       )}
       {slashMatches.length > 0 && activeSession && !working && (
-        <div className={cn('slash-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Slash commands')}>
+        <div ref={slashPopoverRef} className={cn('slash-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Slash commands')}>
           {slashMatches.map((cmd, index) => (
             <button
               key={cmd.name}
@@ -2934,7 +2972,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                 'slash-item flex w-full cursor-pointer items-center gap-2.5 rounded-[8px] border-0 px-2.5 py-[7px] text-left text-[12.5px]',
                 index === slashIndex ? 'active bg-hover text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover',
               )}
-              onMouseEnter={() => setSlashIndex(index)}
+              onMouseMove={(event) => {
+                if (event.clientX === popoverPointerRef.current.x && event.clientY === popoverPointerRef.current.y) return
+                popoverPointerRef.current = { x: event.clientX, y: event.clientY }
+                if (slashIndex !== index) {
+                  slashScrollByKeyRef.current = false
+                  setSlashIndex(index)
+                }
+              }}
               onMouseDown={(event) => {
                 event.preventDefault()
                 applySlashMatch(cmd)
@@ -2948,7 +2993,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       )}
       {activeMention && activeSession && !working && slashMatches.length === 0 && (mentionLoading || mentionMatches.length > 0 || activeMention.query.length > 0) && (
-        <div className={cn('slash-popover mention-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Files matching @')}>
+        <div ref={mentionPopoverRef} className={cn('slash-popover mention-popover absolute right-0 bottom-[calc(100%+6px)] left-0 z-30 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto p-1.5', popoverSurface)} role="listbox" aria-label={t('Files matching @')}>
           {mentionLoading && mentionMatches.length === 0 ? (
             <div className="mention-empty px-3 py-3 text-[12.5px] text-ink-muted">{t('Loading files…')}</div>
           ) : mentionMatches.length === 0 ? (
@@ -2967,7 +3012,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     'slash-item mention-item flex w-full cursor-pointer items-center gap-2 rounded-[8px] border-0 px-2.5 py-[7px] text-left text-[12.5px]',
                     index === mentionIndex ? 'active bg-hover text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover',
                   )}
-                  onMouseEnter={() => setMentionIndex(index)}
+                  onMouseMove={(event) => {
+                    if (event.clientX === popoverPointerRef.current.x && event.clientY === popoverPointerRef.current.y) return
+                    popoverPointerRef.current = { x: event.clientX, y: event.clientY }
+                    if (mentionIndex !== index) {
+                      mentionScrollByKeyRef.current = false
+                      setMentionIndex(index)
+                    }
+                  }}
                   onMouseDown={(event) => {
                     event.preventDefault()
                     applyMentionMatch(item)
@@ -3088,7 +3140,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         )}
         <textarea
           ref={textareaRef}
-          className="max-h-[200px] min-h-[24px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.55] text-ink outline-none placeholder:text-ink-faint sm:text-[15px]"
+          className="max-h-[200px] min-h-[48px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.55] text-ink outline-none placeholder:text-ink-faint sm:text-[15px]"
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value)
@@ -3115,11 +3167,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             if (slashMatches.length > 0) {
               if (event.key === 'ArrowDown') {
                 event.preventDefault()
+                slashScrollByKeyRef.current = true
                 setSlashIndex((i) => (i + 1) % slashMatches.length)
                 return
               }
               if (event.key === 'ArrowUp') {
                 event.preventDefault()
+                slashScrollByKeyRef.current = true
                 setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
                 return
               }
@@ -3143,11 +3197,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             if (activeMention && (mentionMatches.length > 0 || mentionLoading)) {
               if (event.key === 'ArrowDown' && mentionMatches.length > 0) {
                 event.preventDefault()
+                mentionScrollByKeyRef.current = true
                 setMentionIndex((i) => (i + 1) % mentionMatches.length)
                 return
               }
               if (event.key === 'ArrowUp' && mentionMatches.length > 0) {
                 event.preventDefault()
+                mentionScrollByKeyRef.current = true
                 setMentionIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
                 return
               }
@@ -3173,7 +3229,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             }
           }}
           placeholder={t(runtime.queue.length || taskIsRunning ? 'Add a message to the queue…' : 'Message Lune, / for commands, @ for files…')}
-          rows={1}
+          rows={2}
           disabled={!client || !activeSession || working}
         />
         <div className="composer-footer flex items-center justify-between gap-1.5 sm:gap-2">
@@ -4151,7 +4207,7 @@ function EffortSlider({
     <div
       className={cn(
         'effort-slider-section mt-0.5 flex flex-col gap-[7px] rounded-[10px] border border-transparent border-t-line-subtle px-3 pt-2.5 pb-[9px] transition-[background,border-color] duration-180',
-        isMax ? 'is-max border-line-strong bg-[light-dark(#f8f8f9,#1b1b20)]' : 'bg-subtle',
+        isMax ? 'is-max border-line-strong bg-[light-dark(#f8f8f9,#2c2d33)]' : 'bg-subtle',
       )}
     >
       <div className="effort-slider-head flex items-center justify-between gap-2 text-[12px] font-semibold text-ink-secondary">
