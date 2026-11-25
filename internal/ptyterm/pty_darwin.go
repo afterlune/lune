@@ -1,0 +1,174 @@
+//go:build darwin
+
+package ptyterm
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
+
+type darwinSession struct {
+	ptmx   *os.File
+	cmd    *exec.Cmd
+	mu     sync.Mutex
+	closed bool
+
+	waitOnce sync.Once
+	waitCode int
+	waitErr  error
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func defaultShell(explicit string) (string, []string) {
+	candidates := []string{explicit, os.Getenv("SHELL"), "/bin/zsh", "/bin/bash", "/bin/sh"}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if path, err := exec.LookPath(c); err == nil {
+			return path, nil
+		}
+	}
+	return "/bin/sh", nil
+}
+
+func ptsnameDarwin(fd uintptr) (string, error) {
+	var buf [128]byte
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, unix.TIOCPTYGNAME, uintptr(unsafe.Pointer(&buf[0])))
+	if errno != 0 {
+		return "", errno
+	}
+	if i := bytes.IndexByte(buf[:], 0); i >= 0 {
+		return string(buf[:i]), nil
+	}
+	return string(buf[:]), nil
+}
+
+func openPTY(dir, explicitShell string, cols, rows uint16) (Session, error) {
+	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open /dev/ptmx: %w", err)
+	}
+
+	if err := unix.IoctlSetInt(int(ptmx.Fd()), unix.TIOCPTYGRANT, 0); err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("grant pty: %w", err)
+	}
+	if err := unix.IoctlSetInt(int(ptmx.Fd()), unix.TIOCPTYUNLK, 0); err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("unlock pty: %w", err)
+	}
+	slaveName, err := ptsnameDarwin(ptmx.Fd())
+	if err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("query pty name: %w", err)
+	}
+	slave, err := os.OpenFile(slaveName, os.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("open %s: %w", slaveName, err)
+	}
+
+	if err := unix.IoctlSetWinsize(int(ptmx.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols}); err != nil {
+		_ = slave.Close()
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("set initial winsize: %w", err)
+	}
+
+	shell, args := defaultShell(explicitShell)
+	cmd := exec.Command(shell, args...)
+	cmd.Dir = dir
+	cmd.Env = buildEnv()
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:  true,
+		Setctty: true,
+		Ctty:    0,
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = slave.Close()
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("start shell %q: %w", shell, err)
+	}
+	_ = slave.Close()
+
+	return &darwinSession{ptmx: ptmx, cmd: cmd}, nil
+}
+
+func (s *darwinSession) Read(p []byte) (int, error) {
+	return s.ptmx.Read(p)
+}
+
+func (s *darwinSession) Write(p []byte) (int, error) {
+	return s.ptmx.Write(p)
+}
+
+func (s *darwinSession) Resize(cols, rows uint16) error {
+	cols, rows = normalizeSize(cols, rows)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("terminal session is closed")
+	}
+	return unix.IoctlSetWinsize(int(s.ptmx.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+}
+
+func (s *darwinSession) Wait() (int, error) {
+	s.waitOnce.Do(func() {
+		err := s.cmd.Wait()
+		if err == nil {
+			s.waitCode = 0
+			return
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			s.waitCode = exitErr.ExitCode()
+			return
+		}
+		s.waitCode = -1
+		s.waitErr = err
+	})
+	return s.waitCode, s.waitErr
+}
+
+func (s *darwinSession) Close() error {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGHUP)
+		}
+		s.closeErr = s.ptmx.Close()
+
+		done := make(chan struct{})
+		go func() {
+			_, _ = s.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(150 * time.Millisecond):
+			if s.cmd != nil && s.cmd.Process != nil {
+				_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
+			}
+			<-done
+		}
+	})
+	return s.closeErr
+}

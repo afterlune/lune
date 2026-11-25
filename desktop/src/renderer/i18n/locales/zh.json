@@ -534,5 +534,19 @@
   "Compacting": "压缩中",
   "In": "输入",
   "Out": "输出",
-  "Context usage": "上下文"
+  "Context usage": "上下文",
+  "Terminal": "终端",
+  "New terminal": "新建终端",
+  "Close terminal": "关闭终端",
+  "Restart terminal": "重启终端",
+  "Clear terminal": "清空终端",
+  "Exited": "已退出",
+  "Connecting to terminal…": "正在连接终端…",
+  "Terminal connection failed.": "终端连接失败。",
+  "Open interactive workspace terminal": "打开工作区交互式终端",
+  "Open terminal": "打开终端",
+  "Terminal is only available for local workspaces.": "仅本地工作区支持打开终端。",
+  "Toggle workspace": "展开或折叠工作区",
+  "New conversation in {{name}}": "在 {{name}} 中新建会话",
+  "Show all ({{count}})": "显示全部 ({{count}})"
 }

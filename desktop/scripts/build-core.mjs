@@ -60,4 +60,15 @@ for (const [packagePath, filename] of [
   if (result.status !== 0) throw new Error(`Could not build ${packagePath}.`)
 }
 
-console.log(`Built lune-core and lune-sandbox for ${target} x64 in ${outputDirectory}${process.env.LUNE_CORE_DIR ? ' from LUNE_CORE_DIR' : useSiblingCore ? ' from the pinned sibling Core checkout' : ' from the pinned Go module source'}`)
+{
+  const ptyOutputPath = resolve(outputDirectory, `lune-pty${suffix}`)
+  const result = spawnSync(process.env.GO || 'go', ['build', '-trimpath', '-o', ptyOutputPath, './cmd/lune-pty'], {
+    cwd: repositoryRoot,
+    stdio: 'inherit',
+    env: { ...process.env, GOOS: goos, GOARCH: 'amd64', CGO_ENABLED: '0', GOWORK: 'off' },
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error('Could not build ./cmd/lune-pty.')
+}
+
+console.log(`Built lune-core, lune-sandbox, and lune-pty for ${target} x64 in ${outputDirectory}${process.env.LUNE_CORE_DIR ? ' from LUNE_CORE_DIR' : useSiblingCore ? ' from the pinned sibling Core checkout' : ' from the pinned Go module source'}`)

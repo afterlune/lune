@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('luneDesktop', {
   forgetConnection: (mode: string, address: string): Promise<void> => ipcRenderer.invoke('settings:forget-connection', mode, address),
   lastSession: (): Promise<string | null> => ipcRenderer.invoke('settings:last-session'),
   rememberSession: (mode: string, address: string, session: string): Promise<void> => ipcRenderer.invoke('settings:remember-session', mode, address, session),
+  listWorkspaces: () => ipcRenderer.invoke('settings:workspaces'),
+  selectPersistedWorkspace: (id: string): Promise<void> => ipcRenderer.invoke('settings:select-workspace', id),
+  closePersistedWorkspace: (id: string): Promise<void> => ipcRenderer.invoke('settings:close-workspace', id),
   saveWorkspacePermission: (workspace: string, mode: string): Promise<void> =>
     ipcRenderer.invoke('settings:save-workspace-permission', workspace, mode),
   getTheme: (): Promise<ThemePreference> => ipcRenderer.invoke('desktop:get-theme'),
@@ -52,5 +55,15 @@ contextBridge.exposeInMainWorld('luneDesktop', {
     const handler = (_event: Electron.IpcRendererEvent, notification: { method: string; params?: unknown }) => listener(notification)
     ipcRenderer.on('runtime:notification', handler)
     return () => ipcRenderer.removeListener('runtime:notification', handler)
+  },
+  terminalOpen: (input: { cwd?: string; cols?: number; rows?: number }): Promise<{ id: string }> =>
+    ipcRenderer.invoke('terminal:open', input),
+  terminalWrite: (id: string, data: string): Promise<void> => ipcRenderer.invoke('terminal:write', { id, data }),
+  terminalResize: (id: string, cols: number, rows: number): Promise<void> => ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
+  terminalClose: (id: string): Promise<void> => ipcRenderer.invoke('terminal:close', { id }),
+  onTerminalEvent: (listener: (event: { id: string; type: string; data?: string; code?: number; message?: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { id: string; type: string; data?: string; code?: number; message?: string }) => listener(payload)
+    ipcRenderer.on('terminal:event', handler)
+    return () => ipcRenderer.removeListener('terminal:event', handler)
   },
 })

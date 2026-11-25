@@ -303,7 +303,7 @@ export interface MCPResourceTemplate {
   mimeType?: string
 }
 
-export type HarnessTab = 'files' | 'goal' | 'processes' | 'mcp' | 'context'
+export type HarnessTab = 'files' | 'goal' | 'processes' | 'terminal' | 'mcp' | 'context'
 
 export interface HistoryAttachment {
   name: string

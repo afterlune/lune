@@ -534,5 +534,19 @@
   "Compacting": "Compacting",
   "In": "In",
   "Out": "Out",
-  "Context usage": "Context"
+  "Context usage": "Context",
+  "Terminal": "Terminal",
+  "New terminal": "New terminal",
+  "Close terminal": "Close terminal",
+  "Restart terminal": "Restart terminal",
+  "Clear terminal": "Clear terminal",
+  "Exited": "Exited",
+  "Connecting to terminal…": "Connecting to terminal…",
+  "Terminal connection failed.": "Terminal connection failed.",
+  "Open interactive workspace terminal": "Open interactive workspace terminal",
+  "Open terminal": "Open terminal",
+  "Terminal is only available for local workspaces.": "Terminal is only available for local workspaces.",
+  "Toggle workspace": "Toggle workspace",
+  "New conversation in {{name}}": "New conversation in {{name}}",
+  "Show all ({{count}})": "Show all ({{count}})"
 }

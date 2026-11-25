@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Activity, Check, ChevronRight, Copy, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play,
-  Plug, RefreshCw, Settings, Square, Target, Terminal, Trash2, X,
+  Plug, RefreshCw, Settings, Square, SquareTerminal, Target, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { RuntimeClient } from './runtime'
 import { WorkspaceFiles, type WorkspaceInfo } from './workspace-files'
+import { TerminalPanel } from './terminal-panel'
+import { terminalTargetKey, type TerminalTarget } from './terminal-transport'
 import {
   bannerError, btnIcon, btnPlain, btnPlainDanger, btnPrimaryCompact, btnSecondary,
   btnSubtleIcon, cn, fieldInput, fieldSelect, fieldTextarea, statusPill, subtleCard,
@@ -87,6 +89,7 @@ export function HarnessPanel({
   onRefreshState,
   onChangeReasoningEffort,
   liveContext,
+  terminalTarget,
   permissionMode,
   allowedPermissionModes,
   onChangePermissionMode,
@@ -111,6 +114,7 @@ export function HarnessPanel({
   onRefreshState: () => Promise<void>
   onChangeReasoningEffort?: (effort: string) => void
   liveContext?: LiveContextOverride
+  terminalTarget?: TerminalTarget | null
   permissionMode?: string
   allowedPermissionModes?: string[]
   onChangePermissionMode?: (mode: string) => void
@@ -121,6 +125,7 @@ export function HarnessPanel({
     { id: 'files', label: 'Files', icon: FolderOpen, available: has('workspace.files') },
     { id: 'goal', label: 'Goal', icon: Target, available: has('goal.manage') && Boolean(activeSession) },
     { id: 'processes', label: 'Processes', icon: Terminal, available: has('command.control') && Boolean(activeSession) },
+    { id: 'terminal', label: 'Terminal', icon: SquareTerminal, available: Boolean(terminalTarget) },
     { id: 'mcp', label: 'MCP', icon: Plug, available: has('mcp.inspect') },
     { id: 'context', label: 'Context', icon: Activity, available: true },
   ]
@@ -128,6 +133,15 @@ export function HarnessPanel({
   const effectiveTab = visibleTabs.some((item) => item.id === tab) ? tab : (visibleTabs[0]?.id ?? 'context')
   const tabsRef = useRef<HTMLDivElement | null>(null)
   const [tabFade, setTabFade] = useState({ left: false, right: false })
+  const targetKey = terminalTargetKey(terminalTarget)
+  const [mountedTargetKey, setMountedTargetKey] = useState('')
+  const terminalMounted = Boolean(terminalTarget) && mountedTargetKey === targetKey
+
+  useEffect(() => {
+    if (visible && effectiveTab === 'terminal' && targetKey) {
+      setMountedTargetKey(targetKey)
+    }
+  }, [visible, effectiveTab, targetKey])
 
   useEffect(() => {
     if (!visible) return
@@ -227,16 +241,22 @@ export function HarnessPanel({
     activeBtn?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
   }, [visible, effectiveTab])
 
-  if (!visible) return null
+  if (!visible && !terminalMounted) return null
 
   return (
     <aside
       className={cn(
-        'harness-panel z-[5] flex h-full min-h-0 min-w-0 flex-col border-l border-line-subtle bg-sidebar',
-        fullScreen && 'fullscreen fixed inset-0 z-[60] h-dvh w-screen border-0',
+        'harness-panel z-[5] h-full min-h-0 min-w-0 flex-col border-l border-line-subtle bg-sidebar',
+        visible ? 'flex' : 'hidden',
+        visible && fullScreen && 'fullscreen fixed inset-0 z-[60] h-dvh w-screen border-0',
       )}
       aria-label={t('Harness')}
-      onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}
+      aria-hidden={!visible || undefined}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        if (event.target instanceof Element && event.target.closest('.terminal-panel')) return
+        onClose()
+      }}
     >
       <header className="harness-panel-header flex h-[52px] items-center justify-between gap-1.5 border-b border-line-subtle bg-canvas px-2.5">
         <div
@@ -278,7 +298,7 @@ export function HarnessPanel({
       </header>
 
       <div className="harness-panel-body flex min-h-0 flex-1 flex-col overflow-hidden">
-        {effectiveTab === 'files' && has('workspace.files') && (
+        {visible && effectiveTab === 'files' && has('workspace.files') && (
           <WorkspaceFiles
             client={client}
             workspace={workspace}
@@ -289,7 +309,7 @@ export function HarnessPanel({
             embedded
           />
         )}
-        {effectiveTab === 'goal' && activeSession && (
+        {visible && effectiveTab === 'goal' && activeSession && (
           <GoalInspector
             client={client}
             sessionId={activeSession.id}
@@ -298,7 +318,7 @@ export function HarnessPanel({
             onUpdated={onRefreshState}
           />
         )}
-        {effectiveTab === 'processes' && activeSession && (
+        {visible && effectiveTab === 'processes' && activeSession && (
           <ProcessInspector
             client={client}
             sessionId={activeSession.id}
@@ -306,7 +326,12 @@ export function HarnessPanel({
             visible={visible && effectiveTab === 'processes'}
           />
         )}
-        {effectiveTab === 'mcp' && (
+        {terminalMounted && terminalTarget && (
+          <div className={cn('min-h-0 flex-1 flex-col overflow-hidden', visible && effectiveTab === 'terminal' ? 'flex' : 'hidden')}>
+            <TerminalPanel key={targetKey} target={terminalTarget} visible={visible && effectiveTab === 'terminal'} />
+          </div>
+        )}
+        {visible && effectiveTab === 'mcp' && (
           <MCPInspector
             client={client}
             sessionId={activeSession?.id ?? ''}
@@ -314,7 +339,7 @@ export function HarnessPanel({
             onOpenMCPSettings={onOpenMCPSettings}
           />
         )}
-        {effectiveTab === 'context' && (
+        {visible && effectiveTab === 'context' && (
           <ContextInspector
             activeSession={activeSession}
             runtime={runtime}

@@ -202,37 +202,65 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 		runErr = errors.Join(runErr, workspaces.shutdown(ctx))
 	}()
 
-	var initialPath string
+	if records, listErr := store.ListWorkspaces(true); listErr == nil {
+		for _, rec := range records {
+			info, statErr := os.Stat(rec.Path)
+			if statErr != nil || !info.IsDir() {
+				fmt.Fprintf(stderr, "Skipping unavailable workspace %s\n", rec.Path)
+				_ = store.CloseWorkspace(rec.ID)
+				continue
+			}
+			if _, openErr := workspaces.openWithOptions(rec.Path, false); errors.Is(openErr, errWebConfigRequired) {
+				workspaces.mu.Lock()
+				if workspaces.pendingInitial == "" {
+					workspaces.pendingInitial = rec.Path
+				}
+				workspaces.needsSetup = true
+				workspaces.mu.Unlock()
+				fmt.Fprintln(stderr, "No model provider configured in settings DB yet; open Settings in Web UI to configure providers and models.")
+				break
+			} else if openErr != nil {
+				fmt.Fprintf(stderr, "Failed to restore workspace %s: %v\n", rec.Path, openErr)
+			}
+		}
+	}
+
 	if strings.TrimSpace(options.workspace) != "" {
 		abs, err := filepath.Abs(options.workspace)
 		if err != nil {
 			return err
 		}
-		initialPath = abs
-	} else if recent, err := store.WebConnections(); err == nil {
-		for _, conn := range recent {
-			if conn.Mode == "local" {
-				if info, statErr := os.Stat(conn.Address); statErr == nil && info.IsDir() {
-					initialPath = conn.Address
-					break
+		canonicalArg, canonErr := filepath.EvalSymlinks(abs)
+		if canonErr != nil {
+			canonicalArg = filepath.Clean(abs)
+		}
+		alreadyOpen := false
+		for _, item := range workspaces.listOpened() {
+			if item.Path == canonicalArg {
+				alreadyOpen = true
+				break
+			}
+		}
+		if !alreadyOpen && !workspaces.needsSetup {
+			if _, err := workspaces.openWithOptions(abs, true); errors.Is(err, errWebConfigRequired) {
+				workspaces.mu.Lock()
+				if workspaces.pendingInitial == "" {
+					workspaces.pendingInitial = abs
 				}
+				workspaces.needsSetup = true
+				workspaces.mu.Unlock()
+				fmt.Fprintln(stderr, "No model provider configured in settings DB yet; open Settings in Web UI to configure providers and models.")
+			} else if err != nil && len(workspaces.listOpened()) == 0 {
+				return err
+			} else if err != nil {
+				fmt.Fprintf(stderr, "Failed to open workspace %s: %v\n", abs, err)
 			}
 		}
 	}
-
-	if initialPath != "" {
-		initial, err := workspaces.open(initialPath)
-		if errors.Is(err, errWebConfigRequired) {
-			workspaces.mu.Lock()
-			workspaces.pendingInitial = initialPath
-			workspaces.needsSetup = true
-			workspaces.mu.Unlock()
-			fmt.Fprintln(stderr, "No model provider configured in settings DB yet; open Settings in Web UI to configure providers and models.")
-		} else if err != nil {
-			return err
-		} else {
-			workspaces.initial = initial.ID
-		}
+	if opened := workspaces.listOpened(); len(opened) > 0 {
+		workspaces.mu.Lock()
+		workspaces.initial = opened[0].ID
+		workspaces.mu.Unlock()
 	}
 
 	assets, err := fs.Sub(webAssets, "webdist")

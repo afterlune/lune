@@ -1,9 +1,29 @@
 import { app, safeStorage } from 'electron'
+import { randomBytes } from 'node:crypto'
 import { chmodSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, SavedConnection } from '../shared/desktop-settings.js'
+import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, SavedConnection, WorkspaceRecord, WorkspaceSessionRecord } from '../shared/desktop-settings.js'
 import { defaultUiPreferences, normalizeUiPreferences, type UiPreferences } from '../shared/ui-preferences.js'
+
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+function newWorkspaceId(): string {
+  const bytes = randomBytes(20)
+  let out = ''
+  for (let i = 0; i < 26; i++) {
+    out += BASE32_ALPHABET[bytes[i % bytes.length] & 31]
+  }
+  return out
+}
+
+function parseTimestampMs(raw: unknown, fallback: number): number {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.round(raw)
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Date.parse(raw)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
+  return fallback
+}
 
 export const startupConfigLimit = 1024 * 1024
 type Json = Record<string, unknown>
@@ -113,8 +133,34 @@ export class DesktopSettings {
     this.database = new DatabaseSync(path)
     try {
       if (process.platform !== 'win32') chmodSync(path, 0o600)
-      this.database.exec('PRAGMA busy_timeout = 5000')
+      this.database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;')
       const version = this.database.prepare('PRAGMA user_version').get()?.user_version
+      const workspaceSchema = `
+        CREATE TABLE IF NOT EXISTS workspaces (
+          id TEXT PRIMARY KEY,
+          path TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          is_open INTEGER NOT NULL DEFAULT 1,
+          last_session_id TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_opened_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspaces_open_time
+          ON workspaces(is_open, last_opened_at DESC, created_at DESC);
+        CREATE TABLE IF NOT EXISTS workspace_sessions (
+          workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          archived INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_opened_at INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(workspace_id, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws_time
+          ON workspace_sessions(workspace_id, updated_at DESC, created_at DESC);
+      `
       if (version === 0) {
         this.transaction(() => {
           this.database.exec(`
@@ -125,7 +171,8 @@ export class DesktopSettings {
               mode TEXT NOT NULL, address TEXT NOT NULL, name TEXT NOT NULL,
               touched INTEGER NOT NULL, session TEXT, PRIMARY KEY(mode,address)
             );
-            PRAGMA user_version = 2;
+            ${workspaceSchema}
+            PRAGMA user_version = 3;
           `)
           for (const [key, filename] of [['theme', 'appearance.txt'], ['shortcut', 'quick-shortcut.txt']]) {
             try {
@@ -138,9 +185,22 @@ export class DesktopSettings {
         })
       } else if (version === 1) {
         this.transaction(() => {
-          this.database.exec(`ALTER TABLE secrets ADD COLUMN encoding TEXT NOT NULL DEFAULT 'safeStorage'; PRAGMA user_version = 2;`)
+          this.database.exec(`
+            ALTER TABLE secrets ADD COLUMN encoding TEXT NOT NULL DEFAULT 'safeStorage';
+            ${workspaceSchema}
+            PRAGMA user_version = 3;
+          `)
+          this.migrateLocalConnectionsToWorkspaces()
         })
-      } else if (version !== 2) {
+      } else if (version === 2) {
+        this.transaction(() => {
+          this.database.exec(`
+            ${workspaceSchema}
+            PRAGMA user_version = 3;
+          `)
+          this.migrateLocalConnectionsToWorkspaces()
+        })
+      } else if (version !== 3) {
         throw new Error('Unsupported desktop settings database version.')
       }
     } catch (error) {
@@ -403,11 +463,216 @@ export class DesktopSettings {
   }
 
   lastSession(mode: string, address: string): string | undefined {
+    if (mode === 'local') {
+      const ws = this.database.prepare('SELECT last_session_id FROM workspaces WHERE path = ?').get(address) as { last_session_id?: string } | undefined
+      if (ws?.last_session_id) return ws.last_session_id
+    }
     return this.database.prepare('SELECT session FROM connections WHERE mode = ? AND address = ?').get(mode, address)?.session as string | undefined
   }
 
   rememberSession(mode: string, address: string, session: string) {
     this.database.prepare('UPDATE connections SET session = ? WHERE mode = ? AND address = ?').run(session, mode, address)
+    if (mode === 'local') {
+      const now = Date.now()
+      this.transaction(() => {
+        const ws = this.database.prepare('SELECT id FROM workspaces WHERE path = ?').get(address) as { id?: string } | undefined
+        if (!ws?.id) return
+        this.database.prepare('UPDATE workspaces SET last_session_id = ?, updated_at = ? WHERE id = ?').run(session, now, ws.id)
+        this.database.prepare('UPDATE workspace_sessions SET last_opened_at = ? WHERE workspace_id = ? AND session_id = ?').run(now, ws.id, session)
+      })
+    }
+  }
+
+  private migrateLocalConnectionsToWorkspaces() {
+    const countRow = this.database.prepare('SELECT COUNT(*) AS cnt FROM workspaces').get() as { cnt?: number } | undefined
+    if ((countRow?.cnt ?? 0) > 0) return
+    const rows = this.database.prepare("SELECT address, name, touched, coalesce(session, '') AS session FROM connections WHERE mode = 'local' ORDER BY touched DESC").all() as Array<{
+      address: string; name: string; touched: number; session: string
+    }>
+    for (const row of rows) {
+      let resolved = row.address
+      try {
+        resolved = realpathSync.native(row.address)
+        if (!statSync(resolved).isDirectory()) continue
+      } catch {
+        continue
+      }
+      const ts = typeof row.touched === 'number' && row.touched > 0 ? row.touched : Date.now()
+      const displayName = row.name?.trim() || basename(resolved) || resolved
+      this.database.prepare(`
+        INSERT INTO workspaces(id, path, name, is_open, last_session_id, created_at, updated_at, last_opened_at)
+        VALUES(?, ?, ?, 1, ?, ?, ?, ?)
+        ON CONFLICT(path) DO NOTHING
+      `).run(newWorkspaceId(), resolved, displayName, row.session || '', ts, ts, ts)
+    }
+  }
+
+  ensureWorkspace(rawPath: string, touch = true): WorkspaceRecord {
+    const resolved = workspacePath(rawPath)
+    const now = Date.now()
+    const name = basename(resolved) || resolved
+    let out!: WorkspaceRecord
+    this.transaction(() => {
+      const existing = this.database.prepare(`
+        SELECT id, path, name, is_open, last_session_id, created_at, updated_at, last_opened_at
+        FROM workspaces WHERE path = ?
+      `).get(resolved) as {
+        id: string; path: string; name: string; is_open: number; last_session_id: string
+        created_at: number; updated_at: number; last_opened_at: number
+      } | undefined
+      if (!existing) {
+        const id = newWorkspaceId()
+        this.database.prepare(`
+          INSERT INTO workspaces(id, path, name, is_open, last_session_id, created_at, updated_at, last_opened_at)
+          VALUES(?, ?, ?, 1, '', ?, ?, ?)
+        `).run(id, resolved, name, now, now, now)
+        out = { id, path: resolved, name, isOpen: true, lastSessionId: '', createdAt: now, updatedAt: now, lastOpenedAt: now, sessions: [] }
+        return
+      }
+      if (touch) {
+        this.database.prepare('UPDATE workspaces SET is_open = 1, name = ?, updated_at = ?, last_opened_at = ? WHERE id = ?').run(name, now, now, existing.id)
+      } else if (!existing.is_open) {
+        this.database.prepare('UPDATE workspaces SET is_open = 1, name = ? WHERE id = ?').run(name, existing.id)
+      }
+      out = {
+        id: existing.id,
+        path: existing.path,
+        name,
+        isOpen: true,
+        lastSessionId: existing.last_session_id,
+        createdAt: existing.created_at,
+        updatedAt: touch ? now : existing.updated_at,
+        lastOpenedAt: touch ? now : existing.last_opened_at,
+      }
+    })
+    return out
+  }
+
+  selectWorkspace(id: string) {
+    const now = Date.now()
+    this.database.prepare('UPDATE workspaces SET is_open = 1, last_opened_at = ?, updated_at = ? WHERE id = ?').run(now, now, id)
+  }
+
+  closeWorkspace(id: string) {
+    this.database.prepare('UPDATE workspaces SET is_open = 0, updated_at = ? WHERE id = ?').run(Date.now(), id)
+  }
+
+  listWorkspacesWithSessions(openOnly = true): WorkspaceRecord[] {
+    const query = `
+      SELECT id, path, name, is_open, last_session_id, created_at, updated_at, last_opened_at
+      FROM workspaces
+      ${openOnly ? 'WHERE is_open = 1' : ''}
+      ORDER BY last_opened_at DESC, created_at DESC, rowid DESC
+    `
+    const rows = this.database.prepare(query).all() as Array<{
+      id: string; path: string; name: string; is_open: number; last_session_id: string
+      created_at: number; updated_at: number; last_opened_at: number
+    }>
+    const sessionStmt = this.database.prepare(`
+      SELECT session_id, workspace_id, title, archived, created_at, updated_at, last_opened_at
+      FROM workspace_sessions
+      WHERE workspace_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+    `)
+    return rows.map((row) => {
+      const sessRows = sessionStmt.all(row.id) as Array<{
+        session_id: string; workspace_id: string; title: string; archived: number
+        created_at: number; updated_at: number; last_opened_at: number
+      }>
+      const sessions: WorkspaceSessionRecord[] = sessRows.map((s) => ({
+        sessionId: s.session_id,
+        workspaceId: s.workspace_id,
+        title: s.title,
+        archived: s.archived !== 0,
+        createdAt: s.created_at,
+        updatedAt: s.updated_at,
+        lastOpenedAt: s.last_opened_at,
+      }))
+      return {
+        id: row.id,
+        path: row.path,
+        name: row.name,
+        isOpen: row.is_open !== 0,
+        lastSessionId: row.last_session_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        lastOpenedAt: row.last_opened_at,
+        sessions,
+      }
+    })
+  }
+
+  upsertWorkspaceSessions(
+    workspacePathOrID: string,
+    sessions: Array<{ id?: unknown; title?: unknown; archived?: unknown; updatedAt?: unknown; createdAt?: unknown }>,
+    pruneMissing = false,
+  ) {
+    if (!sessions.length && !pruneMissing) return
+    const now = Date.now()
+    this.transaction(() => {
+      const row = this.database.prepare('SELECT id FROM workspaces WHERE id = ? OR path = ?').get(workspacePathOrID, workspacePathOrID) as { id?: string } | undefined
+      if (!row?.id) return
+      const wsId = row.id
+      const keep = new Set<string>()
+      let maxUpdated = 0
+      const upsert = this.database.prepare(`
+        INSERT INTO workspace_sessions(workspace_id, session_id, title, archived, created_at, updated_at, last_opened_at)
+        VALUES(?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT(workspace_id, session_id) DO UPDATE SET
+          title = excluded.title,
+          archived = excluded.archived,
+          updated_at = excluded.updated_at,
+          created_at = CASE
+            WHEN workspace_sessions.created_at > 0 AND workspace_sessions.created_at < excluded.created_at THEN workspace_sessions.created_at
+            ELSE excluded.created_at
+          END
+      `)
+      for (const s of sessions) {
+        const sid = typeof s.id === 'string' ? s.id.trim() : ''
+        if (!sid) continue
+        keep.add(sid)
+        const title = typeof s.title === 'string' ? s.title : ''
+        const archived = s.archived ? 1 : 0
+        const updatedAt = parseTimestampMs(s.updatedAt, now)
+        const createdAt = parseTimestampMs(s.createdAt, updatedAt)
+        if (updatedAt > maxUpdated) maxUpdated = updatedAt
+        upsert.run(wsId, sid, title, archived, createdAt, updatedAt)
+      }
+      if (pruneMissing) {
+        const existing = this.database.prepare('SELECT session_id FROM workspace_sessions WHERE workspace_id = ?').all(wsId) as Array<{ session_id: string }>
+        for (const item of existing) {
+          if (!keep.has(item.session_id)) {
+            this.database.prepare('DELETE FROM workspace_sessions WHERE workspace_id = ? AND session_id = ?').run(wsId, item.session_id)
+          }
+        }
+      }
+      if (maxUpdated > 0) {
+        this.database.prepare('UPDATE workspaces SET updated_at = MAX(updated_at, ?) WHERE id = ?').run(maxUpdated, wsId)
+      }
+    })
+  }
+
+  updateWorkspaceSessionMeta(workspacePathOrID: string, sessionId: string, patch: { title?: string; archived?: boolean }) {
+    const row = this.database.prepare('SELECT id FROM workspaces WHERE id = ? OR path = ?').get(workspacePathOrID, workspacePathOrID) as { id?: string } | undefined
+    if (!row?.id) return
+    const now = Date.now()
+    if (patch.title !== undefined) {
+      this.database.prepare('UPDATE workspace_sessions SET title = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?').run(patch.title, now, row.id, sessionId)
+    }
+    if (patch.archived !== undefined) {
+      this.database.prepare('UPDATE workspace_sessions SET archived = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?').run(patch.archived ? 1 : 0, now, row.id, sessionId)
+    }
+  }
+
+  deleteWorkspaceSession(workspacePathOrID: string, sessionId: string) {
+    this.transaction(() => {
+      const row = this.database.prepare('SELECT id, last_session_id FROM workspaces WHERE id = ? OR path = ?').get(workspacePathOrID, workspacePathOrID) as { id?: string; last_session_id?: string } | undefined
+      if (!row?.id) return
+      this.database.prepare('DELETE FROM workspace_sessions WHERE workspace_id = ? AND session_id = ?').run(row.id, sessionId)
+      if (row.last_session_id === sessionId) {
+        this.database.prepare("UPDATE workspaces SET last_session_id = '' WHERE id = ?").run(row.id)
+      }
+    })
   }
 
   workspacePermissionMode(workspace: string): string {

@@ -197,6 +197,7 @@
     contain: layout style;
   }
   .conversation-column, .message, .reasoning-block { contain: layout style; }
+  .terminal-panel .xterm .xterm-viewport { background-color: var(--bg-canvas) !important; }
   .composer:has(textarea:focus-visible) { border-color: var(--border-strong); }
   .session-search:focus-within,
   .model-fetch-search:focus-within { border-color: var(--border-strong); box-shadow: 0 0 0 3px var(--focus-halo); }

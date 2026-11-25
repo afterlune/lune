@@ -4,7 +4,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/afterlune/lune/internal/engram"
+	"github.com/afterlune/lune/internal/ptyterm"
 	"github.com/afterlune/lune/internal/settings"
 	"github.com/afterlune/lune/internal/slashcmd"
 	"github.com/afterlune/lune/internal/toolchains"
@@ -47,44 +47,67 @@ type webWorkspaces struct {
 	closing        bool
 	needsSetup     bool
 	pendingInitial string
-	order          []string
-	entries        map[string]*webWorkspaceEntry
+	order           []string
+	entries         map[string]*webWorkspaceEntry
+	activeTerminals map[ptyterm.Session]struct{}
+}
+
+type webWorkspaceView struct {
+	ID            string                            `json:"id"`
+	Path          string                            `json:"path"`
+	Name          string                            `json:"name"`
+	LastSessionID string                            `json:"lastSessionId"`
+	CreatedAt     int64                             `json:"createdAt"`
+	UpdatedAt     int64                             `json:"updatedAt"`
+	LastOpenedAt  int64                             `json:"lastOpenedAt"`
+	Sessions      []settings.WorkspaceSessionRecord `json:"sessions"`
 }
 
 func (s *webWorkspaces) open(path string) (core.Workspace, error) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	return s.openLocked(path)
+	return s.openWithOptions(path, true)
 }
 
-func (s *webWorkspaces) openLocked(path string) (core.Workspace, error) {
-	if s.store == nil {
-		return core.Workspace{}, errors.New("web settings store is unavailable")
-	}
-	if !filepath.IsAbs(path) {
-		return core.Workspace{}, errors.New("workspace must be an absolute directory path")
-	}
-	canonical, err := filepath.EvalSymlinks(path)
+func (s *webWorkspaces) openWithOptions(path string, touch bool) (core.Workspace, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	ws, entry, err := s.openLocked(path, touch)
 	if err != nil {
 		return core.Workspace{}, err
 	}
+	if entry != nil && s.store != nil {
+		_, _ = s.syncEntrySessions(context.Background(), entry)
+	}
+	return ws, nil
+}
+
+func (s *webWorkspaces) openLocked(path string, touch bool) (core.Workspace, *webWorkspaceEntry, error) {
+	if s.store == nil {
+		return core.Workspace{}, nil, errors.New("web settings store is unavailable")
+	}
+	if !filepath.IsAbs(path) {
+		return core.Workspace{}, nil, errors.New("workspace must be an absolute directory path")
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return core.Workspace{}, nil, err
+	}
 	for _, component := range strings.Split(filepath.ToSlash(canonical), "/") {
 		if strings.EqualFold(component, ".lune") {
-			return core.Workspace{}, errors.New("cannot open a Lune state directory as a workspace")
+			return core.Workspace{}, nil, errors.New("cannot open a Lune state directory as a workspace")
 		}
 	}
 	info, err := os.Stat(canonical)
 	if err != nil {
-		return core.Workspace{}, err
+		return core.Workspace{}, nil, err
 	}
 	if !info.IsDir() {
-		return core.Workspace{}, errors.New("workspace must be a directory")
+		return core.Workspace{}, nil, errors.New("workspace must be a directory")
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closing {
-		return core.Workspace{}, errors.New("workspace host is shutting down")
+		s.mu.Unlock()
+		return core.Workspace{}, nil, errors.New("workspace host is shutting down")
 	}
 	for _, id := range s.order {
 		existing := s.entries[id]
@@ -92,28 +115,39 @@ func (s *webWorkspaces) openLocked(path string) (core.Workspace, error) {
 			continue
 		}
 		if os.SameFile(existing.info, info) {
-			return existing.workspace, nil
+			ws := existing.workspace
+			s.mu.Unlock()
+			if touch {
+				_ = s.store.SelectWorkspace(ws.ID)
+			}
+			return ws, existing, nil
 		}
 		if existing.workspace.Path == canonical {
-			return core.Workspace{}, errors.New("the open workspace directory was replaced")
+			s.mu.Unlock()
+			return core.Workspace{}, nil, errors.New("the open workspace directory was replaced")
 		}
 	}
+	s.mu.Unlock()
 
 	projectConfig, configured, err := s.store.EffectiveWebConfig(canonical)
 	if err != nil {
-		return core.Workspace{}, err
+		return core.Workspace{}, nil, err
 	}
 	if !configured {
-		s.pendingInitial = canonical
+		s.mu.Lock()
+		if s.pendingInitial == "" {
+			s.pendingInitial = canonical
+		}
 		s.needsSetup = true
-		return core.Workspace{}, errWebConfigRequired
+		s.mu.Unlock()
+		return core.Workspace{}, nil, errWebConfigRequired
 	}
 
 	stateDir := filepath.Join(canonical, ".lune")
 	if stateInfo, lstatErr := os.Lstat(stateDir); lstatErr == nil && (!stateInfo.IsDir() || stateInfo.Mode()&os.ModeSymlink != 0) {
-		return core.Workspace{}, errors.New(".lune must be a real directory in the workspace")
+		return core.Workspace{}, nil, errors.New(".lune must be a real directory in the workspace")
 	} else if lstatErr != nil && !errors.Is(lstatErr, os.ErrNotExist) {
-		return core.Workspace{}, lstatErr
+		return core.Workspace{}, nil, lstatErr
 	}
 
 	var toolchainRoots []string
@@ -138,50 +172,128 @@ func (s *webWorkspaces) openLocked(path string) (core.Workspace, error) {
 	}
 	client, err := core.New(coreCfg)
 	if err != nil {
-		return core.Workspace{}, err
+		return core.Workspace{}, nil, err
 	}
 	initialPerm := core.PermissionWorkspace
-	if s.store != nil {
-		if savedPerm, ok, permErr := s.store.LoadWorkspacePermissionMode(canonical); permErr == nil && ok {
-			if parsed, parseErr := slashcmd.ParsePermissionMode(savedPerm); parseErr == nil {
-				initialPerm = parsed
-			}
+	if savedPerm, ok, permErr := s.store.LoadWorkspacePermissionMode(canonical); permErr == nil && ok {
+		if parsed, parseErr := slashcmd.ParsePermissionMode(savedPerm); parseErr == nil {
+			initialPerm = parsed
 		}
 	}
 	if err := client.SetPermissionMode(initialPerm); err != nil {
 		_ = client.Close(context.Background())
-		return core.Workspace{}, err
+		return core.Workspace{}, nil, err
 	}
 	host, err := runtimehost.New(client, s.token)
 	if err != nil {
 		_ = client.Close(context.Background())
-		return core.Workspace{}, err
+		return core.Workspace{}, nil, err
 	}
 	enableCoreIntegrations(client, coreCfg, s.diagnostics)
 
-	ws := core.Workspace{ID: rand.Text(), Path: canonical}
+	rec, err := s.store.EnsureWorkspace(canonical, touch)
+	if err != nil {
+		_ = host.Shutdown(context.Background())
+		_ = client.Close(context.Background())
+		return core.Workspace{}, nil, err
+	}
+
+	ws := core.Workspace{ID: rec.ID, Path: canonical}
+	entry := &webWorkspaceEntry{workspace: ws, info: info, core: client, host: host}
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		_ = host.Shutdown(context.Background())
+		_ = client.Close(context.Background())
+		return core.Workspace{}, nil, errors.New("workspace host is shutting down")
+	}
 	if s.entries == nil {
 		s.entries = make(map[string]*webWorkspaceEntry)
 	}
-	s.entries[ws.ID] = &webWorkspaceEntry{workspace: ws, info: info, core: client, host: host}
+	s.entries[ws.ID] = entry
 	s.order = append(s.order, ws.ID)
-	if s.initial == "" {
+	if touch || s.initial == "" {
 		s.initial = ws.ID
 	}
 	s.needsSetup = false
+	s.mu.Unlock()
 
 	_ = s.store.TouchWorkspace(canonical)
 	_ = s.store.SaveWebConnection("local", canonical, filepath.Base(canonical), nil, false)
-	return ws, nil
+	return ws, entry, nil
+}
+
+func (s *webWorkspaces) syncEntrySessions(ctx context.Context, entry *webWorkspaceEntry) ([]settings.WorkspaceSessionRecord, error) {
+	if s.store == nil || entry == nil || entry.core == nil {
+		return []settings.WorkspaceSessionRecord{}, nil
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	sessions, err := entry.core.ListSessions(syncCtx, 500, true)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]settings.WorkspaceSessionRecord, 0, len(sessions))
+	for _, sess := range sessions {
+		var updatedMs int64
+		if !sess.UpdatedAt.IsZero() {
+			updatedMs = sess.UpdatedAt.UTC().UnixMilli()
+		}
+		records = append(records, settings.WorkspaceSessionRecord{
+			SessionID:   sess.ID,
+			WorkspaceID: entry.workspace.ID,
+			Title:       sess.Title,
+			Archived:    sess.Archived,
+			CreatedAt:   updatedMs,
+			UpdatedAt:   updatedMs,
+		})
+	}
+	if err := s.store.SyncWorkspaceSessions(entry.workspace.ID, records); err != nil {
+		return nil, err
+	}
+	saved, err := s.store.ListWorkspaceSessions(entry.workspace.ID, true)
+	if err != nil {
+		return records, nil
+	}
+	if saved == nil {
+		saved = []settings.WorkspaceSessionRecord{}
+	}
+	return saved, nil
+}
+
+func (s *webWorkspaces) workspaceView(ws core.Workspace) webWorkspaceView {
+	name := filepath.Base(ws.Path)
+	if name == "" || name == string(filepath.Separator) {
+		name = ws.Path
+	}
+	view := webWorkspaceView{
+		ID:       ws.ID,
+		Path:     ws.Path,
+		Name:     name,
+		Sessions: []settings.WorkspaceSessionRecord{},
+	}
+	if s.store != nil {
+		if rec, found, err := s.store.WorkspaceByID(ws.ID); err == nil && found {
+			view.Name = rec.Name
+			view.LastSessionID = rec.LastSessionID
+			view.CreatedAt = rec.CreatedAt
+			view.UpdatedAt = rec.UpdatedAt
+			view.LastOpenedAt = rec.LastOpenedAt
+		}
+		if sessions, err := s.store.ListWorkspaceSessions(ws.ID, true); err == nil && sessions != nil {
+			view.Sessions = sessions
+		}
+	}
+	return view
 }
 
 func (s *webWorkspaces) closeWorkspace(id string) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	return s.closeWorkspaceLocked(id)
+	return s.closeWorkspaceLocked(id, true)
 }
 
-func (s *webWorkspaces) closeWorkspaceLocked(id string) error {
+func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error {
 	s.mu.Lock()
 	entry := s.entries[id]
 	if entry == nil {
@@ -194,6 +306,9 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string) error {
 	defer cancel()
 	if len(entry.core.ActiveTasks()) > 0 {
 		return errWebWorkspaceBusy
+	}
+	if s.store != nil {
+		_, _ = s.syncEntrySessions(ctx, entry)
 	}
 	if err := entry.core.Close(ctx); err != nil {
 		if strings.Contains(err.Error(), "cannot close core while a task is running") || strings.Contains(err.Error(), "runtime configuration changes are active") {
@@ -221,6 +336,16 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string) error {
 		}
 	}
 	s.mu.Unlock()
+	if persistClose && s.store != nil {
+		_ = s.store.CloseWorkspace(id)
+	}
+	if opened := s.listOpened(); len(opened) > 0 {
+		s.mu.Lock()
+		if s.initial == "" || s.entries[s.initial] == nil {
+			s.initial = opened[0].ID
+		}
+		s.mu.Unlock()
+	}
 	return entry.host.Shutdown(ctx)
 }
 
@@ -259,25 +384,31 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 		}
 	}
 	for _, entry := range targets {
-		if err := s.closeWorkspaceLocked(entry.workspace.ID); err != nil {
+		if err := s.closeWorkspaceLocked(entry.workspace.ID, false); err != nil {
 			return s.listOpened(), false, err
 		}
 	}
 
 	var opened []core.Workspace
 	for _, entry := range targets {
-		ws, err := s.openLocked(entry.workspace.Path)
+		ws, newEntry, err := s.openLocked(entry.workspace.Path, false)
 		if err != nil && !errors.Is(err, errWebConfigRequired) {
 			return s.listOpened(), len(targets) > 0, err
 		}
 		if err == nil {
+			if newEntry != nil && s.store != nil {
+				_, _ = s.syncEntrySessions(context.Background(), newEntry)
+			}
 			opened = append(opened, ws)
 		}
 	}
 	if len(targets) == 0 && len(s.listOpened()) == 0 && pendingPath != "" {
-		if ws, err := s.openLocked(pendingPath); err != nil && !errors.Is(err, errWebConfigRequired) {
+		if ws, newEntry, err := s.openLocked(pendingPath, true); err != nil && !errors.Is(err, errWebConfigRequired) {
 			return s.listOpened(), false, err
 		} else if err == nil {
+			if newEntry != nil && s.store != nil {
+				_, _ = s.syncEntrySessions(context.Background(), newEntry)
+			}
 			opened = append(opened, ws)
 		}
 	}
@@ -320,14 +451,72 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 
 func (s *webWorkspaces) listOpened() []core.Workspace {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	items := make([]core.Workspace, 0, len(s.order))
-	for _, id := range s.order {
-		if entry := s.entries[id]; entry != nil {
+	entriesCopy := make(map[string]*webWorkspaceEntry, len(s.entries))
+	for id, entry := range s.entries {
+		entriesCopy[id] = entry
+	}
+	orderCopy := append([]string(nil), s.order...)
+	store := s.store
+	s.mu.Unlock()
+
+	items := make([]core.Workspace, 0, len(entriesCopy))
+	seen := make(map[string]struct{}, len(entriesCopy))
+	if store != nil {
+		if recs, err := store.ListWorkspaces(true); err == nil {
+			for _, rec := range recs {
+				if entry := entriesCopy[rec.ID]; entry != nil {
+					items = append(items, entry.workspace)
+					seen[rec.ID] = struct{}{}
+				}
+			}
+		}
+	}
+	for _, id := range orderCopy {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		if entry := entriesCopy[id]; entry != nil {
 			items = append(items, entry.workspace)
 		}
 	}
 	return items
+}
+
+func (s *webWorkspaces) listOpenedDetailed() []webWorkspaceView {
+	opened := s.listOpened()
+	if len(opened) == 0 {
+		return []webWorkspaceView{}
+	}
+	byID := make(map[string]settings.WorkspaceRecord)
+	if s.store != nil {
+		if recs, err := s.store.ListWorkspacesWithSessions(true); err == nil {
+			for _, rec := range recs {
+				byID[rec.ID] = rec
+			}
+		}
+	}
+	views := make([]webWorkspaceView, 0, len(opened))
+	for _, ws := range opened {
+		if rec, ok := byID[ws.ID]; ok {
+			sessions := rec.Sessions
+			if sessions == nil {
+				sessions = []settings.WorkspaceSessionRecord{}
+			}
+			views = append(views, webWorkspaceView{
+				ID:            ws.ID,
+				Path:          ws.Path,
+				Name:          rec.Name,
+				LastSessionID: rec.LastSessionID,
+				CreatedAt:     rec.CreatedAt,
+				UpdatedAt:     rec.UpdatedAt,
+				LastOpenedAt:  rec.LastOpenedAt,
+				Sessions:      sessions,
+			})
+			continue
+		}
+		views = append(views, s.workspaceView(ws))
+	}
+	return views
 }
 
 func (s *webWorkspaces) reloadWorkspace(id string) error {
@@ -347,8 +536,12 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		entry := s.entries[id]
 		s.mu.Unlock()
-		if entry == nil || tail != "runtime" {
+		if entry == nil || (tail != "runtime" && tail != "terminal") {
 			http.NotFound(w, r)
+			return
+		}
+		if tail == "terminal" {
+			s.serveTerminal(w, r, entry.workspace.Path)
 			return
 		}
 		request := r.Clone(r.Context())
@@ -368,6 +561,7 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		ID             string                  `json:"id"`
+		SessionID      string                  `json:"sessionId"`
 		Path           string                  `json:"path"`
 		Language       string                  `json:"language"`
 		Theme          string                  `json:"theme"`
@@ -404,18 +598,21 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 			theme, _ = s.store.WebTheme()
 			recent, _ = s.store.RecentWorkspaces()
 		}
-		opened := s.listOpened()
+		opened := s.listOpenedDetailed()
 		s.mu.Lock()
 		initial := s.initial
 		needsSetup := s.needsSetup
 		defaultPath := s.pendingInitial
-		if initial == "" && len(opened) > 0 {
-			initial = opened[0].ID
-		}
-		if defaultPath == "" && len(opened) > 0 {
-			defaultPath = opened[0].Path
-		}
 		s.mu.Unlock()
+		if len(opened) > 0 {
+			initial = opened[0].ID
+			s.mu.Lock()
+			s.initial = initial
+			s.mu.Unlock()
+			if defaultPath == "" {
+				defaultPath = opened[0].Path
+			}
+		}
 		if defaultPath == "" {
 			defaultPath, _ = os.UserHomeDir()
 		}
@@ -456,10 +653,53 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		result = map[string]any{"ok": err == nil, "preferences": preferences}
 	case "/_lune/open-workspace":
-		result, err = s.open(input.Path)
+		var ws core.Workspace
+		ws, err = s.open(input.Path)
+		if err == nil {
+			result = s.workspaceView(ws)
+		}
 	case "/_lune/close-workspace":
 		err = s.closeWorkspace(input.ID)
 		result = map[string]any{"ok": err == nil}
+	case "/_lune/workspaces/select":
+		s.mu.Lock()
+		entry := s.entries[input.ID]
+		if entry != nil {
+			s.initial = input.ID
+		}
+		s.mu.Unlock()
+		if entry == nil {
+			err = errors.New("workspace not found")
+		} else if s.store != nil {
+			err = s.store.SelectWorkspace(input.ID)
+		}
+		result = map[string]any{"ok": err == nil}
+	case "/_lune/workspaces/active-session":
+		s.mu.Lock()
+		entry := s.entries[input.ID]
+		s.mu.Unlock()
+		if entry == nil {
+			err = errors.New("workspace not found")
+		} else if strings.TrimSpace(input.SessionID) == "" {
+			err = errors.New("sessionId is required")
+		} else if s.store != nil {
+			_, _ = s.syncEntrySessions(r.Context(), entry)
+			err = s.store.RememberWorkspaceActiveSession(input.ID, input.SessionID)
+		}
+		result = map[string]any{"ok": err == nil}
+	case "/_lune/workspaces/sessions/sync":
+		s.mu.Lock()
+		entry := s.entries[input.ID]
+		s.mu.Unlock()
+		if entry == nil {
+			err = errors.New("workspace not found")
+		} else {
+			var sessions []settings.WorkspaceSessionRecord
+			sessions, err = s.syncEntrySessions(r.Context(), entry)
+			if err == nil {
+				result = map[string]any{"ok": true, "sessions": sessions}
+			}
+		}
 	case "/_lune/reload-workspace":
 		err = s.reloadWorkspace(input.ID)
 		result = map[string]any{"ok": err == nil}
@@ -636,10 +876,22 @@ func (s *webWorkspaces) browse(path string) (any, error) {
 		parent = ""
 	}
 	recent := []string{}
+	seenRecent := map[string]struct{}{}
 	if s.store != nil {
+		if recs, err := s.store.ListWorkspaces(false); err == nil {
+			for _, rec := range recs {
+				if _, ok := seenRecent[rec.Path]; !ok {
+					seenRecent[rec.Path] = struct{}{}
+					recent = append(recent, rec.Path)
+				}
+			}
+		}
 		if items, err := s.store.RecentWorkspaces(); err == nil {
 			for _, item := range items {
-				recent = append(recent, item.Path)
+				if _, ok := seenRecent[item.Path]; !ok {
+					seenRecent[item.Path] = struct{}{}
+					recent = append(recent, item.Path)
+				}
 			}
 		}
 	}
@@ -647,6 +899,7 @@ func (s *webWorkspaces) browse(path string) (any, error) {
 }
 
 func (s *webWorkspaces) shutdown(ctx context.Context) error {
+	s.closeAllTerminals()
 	s.mu.Lock()
 	s.closing = true
 	entries := make([]*webWorkspaceEntry, 0, len(s.entries))
@@ -654,6 +907,11 @@ func (s *webWorkspaces) shutdown(ctx context.Context) error {
 		entries = append(entries, entry)
 	}
 	s.mu.Unlock()
+	if s.store != nil {
+		for _, entry := range entries {
+			_, _ = s.syncEntrySessions(ctx, entry)
+		}
+	}
 	results := make(chan error, len(entries)*2)
 	for _, entry := range entries {
 		go func(e *webWorkspaceEntry) {

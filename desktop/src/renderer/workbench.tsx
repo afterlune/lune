@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Folder, FolderOpen, KeyRound, Plus, Settings, ShieldAlert, X } from 'lucide-react'
+import type { WorkspaceSessionRecord } from '../shared/desktop-settings'
 import type { ThemePreference } from '../shared/theme'
 import App from './App'
 import { useTranslation } from 'react-i18next'
@@ -14,7 +15,16 @@ import { SettingsModal } from './settings-modal'
 import { applyTheme } from './theme'
 import { bannerError, btnIcon, btnPlain, btnPrimary, btnPrimaryCompact, btnSecondary, cn, fieldInput } from './ui'
 
-interface Workspace { id: string; path: string }
+interface Workspace {
+  id: string
+  path: string
+  name?: string
+  lastSessionId?: string
+  createdAt?: number
+  updatedAt?: number
+  lastOpenedAt?: number
+  sessions?: WorkspaceSessionRecord[]
+}
 interface WorkspacesResponse {
   initial: string
   items: Workspace[]
@@ -43,7 +53,17 @@ export interface ManagedWorkspace {
   onConnectRemote?: (options: { url: string; token: string; name?: string; rememberToken?: boolean }) => Promise<void>
   onReturnToLocal?: () => Promise<void>
   workspaces?: Workspace[]
+  activityByWorkspace?: Record<string, WorkspaceActivity>
+  workspaceSessions?: Record<string, WorkspaceSessionRecord[]>
   onSelectWorkspace?: (id: string) => void
+  onSelectWorkspaceSession?: (workspaceId: string, sessionId: string) => void
+  onCreateWorkspaceSession?: (workspaceId: string) => void
+  onCloseWorkspace?: (workspaceId: string) => void
+  onRememberSession?: (workspaceId: string, sessionId: string) => void
+  onSyncSessions?: (workspaceId: string) => void
+  onReportSessions?: (workspaceId: string, sessions: WorkspaceSessionRecord[]) => void
+  requestedSession?: { sessionId: string; seq: number } | null
+  newSessionToken?: number
 }
 
 const selectionKey = 'lune:active-workspace'
@@ -96,6 +116,9 @@ function Workbench({ theme }: { theme: ThemePreference }) {
   const [needsSetup, setNeedsSetup] = useState(false)
   const [defaultPath, setDefaultPath] = useState('')
   const [activity, setActivity] = useState<Record<string, WorkspaceActivity>>({})
+  const [workspaceSessions, setWorkspaceSessions] = useState<Record<string, WorkspaceSessionRecord[]>>({})
+  const [requestedSession, setRequestedSession] = useState<{ workspaceId: string; sessionId: string; seq: number } | null>(null)
+  const [newSessionRequest, setNewSessionRequest] = useState<Record<string, number>>({})
   const [picker, setPicker] = useState<{ openFilesAfter: boolean } | null>(null)
   const [focusFilesRequest, setFocusFilesRequest] = useState<{ id: string; seq: number } | null>(null)
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
@@ -117,6 +140,15 @@ function Workbench({ theme }: { theme: ThemePreference }) {
       try { preferredId = sessionStorage.getItem(selectionKey) } catch { /* use initial workspace */ }
     }
     setWorkspaces(result.items)
+    setWorkspaceSessions((prev) => {
+      const next = { ...prev }
+      for (const item of result.items) {
+        if (Array.isArray(item.sessions)) {
+          next[item.id] = item.sessions
+        }
+      }
+      return next
+    })
     setNeedsSetup(Boolean(result.needsSetup))
     if (result.defaultPath) setDefaultPath(result.defaultPath)
     setSelected(result.items.some((item) => item.id === preferredId) ? preferredId! : result.initial)
@@ -185,11 +217,46 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     }
   }
 
-  function select(id: string) {
+  const select = useCallback((id: string) => {
     setRemoteOverride(null)
     setSelected(id)
     try { sessionStorage.setItem(selectionKey, id) } catch { /* current tab selection still works */ }
-  }
+    if (credential) {
+      void localRequest(credential, 'workspaces/select', { id }).catch(() => undefined)
+    }
+  }, [credential])
+
+  const selectWorkspaceSession = useCallback((workspaceId: string, sessionId: string) => {
+    select(workspaceId)
+    setRequestedSession((prev) => ({ workspaceId, sessionId, seq: (prev?.seq ?? 0) + 1 }))
+  }, [select])
+
+  const createWorkspaceSession = useCallback((workspaceId: string) => {
+    select(workspaceId)
+    setNewSessionRequest((prev) => ({ ...prev, [workspaceId]: (prev[workspaceId] ?? 0) + 1 }))
+  }, [select])
+
+  const rememberWorkspaceSession = useCallback((workspaceId: string, sessionId: string) => {
+    setWorkspaces((prev) => prev.map((w) => w.id === workspaceId ? { ...w, lastSessionId: sessionId } : w))
+    if (credential) {
+      void localRequest(credential, 'workspaces/active-session', { id: workspaceId, sessionId }).catch(() => undefined)
+    }
+  }, [credential])
+
+  const syncWorkspaceSessions = useCallback((workspaceId: string) => {
+    if (!credential) return
+    void localRequest<{ sessions?: WorkspaceSessionRecord[] }>(credential, 'workspaces/sessions/sync', { id: workspaceId })
+      .then((res) => {
+        if (Array.isArray(res.sessions)) {
+          setWorkspaceSessions((prev) => ({ ...prev, [workspaceId]: res.sessions! }))
+        }
+      })
+      .catch(() => undefined)
+  }, [credential])
+
+  const reportWorkspaceSessions = useCallback((workspaceId: string, list: WorkspaceSessionRecord[]) => {
+    setWorkspaceSessions((prev) => ({ ...prev, [workspaceId]: list }))
+  }, [])
 
   const report = useCallback((id: string, status: WorkspaceActivity) => {
     setActivity((previous) => previous[id] === status ? previous : { ...previous, [id]: status })
@@ -391,7 +458,19 @@ function Workbench({ theme }: { theme: ThemePreference }) {
             focusFilesToken: focusFilesRequest?.id === workspace.id ? focusFilesRequest.seq : 0,
             workspaceRevision,
             workspaces,
+            activityByWorkspace: activity,
+            workspaceSessions,
             onSelectWorkspace: select,
+            onSelectWorkspaceSession: selectWorkspaceSession,
+            onCreateWorkspaceSession: createWorkspaceSession,
+            onCloseWorkspace: (id) => { void handleCloseWorkspace(id) },
+            onRememberSession: rememberWorkspaceSession,
+            onSyncSessions: syncWorkspaceSessions,
+            onReportSessions: reportWorkspaceSessions,
+            requestedSession: requestedSession?.workspaceId === workspace.id
+              ? { sessionId: requestedSession.sessionId, seq: requestedSession.seq }
+              : null,
+            newSessionToken: newSessionRequest[workspace.id] ?? 0,
           reconnectWorkspace: async () => {
             await localRequest(credential, 'reload-workspace', { id: workspace.id })
             setPairingError('')
@@ -461,7 +540,10 @@ function Workbench({ theme }: { theme: ThemePreference }) {
         close={() => setPicker(null)}
         onOpenSettings={() => { setPicker(null); setSetupSettingsOpen(true) }}
         opened={(item) => {
-          setWorkspaces((previous) => previous.some((existing) => existing.id === item.id) ? previous : [...previous, item])
+          setWorkspaces((previous) => [item, ...previous.filter((existing) => existing.id !== item.id)])
+          if (Array.isArray(item.sessions)) {
+            setWorkspaceSessions((prev) => ({ ...prev, [item.id]: item.sessions! }))
+          }
           setNeedsSetup(false)
           select(item.id)
           const shouldOpenFiles = picker.openFilesAfter

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createDesktopSettingsAPI, createRemoteOnlySettingsAPI } from './settings-api'
 import { formatCapacity, SettingsModal, type SettingsTab } from './settings-modal'
-import type { SavedConnection } from '../shared/desktop-settings'
+import type { SavedConnection, WorkspaceRecord, WorkspaceSessionRecord } from '../shared/desktop-settings'
+import { WorkspaceTree, type WorkspaceTreeItem } from './workspace-tree'
 import { lastLoopbackSession, rememberLoopbackSession } from './loopback'
 import {
   loadLastSessionSettings,
@@ -22,6 +23,7 @@ import type { ThemePreference } from '../shared/theme'
 import { defaultUiPreferences, type UiPreferences } from '../shared/ui-preferences'
 import { MarkdownContent } from './markdown'
 import { HarnessPanel } from './harness-panel'
+import type { TerminalTarget } from './terminal-transport'
 import { TimelineView } from './timeline'
 import {
   clearCapturedReasoning, mergeCapturedReasoning, readCapturedReasoning,
@@ -169,7 +171,10 @@ function groupSessionsByTime(items: SessionSummary[]): Array<{ label: SessionGro
   }
   return (['Today', 'Yesterday', 'Previous 7 Days', 'Older'] as const)
     .filter((label) => buckets[label].length > 0)
-    .map((label) => ({ label, items: buckets[label] }))
+    .map((label) => ({
+      label,
+      items: [...buckets[label]].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)),
+    }))
 }
 
 const webLastURLKey = 'lune:web-remote-url'
@@ -297,6 +302,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [remoteName, setRemoteName] = useState('')
   const [rememberToken, setRememberToken] = useState(() => (desktop ? false : (initialWebSaved?.remembered ?? true)))
   const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([])
+  const [desktopWorkspaces, setDesktopWorkspaces] = useState<WorkspaceRecord[]>([])
   const [connectionNotice, setConnectionNotice] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('models')
@@ -483,9 +489,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         event.preventDefault()
         setPaletteOpen((open) => !open)
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target instanceof Element && event.target.closest('.terminal-panel')))) {
         event.preventDefault()
         setHarnessOpen((open) => !open)
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === '`' && hasTerminalRef.current) {
+        event.preventDefault()
+        setHarnessTab('terminal')
+        setHarnessOpen((open) => (harnessTabRef.current === 'terminal' ? !open : true))
       }
     }
     document.addEventListener('pointerdown', onPointerDown)
@@ -581,6 +592,20 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     [activeSession, runtime, modelOption, liveContextOverride],
   )
 
+  const terminalTarget = useMemo<TerminalTarget | null>(() => {
+    if (desktop && connection?.mode === 'local' && connection.workspace) {
+      return { kind: 'desktop', cwd: connection.workspace }
+    }
+    if (!desktop && connection?.mode === 'loopback' && connection.url && connection.token && connection.url.endsWith('/runtime')) {
+      return { kind: 'web', wsUrl: connection.url.replace(/\/runtime$/, '/terminal'), token: connection.token }
+    }
+    return null
+  }, [desktop, connection])
+  const hasTerminalRef = useRef(Boolean(terminalTarget))
+  hasTerminalRef.current = Boolean(terminalTarget)
+  const harnessTabRef = useRef(harnessTab)
+  harnessTabRef.current = harnessTab
+
   const listSessions = useCallback((target: RuntimeClient, offset: number, term: string, archived: boolean) =>
     target.request<SessionSummary[]>(serverSearch && term ? 'session.search' : 'session.list', {
       offset, limit: sessionPageSize, includeArchived: archived,
@@ -610,8 +635,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   }, [])
 
   const reloadSavedConnections = useCallback(async () => {
-    const saved = await window.luneDesktop?.savedConnections()
+    const [saved, wsList] = await Promise.all([
+      window.luneDesktop?.savedConnections(),
+      window.luneDesktop?.listWorkspaces().catch(() => undefined),
+    ])
     if (saved) { setSavedConnections(saved.items); setConnectionNotice(saved.notice) }
+    if (Array.isArray(wsList)) setDesktopWorkspaces(wsList)
   }, [])
   useEffect(() => {
     void reloadSavedConnections().catch((error) => setConnectionError(errorMessage(error)))
@@ -737,11 +766,38 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     )
     return () => { active = false }
   }, [canBrowse, client])
+  const pendingDesktopSessionRef = useRef<{ workspace: string; sessionId: string } | null>(null)
+  const pendingDesktopNewSessionRef = useRef('')
+  const handledSessionReqSeqRef = useRef(0)
+  const handledNewSessionTokenRef = useRef(0)
+  const onRememberSessionRef = useRef(managed?.onRememberSession)
+  onRememberSessionRef.current = managed?.onRememberSession
+  const onSyncSessionsRef = useRef(managed?.onSyncSessions)
+  onSyncSessionsRef.current = managed?.onSyncSessions
+  const onReportSessionsRef = useRef(managed?.onReportSessions)
+  onReportSessionsRef.current = managed?.onReportSessions
+  const workspaceIdRef = useRef(workspaceId)
+  workspaceIdRef.current = workspaceId
+
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
+  useEffect(() => {
+    if (!workspaceId || !onReportSessionsRef.current) return
+    const mapped: WorkspaceSessionRecord[] = sessions.map((s) => ({
+      sessionId: s.id,
+      workspaceId,
+      title: s.title || '',
+      archived: Boolean(s.archived),
+      createdAt: Date.parse(s.updatedAt) || Date.now(),
+      updatedAt: Date.parse(s.updatedAt) || Date.now(),
+      lastOpenedAt: s.id === activeSessionId ? Date.now() : 0,
+    }))
+    onReportSessionsRef.current(workspaceId, mapped)
+  }, [sessions, workspaceId, activeSessionId])
   useEffect(() => {
     if (!connection || !activeSession || activeSession.id !== activeSessionId) return
     if (connection.mode === 'loopback') {
       rememberLoopbackSession(workspaceId, activeSessionId)
+      if (workspaceId) onRememberSessionRef.current?.(workspaceId, activeSessionId)
       return
     }
     if (!desktop && connection.mode === 'remote') {
@@ -749,8 +805,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       return
     }
     const address = connection.mode === 'local' ? connection.workspace : connection.url
-    void window.luneDesktop?.rememberSession(connection.mode, address, activeSessionId).catch(() => undefined)
-  }, [connection, activeSession, activeSessionId, desktop, workspaceId])
+    void window.luneDesktop?.rememberSession(connection.mode, address, activeSessionId)
+      .then(() => { if (desktop) void reloadSavedConnections().catch(() => undefined) })
+      .catch(() => undefined)
+  }, [connection, activeSession, activeSessionId, desktop, workspaceId, reloadSavedConnections])
 
   const disconnect = useCallback(async () => {
     autoReconnect.current = false
@@ -940,15 +998,37 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setSessions(sessionsRef.current)
       modelsRef.current = nextModels ?? []
       setModels(modelsRef.current)
-      const previousID = window.luneDesktop
-        ? await window.luneDesktop.lastSession().catch(() => null)
-        : connectionRef.current?.mode === 'loopback'
-          ? lastLoopbackSession(workspaceId)
-          : connectionRef.current?.mode === 'remote'
-            ? (() => { try { return sessionStorage.getItem(webLastSessionKey(connectionRef.current.url)) } catch { return null } })()
-            : activeSessionIdRef.current
+      const requestedManaged = managed?.requestedSession
+      if (requestedManaged) handledSessionReqSeqRef.current = requestedManaged.seq
+      const newTokenManaged = managed?.newSessionToken ?? 0
+      if (newTokenManaged > 0) handledNewSessionTokenRef.current = newTokenManaged
+
+      const connNow = connectionRef.current
+      const forceNewDesktop = Boolean(
+        window.luneDesktop && connNow?.mode === 'local' && pendingDesktopNewSessionRef.current === connNow.workspace,
+      )
+      if (forceNewDesktop) pendingDesktopNewSessionRef.current = ''
+      const forceNew = forceNewDesktop || newTokenManaged > 0
+
+      let pendingDesktopSessionId: string | null = null
+      if (window.luneDesktop && connNow?.mode === 'local' && pendingDesktopSessionRef.current?.workspace === connNow.workspace) {
+        pendingDesktopSessionId = pendingDesktopSessionRef.current.sessionId
+        pendingDesktopSessionRef.current = null
+      }
+
+      const previousID = forceNew
+        ? null
+        : window.luneDesktop
+          ? (pendingDesktopSessionId ?? await window.luneDesktop.lastSession().catch(() => null))
+          : connNow?.mode === 'loopback'
+            ? (requestedManaged?.sessionId || managed?.workspace.lastSessionId || lastLoopbackSession(workspaceId))
+            : connNow?.mode === 'remote'
+              ? (() => { try { return sessionStorage.getItem(webLastSessionKey(connNow.url)) } catch { return null } })()
+              : activeSessionIdRef.current
       if (cancelled) return
-      const existing = (previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]
+      const existing = forceNew
+        ? undefined
+        : ((previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0])
       if (cancelled) return
       if (existing) {
         activeSessionRef.current = existing
@@ -959,9 +1039,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         if (!cancelled) {
           activeSessionRef.current = created
           setActiveSession(created)
-          sessionsRef.current = [created]
-          setSessions([created])
+          const next = [created, ...(nextSessions ?? []).filter((item) => item.id !== created.id)]
+          sessionsRef.current = next
+          setSessions(next)
           setActiveSessionId(created.id)
+          if (workspaceId) onSyncSessionsRef.current?.(workspaceId)
         }
       }
       setShowConnection(false)
@@ -970,6 +1052,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     })
     return () => { cancelled = true }
   }, [client, workspaceId, createSessionWithDefaults])
+
+  useEffect(() => {
+    const req = managed?.requestedSession
+    if (!req || !client || initializedClient.current !== client || req.seq <= handledSessionReqSeqRef.current) return
+    handledSessionReqSeqRef.current = req.seq
+    setActiveSessionId(req.sessionId)
+  }, [managed?.requestedSession, client])
 
   useEffect(() => {
     if (!client || !activeSessionId) return
@@ -1035,6 +1124,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         }, ...items].slice(0, 5))
         setLiveContextOverride((prev) => (prev.compacting ? { ...prev, compacting: false } : prev))
         void refreshAll()
+        if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
       } else if (event.kind === 'agent_started') {
         const agentKey = event.agentId || event.agentName || event.taskId || `agent-${Date.now()}`
         const name = event.agentName || event.agentRole || 'Subagent'
@@ -1394,6 +1484,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       })
       setActiveSessionId(created.id)
       setListRevision((revision) => revision + 1)
+      if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+      if (desktop) void reloadSavedConnections().catch(() => undefined)
       setHistory([])
       setTimeline([])
       setOptimistic([])
@@ -1412,6 +1504,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     } catch (error) { setActionError(errorMessage(error)) }
     finally { setWorking(false) }
   }
+
+  const newSessionToken = managed?.newSessionToken ?? 0
+  useEffect(() => {
+    if (!newSessionToken || !client || initializedClient.current !== client || newSessionToken <= handledNewSessionTokenRef.current) return
+    handledNewSessionTokenRef.current = newSessionToken
+    void createSession()
+  })
 
   const sendMessage = async (steer = false, options?: { textOverride?: string; forcePlanMode?: boolean; restoreDraftOnError?: string }) => {
     let text = (options?.textOverride !== undefined ? options.textOverride : draft).trim()
@@ -1682,6 +1781,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     await client.request('session.setArchived', { sessionId: target.id, archived: !target.archived })
     if (target.id === activeSessionId) await refreshSessionData(client, target.id)
     setListRevision((revision) => revision + 1)
+    if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+    if (desktop) void reloadSavedConnections().catch(() => undefined)
   })
 
   const forkSession = (targetId = activeSessionId) => void sessionAction(async () => {
@@ -1697,6 +1798,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     })
     setActiveSessionId(forked.id)
     setListRevision((revision) => revision + 1)
+    if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+    if (desktop) void reloadSavedConnections().catch(() => undefined)
   })
 
   const compactSession = () => void sessionAction(async () => {
@@ -1849,6 +1952,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     }
     setSessionDialog(null)
     setListRevision((revision) => revision + 1)
+    if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+    if (desktop) void reloadSavedConnections().catch(() => undefined)
     if (kind !== 'delete' && targetId === activeSessionId) await refreshSessionData(client, targetId)
   })
 
@@ -1916,6 +2021,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       }
       case '/ps':
         openHarnessTab('processes')
+        return
+      case '/terminal':
+        if (!terminalTarget) {
+          setActionError(t('Terminal is only available for local workspaces.'))
+          return
+        }
+        openHarnessTab('terminal')
         return
       case '/logs':
         if (args) setRequestedCommandId(args)
@@ -2641,6 +2753,145 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const popoverBtnCls =
     'flex w-full cursor-pointer items-center gap-2 rounded-[7px] border-0 bg-transparent px-[9px] py-1.5 text-left text-[12.5px] text-ink hover:not-disabled:bg-hover disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:shrink-0 [&_svg]:text-ink-secondary'
 
+  const renderSessionRowActions = (session: SessionSummary) => {
+    const menuOpen = rowMenuId === session.id
+    return (
+      <div
+        className={cn(
+          'session-row-actions flex items-center gap-[1px] pr-1 transition-opacity duration-120',
+          menuOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none group-hover/srow:opacity-100 group-hover/srow:pointer-events-auto group-focus-within/srow:opacity-100 group-focus-within/srow:pointer-events-auto',
+        )}
+      >
+        <button
+          type="button"
+          className={rowActionBtnCls}
+          aria-label={t('Rename')}
+          title={t('Rename')}
+          disabled={working}
+          onClick={(event) => {
+            event.stopPropagation()
+            setRowMenuId('')
+            setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' })
+          }}
+        >
+          <Pencil size={13} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={cn(rowActionBtnCls, 'hover:not-disabled:bg-danger-bg hover:not-disabled:text-danger')}
+          aria-label={t('Delete…')}
+          title={t('Delete…')}
+          disabled={working || (session.id === activeSessionId && sessionBusy)}
+          onClick={(event) => {
+            event.stopPropagation()
+            setRowMenuId('')
+            setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' })
+          }}
+        >
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
+        <div className="session-row-menu relative">
+          <button
+            type="button"
+            className={rowActionBtnCls}
+            aria-label={t('Conversation actions')}
+            title={t('Conversation actions')}
+            aria-expanded={menuOpen}
+            disabled={working}
+            onClick={(event) => {
+              event.stopPropagation()
+              setRowMenuId((current) => (current === session.id ? '' : session.id))
+            }}
+          >
+            <MoreHorizontal size={13} aria-hidden="true" />
+          </button>
+          {menuOpen && (
+            <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-composer p-[5px] shadow-elev-md" role="menu">
+              <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
+                <Pencil size={13} aria-hidden="true" /><span>{t('Rename')}</span>
+              </button>
+              <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); changeArchived(session) }}>
+                <Archive size={13} aria-hidden="true" /><span>{t(session.archived ? 'Unarchive' : 'Archive')}</span>
+              </button>
+              {has('session.fork') && (
+                <button type="button" className={popoverBtnCls} disabled={working || (session.id === activeSessionId && taskIsRunning)} onClick={() => { setRowMenuId(''); forkSession(session.id) }}>
+                  <GitFork size={13} aria-hidden="true" /><span>{t('Fork conversation')}</span>
+                </button>
+              )}
+              <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); saveConversation(session) }}>
+                <Download size={13} aria-hidden="true" /><span>{t('Export Markdown')}</span>
+              </button>
+              {session.id === activeSessionId && has('session.compact') && (
+                <button type="button" className={popoverBtnCls} disabled={sessionBusy || working} onClick={() => { setRowMenuId(''); compactSession() }}>
+                  <Minimize2 size={13} aria-hidden="true" /><span>{t('Compact context')}</span>
+                </button>
+              )}
+              {session.id === activeSessionId && has('session.rewind') && (
+                <button type="button" className={popoverBtnCls} disabled={sessionBusy || working || !history.length} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rewind', sessionId: session.id, value: '1' }) }}>
+                  <RotateCcw size={13} aria-hidden="true" /><span>{t('Rewind…')}</span>
+                </button>
+              )}
+              <hr className="menu-divider my-1 h-[1px] border-0 bg-line-subtle" />
+              <button
+                type="button"
+                className={cn(popoverBtnCls, 'text-danger hover:not-disabled:bg-danger-bg [&_svg]:text-danger')}
+                disabled={working || (session.id === activeSessionId && sessionBusy)}
+                onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' }) }}
+              >
+                <Trash2 size={13} aria-hidden="true" /><span>{t('Delete…')}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const useWebTree = Boolean(managed && !managed.isRemoteOverride)
+  const useDesktopTree = Boolean(!managed && desktop && connection?.mode !== 'remote')
+
+  const webTreeItems: WorkspaceTreeItem[] = useWebTree
+    ? (managed!.workspaces?.length ? managed!.workspaces : [managed!.workspace]).map((w) => ({
+        id: w.id,
+        path: w.path,
+        name: w.name || w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
+        activity: managed!.activityByWorkspace?.[w.id],
+        sessions: (managed!.workspaceSessions?.[w.id] ?? w.sessions ?? []).map((s) => ({
+          id: s.sessionId,
+          title: s.title,
+          archived: s.archived,
+          updatedAt: s.updatedAt,
+        })),
+      }))
+    : []
+
+  const desktopTreeItems: WorkspaceTreeItem[] = useDesktopTree
+    ? (desktopWorkspaces.length
+        ? desktopWorkspaces.map((w) => ({
+            id: w.id,
+            path: w.path,
+            name: w.name || w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
+            sessions: (w.sessions ?? []).map((s) => ({
+              id: s.sessionId,
+              title: s.title,
+              archived: s.archived,
+              updatedAt: s.updatedAt,
+            })),
+          }))
+        : savedConnections
+            .filter((c) => c.mode === 'local')
+            .map((c) => ({
+              id: c.address,
+              path: c.address,
+              name: c.address.split(/[\\/]/).filter(Boolean).at(-1) || c.address,
+              sessions: [],
+            })))
+    : []
+
+  const activeDesktopWorkspaceId = useDesktopTree && connection?.mode === 'local'
+    ? (desktopTreeItems.find((w) => w.path === connection.workspace)?.id ?? connection.workspace)
+    : ''
+
   const sessionNavigation = <>
     <button
       className="new-chat-button mb-2.5 flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-left text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:not-disabled:bg-hover disabled:opacity-45"
@@ -2683,173 +2934,142 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       </div>
     )}
-    {managed?.navigation ?? (desktop && (
-      <section className="workspace-list mb-3 grid gap-0.5" aria-label={t('Workspaces')}>
-        <div className="workspace-list-heading flex select-none items-center justify-between px-2.5 pt-0.5 pb-1 text-[11.5px] font-medium text-ink-muted">
-          <span>{t('Workspaces')}</span>
-          <button
-            type="button"
-            className={cn('icon-button', btnIcon)}
-            aria-label={t('Open workspace')}
-            title={t('Open workspace')}
-            onClick={() => void openWorkspaceAsFileTree(false)}
-          >
-            <Plus size={16} />
-          </button>
-        </div>
-        {savedConnections.filter((item) => item.mode === 'local').map((item) => {
-          const selectedWs = connection?.mode === 'local' && connection.workspace === item.address
-          const label = item.address.split(/[\\/]/).filter(Boolean).at(-1) || item.address
-          return (
-            <div className={cn('workspace-row flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover', selectedWs && 'selected bg-active')} key={item.address}>
-              <button
-                type="button"
-                className={cn('workspace-row-btn flex min-h-[33px] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[9px] border-0 bg-transparent px-2.5 py-[5px] text-left text-[13.5px] text-ink', selectedWs && 'font-medium')}
-                aria-pressed={selectedWs}
-                title={item.address}
-                disabled={busy}
-                onClick={() => {
-                  setMode('local')
-                  setWorkspace(item.address)
-                  void activateConnection({ mode: 'local', workspace: item.address })
-                }}
-              >
-                <Folder size={15} className="shrink-0 text-ink-secondary" />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-              </button>
-            </div>
-          )
-        })}
-      </section>
-    ))}
-    <div className="session-list min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-0.5" aria-busy={listLoading}>
-      {sessionGroups.map((group) => (
-        <div className="session-group mb-3" key={group.label}>
-          <div className="session-group-label px-2.5 pt-1 pb-1 text-[11px] font-medium text-ink-muted">{t(group.label)}</div>
-          {group.items.map((session) => {
-            const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
-            const menuOpen = rowMenuId === session.id
-            const selected = session.id === activeSessionId
-            return (
-              <div
-                key={session.id}
-                className={cn(
-                  'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
-                  selected && 'selected bg-active',
-                  menuOpen && 'menu-open bg-hover',
-                )}
-              >
-                <button
-                  className={cn(
-                    'session-item m-0 min-h-[34px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent px-2.5 py-1.5 text-left text-[13.5px] text-ink',
-                    selected && 'font-medium',
-                  )}
-                  disabled={working}
-                  aria-current={selected ? 'true' : undefined}
-                  onClick={() => chooseSession(session.id)}
-                >
-                  <span className="block truncate">{preview}{session.archived ? t(' (archived)') : ''}</span>
-                </button>
-                <div
-                  className={cn(
-                    'session-row-actions flex items-center gap-[1px] pr-1 transition-opacity duration-120',
-                    menuOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none group-hover/srow:opacity-100 group-hover/srow:pointer-events-auto group-focus-within/srow:opacity-100 group-focus-within/srow:pointer-events-auto',
-                  )}
-                >
-                  <button
-                    type="button"
-                    className={rowActionBtnCls}
-                    aria-label={t('Rename')}
-                    title={t('Rename')}
-                    disabled={working}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setRowMenuId('')
-                      setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' })
-                    }}
-                  >
-                    <Pencil size={13} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(rowActionBtnCls, 'hover:not-disabled:bg-danger-bg hover:not-disabled:text-danger')}
-                    aria-label={t('Delete…')}
-                    title={t('Delete…')}
-                    disabled={working || (session.id === activeSessionId && sessionBusy)}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setRowMenuId('')
-                      setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' })
-                    }}
-                  >
-                    <Trash2 size={13} aria-hidden="true" />
-                  </button>
-                  <div className="session-row-menu relative">
-                    <button
-                      type="button"
-                      className={rowActionBtnCls}
-                      aria-label={t('Conversation actions')}
-                      title={t('Conversation actions')}
-                      aria-expanded={menuOpen}
-                      disabled={working}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setRowMenuId((current) => (current === session.id ? '' : session.id))
-                      }}
-                    >
-                      <MoreHorizontal size={13} aria-hidden="true" />
-                    </button>
-                    {menuOpen && (
-                      <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-composer p-[5px] shadow-elev-md" role="menu">
-                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
-                          <Pencil size={13} aria-hidden="true" /><span>{t('Rename')}</span>
-                        </button>
-                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); changeArchived(session) }}>
-                          <Archive size={13} aria-hidden="true" /><span>{t(session.archived ? 'Unarchive' : 'Archive')}</span>
-                        </button>
-                        {has('session.fork') && (
-                          <button type="button" className={popoverBtnCls} disabled={working || (session.id === activeSessionId && taskIsRunning)} onClick={() => { setRowMenuId(''); forkSession(session.id) }}>
-                            <GitFork size={13} aria-hidden="true" /><span>{t('Fork conversation')}</span>
-                          </button>
-                        )}
-                        <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); saveConversation(session) }}>
-                          <Download size={13} aria-hidden="true" /><span>{t('Export Markdown')}</span>
-                        </button>
-                        {session.id === activeSessionId && has('session.compact') && (
-                          <button type="button" className={popoverBtnCls} disabled={sessionBusy || working} onClick={() => { setRowMenuId(''); compactSession() }}>
-                            <Minimize2 size={13} aria-hidden="true" /><span>{t('Compact context')}</span>
-                          </button>
-                        )}
-                        {session.id === activeSessionId && has('session.rewind') && (
-                          <button type="button" className={popoverBtnCls} disabled={sessionBusy || working || !history.length} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rewind', sessionId: session.id, value: '1' }) }}>
-                            <RotateCcw size={13} aria-hidden="true" /><span>{t('Rewind…')}</span>
-                          </button>
-                        )}
-                        <hr className="menu-divider my-1 h-[1px] border-0 bg-line-subtle" />
-                        <button
-                          type="button"
-                          className={cn(popoverBtnCls, 'text-danger hover:not-disabled:bg-danger-bg [&_svg]:text-danger')}
-                          disabled={working || (session.id === activeSessionId && sessionBusy)}
-                          onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'delete', sessionId: session.id, value: '' }) }}
-                        >
-                          <Trash2 size={13} aria-hidden="true" /><span>{t('Delete…')}</span>
-                        </button>
-                      </div>
+    {useWebTree ? (
+      <WorkspaceTree
+        workspaces={webTreeItems}
+        activeWorkspaceId={managed!.workspace.id}
+        activeSessionId={activeSessionId}
+        activeSessions={filteredSessions}
+        listLoading={listLoading}
+        moreSessions={moreSessions}
+        onLoadMore={loadMoreSessions}
+        working={working}
+        search={search}
+        showArchived={showArchived}
+        onOpenWorkspacePicker={() => managed!.openDirectoryPicker(false)}
+        onSelectWorkspace={(id) => {
+          closeDrawer()
+          managed!.onSelectWorkspace?.(id)
+        }}
+        onSelectSession={(wsId, sessionId) => {
+          if (wsId === managed!.workspace.id) {
+            chooseSession(sessionId)
+          } else {
+            closeDrawer()
+            managed!.onSelectWorkspaceSession?.(wsId, sessionId)
+          }
+        }}
+        onNewSessionInWorkspace={(wsId) => {
+          if (wsId === managed!.workspace.id) {
+            void createSession()
+          } else {
+            closeDrawer()
+            managed!.onCreateWorkspaceSession?.(wsId)
+          }
+        }}
+        onCloseWorkspace={managed!.onCloseWorkspace}
+        renderActiveSessionActions={renderSessionRowActions}
+      />
+    ) : useDesktopTree ? (
+      <WorkspaceTree
+        workspaces={desktopTreeItems}
+        activeWorkspaceId={activeDesktopWorkspaceId}
+        activeSessionId={activeSessionId}
+        activeSessions={filteredSessions}
+        listLoading={listLoading}
+        moreSessions={moreSessions}
+        onLoadMore={loadMoreSessions}
+        working={working || busy}
+        search={search}
+        showArchived={showArchived}
+        onOpenWorkspacePicker={() => void openWorkspaceAsFileTree(false)}
+        onSelectWorkspace={(id) => {
+          const target = desktopTreeItems.find((w) => w.id === id)
+          if (!target) return
+          closeDrawer()
+          setMode('local')
+          setWorkspace(target.path)
+          void activateConnection({ mode: 'local', workspace: target.path })
+        }}
+        onSelectSession={(wsId, sessionId) => {
+          const target = desktopTreeItems.find((w) => w.id === wsId)
+          if (!target) return
+          if (wsId === activeDesktopWorkspaceId) {
+            chooseSession(sessionId)
+            return
+          }
+          closeDrawer()
+          pendingDesktopSessionRef.current = { workspace: target.path, sessionId }
+          setMode('local')
+          setWorkspace(target.path)
+          void activateConnection({ mode: 'local', workspace: target.path })
+        }}
+        onNewSessionInWorkspace={(wsId) => {
+          const target = desktopTreeItems.find((w) => w.id === wsId)
+          if (!target) return
+          if (wsId === activeDesktopWorkspaceId) {
+            void createSession()
+            return
+          }
+          closeDrawer()
+          pendingDesktopNewSessionRef.current = target.path
+          setMode('local')
+          setWorkspace(target.path)
+          void activateConnection({ mode: 'local', workspace: target.path })
+        }}
+        onCloseWorkspace={(id) => {
+          const target = desktopTreeItems.find((w) => w.id === id)
+          if (!target || target.path === (connection?.mode === 'local' ? connection.workspace : '')) return
+          void window.luneDesktop?.closePersistedWorkspace(id).then(() => reloadSavedConnections()).catch(() => undefined)
+        }}
+        renderActiveSessionActions={renderSessionRowActions}
+      />
+    ) : (
+      <>
+        {managed?.navigation}
+        <div className="session-list min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-0.5" aria-busy={listLoading}>
+          {sessionGroups.map((group) => (
+            <div className="session-group mb-3" key={group.label}>
+              <div className="session-group-label px-2.5 pt-1 pb-1 text-[11px] font-medium text-ink-muted">{t(group.label)}</div>
+              {group.items.map((session) => {
+                const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
+                const menuOpen = rowMenuId === session.id
+                const selected = session.id === activeSessionId
+                return (
+                  <div
+                    key={session.id}
+                    className={cn(
+                      'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
+                      selected && 'selected bg-active',
+                      menuOpen && 'menu-open bg-hover',
                     )}
+                  >
+                    <button
+                      className={cn(
+                        'session-item m-0 min-h-[34px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent px-2.5 py-1.5 text-left text-[13.5px] text-ink',
+                        selected && 'font-medium',
+                      )}
+                      disabled={working}
+                      aria-current={selected ? 'true' : undefined}
+                      onClick={() => chooseSession(session.id)}
+                    >
+                      <span className="block truncate">{preview}{session.archived ? t(' (archived)') : ''}</span>
+                    </button>
+                    {renderSessionRowActions(session)}
                   </div>
-                </div>
-              </div>
-            )
-          })}
+                )
+              })}
+            </div>
+          ))}
+          {moreSessions && <button className={cn(btnPlain, 'sidebar-load-more mt-1 w-full')} disabled={working || listLoading} onClick={loadMoreSessions}>{t('Load more')}</button>}
+          {!filteredSessions.length && (
+            <div className="empty-sessions px-2.5 py-6 text-center text-[12.5px] text-ink-muted">
+              {t(listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.')}
+            </div>
+          )}
         </div>
-      ))}
-      {moreSessions && <button className={cn(btnPlain, 'sidebar-load-more mt-1 w-full')} disabled={working || listLoading} onClick={loadMoreSessions}>{t('Load more')}</button>}
-      {!filteredSessions.length && (
-        <div className="empty-sessions px-2.5 py-6 text-center text-[12.5px] text-ink-muted">
-          {t(listLoading ? 'Loading conversations…' : search.trim() ? 'No matching conversations.' : 'No conversations yet.')}
-        </div>
-      )}
-    </div>
+      </>
+    )}
     {drawerOpen && actionError && <div className={cn('action-error my-2 flex items-center gap-2', bannerError)} role="alert">{actionError}</div>}
     <div className="sidebar-bottom mt-2 flex flex-col gap-2 pt-2">
       <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-subtle px-2.5 py-2">
@@ -3886,6 +4106,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           }}
           onChangeReasoningEffort={(effort) => void changeSettings({ reasoningEffort: effort })}
           liveContext={liveContextOverride}
+          terminalTarget={terminalTarget}
           permissionMode={permissionMode}
           allowedPermissionModes={allowedPermissionModes}
           onChangePermissionMode={(mode) => void changePermissionMode(mode as PermissionMode)}
@@ -3912,14 +4133,21 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             }))
           }
           if (desktop) {
-            return savedConnections
-              .filter((c) => c.mode === 'local')
-              .map((c) => ({
-                id: c.address,
-                name: c.address.split(/[\\/]/).filter(Boolean).at(-1) || c.address,
-                path: c.address,
-                active: connection?.mode === 'local' && connection.workspace === c.address,
-              }))
+            return (desktopWorkspaces.length
+              ? desktopWorkspaces.map((w) => ({
+                  id: w.path,
+                  name: w.name || w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
+                  path: w.path,
+                  active: connection?.mode === 'local' && connection.workspace === w.path,
+                }))
+              : savedConnections
+                  .filter((c) => c.mode === 'local')
+                  .map((c) => ({
+                    id: c.address,
+                    name: c.address.split(/[\\/]/).filter(Boolean).at(-1) || c.address,
+                    path: c.address,
+                    active: connection?.mode === 'local' && connection.workspace === c.address,
+                  })))
           }
           return []
         })() satisfies PaletteWorkspaceItem[]}
@@ -3944,6 +4172,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           ...(has('workspace.files') ? [{ id: 'tab-files', label: 'Open workspace files', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('files') }] : []),
           ...(has('goal.manage') && activeSession ? [{ id: 'tab-goal', label: 'Inspect Goal', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('goal') }] : []),
           ...(has('command.control') && activeSession ? [{ id: 'tab-proc', label: 'Inspect Processes', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('processes') }] : []),
+          ...(terminalTarget ? [{ id: 'tab-terminal', label: 'Open terminal', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('terminal') }] : []),
           ...(has('mcp.inspect') ? [{ id: 'tab-mcp', label: 'Inspect MCP servers', hint: 'Harness', section: 'Actions' as const, run: () => openHarnessTab('mcp') }] : []),
           ...(has('turn.plan') ? [{ id: 'toggle-plan', label: planMode ? 'Disable plan mode' : 'Enable plan mode', section: 'Actions' as const, run: () => setPlanMode((v) => !v) }] : []),
           ...(has('session.compact') && activeSession ? [{ id: 'compact', label: 'Compact context', section: 'Actions' as const, run: compactSession }] : []),

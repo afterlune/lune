@@ -1,6 +1,7 @@
 import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeTheme } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { constants, existsSync } from 'node:fs'
+import { constants, existsSync, statSync } from 'node:fs'
 import { open, writeFile } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join, resolve } from 'node:path'
@@ -35,6 +36,7 @@ let socket: WebSocket | null = null
 let coreProcess: ChildProcessWithoutNullStreams | null = null
 let coreExit: Promise<void> | null = null
 let lastConnection: DesktopConnectionOptions | null = null
+const terminals = new Map<string, ChildProcessWithoutNullStreams>()
 let quitting = false
 let settings: DesktopSettings
 let connectionNotice = ''
@@ -103,6 +105,35 @@ function sandboxExecutable(): string {
   return join(dirname(coreExecutable()), `lune-sandbox${suffix}`)
 }
 
+function ptyExecutable(): string {
+  const suffix = process.platform === 'win32' ? '.exe' : ''
+  const platformDir = process.platform === 'win32' ? 'win32' : 'linux'
+  const candidates = [
+    process.env.LUNE_PTY_BIN,
+    join(process.resourcesPath, 'bin', `lune-pty${suffix}`),
+    resolve(currentDirectory, '../../resources/bin', platformDir, `lune-pty${suffix}`),
+    resolve(currentDirectory, '../../../bin', `lune-pty${suffix}`),
+  ].filter((value): value is string => Boolean(value))
+  const binary = candidates.find(existsSync)
+  if (!binary) throw new Error('lune-pty was not found. Build it with `npm run build:core` or `go build -o bin/lune-pty ./cmd/lune-pty`.')
+  return binary
+}
+
+function closeAllTerminals(): void {
+  for (const [id, child] of terminals) {
+    terminals.delete(id)
+    try { child.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* ignore */ }
+    try { child.stdin.end() } catch { /* ignore */ }
+    if (child.exitCode === null) {
+      setTimeout(() => {
+        if (child.exitCode === null) {
+          try { child.kill() } catch { /* ignore */ }
+        }
+      }, 250)
+    }
+  }
+}
+
 function attachPeer(nextPeer: JsonRpcPeer): void {
   peer = nextPeer
   nextPeer.onNotification((notification) => {
@@ -111,6 +142,7 @@ function attachPeer(nextPeer: JsonRpcPeer): void {
 }
 
 async function disconnectRuntime(): Promise<void> {
+  closeAllTerminals()
   const activePeer = peer
   peer = null
   activePeer?.fail(new Error('Connection closed'))
@@ -488,6 +520,23 @@ ipcMain.handle('settings:remember-session', (event, mode: unknown, address: unkn
   settings.rememberSession(lastConnection.mode, normalized, session)
 })
 
+ipcMain.handle('settings:workspaces', (event) => {
+  assertMainWindow(event)
+  return settings.listWorkspacesWithSessions(true)
+})
+
+ipcMain.handle('settings:select-workspace', (event, id: unknown) => {
+  assertMainWindow(event)
+  if (typeof id !== 'string' || !id.trim()) throw new Error('Workspace id is required.')
+  settings.selectWorkspace(id.trim())
+})
+
+ipcMain.handle('settings:close-workspace', (event, id: unknown) => {
+  assertMainWindow(event)
+  if (typeof id !== 'string' || !id.trim()) throw new Error('Workspace id is required.')
+  settings.closeWorkspace(id.trim())
+})
+
 ipcMain.handle('settings:save-workspace-permission', (event, workspace: unknown, mode: unknown) => {
   assertMainWindow(event)
   if (typeof workspace !== 'string' || !workspace.trim()) throw new Error('Workspace path is required.')
@@ -591,6 +640,9 @@ async function openRuntime(options: DesktopConnectionOptions): Promise<unknown> 
     try {
       const transient = await settings.recordConnection(options.mode, connectionAddress(options), options.mode === 'remote' ? options.name : undefined, remember)
       if (transient) connectionNotice = 'The system credential store is unavailable. This token is remembered only until the app closes.'
+      if (options.mode === 'local') {
+        settings.ensureWorkspace(options.workspace, true)
+      }
     } catch {
       connectionNotice = 'The connection is active, but its settings could not be saved.'
     }
@@ -616,11 +668,48 @@ ipcMain.handle('runtime:reconnect', async (event) => {
   }, (pending) => { runtimeChange = pending })
 })
 
-ipcMain.handle('runtime:request', (event, message: { method?: unknown; params?: unknown }) => {
+ipcMain.handle('runtime:request', async (event, message: { method?: unknown; params?: unknown }) => {
   assertMainWindow(event)
   if (typeof message?.method !== 'string' || !allowedRuntimeMethods.has(message.method)) throw new Error('This Runtime Protocol method is not available to the frontend.')
   if (!peer) throw new Error('Connect to Core first.')
-  return peer.request(message.method, message.params ?? {}, message.method === 'session.compact' ? 600_000 : undefined)
+  const result = await peer.request(message.method, message.params ?? {}, message.method === 'session.compact' ? 600_000 : undefined)
+  if (lastConnection?.mode === 'local') {
+    const wsPath = lastConnection.workspace
+    const params = (message.params && typeof message.params === 'object' ? message.params : {}) as Record<string, unknown>
+    try {
+      switch (message.method) {
+        case 'session.list':
+          if (Array.isArray(result)) {
+            const prune = !params.offset && params.includeArchived === true
+            settings.upsertWorkspaceSessions(wsPath, result as Array<{ id?: unknown }>, prune)
+          }
+          break
+        case 'session.create':
+        case 'session.get':
+        case 'session.fork':
+          if (result && typeof result === 'object' && 'id' in result) {
+            settings.upsertWorkspaceSessions(wsPath, [result as { id?: unknown }], false)
+          }
+          break
+        case 'session.setTitle':
+          if (typeof params.sessionId === 'string' && typeof params.title === 'string') {
+            settings.updateWorkspaceSessionMeta(wsPath, params.sessionId, { title: params.title })
+          }
+          break
+        case 'session.setArchived':
+          if (typeof params.sessionId === 'string' && typeof params.archived === 'boolean') {
+            settings.updateWorkspaceSessionMeta(wsPath, params.sessionId, { archived: params.archived })
+          }
+          break
+        case 'session.delete':
+          if (typeof params.sessionId === 'string') {
+            settings.deleteWorkspaceSession(wsPath, params.sessionId)
+          }
+          break
+      }
+    } catch { /* metadata sync failure must not fail runtime RPC */ }
+  }
+  return result
 })
 
 ipcMain.handle('runtime:close', async (event, forget = false) => {
@@ -629,6 +718,102 @@ ipcMain.handle('runtime:close', async (event, forget = false) => {
     await disconnectRuntime()
     if (forget) lastConnection = null
   }, (pending) => { runtimeChange = pending })
+})
+
+ipcMain.handle('terminal:open', (event, rawInput?: { cwd?: unknown; cols?: unknown; rows?: unknown }) => {
+  assertMainWindow(event)
+  const fallbackCwd = lastConnection?.mode === 'local' ? lastConnection.workspace : ''
+  const cwd = typeof rawInput?.cwd === 'string' && rawInput.cwd.trim() ? rawInput.cwd.trim() : fallbackCwd
+  if (!cwd) throw new Error('Select a local workspace before opening a terminal.')
+  const resolvedCwd = resolve(cwd)
+  if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
+    throw new Error('Terminal working directory does not exist.')
+  }
+  const cols = typeof rawInput?.cols === 'number' && Number.isFinite(rawInput.cols) ? Math.max(20, Math.min(500, Math.round(rawInput.cols))) : 80
+  const rows = typeof rawInput?.rows === 'number' && Number.isFinite(rawInput.rows) ? Math.max(5, Math.min(200, Math.round(rawInput.rows))) : 24
+
+  const id = randomUUID()
+  const child = spawn(ptyExecutable(), ['--cwd', resolvedCwd, '--cols', String(cols), '--rows', String(rows)], {
+    cwd: resolvedCwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  terminals.set(id, child)
+
+  const decoder = new StringDecoder('utf8')
+  let buffer = ''
+  const sendTerminalEvent = (payload: Record<string, unknown>) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:event', { id, ...payload })
+    }
+  }
+  child.stdout.on('data', (chunk: Buffer) => {
+    buffer += decoder.write(chunk)
+    for (;;) {
+      const nl = buffer.indexOf('\n')
+      if (nl < 0) break
+      const line = buffer.slice(0, nl).trim()
+      buffer = buffer.slice(nl + 1)
+      if (!line) continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        sendTerminalEvent(parsed)
+      } catch { /* ignore malformed helper output */ }
+    }
+  })
+  child.on('error', (error) => {
+    terminals.delete(id)
+    sendTerminalEvent({ type: 'error', message: error.message })
+    sendTerminalEvent({ type: 'exit', code: -1 })
+  })
+  child.on('exit', (code) => {
+    const rest = (buffer + decoder.end()).trim()
+    if (rest) {
+      try { sendTerminalEvent(JSON.parse(rest) as Record<string, unknown>) } catch { /* ignore */ }
+    }
+    if (terminals.delete(id)) {
+      sendTerminalEvent({ type: 'exit', code: code ?? 0 })
+    }
+  })
+  child.stdin.on('error', () => { /* handled on exit */ })
+  return { id }
+})
+
+ipcMain.handle('terminal:write', (event, rawInput?: { id?: unknown; data?: unknown }) => {
+  assertMainWindow(event)
+  if (typeof rawInput?.id !== 'string' || typeof rawInput?.data !== 'string') return
+  const child = terminals.get(rawInput.id)
+  if (!child || child.exitCode !== null) return
+  try {
+    child.stdin.write(JSON.stringify({ type: 'data', data: rawInput.data }) + '\n')
+  } catch { /* ignore */ }
+})
+
+ipcMain.handle('terminal:resize', (event, rawInput?: { id?: unknown; cols?: unknown; rows?: unknown }) => {
+  assertMainWindow(event)
+  if (typeof rawInput?.id !== 'string') return
+  const child = terminals.get(rawInput.id)
+  if (!child || child.exitCode !== null) return
+  const cols = typeof rawInput?.cols === 'number' && Number.isFinite(rawInput.cols) ? Math.max(20, Math.min(500, Math.round(rawInput.cols))) : 80
+  const rows = typeof rawInput?.rows === 'number' && Number.isFinite(rawInput.rows) ? Math.max(5, Math.min(200, Math.round(rawInput.rows))) : 24
+  try {
+    child.stdin.write(JSON.stringify({ type: 'resize', cols, rows }) + '\n')
+  } catch { /* ignore */ }
+})
+
+ipcMain.handle('terminal:close', (event, rawInput?: { id?: unknown }) => {
+  assertMainWindow(event)
+  if (typeof rawInput?.id !== 'string') return
+  const child = terminals.get(rawInput.id)
+  if (!child) return
+  terminals.delete(rawInput.id)
+  try { child.stdin.write(JSON.stringify({ type: 'close' }) + '\n') } catch { /* ignore */ }
+  try { child.stdin.end() } catch { /* ignore */ }
+  setTimeout(() => {
+    if (child.exitCode === null) {
+      try { child.kill() } catch { /* ignore */ }
+    }
+  }, 250)
 })
 
 app.whenReady().then(() => {

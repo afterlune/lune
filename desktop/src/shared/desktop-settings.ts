@@ -34,6 +34,28 @@ export type SavedConnection = {
   remembered: boolean
 }
 
+export type WorkspaceSessionRecord = {
+  sessionId: string
+  workspaceId: string
+  title: string
+  archived: boolean
+  createdAt: number
+  updatedAt: number
+  lastOpenedAt: number
+}
+
+export type WorkspaceRecord = {
+  id: string
+  path: string
+  name: string
+  isOpen: boolean
+  lastSessionId: string
+  createdAt: number
+  updatedAt: number
+  lastOpenedAt: number
+  sessions?: WorkspaceSessionRecord[]
+}
+
 export type DesktopConnectionOptions =
   | { mode: 'local'; workspace: string }
   | { mode: 'remote'; url: string; token: string; name?: string; rememberToken?: boolean }

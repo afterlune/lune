@@ -69,7 +69,8 @@ func Open(path string) (*Store, error) {
 	// "database is locked" on shared settings updates.
 	const pragmas = `
 PRAGMA busy_timeout = 5000;
-PRAGMA journal_mode = WAL;`
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;`
 	if _, err := db.ExecContext(context.Background(), pragmas); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure settings database: %w", err)
@@ -108,10 +109,38 @@ CREATE TABLE IF NOT EXISTS web_connections (
   touched INTEGER NOT NULL,
   session TEXT,
   PRIMARY KEY(mode, address)
-);`
+);
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  is_open INTEGER NOT NULL DEFAULT 1,
+  last_session_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_opened_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_open_time
+  ON workspaces(is_open, last_opened_at DESC, created_at DESC);
+CREATE TABLE IF NOT EXISTS workspace_sessions (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_opened_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(workspace_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_sessions_ws_time
+  ON workspace_sessions(workspace_id, updated_at DESC, created_at DESC);`
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize settings database: %w", err)
+	}
+	if err := store.migrateLegacyWorkspaces(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate legacy workspaces: %w", err)
 	}
 	if runtime.GOOS != "windows" {
 		_ = os.Chmod(path, 0o600)

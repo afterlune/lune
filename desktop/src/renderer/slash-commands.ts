@@ -14,6 +14,7 @@ export const slashCommands: SlashCommandDef[] = [
   { name: '/files', usage: '/files [path]', argHint: '[path]', description: 'Open workspace file tree or preview a file', capability: 'workspace.files', category: 'harness' },
   { name: '/goal', usage: '/goal [objective|pause|resume|budget N|edit text|clear]', argHint: '[objective | pause | resume | budget N | clear]', description: 'View or manage persistent cross-turn goal', capability: 'goal.manage', category: 'harness' },
   { name: '/ps', usage: '/ps', description: 'List background commands and processes', capability: 'command.control', category: 'harness' },
+  { name: '/terminal', aliases: ['/term'], usage: '/terminal', description: 'Open interactive workspace terminal', category: 'harness' },
   { name: '/logs', usage: '/logs <id>', argHint: '<id>', description: 'Inspect output logs of a background command', capability: 'command.control', category: 'harness' },
   { name: '/stop-cmd', usage: '/stop-cmd <id>', argHint: '<id>', description: 'Stop a running background command', capability: 'command.control', category: 'harness' },
   { name: '/mcp', usage: '/mcp [list|enable <name>|disable <name>]', argHint: '[list | enable <name> | disable <name>]', description: 'Inspect or toggle configured MCP servers', capability: 'mcp.inspect', category: 'harness' },
