@@ -195,6 +195,7 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 		token:       token,
 		diagnostics: stderr,
 		store:       store,
+		sharedState: options.sharedState,
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

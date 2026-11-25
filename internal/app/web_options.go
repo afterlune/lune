@@ -10,12 +10,13 @@ import (
 )
 
 type webOptions struct {
-	workspace string
-	noOpen    bool
-	listen    string
-	tlsCert   string
-	tlsKey    string
-	tokenFile string
+	workspace   string
+	noOpen      bool
+	sharedState bool
+	listen      string
+	tlsCert     string
+	tlsKey      string
+	tokenFile   string
 }
 
 func isLoopbackListen(addr string) bool {
@@ -36,19 +37,20 @@ func parseWebOptions(args []string, stdout io.Writer) (webOptions, bool, error) 
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&options.workspace, "workspace", "", "workspace directory")
 	flags.BoolVar(&options.noOpen, "no-open", false, "print the launch link instead of opening the browser")
+	flags.BoolVar(&options.sharedState, "shared-state", false, "share the workspace state with another Core process")
 	flags.StringVar(&options.listen, "listen", "127.0.0.1:0", "listen address for Web host")
 	flags.StringVar(&options.tlsCert, "tls-cert", "", "TLS certificate PEM file")
 	flags.StringVar(&options.tlsKey, "tls-key", "", "TLS private key PEM file")
 	flags.StringVar(&options.tokenFile, "token-file", "", "file containing the access token for HTTPS Web access")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: lune web [--workspace DIRECTORY] [--no-open] [--listen ADDR --tls-cert PEM --tls-key PEM --token-file PATH]")
+			fmt.Fprintln(stdout, "Usage: lune web [--workspace DIRECTORY] [--shared-state] [--no-open] [--listen ADDR --tls-cert PEM --tls-key PEM --token-file PATH]")
 			return options, false, nil
 		}
 		return options, false, err
 	}
 	if flags.NArg() != 0 {
-		return options, false, errors.New("usage: lune web [--workspace DIRECTORY] [--no-open] [--listen ADDR --tls-cert PEM --tls-key PEM --token-file PATH]")
+		return options, false, errors.New("usage: lune web [--workspace DIRECTORY] [--shared-state] [--no-open] [--listen ADDR --tls-cert PEM --tls-key PEM --token-file PATH]")
 	}
 	if (options.tlsCert == "") != (options.tlsKey == "") {
 		return options, false, errors.New("lune web requires both --tls-cert and --tls-key")

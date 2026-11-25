@@ -1,3 +1,11 @@
+FROM node:22.12-alpine AS web-build
+
+WORKDIR /src
+COPY desktop/package.json desktop/package-lock.json ./desktop/
+RUN cd desktop && npm ci --ignore-scripts
+COPY desktop ./desktop
+RUN cd desktop && npm run build:web && node scripts/embed-web.mjs
+
 FROM golang:1.27.4-bookworm AS build
 
 WORKDIR /src
@@ -6,8 +14,10 @@ ENV GOWORK=off
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=web-build /src/internal/app/webdist ./internal/app/webdist
 RUN CGO_ENABLED=0 go build -trimpath -o /out/lune-sandbox github.com/afterlune/luneCore/cmd/lune-sandbox \
     && CGO_ENABLED=0 go build -trimpath -o /out/lune ./cmd \
+    && CGO_ENABLED=0 go build -tags lune_web -trimpath -o /out/lune-web ./cmd \
     && CGO_ENABLED=0 go build -trimpath -o /out/lune-a2a-proxy ./cmd/a2a-proxy
 
 FROM debian:bookworm-slim
@@ -21,11 +31,13 @@ RUN apt-get update \
     && chown -R lune:lune /var/lib/lune /workspace
 
 COPY --from=build /out/lune /usr/local/bin/lune
+COPY --from=build /out/lune-web /usr/local/bin/lune-web
 COPY --from=build /out/lune-sandbox /usr/local/bin/lune-sandbox
 COPY --from=build /out/lune-a2a-proxy /usr/local/bin/lune-a2a-proxy
 COPY --from=build /usr/local/go /usr/local/go
 COPY deploy/lune-a2a-entrypoint.sh /usr/local/bin/lune-a2a-entrypoint
-RUN chmod 0555 /usr/local/bin/lune-a2a-entrypoint
+COPY deploy/lune-web-entrypoint.sh /usr/local/bin/lune-web-entrypoint
+RUN chmod 0555 /usr/local/bin/lune-a2a-entrypoint /usr/local/bin/lune-web-entrypoint
 
 ENV HOME=/var/lib/lune \
     XDG_CONFIG_HOME=/var/lib/lune/.config \

@@ -258,6 +258,7 @@
   "Loading conversations…": "正在加载会话…",
   "Loading files…": "正在加载文件…",
   "Loading…": "加载中…",
+  "Linked session was not found in this workspace": "当前工作区中找不到链接的会话",
   "Local Core": "本机 Core",
   "low": "低",
   "Lune wants to use": "Lune 请求使用",

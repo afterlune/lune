@@ -30,4 +30,6 @@ SendMessage 接受按顺序排列的 text 和 JSON data parts。初始 data 作�
 
 `deploy/docker-compose.a2a.yml` 使用常驻 Go 代理转发到按需启动的原生 A2A worker。代理自己提供健康检查和 Agent Card；首个已认证 JSON-RPC 请求到达时启动 loopback-only 的 Lune 子进程。对外 Bearer 在代理终止，不转发给 worker。代理仅在所有已观察任务终态且空闲一小时后卸载 worker；等待交互的任务会保持运行直到恢复或取消。
 
+若要从 Lune Web 查看 MoonFei 委派创建的同一会话，在同一工作区启动 `lune web --workspace <工作区> --shared-state`。A2A task 的 `contextId` 就是 Core session ID。Lune Web 使用 `?sessionId=<contextId>` 打开对应会话；两个 Core 共享状态，Core 的会话锁仍会阻止同一会话并发执行。
+
 工作目录固定为 `/workspace`，默认绑定 Windows 宿主的 `D:\WorkSpace`，权限为 `workspace`。容器使用独立 Linux 配置，模型密钥通过 `apiKeyEnv` 提供；不得提交 `.env` 或 `deploy/lune-runtime.config.json`。A2A task 状态仍由原生 worker 保存在内存，强制重启时任务 ID 会失效；代理不会自动重放，MoonFei 将结果不明任务交给用户判断。

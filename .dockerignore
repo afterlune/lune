@@ -6,7 +6,7 @@ go.work
 go.work.sum
 go.pinned.mod
 go.pinned.sum
-bin
+/bin/
 .lune
 **/.lune
 .tmp-go-cache
@@ -18,5 +18,11 @@ sessions.db
 diag
 **/node_modules
 **/dist
+desktop/out/
+desktop/out-electron/
+desktop/release/
+desktop/resources/bin/
+docs/
+internal/app/webdist
 **/.cache
 deploy/lune-runtime.config.json

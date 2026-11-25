@@ -47,6 +47,54 @@ services:
     cap_drop:
       - ALL
 
+  lune-web:
+    image: lune-a2a:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.a2a
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    entrypoint: ["/usr/local/bin/lune-web-entrypoint"]
+    depends_on:
+      lune-a2a:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      LUNE_WEB_TOKEN: ${LUNE_WEB_TOKEN:?Set LUNE_WEB_TOKEN in lune/.env}
+      LUNE_DEEPSEEK_API_KEY: ${LUNE_DEEPSEEK_API_KEY:-}
+      LUNE_WORKSPACE: /workspace
+    volumes:
+      - type: bind
+        source: ${LUNE_WORKSPACE_PATH:-D:/WorkSpace}
+        target: /workspace
+      - type: bind
+        source: ./lune-runtime.config.json
+        target: /run/lune-runtime/config.json
+        read_only: true
+      - lune-home:/var/lib/lune
+    networks:
+      default:
+      moonfei-lune-a2a:
+        aliases:
+          - lune-web
+    expose:
+      - "18094"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://127.0.0.1:18094/_lune/status', context=ssl._create_unverified_context(), timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
   lune-home:
 

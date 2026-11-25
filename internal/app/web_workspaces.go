@@ -44,6 +44,7 @@ type webWorkspaces struct {
 	diagnostics io.Writer
 	initial     string
 	store       *settings.Store
+	sharedState bool
 
 	lifecycleMu     sync.Mutex
 	mu              sync.Mutex
@@ -207,7 +208,7 @@ func (s *webWorkspaces) openLocked(path string, touch bool) (core.Workspace, *we
 	coreCfg := core.Config{
 		Workspace:             canonical,
 		StateDir:              stateDir,
-		ExclusiveState:        true,
+		ExclusiveState:        !s.sharedState,
 		Logger:                slog.Default(),
 		PersonalInstructions:  engram.Instructions(projectConfig.MCPServers),
 		SandboxHelperPath:     findSandboxHelper(canonical),

@@ -378,6 +378,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [moreSessions, setMoreSessions] = useState(false)
   const [listLoading, setListLoading] = useState(false)
   const [listRevision, setListRevision] = useState(0)
+  const linkedSessionId = useMemo(() => {
+    const value = new URLSearchParams(window.location.search).get('sessionId')?.trim() ?? ''
+    return value.slice(0, 256)
+  }, [])
+  const linkedSessionIdRef = useRef(linkedSessionId)
   const [capabilities, setCapabilities] = useState<string[]>([])
   const [planMode, setPlanMode] = useState(false)
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -1127,13 +1132,30 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (forceNewDesktop) pendingDesktopNewSessionRef.current = ''
       const forceNew = forceNewDesktop || newTokenManaged > 0
 
+      let linkedSession: SessionSummary | undefined
+      if (linkedSessionIdRef.current) {
+        linkedSession = await client.request<SessionSummary>(
+          'session.get',
+          { sessionId: linkedSessionIdRef.current },
+        ).catch(() => undefined)
+        if (cancelled) return
+        if (linkedSession) {
+          linkedSessionIdRef.current = ''
+          const target = new URL(window.location.href)
+          target.searchParams.delete('sessionId')
+          window.history.replaceState(window.history.state, '', target)
+        } else {
+          setActionError(t('Linked session was not found in this workspace'))
+        }
+      }
+
       let pendingDesktopSessionId: string | null = null
       if (window.luneDesktop && connNow?.mode === 'local' && pendingDesktopSessionRef.current?.workspace === connNow.workspace) {
         pendingDesktopSessionId = pendingDesktopSessionRef.current.sessionId
         pendingDesktopSessionRef.current = null
       }
 
-      const previousID = forceNew
+      const previousID = linkedSession?.id ?? (forceNew
         ? null
         : window.luneDesktop
           ? (pendingDesktopSessionId ?? await window.luneDesktop.lastSession().catch(() => null))
@@ -1141,11 +1163,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             ? (requestedManaged?.sessionId || managed?.workspace.lastSessionId || lastLoopbackSession(workspaceId))
             : connNow?.mode === 'remote'
               ? (() => { try { return sessionStorage.getItem(webLastSessionKey(connNow.url)) } catch { return null } })()
-              : activeSessionIdRef.current
+              : activeSessionIdRef.current)
       if (cancelled) return
-      const existing = forceNew
+      const existing = linkedSession ?? (forceNew
         ? undefined
-        : ((previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0])
+        : ((previousID ? await client.request<SessionSummary>('session.get', { sessionId: previousID }).catch(() => undefined) : undefined) ?? nextSessions?.[0]))
       if (cancelled) return
       if (existing) {
         activeSessionRef.current = existing
@@ -1168,7 +1190,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (!cancelled) setActionError(errorMessage(error))
     })
     return () => { cancelled = true }
-  }, [client, workspaceId, createSessionWithDefaults])
+  }, [client, workspaceId, createSessionWithDefaults, t])
 
   useEffect(() => {
     const req = managed?.requestedSession
