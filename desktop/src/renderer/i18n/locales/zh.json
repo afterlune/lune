@@ -528,5 +528,14 @@
   "YOU": "你",
   "You can retry this tool or skip it.": "可重试或跳过此工具。",
   "Your answer": "你的回答",
-  "Your response will continue this run.": "回答后将继续执行。"
+  "Your response will continue this run.": "回答后将继续执行。",
+  "Toggle Plan mode or send a prompt in Plan mode": "切换 Plan 只读模式，或以 Plan 模式直接发送内容",
+  "Cache": "缓存",
+  "Total": "总计",
+  "Total tokens": "总 Token 用量",
+  "Compacting": "压缩中",
+  "In": "输入",
+  "Out": "输出",
+  "/plan [prompt]": "/plan [内容]",
+  "Context usage": "上下文"
 }

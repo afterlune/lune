@@ -30,11 +30,25 @@ export interface UsageTotals {
   cache_creation?: number
 }
 
+export interface ModelUsage {
+  input_tokens?: number
+  input_tokens_details?: {
+    cached_tokens?: number
+    cache_creation_tokens?: number
+  }
+  output_tokens?: number
+  output_tokens_details?: {
+    reasoning_tokens?: number
+  }
+  total_tokens?: number
+}
+
 export interface UsageRecord {
   request_id?: string
   request_attempt?: number
   request_changes?: string[]
   request: number
+  usage?: ModelUsage
   estimated_input_tokens?: number
   available: boolean
   context_window?: number
@@ -166,8 +180,24 @@ export interface RuntimeEvent {
   agentRole?: string
   agentTask?: string
   teamRunId?: string
-  usage?: Partial<UsageTotals>
+  usage?: ModelUsage & Partial<UsageTotals>
+  usagePurpose?: string
+  requestId?: string
+  requestAttempt?: number
+  requestChanges?: string[]
+  contextWindow?: number
   estimatedInputTokens?: number
+  compaction?: {
+    stage?: string
+    mode?: string
+    reason?: string
+    strategy?: string
+    beforeTokens?: number
+    afterTokens?: number
+    threshold?: number
+    turns?: number
+    error?: string
+  }
 }
 
 export interface LiveAgentRun {

@@ -528,5 +528,14 @@
   "YOU": "YOU",
   "You can retry this tool or skip it.": "You can retry this tool or skip it.",
   "Your answer": "Your answer",
-  "Your response will continue this run.": "Your response will continue this run."
+  "Your response will continue this run.": "Your response will continue this run.",
+  "Toggle Plan mode or send a prompt in Plan mode": "Toggle Plan mode or send a prompt in Plan mode",
+  "Cache": "Cache",
+  "Total": "Total",
+  "Total tokens": "Total tokens",
+  "Compacting": "Compacting",
+  "In": "In",
+  "Out": "Out",
+  "/plan [prompt]": "/plan [prompt]",
+  "Context usage": "Context"
 }

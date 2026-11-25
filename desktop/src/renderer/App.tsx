@@ -9,6 +9,10 @@ import {
   saveLastSessionSettings,
   sessionDefaultsScopeKey,
 } from './session-defaults'
+import {
+  applyUsageEvent, deriveSessionUsageMetrics, formatTokenCount, isLeadMainUsage,
+  seedAppliedUsageKeys, usageEventDedupKey, type LiveContextOverride,
+} from './usage-metrics'
 import { useTranslation } from 'react-i18next'
 import { LanguagePicker, useLanguage } from './language'
 import type { ManagedWorkspace, WorkspaceActivity } from './workbench'
@@ -367,6 +371,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const eventHandler = useRef<(event: RuntimeEvent) => void>(() => {})
   const initializedClient = useRef<RuntimeClient | null>(null)
   const activeSessionIdRef = useRef(activeSessionId)
+  const [liveContextOverride, setLiveContextOverride] = useState<LiveContextOverride>({ compacting: false })
+  const appliedUsageKeysRef = useRef<Set<string>>(new Set())
   const sessionsRef = useRef<SessionSummary[]>(sessions)
   sessionsRef.current = sessions
   const modelsRef = useRef<ModelOption[]>(models)
@@ -530,7 +536,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const taskHasQueuedWork = taskIsQueued || runtime.queue.some((item) => item.status === 'queued' || item.status === 'active')
   const sessionBusy = taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0
   const modelOption = models.find((option) => option.profile === selectedModel)
-  const contextLimit = runtime.task.contextWindow || modelOption?.contextWindow
+  const usageMetrics = useMemo(
+    () => deriveSessionUsageMetrics({ session: activeSession, runtime, modelOption, liveContext: liveContextOverride }),
+    [activeSession, runtime, modelOption, liveContextOverride],
+  )
 
   const listSessions = useCallback((target: RuntimeClient, offset: number, term: string, archived: boolean) =>
     target.request<SessionSummary[]>(serverSearch && term ? 'session.search' : 'session.list', {
@@ -828,6 +837,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setTimeline(mergedEntries)
     activeSessionRef.current = summary
     setActiveSession(summary)
+    appliedUsageKeysRef.current = seedAppliedUsageKeys(summary)
     setHistory(messages)
     setOptimistic((items) => {
       const counts = new Map<string, number>()
@@ -927,6 +937,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       (activeSessionRef.current?.id === sessionId ? activeSessionRef.current : null)
     activeSessionRef.current = cachedSession
     setActiveSession(cachedSession)
+    setLiveContextOverride({ compacting: false })
+    appliedUsageKeysRef.current = cachedSession ? seedAppliedUsageKeys(cachedSession) : new Set()
     setTimeline([])
     setHistory([])
     streamingExecution.current = undefined
@@ -1021,17 +1033,17 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           failed,
         }, ...items].slice(0, 5))
       } else if (event.kind === 'usage') {
+        const dedupKey = usageEventDedupKey(event)
+        if (dedupKey && appliedUsageKeysRef.current.has(dedupKey)) return
+        if (dedupKey) appliedUsageKeysRef.current.add(dedupKey)
+        if (isLeadMainUsage(event.agentId, event.usagePurpose)) {
+          setLiveContextOverride((prev) => (prev.afterTokens !== undefined ? { ...prev, afterTokens: undefined } : prev))
+        }
         setActiveSession((prev) => {
           if (!prev || prev.id !== sessionId) return prev
-          const cur = prev.sessionUsage ?? { requests: 0, measured: 0, input: 0, output: 0, reasoning: 0, total: 0, cached: 0 }
-          return {
-            ...prev,
-            sessionUsage: {
-              ...cur,
-              ...(event.usage ?? {}),
-              ...(event.estimatedInputTokens !== undefined ? { estimated_input: event.estimatedInputTokens } : {}),
-            },
-          }
+          const updated = applyUsageEvent(prev, event)
+          activeSessionRef.current = updated
+          return updated
         })
       } else if (event.kind === 'model_retry' || event.kind === 'model_recovery_required') {
         if (event.modelFailure) setModelFailure(event.modelFailure)
@@ -1039,6 +1051,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       } else if (event.kind === 'model_recovery_resumed') {
         setModelFailure(null)
       } else if (event.kind === 'context_compaction') {
+        const stage = event.compaction?.stage
+        const afterTokens = event.compaction?.afterTokens
+        if (stage === 'started' || stage === 'running') {
+          setLiveContextOverride((prev) => ({ ...prev, compacting: true }))
+        } else if (stage === 'completed' || stage === 'finished' || stage === 'failed' || stage === 'skipped') {
+          setLiveContextOverride({
+            compacting: false,
+            ...(typeof afterTokens === 'number' && afterTokens > 0 ? { afterTokens } : {}),
+          })
+        }
         void refreshAll()
       } else if (event.kind === 'task_queued' || event.kind === 'goal_updated' || event.kind === 'goal_cleared' || event.kind === 'command_started' || event.kind === 'command_finished') {
         void refreshLiveState()
@@ -1343,19 +1365,32 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     finally { setWorking(false) }
   }
 
-  const sendMessage = async (steer = false) => {
-    const text = draft.trim()
+  const sendMessage = async (steer = false, options?: { textOverride?: string; forcePlanMode?: boolean; restoreDraftOnError?: string }) => {
+    let text = (options?.textOverride !== undefined ? options.textOverride : draft).trim()
+    let forcePlan = Boolean(options?.forcePlanMode)
+    let restoreDraft = options?.restoreDraftOnError
     if (!client || activeSession?.id !== activeSessionId || !activeSessionId || (!text && !attachments.length) || working || connectionStatus !== 'connected') return
-    if (!steer && !attachments.length && parseSlashCommand(text)) {
-      await executeSlashCommand(text)
-      return
+    if (!steer && options?.textOverride === undefined) {
+      const parsed = parseSlashCommand(text)
+      if (parsed?.command.name === '/plan' && (parsed.args || attachments.length)) {
+        if (!has('turn.plan')) {
+          setActionError('Current Core does not support /plan (turn.plan).')
+          return
+        }
+        restoreDraft = draft
+        text = parsed.args
+        forcePlan = true
+      } else if (parsed && !attachments.length) {
+        await executeSlashCommand(text)
+        return
+      }
     }
     if (attachments.length && !has('turn.attachments')) {
       setActionError('This Core does not support attachments. Remove them or connect to an updated Core.')
       return
     }
     try { validateAttachments(attachments, Boolean(modelOption?.supportsInputImages)) } catch (error) { setActionError(errorMessage(error)); return }
-    const plan = has('turn.plan') && planMode && !steer
+    const plan = has('turn.plan') && (forcePlan || planMode) && !steer
     const requestedMode = steer ? 'steer_input' : taskIsRunning || taskIsQueued || taskIsPaused || runtime.queue.length > 0 ? 'queue_input' : 'start_if_idle'
     const key = JSON.stringify([activeSessionId, text, attachments, plan, steer])
     const existing = submissionRetry.current
@@ -1396,7 +1431,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       void refreshRuntime(client, activeSessionId).catch((error) => setActionError(errorMessage(error)))
     } catch (error) {
       setOptimistic((items) => items.filter((item) => item.id !== submissionId))
-      setDraft(text)
+      setDraft(restoreDraft ?? text)
       if (/session_busy|task_paused/.test(errorMessage(error))) submissionRetry.current = null
       setActionError(errorMessage(error))
     } finally { setWorking(false) }
@@ -1769,6 +1804,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         await createSession()
         return
       case '/plan':
+        if (args) {
+          await sendMessage(false, { textOverride: args, forcePlanMode: true, restoreDraftOnError: rawInput })
+          return
+        }
         setPlanMode((value) => !value)
         return
       case '/files':
@@ -1900,12 +1939,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         cancelAllPending()
         return
       case '/status': {
-        const usage = activeSession?.sessionUsage
+        const m = usageMetrics
         setSlashNotice([
           `**Session** \`${activeSessionId}\``,
           `- **Model**: \`${selectedModel || '-'}\` (${activeSession?.settings.reasoningEffort || 'default'})`,
           `- **Task**: \`${runtime.task.status}\` · **Queued**: ${runtime.queue.length}`,
-          usage ? `- **Tokens**: ${usage.input.toLocaleString()} in / ${usage.output.toLocaleString()} out (${usage.cached.toLocaleString()} cached)` : '',
+          m.hasUsage ? `- **Tokens**: ${formatTokenCount(m.input)} in / ${formatTokenCount(m.output)} out · ${formatTokenCount(m.cached)} cached (${m.cachePct}%) · ${formatTokenCount(m.total)} total` : '',
+          m.hasUsage && m.contextWindow > 0 ? `- **Context**: ${formatTokenCount(m.usedContext)} / ${formatTokenCount(m.contextWindow)} (${m.contextPct}%)` : '',
         ].filter(Boolean).join('\n'))
         return
       }
@@ -3315,15 +3355,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       </div>
       {!isEmptyConversation && (
         <div className="composer-telemetry mt-1.5 flex min-h-[28px] flex-wrap items-center justify-center gap-2">
-          {activeSession?.sessionUsage && (
+          {usageMetrics.hasUsage && (
             <button
               type="button"
               className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              title={`${t('input')} ${usageMetrics.input.toLocaleString()} · ${t('output')} ${usageMetrics.output.toLocaleString()} · ${t('Cache')} ${usageMetrics.cached.toLocaleString()} · ${t('Total')} ${usageMetrics.total.toLocaleString()} · ${t('Context usage')} ${usageMetrics.usedContext.toLocaleString()} / ${usageMetrics.contextWindow.toLocaleString()}`}
               onClick={() => openHarnessTab('context')}
             >
               <span>
-                {activeSession.sessionUsage.input.toLocaleString()} {t('input')} · {activeSession.sessionUsage.output.toLocaleString()} {t('output')}
-                {contextLimit ? ` · ${contextLimit.toLocaleString()} ${t('context limit')}` : ''}
+                {t('In')} {formatTokenCount(usageMetrics.input)} · {t('Out')} {formatTokenCount(usageMetrics.output)}
+                {' · '}{t('Cache')} {formatTokenCount(usageMetrics.cached)} ({usageMetrics.cachePct}%)
+                {' · '}{t('Total')} {formatTokenCount(usageMetrics.total)}
+                {usageMetrics.compacting
+                  ? ` · ${t('Context usage')} ${t('Compacting')}…`
+                  : usageMetrics.contextWindow > 0
+                    ? ` · ${t('Context usage')} ${formatTokenCount(usageMetrics.usedContext)}/${formatTokenCount(usageMetrics.contextWindow)} (${usageMetrics.contextPct}%)`
+                    : usageMetrics.usedContext > 0
+                      ? ` · ${t('Context usage')} ${formatTokenCount(usageMetrics.usedContext)}`
+                      : ''}
               </span>
             </button>
           )}
@@ -3742,6 +3791,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             setSettingsOpen(true)
           }}
           onChangeReasoningEffort={(effort) => void changeSettings({ reasoningEffort: effort })}
+          liveContext={liveContextOverride}
           permissionMode={permissionMode}
           allowedPermissionModes={allowedPermissionModes}
           onChangePermissionMode={(mode) => void changePermissionMode(mode as PermissionMode)}

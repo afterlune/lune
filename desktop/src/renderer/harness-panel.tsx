@@ -16,6 +16,7 @@ import {
   type MCPPromptResult, type MCPResource, type MCPResourceTemplate, type MCPServerStatus,
   type ModelOption, type RuntimeState, type SessionSummary,
 } from './harness-types'
+import { deriveSessionUsageMetrics, formatTokenCount, type LiveContextOverride } from './usage-metrics'
 
 function extractResponseInputText(input: unknown): string {
   if (input === null || input === undefined) return ''
@@ -85,6 +86,7 @@ export function HarnessPanel({
   onOpenMCPSettings,
   onRefreshState,
   onChangeReasoningEffort,
+  liveContext,
   permissionMode,
   allowedPermissionModes,
   onChangePermissionMode,
@@ -108,6 +110,7 @@ export function HarnessPanel({
   onOpenMCPSettings?: () => void
   onRefreshState: () => Promise<void>
   onChangeReasoningEffort?: (effort: string) => void
+  liveContext?: LiveContextOverride
   permissionMode?: string
   allowedPermissionModes?: string[]
   onChangePermissionMode?: (mode: string) => void
@@ -318,6 +321,7 @@ export function HarnessPanel({
             models={models}
             capabilities={capabilities}
             onChangeReasoningEffort={onChangeReasoningEffort}
+            liveContext={liveContext}
             permissionMode={permissionMode}
             allowedPermissionModes={allowedPermissionModes}
             onChangePermissionMode={onChangePermissionMode}
@@ -1163,6 +1167,7 @@ function ContextInspector({
   models,
   capabilities,
   onChangeReasoningEffort,
+  liveContext,
   permissionMode,
   allowedPermissionModes,
   onChangePermissionMode,
@@ -1172,6 +1177,7 @@ function ContextInspector({
   models: ModelOption[]
   capabilities: string[]
   onChangeReasoningEffort?: (effort: string) => void
+  liveContext?: LiveContextOverride
   permissionMode?: string
   allowedPermissionModes?: string[]
   onChangePermissionMode?: (mode: string) => void
@@ -1180,10 +1186,9 @@ function ContextInspector({
   const usage = activeSession?.sessionUsage
   const selectedProfile = activeSession?.settings.modelProfile || models[0]?.profile || ''
   const modelOption = models.find((m) => m.profile === selectedProfile)
-  const contextLimit = runtime.task.contextWindow || modelOption?.contextWindow || 0
-  const latestInput = usage?.estimated_input || usage?.input || 0
-  const contextPct = contextLimit > 0 ? Math.min(100, Math.round((latestInput / contextLimit) * 100)) : 0
-  const cachePct = usage && usage.input > 0 ? Math.round((usage.cached / usage.input) * 100) : 0
+  const metrics = deriveSessionUsageMetrics({ session: activeSession, runtime, modelOption, liveContext })
+  const contextLimit = metrics.contextWindow
+  const contextPct = metrics.contextPct
   const busy = runtime.task.status === 'running' || runtime.task.status === 'queued' || runtime.task.status === 'paused' || runtime.queue.length > 0
   const currentEffort = activeSession?.settings.reasoningEffort || ''
   const currentEffortLabel = EFFORT_LABELS.find((e) => e.value === currentEffort)?.label ?? currentEffort
@@ -1249,17 +1254,18 @@ function ContextInspector({
             <>
               <div className={kvRowCls}>
                 <span>{t('Context window')}</span>
-                <code>{latestInput.toLocaleString()} / {contextLimit.toLocaleString()} ({contextPct}%)</code>
+                <code title={`${metrics.usedContext.toLocaleString()} / ${contextLimit.toLocaleString()}`}>{formatTokenCount(metrics.usedContext)} / {formatTokenCount(contextLimit)} ({contextPct}%)</code>
               </div>
               <div className="meter-track h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
                 <div className="meter-fill h-full rounded-full bg-ink transition-[width] duration-200" style={{ width: `${contextPct}%` }} />
               </div>
             </>
           )}
-          <div className={kvRowCls}><span>{t('Input tokens')}</span><code>{usage.input.toLocaleString()}</code></div>
-          <div className={kvRowCls}><span>{t('Output tokens')}</span><code>{usage.output.toLocaleString()}</code></div>
-          <div className={kvRowCls}><span>{t('Cached input')}</span><code>{usage.cached.toLocaleString()} ({cachePct}%)</code></div>
-          {usage.reasoning > 0 && <div className={kvRowCls}><span>{t('Reasoning tokens')}</span><code>{usage.reasoning.toLocaleString()}</code></div>}
+          <div className={kvRowCls}><span>{t('Input tokens')}</span><code title={metrics.input.toLocaleString()}>{formatTokenCount(metrics.input)}</code></div>
+          <div className={kvRowCls}><span>{t('Output tokens')}</span><code title={metrics.output.toLocaleString()}>{formatTokenCount(metrics.output)}</code></div>
+          <div className={kvRowCls}><span>{t('Cached input')}</span><code title={metrics.cached.toLocaleString()}>{formatTokenCount(metrics.cached)} ({metrics.cachePct}%)</code></div>
+          {usage.reasoning > 0 && <div className={kvRowCls}><span>{t('Reasoning tokens')}</span><code title={usage.reasoning.toLocaleString()}>{formatTokenCount(usage.reasoning)}</code></div>}
+          <div className={kvRowCls}><span>{t('Total tokens')}</span><code title={metrics.total.toLocaleString()}>{formatTokenCount(metrics.total)}</code></div>
         </div>
       )}
 
