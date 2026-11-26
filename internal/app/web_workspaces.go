@@ -278,20 +278,29 @@ func (s *webWorkspaces) syncEntrySessions(ctx context.Context, entry *webWorkspa
 	if err != nil {
 		return nil, err
 	}
+	taskSnapshots, _ := entry.core.ListSessionTaskSnapshots(syncCtx)
+	taskBySession := make(map[string]core.SessionTaskSnapshot, len(taskSnapshots))
+	for _, snapshot := range taskSnapshots {
+		taskBySession[snapshot.SessionID] = snapshot
+	}
 	records := make([]settings.WorkspaceSessionRecord, 0, len(sessions))
 	for _, sess := range sessions {
 		var updatedMs int64
 		if !sess.UpdatedAt.IsZero() {
 			updatedMs = sess.UpdatedAt.UTC().UnixMilli()
 		}
-		records = append(records, settings.WorkspaceSessionRecord{
+		record := settings.WorkspaceSessionRecord{
 			SessionID:   sess.ID,
 			WorkspaceID: entry.workspace.ID,
 			Title:       sess.Title,
 			Archived:    sess.Archived,
 			CreatedAt:   updatedMs,
 			UpdatedAt:   updatedMs,
-		})
+		}
+		if task, found := taskBySession[sess.ID]; found {
+			record.TaskStatus, record.ExecutionID, record.QueueCount = string(task.Status), task.ExecutionID, task.QueueCount
+		}
+		records = append(records, record)
 	}
 	if err := s.store.SyncWorkspaceSessions(entry.workspace.ID, records); err != nil {
 		return nil, err
@@ -302,6 +311,11 @@ func (s *webWorkspaces) syncEntrySessions(ctx context.Context, entry *webWorkspa
 	}
 	if saved == nil {
 		saved = []settings.WorkspaceSessionRecord{}
+	}
+	for index := range saved {
+		if task, found := taskBySession[saved[index].SessionID]; found {
+			saved[index].TaskStatus, saved[index].ExecutionID, saved[index].QueueCount = string(task.Status), task.ExecutionID, task.QueueCount
+		}
 	}
 	return saved, nil
 }
@@ -573,11 +587,17 @@ func (s *webWorkspaces) listOpened() []core.Workspace {
 	return items
 }
 
-func (s *webWorkspaces) listOpenedDetailed() []webWorkspaceView {
+func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceView {
 	opened := s.listOpened()
 	if len(opened) == 0 {
 		return []webWorkspaceView{}
 	}
+	s.mu.Lock()
+	entries := make(map[string]*webWorkspaceEntry, len(s.entries))
+	for id, entry := range s.entries {
+		entries[id] = entry
+	}
+	s.mu.Unlock()
 	byID := make(map[string]settings.WorkspaceRecord)
 	if s.store != nil {
 		if recs, err := s.store.ListWorkspacesWithSessions(true); err == nil {
@@ -606,6 +626,55 @@ func (s *webWorkspaces) listOpenedDetailed() []webWorkspaceView {
 			continue
 		}
 		views = append(views, s.workspaceView(ws))
+	}
+	type taskSnapshotResult struct {
+		workspaceID string
+		snapshots   []core.SessionTaskSnapshot
+	}
+	taskCtx, cancelTasks := context.WithTimeout(ctx, 5*time.Second)
+	results := make(chan taskSnapshotResult, len(views))
+	var taskWG sync.WaitGroup
+	for _, view := range views {
+		entry := entries[view.ID]
+		if entry == nil || entry.core == nil {
+			continue
+		}
+		taskWG.Add(1)
+		go func(workspaceID string, client *core.Core) {
+			defer taskWG.Done()
+			snapshots, err := client.ListSessionTaskSnapshots(taskCtx)
+			if err == nil {
+				results <- taskSnapshotResult{workspaceID: workspaceID, snapshots: snapshots}
+			}
+		}(view.ID, entry.core)
+	}
+	taskWG.Wait()
+	cancelTasks()
+	close(results)
+	tasksByWorkspace := make(map[string]map[string]core.SessionTaskSnapshot, len(views))
+	for result := range results {
+		bySession := make(map[string]core.SessionTaskSnapshot, len(result.snapshots))
+		for _, snapshot := range result.snapshots {
+			bySession[snapshot.SessionID] = snapshot
+		}
+		tasksByWorkspace[result.workspaceID] = bySession
+	}
+	for index := range views {
+		bySession, hasSnapshot := tasksByWorkspace[views[index].ID]
+		if !hasSnapshot {
+			continue
+		}
+		for sessionIndex := range views[index].Sessions {
+			if snapshot, found := bySession[views[index].Sessions[sessionIndex].SessionID]; found {
+				views[index].Sessions[sessionIndex].TaskStatus = string(snapshot.Status)
+				views[index].Sessions[sessionIndex].ExecutionID = snapshot.ExecutionID
+				views[index].Sessions[sessionIndex].QueueCount = snapshot.QueueCount
+			} else {
+				views[index].Sessions[sessionIndex].TaskStatus = string(core.TaskIdle)
+				views[index].Sessions[sessionIndex].ExecutionID = ""
+				views[index].Sessions[sessionIndex].QueueCount = 0
+			}
+		}
 	}
 	return views
 }
@@ -689,7 +758,7 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 			theme, _ = s.store.WebTheme()
 			recent, _ = s.store.RecentWorkspaces()
 		}
-		opened := s.listOpenedDetailed()
+		opened := s.listOpenedDetailed(r.Context())
 		s.mu.Lock()
 		initial := s.initial
 		needsSetup := s.needsSetup

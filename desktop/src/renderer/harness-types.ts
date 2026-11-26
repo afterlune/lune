@@ -324,7 +324,28 @@ export interface MCPResourceTemplate {
   mimeType?: string
 }
 
-export type HarnessTab = 'files' | 'agents' | 'goal' | 'processes' | 'terminal' | 'mcp' | 'context'
+export type HarnessTab = 'files' | 'review' | 'agents' | 'goal' | 'processes' | 'terminal' | 'mcp' | 'context'
+
+export interface ReviewContext {
+  reviewSessionId: string
+  executionId?: string
+  sourceSessionId: string
+  sourceExecutionId?: string
+  path: string
+  materialsDigest: string
+  status?: string
+  stale?: boolean
+}
+
+export interface TaskDiagnosisContext {
+  diagnosisSessionId: string
+  executionId?: string
+  sourceSessionId: string
+  sourceExecutionId?: string
+  evidenceDigest: string
+  status?: string
+  stale?: boolean
+}
 
 export interface HistoryAttachment {
   name: string

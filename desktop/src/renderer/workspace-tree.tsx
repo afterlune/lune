@@ -9,6 +9,9 @@ export interface WorkspaceTreeSession {
   title: string
   archived: boolean
   updatedAt: number
+  taskStatus?: string
+  executionId?: string
+  queueCount?: number
 }
 
 export interface WorkspaceTreeItem {
@@ -49,6 +52,15 @@ function workspaceLabel(item: { name?: string; path: string }): string {
 
 function sortSessionsByTime<T>(items: T[], getTs: (item: T) => number): T[] {
   return [...items].sort((a, b) => getTs(b) - getTs(a))
+}
+
+function taskStatusLabel(status?: string): string {
+  switch (status) {
+    case 'running': return 'Running'
+    case 'queued': return 'Queued'
+    case 'paused': return 'Paused'
+    default: return ''
+  }
 }
 
 export function WorkspaceTree({
@@ -257,6 +269,7 @@ export function WorkspaceTree({
                       {sortedActiveSessions.map((session) => {
                         const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
                         const selected = session.id === activeSessionId
+                        const taskStatus = taskStatusLabel(ws.sessions.find((item) => item.id === session.id)?.taskStatus)
                         return (
                           <div
                             key={session.id}
@@ -277,6 +290,7 @@ export function WorkspaceTree({
                             >
                               <span className="block truncate">{preview}{session.archived ? t(' (archived)') : ''}</span>
                             </button>
+                            {taskStatus && <span className="mr-2 shrink-0 text-[10.5px] text-ink-muted" title={t(taskStatus)}>{t(taskStatus)}</span>}
                             {renderActiveSessionActions(session)}
                           </div>
                         )
@@ -301,6 +315,7 @@ export function WorkspaceTree({
                     <>
                       {visibleNonActive.map((session) => {
                         const preview = session.title || `${t('Conversation')} ${session.id.slice(0, 8)}`
+                        const taskStatus = taskStatusLabel(session.taskStatus)
                         return (
                           <div
                             key={session.id}
@@ -314,6 +329,7 @@ export function WorkspaceTree({
                             >
                               <span className="block truncate">{preview}{session.archived ? t(' (archived)') : ''}</span>
                             </button>
+                            {taskStatus && <span className="mr-2 shrink-0 text-[10.5px] text-ink-muted" title={t(taskStatus)}>{t(taskStatus)}</span>}
                           </div>
                         )
                       })}

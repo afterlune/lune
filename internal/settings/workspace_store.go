@@ -20,6 +20,9 @@ type WorkspaceSessionRecord struct {
 	CreatedAt    int64  `json:"createdAt"`
 	UpdatedAt    int64  `json:"updatedAt"`
 	LastOpenedAt int64  `json:"lastOpenedAt"`
+	TaskStatus   string `json:"taskStatus,omitempty"`
+	ExecutionID  string `json:"executionId,omitempty"`
+	QueueCount   int    `json:"queueCount,omitempty"`
 }
 
 // WorkspaceRecord represents a persistent workspace tracked in settings.db.

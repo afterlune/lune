@@ -18,9 +18,12 @@ const rendererFileURL = pathToFileURL(resolve(currentDirectory, '../renderer/ind
 const allowedRuntimeMethods = new Set([
   'runtime.hello', 'runtime.subscribe', 'runtime.unsubscribe', 'runtime.state', 'runtime.pending',
   'workspace.info', 'workspace.listDirectory', 'workspace.readFile',
+  'review.start', 'review.get',
+  'diagnosis.start', 'diagnosis.get',
   'session.create', 'session.get', 'session.history', 'session.historyPage', 'session.list', 'session.search',
   'session.setSettings', 'session.setTitle', 'session.setArchived', 'session.delete', 'session.fork',
   'session.rewindPreview', 'session.rewind', 'session.compact',
+  'turn.replaceHistory',
   'goal.get', 'goal.create', 'goal.pause', 'goal.resume', 'goal.edit', 'goal.setBudget', 'goal.clear',
   'command.list', 'command.read', 'command.stop',
   'mcp.servers', 'mcp.enable', 'mcp.disable', 'mcp.listPrompts', 'mcp.getPrompt',

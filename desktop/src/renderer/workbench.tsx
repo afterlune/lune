@@ -193,6 +193,21 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     return () => { active = false }
   }, [syncWorkspaces])
 
+  useEffect(() => {
+    if (!credential) return
+    let stopped = false
+    let timer = 0
+    const refresh = async () => {
+      await syncWorkspaces(credential).catch(() => undefined)
+      if (!stopped) timer = window.setTimeout(() => void refresh(), 15_000)
+    }
+    timer = window.setTimeout(() => void refresh(), 15_000)
+    return () => {
+      stopped = true
+      window.clearTimeout(timer)
+    }
+  }, [credential, syncWorkspaces])
+
   const unlockHost = async (event: FormEvent) => {
     event.preventDefault()
     const tok = authInput.trim()
@@ -255,7 +270,18 @@ function Workbench({ theme }: { theme: ThemePreference }) {
   }, [credential])
 
   const reportWorkspaceSessions = useCallback((workspaceId: string, list: WorkspaceSessionRecord[]) => {
-    setWorkspaceSessions((prev) => ({ ...prev, [workspaceId]: list }))
+    setWorkspaceSessions((prev) => {
+      const saved = new Map((prev[workspaceId] ?? []).map((item) => [item.sessionId, item]))
+      return {
+        ...prev,
+        [workspaceId]: list.map((item) => ({
+          ...item,
+          taskStatus: item.taskStatus ?? saved.get(item.sessionId)?.taskStatus,
+          executionId: item.executionId ?? saved.get(item.sessionId)?.executionId,
+          queueCount: item.queueCount ?? saved.get(item.sessionId)?.queueCount,
+        })),
+      }
+    })
   }, [])
 
   const report = useCallback((id: string, status: WorkspaceActivity) => {

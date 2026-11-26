@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
-  Activity, Bot, Check, ChevronRight, Copy, Cpu, FolderOpen, Maximize2, Minimize2, Pause, Play,
+  Activity, Bot, Check, ChevronRight, Copy, Cpu, FileSearch, FolderOpen, Maximize2, Minimize2, Pause, Play,
   Plug, RefreshCw, Settings, Square, SquareTerminal, Target, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -18,7 +18,7 @@ import {
   contentText, objectValue,
   type CommandInfo, type CommandOutput, type Goal, type HarnessTab, type MCPPrompt,
   type MCPPromptResult, type MCPResource, type MCPResourceTemplate, type MCPServerStatus,
-  type ModelOption, type RuntimeState, type SessionSummary,
+  type ModelOption, type ReviewContext, type RuntimeState, type SessionSummary, type TaskDiagnosisContext,
 } from './harness-types'
 import { deriveSessionUsageMetrics, formatTokenCount, type LiveContextOverride } from './usage-metrics'
 
@@ -98,6 +98,14 @@ export function HarnessPanel({
   agents,
   selectedAgentId,
   onSelectAgent,
+  onStartReview,
+  onApplyReviewFindings,
+  reviewContext,
+  onCheckReviewFreshness,
+  onStartDiagnosis,
+  diagnosisContext,
+  onCheckDiagnosisFreshness,
+  onApplyDiagnosis,
 }: {
   client: RuntimeClient
   workspace: WorkspaceInfo | null
@@ -126,6 +134,14 @@ export function HarnessPanel({
   agents?: AgentSnapshot[]
   selectedAgentId?: string
   onSelectAgent?: (id: string) => void
+  onStartReview?: (path: string) => Promise<void>
+  onApplyReviewFindings?: () => Promise<void>
+  reviewContext?: ReviewContext
+  onCheckReviewFreshness?: () => Promise<boolean>
+  onStartDiagnosis?: () => Promise<void>
+  diagnosisContext?: TaskDiagnosisContext
+  onCheckDiagnosisFreshness?: () => Promise<boolean>
+  onApplyDiagnosis?: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const has = (cap: string) => capabilities.includes(cap)
@@ -134,6 +150,7 @@ export function HarnessPanel({
   const agentsBadge = runningSubagents > 0 ? String(runningSubagents) : subagents.length > 0 ? String(subagents.length) : ''
   const tabs: Array<{ id: HarnessTab; label: string; icon: typeof FolderOpen; available: boolean; badge?: string }> = [
     { id: 'files', label: 'Files', icon: FolderOpen, available: has('workspace.files') },
+    { id: 'review', label: 'Review', icon: FileSearch, available: (has('review.workspace') || has('task.diagnose')) && Boolean(activeSession) },
     { id: 'agents', label: 'Agents', icon: Bot, available: true, badge: agentsBadge || undefined },
     { id: 'goal', label: 'Goal', icon: Target, available: has('goal.manage') && Boolean(activeSession) },
     { id: 'processes', label: 'Processes', icon: Terminal, available: has('command.control') && Boolean(activeSession) },
@@ -326,6 +343,24 @@ export function HarnessPanel({
             embedded
           />
         )}
+        {visible && effectiveTab === 'review' && (has('review.workspace') || has('task.diagnose')) && activeSession && (
+          <WorkspaceReviewPanel
+            activeSession={activeSession}
+            reviewContext={reviewContext}
+            canReview={has('review.workspace')}
+            canDiagnose={has('task.diagnose')}
+            taskStatus={runtime.task.status}
+            onStartReview={onStartReview ?? (async () => undefined)}
+            onApplyFindings={onApplyReviewFindings ?? (async () => undefined)}
+            reviewComplete={reviewContext?.status === 'completed' || runtime.task.status === 'completed'}
+            diagnosisComplete={diagnosisContext?.status === 'completed' || runtime.task.status === 'completed'}
+            onCheckFreshness={onCheckReviewFreshness ?? (async () => false)}
+            onStartDiagnosis={onStartDiagnosis ?? (async () => undefined)}
+            diagnosisContext={diagnosisContext}
+            onCheckDiagnosisFreshness={onCheckDiagnosisFreshness ?? (async () => false)}
+            onApplyDiagnosis={onApplyDiagnosis ?? (async () => undefined)}
+          />
+        )}
         {visible && effectiveTab === 'agents' && (
           <AgentInspector
             agents={agents ?? []}
@@ -378,6 +413,205 @@ export function HarnessPanel({
         )}
       </div>
     </aside>
+  )
+}
+
+function WorkspaceReviewPanel({
+  activeSession,
+  reviewContext,
+  canReview,
+  canDiagnose,
+  taskStatus,
+  onStartReview,
+  onApplyFindings,
+  reviewComplete,
+  diagnosisComplete,
+  onCheckFreshness,
+  onStartDiagnosis,
+  diagnosisContext,
+  onCheckDiagnosisFreshness,
+  onApplyDiagnosis,
+}: {
+  activeSession: SessionSummary
+  reviewContext?: ReviewContext
+  canReview: boolean
+  canDiagnose: boolean
+  taskStatus: string
+  onStartReview: (path: string) => Promise<void>
+  onApplyFindings: () => Promise<void>
+  reviewComplete: boolean
+  diagnosisComplete: boolean
+  onCheckFreshness: () => Promise<boolean>
+  onStartDiagnosis: () => Promise<void>
+  diagnosisContext?: TaskDiagnosisContext
+  onCheckDiagnosisFreshness: () => Promise<boolean>
+  onApplyDiagnosis: () => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const [path, setPath] = useState('')
+  const [starting, setStarting] = useState(false)
+  const [diagnosing, setDiagnosing] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [checkingDiagnosis, setCheckingDiagnosis] = useState(false)
+  const [applyingDiagnosis, setApplyingDiagnosis] = useState(false)
+  const [stale, setStale] = useState<boolean | undefined>(reviewContext?.stale)
+  const [diagnosisStale, setDiagnosisStale] = useState<boolean | undefined>(diagnosisContext?.stale)
+  const [error, setError] = useState('')
+
+  useEffect(() => setStale(reviewContext?.stale), [reviewContext?.reviewSessionId, reviewContext?.stale])
+  useEffect(() => setDiagnosisStale(diagnosisContext?.stale), [diagnosisContext?.diagnosisSessionId, diagnosisContext?.stale])
+
+  const start = async () => {
+    if (starting) return
+    setStarting(true)
+    setError('')
+    try {
+      await onStartReview(path.trim())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  const checkFreshness = async () => {
+    if (checking) return
+    setChecking(true)
+    setError('')
+    try {
+      setStale(await onCheckFreshness())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const applyFindings = async () => {
+    if (applying) return
+    setApplying(true)
+    setError('')
+    try {
+      await onApplyFindings()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const startDiagnosis = async () => {
+    if (diagnosing) return
+    setDiagnosing(true)
+    setError('')
+    try { await onStartDiagnosis() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setDiagnosing(false) }
+  }
+
+  const checkDiagnosisFreshness = async () => {
+    if (checkingDiagnosis) return
+    setCheckingDiagnosis(true)
+    setError('')
+    try { setDiagnosisStale(await onCheckDiagnosisFreshness()) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setCheckingDiagnosis(false) }
+  }
+
+  const applyDiagnosis = async () => {
+    if (applyingDiagnosis) return
+    setApplyingDiagnosis(true)
+    setError('')
+    try { await onApplyDiagnosis() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setApplyingDiagnosis(false) }
+  }
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4" aria-busy={starting}>
+      {canReview && <>
+        <div>
+          <h3 className="m-0 text-[14px] font-semibold text-ink">{t('Review workspace changes')}</h3>
+          <p className="mb-0 mt-1.5 text-[12.5px] leading-[1.55] text-ink-secondary">
+            {t('A separate read-only model session reviews staged, unstaged, and untracked text changes, then reports findings with evidence.')}
+          </p>
+        </div>
+        <label className="grid gap-1.5 text-[12.5px] font-medium text-ink">
+          {t('Path (optional)')}
+          <input className={fieldInput} value={path} onChange={(event) => setPath(event.target.value)} placeholder="src/" disabled={starting} />
+        </label>
+        <div className="text-[12px] leading-[1.5] text-ink-muted">
+          {t('The review runs in its own conversation and does not interrupt the source session.')}
+        </div>
+      </>}
+      {reviewContext && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-[9px] border border-line-subtle bg-subtle px-2.5 py-2 text-[12px]">
+            <span className="text-ink-secondary">
+              {stale === undefined
+                ? t('Review evidence freshness has not been checked.')
+                : stale
+                  ? t('Workspace evidence changed after this review started.')
+                  : t('Workspace evidence still matches this review.')}
+            </span>
+            <button type="button" className={btnPlain} disabled={checking} onClick={() => void checkFreshness()}>
+              {checking ? t('Checking…') : t('Check freshness')}
+            </button>
+          </div>
+          <div>
+            <button type="button" className={btnSecondary} disabled={applying || !reviewComplete || stale === true} onClick={() => void applyFindings()}>
+              {applying ? t('Sending findings…') : t('Ask source session to address findings')}
+            </button>
+            {!reviewComplete && <p className="mb-0 mt-1.5 text-[11.5px] text-ink-muted">{t('Wait for the review to finish before sending its findings.')}</p>}
+          </div>
+        </>
+      )}
+      {canDiagnose && (
+        <div className="mt-1 grid gap-2 border-t border-line-subtle pt-4">
+          <div>
+            <h3 className="m-0 text-[14px] font-semibold text-ink">{t('Diagnose task')}</h3>
+            <p className="mb-0 mt-1.5 text-[12.5px] leading-[1.55] text-ink-secondary">
+              {t('Analyze task state, pending requests, recent events, command output, and conversation in a separate read-only session.')}
+            </p>
+          </div>
+          <div className="text-[12px] text-ink-muted">{t('Current task state')}: {t(taskStatus)}</div>
+          <div>
+            <button type="button" className={btnSecondary} disabled={diagnosing} onClick={() => void startDiagnosis()}>
+              {diagnosing ? t('Starting diagnosis…') : t('Analyze task state')}
+            </button>
+          </div>
+        </div>
+      )}
+      {diagnosisContext && (
+        <div className="grid gap-2 rounded-[9px] border border-line-subtle bg-subtle px-2.5 py-2 text-[12px]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-ink-secondary">
+              {diagnosisStale === undefined
+                ? t('Diagnosis evidence freshness has not been checked.')
+                : diagnosisStale
+                  ? t('Task evidence changed after this diagnosis started.')
+                  : t('Task evidence still matches this diagnosis.')}
+            </span>
+            <button type="button" className={btnPlain} disabled={checkingDiagnosis} onClick={() => void checkDiagnosisFreshness()}>
+              {checkingDiagnosis ? t('Checking…') : t('Check freshness')}
+            </button>
+          </div>
+          <div>
+            <button type="button" className={btnSecondary} disabled={applyingDiagnosis || !diagnosisComplete || diagnosisStale === true} onClick={() => void applyDiagnosis()}>
+              {applyingDiagnosis ? t('Sending next steps…') : t('Send next steps to source session')}
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <div className={bannerError} role="alert">{error}</div>}
+      {canReview && <div>
+        <button type="button" className={btnPrimaryCompact} disabled={starting || !activeSession.id} onClick={() => void start()}>
+          <FileSearch size={15} aria-hidden="true" />
+          {starting ? t('Starting review…') : t('Review changes')}
+        </button>
+      </div>}
+    </section>
   )
 }
 

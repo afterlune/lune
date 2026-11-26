@@ -36,7 +36,7 @@ import {
   buildTimeline, objectValue as object, timelineMessages,
   type Activity, type CommandInfo, type HarnessTab, type HistoryAttachment, type HistoryMessage, type LiveAgentRun,
   type LiveToolStep, type ModelFailure, type ModelOption, type OptimisticMessage, type Pending,
-  type RuntimeEvent, type RuntimeState, type SessionSummary, type TimelineEntry,
+  type ReviewContext, type RuntimeEvent, type RuntimeState, type SessionSummary, type TaskDiagnosisContext, type TimelineEntry,
   type UserQuestionDraft,
 } from './harness-types'
 import {
@@ -344,6 +344,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [models, setModels] = useState<ModelOption[]>([])
   const [activeSessionId, setActiveSessionId] = useState('')
   const [activeSession, setActiveSession] = useState<SessionSummary | null>(null)
+  const [reviewContext, setReviewContext] = useState<ReviewContext | null>(null)
+  const [diagnosisContext, setDiagnosisContext] = useState<TaskDiagnosisContext | null>(null)
   const [timeline, setTimeline] = useState<TimelineEntry[]>([])
   const [history, setHistory] = useState<HistoryMessage[]>([])
   const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([])
@@ -412,6 +414,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   const capabilitiesRef = useRef<string[]>([])
   const submissionRetry = useRef<{ key: string; id: string; mode: string } | null>(null)
+  const editResendRetry = useRef<{ key: string; id: string; historyDigest: string; baselineCount: number } | null>(null)
   const columnDrag = useRef<{ side: 'sidebar' | 'harness'; x: number; width: number } | null>(null)
   const clientRef = useRef<RuntimeClient | null>(null)
   const connectionRef = useRef<RuntimeConnection | null>(null)
@@ -897,6 +900,27 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   useEffect(() => { activeSessionIdRef.current = activeSessionId }, [activeSessionId])
   useEffect(() => {
+    if (!activeSessionId) {
+      setReviewContext(null)
+      setDiagnosisContext(null)
+      return
+    }
+    try {
+      const raw = localStorage.getItem(`lune:review:${activeSessionId}`)
+      const parsed = raw ? JSON.parse(raw) as ReviewContext : null
+      setReviewContext(parsed?.reviewSessionId === activeSessionId ? { ...parsed, stale: undefined } : null)
+    } catch {
+      setReviewContext(null)
+    }
+    try {
+      const raw = localStorage.getItem(`lune:diagnosis:${activeSessionId}`)
+      const parsed = raw ? JSON.parse(raw) as TaskDiagnosisContext : null
+      setDiagnosisContext(parsed?.diagnosisSessionId === activeSessionId ? { ...parsed, stale: undefined } : null)
+    } catch {
+      setDiagnosisContext(null)
+    }
+  }, [activeSessionId])
+  useEffect(() => {
     if (!workspaceId || !onReportSessionsRef.current) return
     const mapped: WorkspaceSessionRecord[] = sessions.map((s) => ({
       sessionId: s.id,
@@ -906,9 +930,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       createdAt: Date.parse(s.updatedAt) || Date.now(),
       updatedAt: Date.parse(s.updatedAt) || Date.now(),
       lastOpenedAt: s.id === activeSessionId ? Date.now() : 0,
+      ...(s.id === activeSessionId ? {
+        taskStatus: runtime.task.status,
+        executionId: runtime.task.executionId,
+        queueCount: runtime.queue.length,
+      } : {}),
     }))
     onReportSessionsRef.current(workspaceId, mapped)
-  }, [sessions, workspaceId, activeSessionId])
+  }, [sessions, workspaceId, activeSessionId, runtime.task.status, runtime.task.executionId, runtime.queue.length])
   useEffect(() => {
     if (!connection || !activeSession || activeSession.id !== activeSessionId) return
     if (connection.mode === 'loopback') {
@@ -1810,6 +1839,10 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const trimmed = nextText.trim()
     const targetSessionId = activeSessionId
     if (!client || !activeSession?.id || !targetSessionId || working || connectionStatus !== 'connected' || !has('session.rewind')) return
+    if (!has('turn.replaceHistory')) {
+      setActionError('This Core cannot atomically edit and resend a message. Update Core to continue.')
+      return
+    }
     if (configReloadPending) {
       setActionError('Settings are being applied after the current work finishes. Editing and resending is paused briefly.')
       return
@@ -1833,6 +1866,36 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     setActionError('')
     let submittedOptimisticId = ''
     try {
+      const plan = has('turn.plan') && planMode
+      const retryKey = JSON.stringify([targetSessionId, turns, trimmed, nextAttachments, plan])
+      const previousRetry = editResendRetry.current
+      const retrySubmissionId = previousRetry?.key === retryKey ? previousRetry.id : ''
+      const submitReplacement = (submissionId: string, historyDigest: string) => client.request<{ executionId: string }>('turn.replaceHistory', {
+        sessionId: targetSessionId,
+        submissionId,
+        turns,
+        historyDigest,
+        input: trimmed,
+        mode: 'start_if_idle',
+        ...(plan ? { planMode: true } : {}),
+        ...(nextAttachments.length ? { attachments: nextAttachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
+      })
+      if (retrySubmissionId && previousRetry) {
+        submittedOptimisticId = retrySubmissionId
+        setOptimistic([{
+          id: retrySubmissionId,
+          role: 'user',
+          text: trimmed,
+          baselineCount: previousRetry.baselineCount,
+          sessionId: targetSessionId,
+          attachments: nextAttachments.map((item, index) => ({ ...historyAttachments[index], name: item.name })),
+        }])
+        const submitted = await submitReplacement(retrySubmissionId, previousRetry.historyDigest)
+        setOptimistic((items) => items.map((item) => item.id === retrySubmissionId ? { ...item, executionId: submitted.executionId } : item))
+        if (editResendRetry.current?.id === retrySubmissionId) editResendRetry.current = null
+        void refreshRuntime(client, targetSessionId).catch((error) => setActionError(errorMessage(error)))
+        return
+      }
       let currentRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: targetSessionId }))
       if (runtimeHasPendingWork(currentRuntime)) {
         if (!confirmBusyWork) {
@@ -1877,7 +1940,6 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
       const preview = await client.request<{ removed: number; digest: string }>('session.rewindPreview', { sessionId: targetSessionId, turns })
       if (!preview.digest || preview.removed === 0) throw new Error('Nothing to rewind.')
-      await client.request('session.rewind', { sessionId: targetSessionId, turns, digest: preview.digest })
       streamingExecution.current = undefined
       pendingClearLiveRef.current = false
       streamStore.clear()
@@ -1889,13 +1951,16 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setLiveAgents([])
       setLiveTools([])
       setOptimistic([])
-      const postRewindMessages = (await refreshSessionData(client, targetSessionId)) ?? []
       const attachmentNames = nextAttachments.map((item) => item.name)
       const identity = JSON.stringify([trimmed, attachmentNames])
-      const baselineCount = postRewindMessages.filter((message) => message.role === 'user' && messageIdentity(message) === identity).length
+      const userPositions = history.flatMap((message, index) => message.role === 'user' ? [index] : [])
+      const retainedHistory = preview.removed >= userPositions.length
+        ? []
+        : history.slice(0, userPositions[userPositions.length - preview.removed])
+      const baselineCount = retainedHistory.filter((message) => message.role === 'user' && messageIdentity(message) === identity).length
       const submissionId = crypto.randomUUID()
+      editResendRetry.current = { key: retryKey, id: submissionId, historyDigest: preview.digest, baselineCount }
       submittedOptimisticId = submissionId
-      const plan = has('turn.plan') && planMode
       setOptimistic([{
         id: submissionId,
         role: 'user',
@@ -1904,18 +1969,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         sessionId: targetSessionId,
         attachments: nextAttachments.map((item, index) => ({ ...historyAttachments[index], name: item.name })),
       }])
-      const submitted = await client.request<{ executionId: string }>('turn.submit', {
-        sessionId: targetSessionId,
-        submissionId,
-        input: trimmed,
-        mode: 'start_if_idle',
-        ...(plan ? { planMode: true } : {}),
-        ...(nextAttachments.length ? { attachments: nextAttachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
-      })
+      const submitted = await submitReplacement(submissionId, preview.digest)
       setOptimistic((items) => items.map((item) => item.id === submissionId ? { ...item, executionId: submitted.executionId } : item))
+      if (editResendRetry.current?.id === submissionId) editResendRetry.current = null
       void refreshRuntime(client, targetSessionId).catch((error) => setActionError(errorMessage(error)))
     } catch (error) {
       if (submittedOptimisticId) setOptimistic((items) => items.filter((item) => item.id !== submittedOptimisticId))
+      if (/history changed|preview the edit again|there are no user turns|session_busy|task_paused|session already has active/i.test(errorMessage(error))) editResendRetry.current = null
+      void refreshSessionData(client, targetSessionId).catch(() => undefined)
+      void refreshRuntime(client, targetSessionId).catch(() => undefined)
       setActionError(errorMessage(error))
     } finally {
       setWorking(false)
@@ -2042,6 +2104,235 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     catch (error) { setActionError(errorMessage(error)) }
     finally { setWorking(false) }
   }
+
+  const startWorkspaceReview = async (path = '') => {
+    if (!client || !activeSessionId || !has('review.workspace')) return
+    const sourceSessionId = activeSessionId
+    const sourceExecutionId = latestExecutionId || runtime.task.executionId || ''
+    await sessionAction(async () => {
+      const result = await client.request<{
+        changed: boolean
+        session?: SessionSummary
+        executionId?: string
+        sourceSessionId: string
+        sourceExecutionId?: string
+        path?: string
+        materialsDigest?: string
+      }>('review.start', {
+        sourceSessionId,
+        ...(sourceExecutionId ? { sourceExecutionId } : {}),
+        ...(path.trim() ? { path: path.trim() } : {}),
+      })
+      if (!result.changed || !result.session) {
+        setInfo(t('No text changes to review. Git-ignored and binary files are excluded.'))
+        return
+      }
+      if (!result.materialsDigest) throw new Error('Core did not return a review evidence digest.')
+      if (clientRef.current !== client) return
+      const reviewLink: ReviewContext = {
+        reviewSessionId: result.session.id,
+        executionId: result.executionId,
+        sourceSessionId,
+        ...(sourceExecutionId ? { sourceExecutionId } : {}),
+        path: result.path ?? path.trim(),
+        materialsDigest: result.materialsDigest,
+        stale: false,
+      }
+      try { localStorage.setItem(`lune:review:${result.session.id}`, JSON.stringify(reviewLink)) } catch { /* freshness links remain available for this view */ }
+      setReviewContext(reviewLink)
+      setSearch('')
+      activeSessionRef.current = result.session
+      setActiveSession(result.session)
+      setSessions((items) => {
+        const next = [result.session!, ...items.filter((item) => item.id !== result.session!.id)]
+        sessionsRef.current = next
+        return next
+      })
+      setActiveSessionId(result.session.id)
+      setListRevision((revision) => revision + 1)
+      if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+      setInfo(t('Review started in a separate read-only session.'))
+    })
+  }
+
+  const startTaskDiagnosis = async () => {
+    if (!client || !activeSessionId || !has('task.diagnose')) return
+    const sourceSessionId = activeSessionId
+    const sourceExecutionId = latestExecutionId || runtime.task.executionId || ''
+    await sessionAction(async () => {
+      const result = await client.request<{
+        session: SessionSummary
+        executionId: string
+        sourceSessionId: string
+        sourceExecutionId?: string
+        evidenceDigest: string
+      }>('diagnosis.start', {
+        sourceSessionId,
+        ...(sourceExecutionId ? { sourceExecutionId } : {}),
+      })
+      if (!result.evidenceDigest) throw new Error('Core did not return a diagnosis evidence digest.')
+      if (clientRef.current !== client) return
+      const link: TaskDiagnosisContext = {
+        diagnosisSessionId: result.session.id,
+        executionId: result.executionId,
+        sourceSessionId,
+        ...(sourceExecutionId ? { sourceExecutionId } : {}),
+        evidenceDigest: result.evidenceDigest,
+        stale: false,
+      }
+      try { localStorage.setItem(`lune:diagnosis:${result.session.id}`, JSON.stringify(link)) } catch { /* freshness link remains available for this view */ }
+      setDiagnosisContext(link)
+      setSearch('')
+      activeSessionRef.current = result.session
+      setActiveSession(result.session)
+      setSessions((items) => {
+        const next = [result.session, ...items.filter((item) => item.id !== result.session.id)]
+        sessionsRef.current = next
+        return next
+      })
+      setActiveSessionId(result.session.id)
+      setListRevision((revision) => revision + 1)
+      if (workspaceIdRef.current) onSyncSessionsRef.current?.(workspaceIdRef.current)
+      setInfo(t('Task diagnosis started in a separate read-only session.'))
+    })
+  }
+
+  const checkWorkspaceReview = async () => {
+    const target = reviewContext
+    if (!client || !target || target.reviewSessionId !== activeSessionId) throw new Error('Open a review session before checking evidence freshness.')
+    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', {
+      sessionId: target.reviewSessionId,
+      ...(target.executionId ? { executionId: target.executionId } : {}),
+      sourceSessionId: target.sourceSessionId,
+      path: target.path,
+      materialsDigest: target.materialsDigest,
+    })
+    setReviewContext((current) => {
+      if (!current || current.reviewSessionId !== target.reviewSessionId) return current
+      const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
+      try { localStorage.setItem(`lune:review:${target.reviewSessionId}`, JSON.stringify(updated)) } catch { /* keep the in-memory result */ }
+      return updated
+    })
+    return result.stale
+  }
+
+  const checkTaskDiagnosis = async () => {
+    const target = diagnosisContext
+    if (!client || !target || target.diagnosisSessionId !== activeSessionId) throw new Error('Open a task diagnosis session before checking evidence freshness.')
+    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', {
+      sessionId: target.diagnosisSessionId,
+      ...(target.executionId ? { executionId: target.executionId } : {}),
+      sourceSessionId: target.sourceSessionId,
+      ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
+      evidenceDigest: target.evidenceDigest,
+    })
+    setDiagnosisContext((current) => {
+      if (!current || current.diagnosisSessionId !== target.diagnosisSessionId) return current
+      const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
+      try { localStorage.setItem(`lune:diagnosis:${target.diagnosisSessionId}`, JSON.stringify(updated)) } catch { /* keep the in-memory result */ }
+      return updated
+    })
+    return result.stale
+  }
+
+  const applyTaskDiagnosis = async () => {
+    const target = diagnosisContext
+    if (!client || !target || target.diagnosisSessionId !== activeSessionId) throw new Error('Open a task diagnosis session before handing off its next steps.')
+    await sessionAction(async () => {
+      const diagnosis = await client.request<{ stale: boolean; runtime: RuntimeState; history: unknown; turnResult?: { status: string } | null }>('diagnosis.get', {
+        sessionId: target.diagnosisSessionId,
+        ...(target.executionId ? { executionId: target.executionId } : {}),
+        sourceSessionId: target.sourceSessionId,
+        ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
+        evidenceDigest: target.evidenceDigest,
+      })
+      setDiagnosisContext((current) => current?.diagnosisSessionId === target.diagnosisSessionId ? { ...current, stale: diagnosis.stale, status: diagnosis.turnResult?.status ?? current.status } : current)
+      if (diagnosis.stale) throw new Error(t('Task evidence changed after this diagnosis started. Run a fresh diagnosis before handing off its next steps.'))
+      if (diagnosis.turnResult?.status !== 'completed' && diagnosis.runtime.task.status !== 'completed') throw new Error(t('Wait for the diagnosis to finish before sending its next steps.'))
+      const report = timelineMessages(buildTimeline(diagnosis.history)).filter((message) => message.role === 'assistant').at(-1)?.text.trim()
+      if (!report) throw new Error(t('The diagnosis has not produced a report yet.'))
+      const sourceRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: target.sourceSessionId }))
+      if (sourceRuntime.task.status === 'paused') throw new Error(t('Resume the source task before sending it diagnosis next steps.'))
+      const mode = runtimeHasPendingWork(sourceRuntime) ? 'queue_input' : 'start_if_idle'
+      await client.request('turn.submit', {
+        sessionId: target.sourceSessionId,
+        submissionId: crypto.randomUUID(),
+        input: `Independent diagnosis from session ${target.diagnosisSessionId}:\n\n${report}\n\nUse the observed facts and useful next steps that still apply to this task. Continue the work, verify any changes, and report what you did. Treat unresolved hypotheses as questions, not established facts.`,
+        mode,
+      })
+      setActiveSessionId(target.sourceSessionId)
+      setInfo(t(mode === 'queue_input' ? 'Diagnosis next steps were queued in the source session.' : 'Diagnosis next steps were sent to the source session.'))
+    })
+  }
+
+  const applyReviewFindings = async () => {
+    const target = reviewContext
+    if (!client || !target || target.reviewSessionId !== activeSessionId) throw new Error('Open a review session before handing off findings.')
+    await sessionAction(async () => {
+      const review = await client.request<{ stale: boolean; runtime: RuntimeState; history: unknown; turnResult?: { status: string } | null }>('review.get', {
+        sessionId: target.reviewSessionId,
+        ...(target.executionId ? { executionId: target.executionId } : {}),
+        sourceSessionId: target.sourceSessionId,
+        path: target.path,
+        materialsDigest: target.materialsDigest,
+      })
+      setReviewContext((current) => current?.reviewSessionId === target.reviewSessionId ? { ...current, stale: review.stale, status: review.turnResult?.status ?? current.status } : current)
+      if (review.stale) throw new Error(t('Workspace evidence changed after this review started. Run a fresh review before handing off these findings.'))
+      if (review.turnResult?.status !== 'completed' && review.runtime.task.status !== 'completed') throw new Error(t('Wait for the review to finish before sending its findings.'))
+      const report = timelineMessages(buildTimeline(review.history)).filter((message) => message.role === 'assistant').at(-1)?.text.trim()
+      if (!report) throw new Error(t('The review has not produced a report yet.'))
+
+      const sourceRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: target.sourceSessionId }))
+      if (sourceRuntime.task.status === 'paused') throw new Error(t('Resume the source task before sending it review findings.'))
+      const mode = runtimeHasPendingWork(sourceRuntime) ? 'queue_input' : 'start_if_idle'
+      await client.request('turn.submit', {
+        sessionId: target.sourceSessionId,
+        submissionId: crypto.randomUUID(),
+        input: `Review findings from independent session ${target.reviewSessionId}:\n\n${report}\n\nAddress the confirmed findings that still apply. Recheck the relevant code and report the changes and validation results. Treat unverified items as questions, not defects.`,
+        mode,
+      })
+      setActiveSessionId(target.sourceSessionId)
+      setInfo(t(mode === 'queue_input' ? 'Review findings were queued in the source session.' : 'Review findings were sent to the source session.'))
+    })
+  }
+
+  useEffect(() => {
+    const target = reviewContext
+    if (!client || !target || target.reviewSessionId !== activeSessionId) return
+    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', {
+      sessionId: target.reviewSessionId,
+      ...(target.executionId ? { executionId: target.executionId } : {}),
+      sourceSessionId: target.sourceSessionId,
+      path: target.path,
+      materialsDigest: target.materialsDigest,
+    }).then((result) => {
+      setReviewContext((current) => {
+        if (!current || current.reviewSessionId !== target.reviewSessionId) return current
+        const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
+        try { localStorage.setItem(`lune:review:${target.reviewSessionId}`, JSON.stringify(updated)) } catch { /* keep the in-memory result */ }
+        return updated
+      })
+    }).catch((error) => setActionError(errorMessage(error)))
+  }, [client, activeSessionId, reviewContext?.reviewSessionId, reviewContext?.sourceSessionId, reviewContext?.path, reviewContext?.materialsDigest])
+
+  useEffect(() => {
+    const target = diagnosisContext
+    if (!client || !target || target.diagnosisSessionId !== activeSessionId) return
+    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', {
+      sessionId: target.diagnosisSessionId,
+      ...(target.executionId ? { executionId: target.executionId } : {}),
+      sourceSessionId: target.sourceSessionId,
+      ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
+      evidenceDigest: target.evidenceDigest,
+    }).then((result) => {
+      setDiagnosisContext((current) => {
+        if (!current || current.diagnosisSessionId !== target.diagnosisSessionId) return current
+        const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
+        try { localStorage.setItem(`lune:diagnosis:${target.diagnosisSessionId}`, JSON.stringify(updated)) } catch { /* keep the in-memory result */ }
+        return updated
+      })
+    }).catch((error) => setActionError(errorMessage(error)))
+  }, [client, activeSessionId, diagnosisContext?.diagnosisSessionId, diagnosisContext?.sourceSessionId, diagnosisContext?.sourceExecutionId, diagnosisContext?.evidenceDigest])
 
   const chooseSession = (id: string) => {
     if (!client || working) return
@@ -2320,6 +2611,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       case '/files':
         if (args) setRequestedFile(args)
         openHarnessTab('files')
+        return
+      case '/review':
+        await startWorkspaceReview(args)
+        return
+      case '/diagnose':
+        await startTaskDiagnosis()
         return
       case '/agents':
         openAgentsInspector(args)
@@ -3256,18 +3553,28 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const useDesktopTree = Boolean(!managed && desktop && connection?.mode !== 'remote')
 
   const webTreeItems: WorkspaceTreeItem[] = useWebTree
-    ? (managed!.workspaces?.length ? managed!.workspaces : [managed!.workspace]).map((w) => ({
-        id: w.id,
-        path: w.path,
-        name: w.name || w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
-        activity: managed!.activityByWorkspace?.[w.id],
-        sessions: (managed!.workspaceSessions?.[w.id] ?? w.sessions ?? []).map((s) => ({
-          id: s.sessionId,
-          title: s.title,
-          archived: s.archived,
-          updatedAt: s.updatedAt,
-        })),
-      }))
+    ? (managed!.workspaces?.length ? managed!.workspaces : [managed!.workspace]).map((w) => {
+        const records = managed!.workspaceSessions?.[w.id] ?? w.sessions ?? []
+        const activity = managed!.activityByWorkspace?.[w.id]
+          ?? (records.some((session) => session.taskStatus === 'running') ? 'Running'
+            : records.some((session) => session.taskStatus === 'paused') ? 'Paused'
+              : records.some((session) => session.taskStatus === 'queued') ? 'Queued' : '')
+        return {
+          id: w.id,
+          path: w.path,
+          name: w.name || w.path.split(/[\\/]/).filter(Boolean).at(-1) || w.path,
+          activity,
+          sessions: records.map((s) => ({
+            id: s.sessionId,
+            title: s.title,
+            archived: s.archived,
+            updatedAt: s.updatedAt,
+            taskStatus: s.taskStatus,
+            executionId: s.executionId,
+            queueCount: s.queueCount,
+          })),
+        }
+      })
     : []
 
   const desktopTreeItems: WorkspaceTreeItem[] = useDesktopTree
@@ -3281,6 +3588,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               title: s.title,
               archived: s.archived,
               updatedAt: s.updatedAt,
+              taskStatus: s.taskStatus,
+              executionId: s.executionId,
+              queueCount: s.queueCount,
             })),
           }))
         : savedConnections
@@ -4346,7 +4656,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                     streamStore={streamStore}
                     hasActiveStream={hasActiveStream}
                     canImplementPlan={has('turn.implementPlan')}
-                    canRewind={has('session.rewind')}
+                    canRewind={has('session.rewind') && has('turn.replaceHistory')}
                     sessionBusy={sessionBusy}
                     working={working}
                     latestExecutionId={latestExecutionId}
@@ -4527,6 +4837,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           agents={agentSnapshots}
           selectedAgentId={selectedAgentId}
           onSelectAgent={setSelectedAgentId}
+          onStartReview={startWorkspaceReview}
+          onStartDiagnosis={startTaskDiagnosis}
+          onApplyReviewFindings={applyReviewFindings}
+          reviewContext={reviewContext?.reviewSessionId === activeSession?.id ? reviewContext ?? undefined : undefined}
+          onCheckReviewFreshness={checkWorkspaceReview}
+          diagnosisContext={diagnosisContext?.diagnosisSessionId === activeSession?.id ? diagnosisContext ?? undefined : undefined}
+          onCheckDiagnosisFreshness={checkTaskDiagnosis}
+          onApplyDiagnosis={applyTaskDiagnosis}
           onRefreshState={async () => {
             if (client && activeSessionId) await refreshSessionData(client, activeSessionId)
           }}

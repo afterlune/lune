@@ -42,6 +42,9 @@ export type WorkspaceSessionRecord = {
   createdAt: number
   updatedAt: number
   lastOpenedAt: number
+  taskStatus?: string
+  executionId?: string
+  queueCount?: number
 }
 
 export type WorkspaceRecord = {
