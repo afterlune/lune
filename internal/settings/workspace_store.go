@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"errors"
@@ -427,22 +428,40 @@ func (s *Store) ListWorkspacesWithSessions(openOnly bool) ([]WorkspaceRecord, er
 // SyncWorkspaceSessions replaces/updates the session index for a workspace within a transaction.
 // Existing created_at (when earlier) and last_opened_at values are preserved across syncs.
 func (s *Store) SyncWorkspaceSessions(workspaceID string, sessions []WorkspaceSessionRecord) error {
+	return s.SyncWorkspaceSessionsFrom(context.Background(), workspaceID, func(context.Context) ([]WorkspaceSessionRecord, error) {
+		return sessions, nil
+	})
+}
+
+// SyncWorkspaceSessionsFrom serializes the source snapshot and index update
+// across processes that share this settings database. The loader must not call
+// back into this Store because the transaction holds its SQLite write lock.
+func (s *Store) SyncWorkspaceSessionsFrom(ctx context.Context, workspaceID string, load func(context.Context) ([]WorkspaceSessionRecord, error)) error {
 	wsID := strings.TrimSpace(workspaceID)
-	if wsID == "" {
-		return errors.New("workspace id is required")
+	if ctx == nil || wsID == "" || load == nil {
+		return errors.New("context, workspace id, and session loader are required")
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var exists int
-	if err := tx.QueryRow(`SELECT 1 FROM workspaces WHERE id = ?`, wsID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	// Acquire SQLite's cross-process writer lock before reading the source
+	// snapshot. No workspace timestamp is changed by this no-op update.
+	result, err := tx.ExecContext(ctx, `UPDATE workspaces SET updated_at = updated_at WHERE id = ?`, wsID)
+	if err != nil {
+		return fmt.Errorf("lock workspace session sync: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("check workspace session sync lock: %w", err)
+	} else if affected == 0 {
 		return errors.New("workspace not found")
-	} else if err != nil {
-		return err
+	}
+	sessions, err := load(ctx)
+	if err != nil {
+		return fmt.Errorf("load workspace session snapshot: %w", err)
 	}
 
 	now := time.Now().UTC().UnixMilli()

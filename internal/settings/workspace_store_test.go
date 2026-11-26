@@ -1,10 +1,120 @@
 package settings
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSyncWorkspaceSessionsFromSerializesAcrossStores(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	firstStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstStore.Close()
+	secondStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondStore.Close()
+	workspace, err := firstStore.EnsureWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstLoaderEntered := make(chan struct{})
+	secondLoaderEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	released := false
+	release := func() {
+		if !released {
+			close(releaseFirst)
+			released = true
+		}
+	}
+	defer release()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- firstStore.SyncWorkspaceSessionsFrom(t.Context(), workspace.ID, func(context.Context) ([]WorkspaceSessionRecord, error) {
+			close(firstLoaderEntered)
+			<-releaseFirst
+			return []WorkspaceSessionRecord{{
+				SessionID: "older-snapshot", WorkspaceID: workspace.ID, Title: "older", CreatedAt: 1, UpdatedAt: 1,
+			}}, nil
+		})
+	}()
+	<-firstLoaderEntered
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- secondStore.SyncWorkspaceSessionsFrom(t.Context(), workspace.ID, func(context.Context) ([]WorkspaceSessionRecord, error) {
+			close(secondLoaderEntered)
+			return []WorkspaceSessionRecord{{
+				SessionID: "newer-snapshot", WorkspaceID: workspace.ID, Title: "newer", CreatedAt: 2, UpdatedAt: 2,
+			}}, nil
+		})
+	}()
+	<-secondStarted
+
+	secondLoadedEarly := false
+	select {
+	case <-secondLoaderEntered:
+		secondLoadedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if secondLoadedEarly {
+		t.Fatal("second snapshot loader ran before the first sync committed")
+	}
+
+	saved, err := firstStore.ListWorkspaceSessions(workspace.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || saved[0].SessionID != "newer-snapshot" {
+		t.Fatalf("final sessions = %+v, want only newer snapshot", saved)
+	}
+}
+
+func TestSyncWorkspaceSessionsFromLoaderFailurePreservesIndex(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	workspace, err := store.EnsureWorkspace(t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkspaceSessions(workspace.ID, []WorkspaceSessionRecord{{
+		SessionID: "existing", WorkspaceID: workspace.ID, Title: "keep", CreatedAt: 1, UpdatedAt: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncWorkspaceSessionsFrom(t.Context(), workspace.ID, func(context.Context) ([]WorkspaceSessionRecord, error) {
+		return nil, errors.New("snapshot failed")
+	}); err == nil {
+		t.Fatal("expected snapshot failure")
+	}
+	saved, err := store.ListWorkspaceSessions(workspace.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || saved[0].SessionID != "existing" {
+		t.Fatalf("failed sync changed existing index: %+v", saved)
+	}
+}
 
 func TestWorkspaceStorePersistenceForeignKeysAndOrdering(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))

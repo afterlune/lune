@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Folder, FolderOpen, KeyRound, Plus, Settings, ShieldAlert, X } from 'lucide-react'
 import type { WorkspaceSessionRecord } from '../shared/desktop-settings'
 import type { ThemePreference } from '../shared/theme'
@@ -25,6 +25,7 @@ interface Workspace {
   lastOpenedAt?: number
   configStale?: boolean
   configError?: string
+  recoveryRequired?: boolean
   sessions?: WorkspaceSessionRecord[]
 }
 interface WorkspacesResponse {
@@ -314,8 +315,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     }
   }
 
-  const retryWorkspaceConfig = async (event: MouseEvent, id: string, path: string) => {
-    event.stopPropagation()
+  const retryWorkspaceConfig = async (id: string, path: string) => {
     try {
       await localRequest(credential, 'reload-workspace', { id })
       setPairingError('')
@@ -323,6 +323,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
       setWorkspaceRevision((revision) => revision + 1)
     } catch (err) {
       setPairingError(err instanceof Error ? err.message : String(err))
+      await syncWorkspaces(credential, path).catch(() => undefined)
     }
   }
 
@@ -433,20 +434,24 @@ function Workbench({ theme }: { theme: ThemePreference }) {
                   {t(activity[item.id])}
                 </small>
               )}
-              {item.configStale && (
+              {item.recoveryRequired ? (
+                <small className="workspace-config-status" title={item.configError || t('Workspace could not be reopened')}>
+                  {t('Workspace unavailable')}
+                </small>
+              ) : item.configStale && (
                 <small className="workspace-config-status" title={item.configError || t('Configuration will apply when this workspace is idle.')}>
                   {t('Settings pending')}
                 </small>
               )}
             </button>
-            {item.configStale && item.configError && (
+            {(item.recoveryRequired || item.configStale && item.configError) && (
               <button
                 type="button"
                 className="workspace-config-retry mr-1 shrink-0 rounded px-1.5 py-1 text-[10px] text-ink-secondary hover:bg-active hover:text-ink"
                 title={item.configError}
-                onClick={(event) => void retryWorkspaceConfig(event, item.id, item.path)}
+                onClick={(event) => { event.stopPropagation(); void retryWorkspaceConfig(item.id, item.path) }}
               >
-                {t('Retry settings')}
+                {t(item.recoveryRequired ? 'Retry workspace' : 'Retry settings')}
               </button>
             )}
             <button
@@ -473,7 +478,8 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     </section>
   )
 
-  const activeWorkspaces = remoteOverride ? [] : workspaces
+  const activeWorkspaces = remoteOverride ? [] : workspaces.filter((workspace) => !workspace.recoveryRequired)
+  const selectedRecovery = remoteOverride ? undefined : workspaces.find((workspace) => workspace.id === selected && workspace.recoveryRequired)
 
   return <>
     {remoteOverride && (
@@ -539,7 +545,45 @@ function Workbench({ theme }: { theme: ThemePreference }) {
       </div>
     ))}
 
-    {!remoteOverride && activeWorkspaces.length === 0 && (
+    {!remoteOverride && selectedRecovery && (
+      <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+          <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>
+          <div className="sidebar-bottom mt-2 pt-2">
+            <button
+              type="button"
+              className="settings-button flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:bg-hover"
+              onClick={() => setSetupSettingsOpen(true)}
+            >
+              <Settings size={15} /><span>{t('Settings')}</span>
+            </button>
+          </div>
+        </aside>
+        <main className="chat-area flex min-h-0 min-w-0 flex-col bg-canvas">
+          <div className="empty-stage m-auto flex max-w-[560px] flex-col items-center px-6 py-10 text-center">
+            <h1 className="empty-headline m-0 mb-4 text-[26px] font-semibold tracking-[-0.025em] text-ink">
+              {t('Workspace could not be reopened')}
+            </h1>
+            <p className="connect-intro m-0 mb-3 text-[13.5px] leading-[1.6] text-ink-secondary">
+              {t('Fix the underlying issue, then retry opening this workspace.')}
+            </p>
+            {selectedRecovery.configError && (
+              <p className="form-error mb-5 max-w-full break-words text-[12px]" role="alert">{selectedRecovery.configError}</p>
+            )}
+            <div className="suggestion-row flex flex-wrap items-center justify-center gap-2.5">
+              <button type="button" className={btnPrimaryCompact} onClick={() => void retryWorkspaceConfig(selectedRecovery.id, selectedRecovery.path)}>
+                {t('Retry workspace')}
+              </button>
+              <button type="button" className={btnSecondary} onClick={() => setSetupSettingsOpen(true)}>
+                <Settings size={14} />{t('Open Settings')}
+              </button>
+            </div>
+          </div>
+        </main>
+      </div>
+    )}
+
+    {!remoteOverride && workspaces.length === 0 && (
       <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
         <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
           <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>

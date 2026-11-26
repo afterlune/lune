@@ -221,6 +221,7 @@ func runWeb(args []string, stdout, stderr io.Writer) (runErr error) {
 				fmt.Fprintln(stderr, "No model provider configured in settings DB yet; open Settings in Web UI to configure providers and models.")
 				break
 			} else if openErr != nil {
+				workspaces.recordRecovery(rec.ID, rec.Path, openErr)
 				fmt.Fprintf(stderr, "Failed to restore workspace %s: %v\n", rec.Path, openErr)
 			}
 		}

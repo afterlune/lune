@@ -43,12 +43,18 @@ type webWorkspaceEntry struct {
 	stale bool
 }
 
+type webWorkspaceRecovery struct {
+	path  string
+	error string
+}
+
 type webWorkspaces struct {
 	token       string
 	diagnostics io.Writer
 	initial     string
 	store       *settings.Store
 	sharedState bool
+	newCore     func(core.Config) (*core.Core, error)
 
 	lifecycleMu     sync.Mutex
 	mu              sync.Mutex
@@ -57,21 +63,23 @@ type webWorkspaces struct {
 	pendingInitial  string
 	order           []string
 	entries         map[string]*webWorkspaceEntry
+	recoveries      map[string]webWorkspaceRecovery
 	activeTerminals map[ptyterm.Session]string
 	idleReloads     map[string]bool
 }
 
 type webWorkspaceView struct {
-	ID            string                            `json:"id"`
-	Path          string                            `json:"path"`
-	Name          string                            `json:"name"`
-	LastSessionID string                            `json:"lastSessionId"`
-	CreatedAt     int64                             `json:"createdAt"`
-	UpdatedAt     int64                             `json:"updatedAt"`
-	LastOpenedAt  int64                             `json:"lastOpenedAt"`
-	Sessions      []settings.WorkspaceSessionRecord `json:"sessions"`
-	ConfigStale   bool                              `json:"configStale,omitempty"`
-	ConfigError   string                            `json:"configError,omitempty"`
+	ID               string                            `json:"id"`
+	Path             string                            `json:"path"`
+	Name             string                            `json:"name"`
+	LastSessionID    string                            `json:"lastSessionId"`
+	CreatedAt        int64                             `json:"createdAt"`
+	UpdatedAt        int64                             `json:"updatedAt"`
+	LastOpenedAt     int64                             `json:"lastOpenedAt"`
+	Sessions         []settings.WorkspaceSessionRecord `json:"sessions"`
+	ConfigStale      bool                              `json:"configStale,omitempty"`
+	ConfigError      string                            `json:"configError,omitempty"`
+	RecoveryRequired bool                              `json:"recoveryRequired,omitempty"`
 }
 
 func coreHasPendingWork(ctx context.Context, client *core.Core) (bool, error) {
@@ -95,6 +103,28 @@ func workspaceHasPendingWork(client *core.Core) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return coreHasPendingWork(ctx, client)
+}
+
+func (s *webWorkspaces) recordRecovery(workspaceID, path string, err error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return
+	}
+	message := "workspace could not be reopened"
+	if err != nil {
+		message = err.Error()
+	}
+	s.mu.Lock()
+	if s.recoveries == nil {
+		s.recoveries = make(map[string]webWorkspaceRecovery)
+	}
+	s.recoveries[workspaceID] = webWorkspaceRecovery{path: path, error: message}
+	s.mu.Unlock()
+}
+
+func (s *webWorkspaces) clearRecovery(workspaceID string) {
+	s.mu.Lock()
+	delete(s.recoveries, workspaceID)
+	s.mu.Unlock()
 }
 
 func (s *webWorkspaces) open(path string) (core.Workspace, error) {
@@ -154,6 +184,7 @@ func (s *webWorkspaces) openLockedWithProject(path string, touch bool, override 
 		}
 		if os.SameFile(existing.info, info) {
 			ws := existing.workspace
+			delete(s.recoveries, ws.ID)
 			s.mu.Unlock()
 			if touch {
 				_ = s.store.SelectWorkspace(ws.ID)
@@ -212,7 +243,11 @@ func (s *webWorkspaces) openLockedWithProject(path string, touch bool, override 
 		ProjectConfig:         &projectConfig,
 		CommandToolchainPaths: toolchainRoots,
 	}
-	client, err := core.New(coreCfg)
+	newCore := s.newCore
+	if newCore == nil {
+		newCore = core.New
+	}
+	client, err := newCore(coreCfg)
 	if err != nil {
 		return core.Workspace{}, nil, err
 	}
@@ -253,6 +288,7 @@ func (s *webWorkspaces) openLockedWithProject(path string, touch bool, override 
 		s.entries = make(map[string]*webWorkspaceEntry)
 	}
 	s.entries[ws.ID] = entry
+	delete(s.recoveries, ws.ID)
 	s.order = append(s.order, ws.ID)
 	if touch || s.initial == "" {
 		s.initial = ws.ID
@@ -271,51 +307,49 @@ func (s *webWorkspaces) syncEntrySessions(ctx context.Context, entry *webWorkspa
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var sessions []core.Session
-	const pageSize = 100
-	for offset := 0; ; offset += pageSize {
-		page, err := entry.core.ListSessionPage(syncCtx, offset, pageSize, true)
+	var taskBySession map[string]core.SessionTaskSnapshot
+	var syncedRecords []settings.WorkspaceSessionRecord
+	err := s.store.SyncWorkspaceSessionsFrom(syncCtx, entry.workspace.ID, func(snapshotCtx context.Context) ([]settings.WorkspaceSessionRecord, error) {
+		sessions, err := entry.core.ListSessionIndex(snapshotCtx, true)
 		if err != nil {
 			return nil, err
 		}
-		sessions = append(sessions, page...)
-		if len(page) < pageSize {
-			break
+		taskSnapshots, err := entry.core.ListSessionTaskSnapshots(snapshotCtx)
+		if err != nil {
+			return nil, err
 		}
-	}
-	taskSnapshots, err := entry.core.ListSessionTaskSnapshots(syncCtx)
+		taskBySession = make(map[string]core.SessionTaskSnapshot, len(taskSnapshots))
+		for _, snapshot := range taskSnapshots {
+			taskBySession[snapshot.SessionID] = snapshot
+		}
+		records := make([]settings.WorkspaceSessionRecord, 0, len(sessions))
+		for _, session := range sessions {
+			var updatedMs int64
+			if !session.UpdatedAt.IsZero() {
+				updatedMs = session.UpdatedAt.UTC().UnixMilli()
+			}
+			record := settings.WorkspaceSessionRecord{
+				SessionID:   session.ID,
+				WorkspaceID: entry.workspace.ID,
+				Title:       session.Title,
+				Archived:    session.Archived,
+				CreatedAt:   updatedMs,
+				UpdatedAt:   updatedMs,
+			}
+			if task, found := taskBySession[session.ID]; found {
+				record.TaskStatus, record.ExecutionID, record.QueueCount = string(task.Status), task.ExecutionID, task.QueueCount
+			}
+			records = append(records, record)
+		}
+		syncedRecords = records
+		return records, nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	taskBySession := make(map[string]core.SessionTaskSnapshot, len(taskSnapshots))
-	for _, snapshot := range taskSnapshots {
-		taskBySession[snapshot.SessionID] = snapshot
-	}
-	records := make([]settings.WorkspaceSessionRecord, 0, len(sessions))
-	for _, sess := range sessions {
-		var updatedMs int64
-		if !sess.UpdatedAt.IsZero() {
-			updatedMs = sess.UpdatedAt.UTC().UnixMilli()
-		}
-		record := settings.WorkspaceSessionRecord{
-			SessionID:   sess.ID,
-			WorkspaceID: entry.workspace.ID,
-			Title:       sess.Title,
-			Archived:    sess.Archived,
-			CreatedAt:   updatedMs,
-			UpdatedAt:   updatedMs,
-		}
-		if task, found := taskBySession[sess.ID]; found {
-			record.TaskStatus, record.ExecutionID, record.QueueCount = string(task.Status), task.ExecutionID, task.QueueCount
-		}
-		records = append(records, record)
-	}
-	if err := s.store.SyncWorkspaceSessions(entry.workspace.ID, records); err != nil {
 		return nil, err
 	}
 	saved, err := s.store.ListWorkspaceSessions(entry.workspace.ID, true)
 	if err != nil {
-		return records, nil
+		return syncedRecords, nil
 	}
 	if saved == nil {
 		saved = []settings.WorkspaceSessionRecord{}
@@ -370,7 +404,20 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error
 	s.mu.Lock()
 	entry := s.entries[id]
 	if entry == nil {
+		_, recoverable := s.recoveries[id]
 		s.mu.Unlock()
+		if recoverable && persistClose && s.store != nil {
+			if err := s.store.CloseWorkspace(id); err != nil {
+				return err
+			}
+			s.mu.Lock()
+			delete(s.recoveries, id)
+			if s.initial == id {
+				s.initial = ""
+			}
+			s.mu.Unlock()
+			return nil
+		}
 		return errors.New("workspace not found")
 	}
 	s.mu.Unlock()
@@ -604,7 +651,9 @@ func (s *webWorkspaces) reloadWorkspaceEntryLocked(entry *webWorkspaceEntry) err
 	restorePrevious := func(cause error) error {
 		_, restored, restoreErr := s.openLockedWithProject(entry.workspace.Path, false, &previous)
 		if restoreErr != nil {
-			return fmt.Errorf("workspace reload failed (%v); previous configuration restore failed (%w)", cause, restoreErr)
+			combined := fmt.Errorf("workspace reload failed (%v); previous configuration restore failed (%w)", cause, restoreErr)
+			s.recordRecovery(entry.workspace.ID, entry.workspace.Path, combined)
+			return combined
 		}
 		s.mu.Lock()
 		restored.stale = true
@@ -719,11 +768,9 @@ func (s *webWorkspaces) listOpened() []core.Workspace {
 
 func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceView {
 	opened := s.listOpened()
-	if len(opened) == 0 {
-		return []webWorkspaceView{}
-	}
 	s.mu.Lock()
 	entries := make(map[string]*webWorkspaceEntry, len(s.entries))
+	recoveries := make(map[string]webWorkspaceRecovery, len(s.recoveries))
 	type configStatus struct {
 		stale bool
 		err   string
@@ -733,16 +780,21 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 		entries[id] = entry
 		configStatuses[id] = configStatus{stale: entry.stale, err: entry.reloadError}
 	}
+	for id, recovery := range s.recoveries {
+		recoveries[id] = recovery
+	}
 	s.mu.Unlock()
-	byID := make(map[string]settings.WorkspaceRecord)
+	var records []settings.WorkspaceRecord
 	if s.store != nil {
 		if recs, err := s.store.ListWorkspacesWithSessions(true); err == nil {
-			for _, rec := range recs {
-				byID[rec.ID] = rec
-			}
+			records = recs
 		}
 	}
-	views := make([]webWorkspaceView, 0, len(opened))
+	byID := make(map[string]settings.WorkspaceRecord, len(records))
+	for _, rec := range records {
+		byID[rec.ID] = rec
+	}
+	views := make([]webWorkspaceView, 0, len(opened)+len(recoveries))
 	for _, ws := range opened {
 		if rec, ok := byID[ws.ID]; ok {
 			sessions := rec.Sessions
@@ -767,6 +819,31 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 			continue
 		}
 		views = append(views, s.workspaceView(ws))
+	}
+	for _, rec := range records {
+		if entries[rec.ID] != nil {
+			continue
+		}
+		recovery, ok := recoveries[rec.ID]
+		if !ok {
+			continue
+		}
+		path := recovery.path
+		if path == "" {
+			path = rec.Path
+		}
+		sessions := rec.Sessions
+		if sessions == nil {
+			sessions = []settings.WorkspaceSessionRecord{}
+		}
+		views = append(views, webWorkspaceView{
+			ID: rec.ID, Path: path, Name: rec.Name, LastSessionID: rec.LastSessionID,
+			CreatedAt: rec.CreatedAt, UpdatedAt: rec.UpdatedAt, LastOpenedAt: rec.LastOpenedAt,
+			Sessions: sessions, ConfigError: recovery.error, RecoveryRequired: true,
+		})
+	}
+	if len(views) == 0 {
+		return []webWorkspaceView{}
 	}
 	type taskSnapshotResult struct {
 		workspaceID string
@@ -839,8 +916,10 @@ func (s *webWorkspaces) reloadWorkspace(id string) error {
 		}
 		_, entry, err = s.openLocked(record.Path, true)
 		if err != nil {
+			s.recordRecovery(record.ID, record.Path, err)
 			return err
 		}
+		s.clearRecovery(record.ID)
 		if s.store != nil {
 			_, _ = s.syncEntrySessions(context.Background(), entry)
 		}
@@ -987,11 +1066,12 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 	case "/_lune/workspaces/select":
 		s.mu.Lock()
 		entry := s.entries[input.ID]
-		if entry != nil {
+		_, recoverable := s.recoveries[input.ID]
+		if entry != nil || recoverable {
 			s.initial = input.ID
 		}
 		s.mu.Unlock()
-		if entry == nil {
+		if entry == nil && !recoverable {
 			err = errors.New("workspace not found")
 		} else if s.store != nil {
 			err = s.store.SelectWorkspace(input.ID)

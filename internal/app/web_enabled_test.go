@@ -5,6 +5,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -315,7 +316,77 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 	} else if entry := ws.entries[opened[0].ID]; !entry.stale || entry.reloadError == "" {
 		t.Fatalf("restored workspace is missing its stale configuration status: %+v", entry)
 	}
+	workspaceID := ws.listOpened()[0].ID
+	ws.newCore = func(core.Config) (*core.Core, error) {
+		return nil, errors.New("injected Core startup failure")
+	}
+	if err := ws.reloadWorkspace(workspaceID); err == nil {
+		t.Fatal("reload succeeded despite both the saved config and old Core failing to reopen")
+	}
+	recoveryRes := post("/_lune/workspaces", map[string]any{}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	var recoveryList struct {
+		Initial string             `json:"initial"`
+		Items   []webWorkspaceView `json:"items"`
+	}
+	if recoveryRes.Code != http.StatusOK || json.Unmarshal(recoveryRes.Body.Bytes(), &recoveryList) != nil || len(recoveryList.Items) != 1 || recoveryList.Items[0].ID != workspaceID || !recoveryList.Items[0].RecoveryRequired || recoveryList.Initial != workspaceID {
+		t.Fatalf("recovery workspace was not listed: %d %s", recoveryRes.Code, recoveryRes.Body.String())
+	}
+	ws.newCore = nil
+	repaired := post("/_lune/config/save", map[string]any{
+		"scope": "",
+		"document": map[string]any{
+			"models": map[string]any{
+				"providers": map[string]any{
+					"deepseek": map[string]any{"protocol": "responses", "baseURL": "https://api.deepseek.com", "apiKey": "sk-recovery-test"},
+				},
+				"profiles":       map[string]any{"v3": map[string]any{"provider": "deepseek", "model": "deepseek-chat"}},
+				"defaultProfile": "v3",
+			},
+		},
+	}, "Bearer lan-secret", "https://10.0.0.5:5173")
+	if repaired.Code != http.StatusOK || !strings.Contains(repaired.Body.String(), `"reloaded":true`) {
+		t.Fatalf("config repair did not reopen recovery workspace: %d %s", repaired.Code, repaired.Body.String())
+	}
+	if opened := ws.listOpened(); len(opened) != 1 || opened[0].ID != workspaceID {
+		t.Fatalf("workspace did not reopen after config repair: %+v", opened)
+	}
+	for _, view := range ws.listOpenedDetailed(t.Context()) {
+		if view.ID == workspaceID && view.RecoveryRequired {
+			t.Fatalf("recovery state remained after reopen: %+v", view)
+		}
+	}
 	_ = ws.shutdown(t.Context())
+}
+
+func TestCloseRecoveryWorkspaceMarksItClosed(t *testing.T) {
+	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := t.TempDir()
+	record, err := store.EnsureWorkspace(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaces := &webWorkspaces{store: store}
+	workspaces.recordRecovery(record.ID, record.Path, errors.New("test reopen failure"))
+	if err := workspaces.closeWorkspace(record.ID); err != nil {
+		t.Fatalf("close recovery workspace: %v", err)
+	}
+	opened, err := store.ListWorkspaces(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("open workspaces after close = %+v, want none", opened)
+	}
+	workspaces.mu.Lock()
+	_, remains := workspaces.recoveries[record.ID]
+	workspaces.mu.Unlock()
+	if remains {
+		t.Fatal("closed recovery workspace remained in the recovery list")
+	}
 }
 
 func TestWebWorkspacePersistenceAndSessionSync(t *testing.T) {
