@@ -905,6 +905,34 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setDiagnosisContext(null)
       return
     }
+    const savedAnalysis = activeSession?.id === activeSessionId ? activeSession.analysis : undefined
+    if (savedAnalysis?.kind === 'review') {
+      const restored: ReviewContext = {
+        reviewSessionId: activeSessionId,
+        executionId: savedAnalysis.executionId,
+        sourceSessionId: savedAnalysis.sourceSessionId,
+        ...(savedAnalysis.sourceExecutionId ? { sourceExecutionId: savedAnalysis.sourceExecutionId } : {}),
+        path: savedAnalysis.path ?? '',
+        materialsDigest: savedAnalysis.evidenceDigest,
+      }
+      setReviewContext(restored)
+      setDiagnosisContext(null)
+      try { localStorage.setItem(`lune:review:${activeSessionId}`, JSON.stringify(restored)) } catch { /* Core remains the durable source */ }
+      return
+    }
+    if (savedAnalysis?.kind === 'diagnosis') {
+      const restored: TaskDiagnosisContext = {
+        diagnosisSessionId: activeSessionId,
+        executionId: savedAnalysis.executionId,
+        sourceSessionId: savedAnalysis.sourceSessionId,
+        ...(savedAnalysis.sourceExecutionId ? { sourceExecutionId: savedAnalysis.sourceExecutionId } : {}),
+        evidenceDigest: savedAnalysis.evidenceDigest,
+      }
+      setDiagnosisContext(restored)
+      setReviewContext(null)
+      try { localStorage.setItem(`lune:diagnosis:${activeSessionId}`, JSON.stringify(restored)) } catch { /* Core remains the durable source */ }
+      return
+    }
     try {
       const raw = localStorage.getItem(`lune:review:${activeSessionId}`)
       const parsed = raw ? JSON.parse(raw) as ReviewContext : null
@@ -919,7 +947,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     } catch {
       setDiagnosisContext(null)
     }
-  }, [activeSessionId])
+  }, [activeSessionId, activeSession?.id, activeSession?.analysis])
   useEffect(() => {
     if (!workspaceId || !onReportSessionsRef.current) return
     const mapped: WorkspaceSessionRecord[] = sessions.map((s) => ({
@@ -2197,16 +2225,28 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     })
   }
 
+  const reviewGetParams = (target: ReviewContext) => activeSession?.id === target.reviewSessionId && activeSession.analysis?.kind === 'review'
+    ? { sessionId: target.reviewSessionId }
+    : {
+        sessionId: target.reviewSessionId, sourceSessionId: target.sourceSessionId,
+        ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
+        ...(target.executionId ? { executionId: target.executionId } : {}),
+        path: target.path, materialsDigest: target.materialsDigest,
+      }
+
+  const diagnosisGetParams = (target: TaskDiagnosisContext) => activeSession?.id === target.diagnosisSessionId && activeSession.analysis?.kind === 'diagnosis'
+    ? { sessionId: target.diagnosisSessionId }
+    : {
+        sessionId: target.diagnosisSessionId, sourceSessionId: target.sourceSessionId,
+        ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
+        ...(target.executionId ? { executionId: target.executionId } : {}),
+        evidenceDigest: target.evidenceDigest,
+      }
+
   const checkWorkspaceReview = async () => {
     const target = reviewContext
     if (!client || !target || target.reviewSessionId !== activeSessionId) throw new Error('Open a review session before checking evidence freshness.')
-    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', {
-      sessionId: target.reviewSessionId,
-      ...(target.executionId ? { executionId: target.executionId } : {}),
-      sourceSessionId: target.sourceSessionId,
-      path: target.path,
-      materialsDigest: target.materialsDigest,
-    })
+    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', reviewGetParams(target))
     setReviewContext((current) => {
       if (!current || current.reviewSessionId !== target.reviewSessionId) return current
       const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
@@ -2219,13 +2259,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const checkTaskDiagnosis = async () => {
     const target = diagnosisContext
     if (!client || !target || target.diagnosisSessionId !== activeSessionId) throw new Error('Open a task diagnosis session before checking evidence freshness.')
-    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', {
-      sessionId: target.diagnosisSessionId,
-      ...(target.executionId ? { executionId: target.executionId } : {}),
-      sourceSessionId: target.sourceSessionId,
-      ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
-      evidenceDigest: target.evidenceDigest,
-    })
+    const result = await client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', diagnosisGetParams(target))
     setDiagnosisContext((current) => {
       if (!current || current.diagnosisSessionId !== target.diagnosisSessionId) return current
       const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
@@ -2239,17 +2273,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const target = diagnosisContext
     if (!client || !target || target.diagnosisSessionId !== activeSessionId) throw new Error('Open a task diagnosis session before handing off its next steps.')
     await sessionAction(async () => {
-      const diagnosis = await client.request<{ stale: boolean; runtime: RuntimeState; history: unknown; turnResult?: { status: string } | null }>('diagnosis.get', {
-        sessionId: target.diagnosisSessionId,
-        ...(target.executionId ? { executionId: target.executionId } : {}),
-        sourceSessionId: target.sourceSessionId,
-        ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
-        evidenceDigest: target.evidenceDigest,
-      })
+      const diagnosis = await client.request<{ stale: boolean; runtime: RuntimeState; report?: string; turnResult?: { status: string } | null }>('diagnosis.get', diagnosisGetParams(target))
       setDiagnosisContext((current) => current?.diagnosisSessionId === target.diagnosisSessionId ? { ...current, stale: diagnosis.stale, status: diagnosis.turnResult?.status ?? current.status } : current)
       if (diagnosis.stale) throw new Error(t('Task evidence changed after this diagnosis started. Run a fresh diagnosis before handing off its next steps.'))
       if (diagnosis.turnResult?.status !== 'completed' && diagnosis.runtime.task.status !== 'completed') throw new Error(t('Wait for the diagnosis to finish before sending its next steps.'))
-      const report = timelineMessages(buildTimeline(diagnosis.history)).filter((message) => message.role === 'assistant').at(-1)?.text.trim()
+      const report = diagnosis.report?.trim()
       if (!report) throw new Error(t('The diagnosis has not produced a report yet.'))
       const sourceRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: target.sourceSessionId }))
       if (sourceRuntime.task.status === 'paused') throw new Error(t('Resume the source task before sending it diagnosis next steps.'))
@@ -2269,17 +2297,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const target = reviewContext
     if (!client || !target || target.reviewSessionId !== activeSessionId) throw new Error('Open a review session before handing off findings.')
     await sessionAction(async () => {
-      const review = await client.request<{ stale: boolean; runtime: RuntimeState; history: unknown; turnResult?: { status: string } | null }>('review.get', {
-        sessionId: target.reviewSessionId,
-        ...(target.executionId ? { executionId: target.executionId } : {}),
-        sourceSessionId: target.sourceSessionId,
-        path: target.path,
-        materialsDigest: target.materialsDigest,
-      })
+      const review = await client.request<{ stale: boolean; runtime: RuntimeState; report?: string; turnResult?: { status: string } | null }>('review.get', reviewGetParams(target))
       setReviewContext((current) => current?.reviewSessionId === target.reviewSessionId ? { ...current, stale: review.stale, status: review.turnResult?.status ?? current.status } : current)
       if (review.stale) throw new Error(t('Workspace evidence changed after this review started. Run a fresh review before handing off these findings.'))
       if (review.turnResult?.status !== 'completed' && review.runtime.task.status !== 'completed') throw new Error(t('Wait for the review to finish before sending its findings.'))
-      const report = timelineMessages(buildTimeline(review.history)).filter((message) => message.role === 'assistant').at(-1)?.text.trim()
+      const report = review.report?.trim()
       if (!report) throw new Error(t('The review has not produced a report yet.'))
 
       const sourceRuntime = normalizeRuntimeState(await client.request<RuntimeState>('runtime.state', { sessionId: target.sourceSessionId }))
@@ -2299,13 +2321,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   useEffect(() => {
     const target = reviewContext
     if (!client || !target || target.reviewSessionId !== activeSessionId) return
-    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', {
-      sessionId: target.reviewSessionId,
-      ...(target.executionId ? { executionId: target.executionId } : {}),
-      sourceSessionId: target.sourceSessionId,
-      path: target.path,
-      materialsDigest: target.materialsDigest,
-    }).then((result) => {
+    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('review.get', reviewGetParams(target)).then((result) => {
       setReviewContext((current) => {
         if (!current || current.reviewSessionId !== target.reviewSessionId) return current
         const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }
@@ -2318,13 +2334,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   useEffect(() => {
     const target = diagnosisContext
     if (!client || !target || target.diagnosisSessionId !== activeSessionId) return
-    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', {
-      sessionId: target.diagnosisSessionId,
-      ...(target.executionId ? { executionId: target.executionId } : {}),
-      sourceSessionId: target.sourceSessionId,
-      ...(target.sourceExecutionId ? { sourceExecutionId: target.sourceExecutionId } : {}),
-      evidenceDigest: target.evidenceDigest,
-    }).then((result) => {
+    void client.request<{ stale: boolean; turnResult?: { status: string } | null }>('diagnosis.get', diagnosisGetParams(target)).then((result) => {
       setDiagnosisContext((current) => {
         if (!current || current.diagnosisSessionId !== target.diagnosisSessionId) return current
         const updated = { ...current, stale: result.stale, status: result.turnResult?.status ?? current.status }

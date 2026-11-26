@@ -10,6 +10,8 @@ github.com/afterlune/luneCore v0.1.1-0.20261124081626-cdc3bcbaaea1 h1:1r8RTvlUxa
 github.com/afterlune/luneCore v0.1.1-0.20261124081626-cdc3bcbaaea1/go.mod h1:ECbjEnUFeA9RfKX5DEyRa3OwjcJHT2pz9pila/L82hY=
 github.com/afterlune/luneCore v0.1.1-0.20261126024615-b8527db9a460 h1:zpQNVzsgAC6Nn/KT9bp+sBmU0sKvMvefrz5L+zbaNfs=
 github.com/afterlune/luneCore v0.1.1-0.20261126024615-b8527db9a460/go.mod h1:ECbjEnUFeA9RfKX5DEyRa3OwjcJHT2pz9pila/L82hY=
+github.com/afterlune/luneCore v0.1.1-0.20261126035314-7515019dac9a h1:9tAc4FeHLtEoYdLb0rj2rUliFKbtVtLHhJVc1vRaBl8=
+github.com/afterlune/luneCore v0.1.1-0.20261126035314-7515019dac9a/go.mod h1:ECbjEnUFeA9RfKX5DEyRa3OwjcJHT2pz9pila/L82hY=
 github.com/afterlune/luneGraph v0.0.0-20261119062528-952b489a13a2 h1:1hQcmki2TIYxIITxX5CAl2xdwG2OJGu946sNvpobcsY=
 github.com/afterlune/luneGraph v0.0.0-20261119062528-952b489a13a2/go.mod h1:g/zTNsXgAPngolhqeeJVBMEaWuRRVjJgGttDNnAayw0=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=

@@ -70,6 +70,7 @@ export interface SessionSummary {
   agentUsage?: Record<string, UsageTotals>
   agentUsageComplete?: boolean
   usageRequests?: UsageRecord[]
+  analysis?: AnalysisMetadata
   settings: {
     modelProfile: string
     reasoningEffort?: string
@@ -77,6 +78,15 @@ export interface SessionSummary {
     autoCompact?: boolean
     autoCompactThreshold?: number
   }
+}
+
+export interface AnalysisMetadata {
+  kind: 'review' | 'diagnosis'
+  sourceSessionId: string
+  sourceExecutionId?: string
+  executionId: string
+  evidenceDigest: string
+  path?: string
 }
 
 export interface ModelOption {
