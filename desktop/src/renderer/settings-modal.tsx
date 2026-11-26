@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Activity, Check, ChevronDown, Cpu, Database, Eye, EyeOff,
-  FolderGit2, Globe, KeyRound, Plug, Plus, RefreshCw, Search, SlidersHorizontal,
+  FolderGit2, Globe, KeyRound, Plug, Plus, RefreshCw, Search, ShieldAlert, SlidersHorizontal,
   Star, Trash2, Upload, X,
 } from 'lucide-react'
 import type { ConfigDocument, ConfigImport, ConfigView, MCPServerSummary, ProviderModelInfo, ProviderTestInput, SavedConnection, UiPreferences } from '../shared/desktop-settings'
@@ -212,6 +212,9 @@ export function SettingsModal({
   onDisconnectRemote,
   onReturnToLocal,
   onSavedConfig,
+  runtimeConnectionStatus = 'connected',
+  runtimeConnectionError = '',
+  onRetryRuntime,
   onClose,
 }: {
   open: boolean
@@ -229,6 +232,9 @@ export function SettingsModal({
   onDisconnectRemote?: () => Promise<void>
   onReturnToLocal?: () => Promise<void>
   onSavedConfig?: (result: SaveConfigResult) => SaveConfigResult | void | Promise<SaveConfigResult | void>
+  runtimeConnectionStatus?: 'connected' | 'connecting' | 'reconnecting' | 'offline'
+  runtimeConnectionError?: string
+  onRetryRuntime?: () => void
   onClose: () => void
 }) {
   const { t } = useTranslation()
@@ -379,6 +385,7 @@ export function SettingsModal({
   const catalog = useMemo(() => normalizeDoc(doc), [doc])
   const providerNames = Object.keys(catalog.providers)
   const profileNames = Object.keys(catalog.profiles)
+  const runtimeUnavailable = api.kind === 'web-host' && runtimeConnectionStatus !== 'connected'
 
   if (!open) return null
 
@@ -497,7 +504,7 @@ export function SettingsModal({
         ? t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
         : finalResult.reloadPending
           ? t('Settings saved. Changes will apply when the current work finishes.')
-          : message || (finalResult.reloaded ? t('Settings saved and runtime reconnected.') : t('Settings saved to SQLite database.')))
+          : message || t('Settings saved to SQLite database.'))
       return true
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1402,7 +1409,28 @@ export function SettingsModal({
         <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} /></button>
       </header>
 
-      <div className="settings-shell grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[218px_minmax(0,1fr)] sm:grid-rows-none">
+      {runtimeUnavailable && (
+        <div
+          className={cn('mx-3 mt-3 flex flex-none items-center gap-2 rounded-[9px] border px-3 py-2 text-[12.5px]', runtimeConnectionStatus === 'offline' ? bannerError : bannerStatus)}
+          role={runtimeConnectionStatus === 'offline' ? 'alert' : 'status'}
+          aria-live={runtimeConnectionStatus === 'offline' ? 'assertive' : 'polite'}
+          aria-busy={runtimeConnectionStatus !== 'offline'}
+        >
+          {runtimeConnectionStatus === 'offline'
+            ? <ShieldAlert size={14} className="shrink-0" />
+            : <RefreshCw size={14} className="spin shrink-0" />}
+          <span className="min-w-0 flex-1">
+            {runtimeConnectionStatus === 'offline'
+              ? runtimeConnectionError || t('Core connection lost.')
+              : t('Reconnecting to Core. Your current work continues there.')}
+          </span>
+          {runtimeConnectionStatus === 'offline' && onRetryRuntime && (
+            <button type="button" className={btnSecondary} onClick={onRetryRuntime}>{t('Retry')}</button>
+          )}
+        </div>
+      )}
+
+      <div className="settings-shell grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[218px_minmax(0,1fr)] sm:grid-rows-none" inert={runtimeUnavailable || undefined}>
         <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b border-line-subtle bg-subtle px-2.5 py-2 sm:border-r sm:border-b-0 sm:pt-3 sm:pb-2.5">
           <nav className="settings-nav flex flex-row gap-1 overflow-x-auto sm:flex-col sm:gap-0.5" aria-label={t('Settings sections')}>
             {navItems.filter((item) => !item.hidden).map((item) => {

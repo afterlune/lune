@@ -300,7 +300,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     setWorkspaceRevision((rev) => rev + 1)
   }, [credential, currentWorkspacePath, syncWorkspaces])
 
-  const settingsAPI = useMemo(() => createWebHostSettingsAPI(credential, handleReloaded), [credential, handleReloaded])
+  const settingsAPI = useMemo(() => createWebHostSettingsAPI(credential), [credential])
 
   const handleCloseWorkspace = async (id: string) => {
     try {

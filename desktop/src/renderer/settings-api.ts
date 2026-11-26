@@ -79,10 +79,7 @@ export function createDesktopSettingsAPI(): FrontendSettingsAPI {
   }
 }
 
-export function createWebHostSettingsAPI(
-  credential: string,
-  onReloaded?: (result: SaveConfigResult) => void | Promise<void>,
-): FrontendSettingsAPI {
+export function createWebHostSettingsAPI(credential: string): FrontendSettingsAPI {
   async function request<T>(path: string, body: unknown = {}): Promise<T> {
     const response = await fetch('/_lune/' + path, {
       method: 'POST',
@@ -112,16 +109,8 @@ export function createWebHostSettingsAPI(
     supportsModelConfig: true,
     supportsShortcut: false,
     getConfig: (scope) => request<ConfigView>('config/get', { scope }),
-    saveConfig: async (scope, document, importId) => {
-      const result = await request<SaveConfigResult>('config/save', { scope, document, importId })
-      if (result.reloaded) await onReloaded?.(result)
-      return result
-    },
-    resetWorkspaceConfig: async (workspace) => {
-      const result = await request<SaveConfigResult>('config/reset', { scope: workspace })
-      if (result.reloaded) await onReloaded?.(result)
-      return result
-    },
+    saveConfig: (scope, document, importId) => request<SaveConfigResult>('config/save', { scope, document, importId }),
+    resetWorkspaceConfig: (workspace) => request<SaveConfigResult>('config/reset', { scope: workspace }),
     fetchProviderModels: async (scope, provider) => {
       const res = await request<{ models?: ProviderModelInfo[] }>('providers/models', { scope, provider })
       return res.models ?? []

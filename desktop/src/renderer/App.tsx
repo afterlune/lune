@@ -335,6 +335,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('models')
   const [configReconnectRequired, setConfigReconnectRequired] = useState(false)
   const [applyingConfig, setApplyingConfig] = useState(false)
+  const [webConfigReconnectPending, setWebConfigReconnectPending] = useState(false)
   const [harnessOpen, setHarnessOpen] = useState(false)
   const [harnessTab, setHarnessTab] = useState<HarnessTab>('files')
   const [requestedFile, setRequestedFile] = useState('')
@@ -440,6 +441,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   modelsRef.current = models
   const activeSessionRef = useRef<SessionSummary | null>(activeSession)
   activeSessionRef.current = activeSession
+  const managedWorkspaceRef = useRef(Boolean(managed))
+  managedWorkspaceRef.current = Boolean(managed)
   const workspacePathRef = useRef(workspaceInfo?.path ?? '')
   workspacePathRef.current = workspaceInfo?.path ?? ''
   const currentDefaultsScopeKey = useCallback(() => {
@@ -787,6 +790,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     let candidate: RuntimeClient | null = null
     try {
       const previousClient = clientRef.current
+      const preserveManagedSession = Boolean(
+        managedWorkspaceRef.current && connectionRef.current && connectionRef.current.mode === options.mode,
+      )
       if (previousClient) {
         clientRef.current = null
         subscriptionRef.current = ''
@@ -820,10 +826,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       clientRef.current = candidate
       const savedOptions = desktop && options.mode === 'remote' ? { ...options, token: '' } : options
       connectionRef.current = savedOptions
-      setActiveSession(null)
+      if (!preserveManagedSession) setActiveSession(null)
       setClient(candidate)
       setConnection(savedOptions)
       setConnectionStatus('connected')
+      setWebConfigReconnectPending(false)
       setConfigReloadPending(false)
       if (desktop && options.mode === 'local') setConfigReconnectRequired(false)
       reconnectCount.current = 0
@@ -842,6 +849,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       }
       setConnectionError(errorMessage(error))
       setConnectionStatus(retry ? 'reconnecting' : 'offline')
+      setWebConfigReconnectPending(false)
       if (retry && autoReconnect.current) scheduleReconnect()
       else if (!retry) autoReconnect.current = false
     }
@@ -859,6 +867,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const localMode = managed?.options.mode
   const workspaceRevision = managed?.workspaceRevision ?? 0
   const report = managed?.report
+  const keepManagedWorkspaceVisible = Boolean(managed && connection && !showConnection)
+  const managedRuntimeUnavailable = Boolean(keepManagedWorkspaceVisible && connectionStatus !== 'connected')
+  const managedReconnectInProgress = Boolean(managedRuntimeUnavailable && connectionStatus !== 'offline')
   useEffect(() => {
     if (localURL && localToken && localMode) void activateConnection({ mode: localMode, url: localURL, token: localToken })
   }, [activateConnection, localMode, localURL, localToken, workspaceRevision])
@@ -1212,15 +1223,18 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         pendingDesktopSessionRef.current = null
       }
 
+      const preservedManagedSessionID = managedWorkspaceRef.current && connectionRef.current
+        ? activeSessionRef.current?.id
+        : undefined
       const previousID = linkedSession?.id ?? (forceNew
         ? null
-        : window.luneDesktop
+        : requestedManaged?.sessionId || preservedManagedSessionID || (window.luneDesktop
           ? (pendingDesktopSessionId ?? await window.luneDesktop.lastSession().catch(() => null))
           : connNow?.mode === 'loopback'
-            ? (requestedManaged?.sessionId || managed?.workspace.lastSessionId || lastLoopbackSession(workspaceId))
+            ? (managed?.workspace.lastSessionId || lastLoopbackSession(workspaceId))
             : connNow?.mode === 'remote'
               ? (() => { try { return sessionStorage.getItem(webLastSessionKey(connNow.url)) } catch { return null } })()
-              : activeSessionIdRef.current)
+              : activeSessionIdRef.current))
       if (cancelled) return
       const existing = linkedSession ?? (forceNew
         ? undefined
@@ -1265,32 +1279,37 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     const cachedSession =
       sessionsRef.current.find((item) => item.id === sessionId) ??
       (activeSessionRef.current?.id === sessionId ? activeSessionRef.current : null)
+    const preserveTranscript = Boolean(
+      managedWorkspaceRef.current && connectionRef.current && activeSessionIdRef.current === sessionId && cachedSession,
+    )
     activeSessionRef.current = cachedSession
     setActiveSession(cachedSession)
-    setLiveContextOverride({ compacting: false })
-    appliedUsageKeysRef.current = cachedSession ? mergeAppliedUsageKeys(new Set(), cachedSession) : new Set()
-    setTimeline([])
-    setHistory([])
-    streamingExecution.current = undefined
-    pendingClearLiveRef.current = false
-    setPending([])
-    setModelFailure(null)
-    setRuntime(emptyRuntime)
-    setCommands([])
-    streamStore.clear()
-    subagentStreamBufRef.current.clear()
-    if (subagentStreamRafRef.current !== null) {
-      window.cancelAnimationFrame(subagentStreamRafRef.current)
-      subagentStreamRafRef.current = null
+    if (!preserveTranscript) {
+      setLiveContextOverride({ compacting: false })
+      appliedUsageKeysRef.current = cachedSession ? mergeAppliedUsageKeys(new Set(), cachedSession) : new Set()
+      setTimeline([])
+      setHistory([])
+      streamingExecution.current = undefined
+      pendingClearLiveRef.current = false
+      setPending([])
+      setModelFailure(null)
+      setRuntime(emptyRuntime)
+      setCommands([])
+      streamStore.clear()
+      subagentStreamBufRef.current.clear()
+      if (subagentStreamRafRef.current !== null) {
+        window.cancelAnimationFrame(subagentStreamRafRef.current)
+        subagentStreamRafRef.current = null
+      }
+      setLiveAgents([])
+      setSelectedAgentId('')
+      setLiveTools([])
+      setEditingQueueExecId('')
+      setQueueEditDraft('')
+      setLatestExecutionId('')
+      setActivity([])
+      setSlashNotice('')
     }
-    setLiveAgents([])
-    setSelectedAgentId('')
-    setLiveTools([])
-    setEditingQueueExecId('')
-    setQueueEditDraft('')
-    setLatestExecutionId('')
-    setActivity([])
-    setSlashNotice('')
     cursorKeyRef.current = `lune:cursor:${connection?.mode ?? 'remote'}:${connection?.mode === 'local' ? connection.workspace : connection?.url ?? 'local'}:${sessionId}`
 
     const refreshAll = () => refreshSessionData(targetClient, sessionId).catch((error: unknown) => setActionError(errorMessage(error)))
@@ -3212,9 +3231,17 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         } else if (settingsAPI.kind === 'web-host' && savedResult.reloaded) {
           setConfigReloadPending(false)
           setConfigReconnectRequired(false)
+          setWebConfigReconnectPending(true)
         }
         return savedResult
       }}
+      runtimeConnectionStatus={keepManagedWorkspaceVisible
+        ? webConfigReconnectPending && connectionStatus === 'connected' ? 'reconnecting' : connectionStatus
+        : 'connected'}
+      runtimeConnectionError={connectionError}
+      onRetryRuntime={keepManagedWorkspaceVisible && connectionStatus === 'offline' && managed
+        ? () => void activateConnection(managed.options)
+        : undefined}
       onClose={() => setSettingsOpen(false)}
     />
   )
@@ -3250,7 +3277,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
     )
 
-  if (managed && (!client || showConnection)) {
+  if (managed && (!client || showConnection) && !keepManagedWorkspaceVisible) {
     return (
       <div className="web-workbench web-workbench-loading grid h-dvh min-h-0 grid-cols-1 grid-rows-[52px_auto_minmax(0,1fr)] bg-canvas md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-[52px_minmax(0,1fr)]">
         <header className="workbench-top col-span-full flex items-center gap-3 border-b border-line-subtle bg-canvas px-[18px]">
@@ -3297,7 +3324,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       </div>
     )
   }
-  if (!client || showConnection) {
+  if ((!client || showConnection) && !keepManagedWorkspaceVisible) {
     if (!desktop && autoRestoring && !connectionError) {
       return (
         <div className="connect-page relative flex min-h-screen items-center justify-center bg-canvas px-6 py-20">
@@ -3906,8 +3933,18 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       )}
       {connectionStatus !== 'connected' && (
-        <div className="reconnect-banner mb-2 flex items-center gap-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary">
-          <LoaderCircle className="spin shrink-0" size={14} /> {t(connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.')}
+        <div
+          className="reconnect-banner mb-2 flex items-center gap-2 rounded-[10px] border border-line bg-subtle px-3 py-2 text-[12.5px] text-ink-secondary"
+          role={connectionStatus === 'offline' ? 'alert' : 'status'}
+          aria-live={connectionStatus === 'offline' ? 'assertive' : 'polite'}
+        >
+          {statusIcon}
+          <span className="min-w-0 flex-1">
+            {connectionError || t(connectionStatus === 'reconnecting' ? 'Reconnecting to Core. Your current work continues there.' : 'Core connection lost.')}
+          </span>
+          {managed && !client && connectionStatus === 'offline' && (
+            <button type="button" className={btnSecondary} onClick={() => void activateConnection(managed.options)}>{t('Retry')}</button>
+          )}
         </div>
       )}
       {slashMatches.length > 0 && activeSession && !working && (
@@ -4461,6 +4498,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         harnessOpen && harnessOverlay && 'harness-overlay',
         draggingColumn && 'resizing',
       )}
+      inert={managedReconnectInProgress || undefined}
+      aria-busy={managedReconnectInProgress || undefined}
       style={{ '--sidebar-width': `${sidebarWidth}px`, '--sidebar-edge': `${sidebarCollapsed ? 56 : sidebarWidth}px`, '--harness-width': `${harnessWidth}px` } as CSSProperties}
     >
       {compactLayout ? (
