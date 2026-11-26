@@ -5,13 +5,17 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/afterlune/lune/internal/ptyterm"
 	"github.com/afterlune/lune/internal/settings"
+	core "github.com/afterlune/luneCore"
 )
 
 func TestLocalWebAdmission(t *testing.T) {
@@ -53,6 +57,38 @@ func TestLocalWebAdmission(t *testing.T) {
 				t.Fatal("runtime credential disclosed to a rejected request")
 			}
 		})
+	}
+}
+
+type workspaceTerminalStub struct{ closed bool }
+
+var _ ptyterm.Session = (*workspaceTerminalStub)(nil)
+
+func (*workspaceTerminalStub) Read([]byte) (int, error)       { return 0, io.EOF }
+func (*workspaceTerminalStub) Write(data []byte) (int, error) { return len(data), nil }
+func (*workspaceTerminalStub) Resize(uint16, uint16) error    { return nil }
+func (*workspaceTerminalStub) Wait() (int, error)             { return 0, nil }
+func (s *workspaceTerminalStub) Close() error                 { s.closed = true; return nil }
+
+func TestClosingWorkspaceOnlyClosesItsTerminals(t *testing.T) {
+	first := &workspaceTerminalStub{}
+	second := &workspaceTerminalStub{}
+	workspaces := &webWorkspaces{
+		entries: map[string]*webWorkspaceEntry{
+			"first":  {workspace: core.Workspace{ID: "first"}},
+			"second": {workspace: core.Workspace{ID: "second"}},
+		},
+	}
+	if !workspaces.trackTerminal(first, "first", true) || !workspaces.trackTerminal(second, "second", true) {
+		t.Fatal("could not register workspace terminals")
+	}
+	workspaces.closeWorkspaceTerminals("first")
+	if !first.closed || second.closed {
+		t.Fatalf("terminal close state = (%v, %v), want (true, false)", first.closed, second.closed)
+	}
+	workspaces.entries["first"].closing = true
+	if workspaces.trackTerminal(&workspaceTerminalStub{}, "first", true) {
+		t.Fatal("accepted a terminal for a closing workspace")
 	}
 }
 
@@ -264,18 +300,20 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 		t.Fatalf("invalid permission returned %d, want 400", badPerm.Code)
 	}
 
-	// A save that removes the required model config closes the old Core but
-	// cannot claim that a replacement Core was reloaded.
+	// A save that removes the required model config restores the previous Core
+	// and reports that the newly saved configuration could not be applied.
 	setupSave := post("/_lune/config/save", map[string]any{
 		"scope":    "",
 		"document": map[string]any{"runtime": map[string]any{"maxParallelAgents": 2}},
 	}, "Bearer lan-secret", "https://10.0.0.5:5173")
 	var setupResult map[string]any
-	if setupSave.Code != http.StatusOK || json.Unmarshal(setupSave.Body.Bytes(), &setupResult) != nil || setupResult["reloaded"] != false || setupResult["requiresReconnect"] != true || setupResult["needsSetup"] != true {
+	if setupSave.Code != http.StatusOK || json.Unmarshal(setupSave.Body.Bytes(), &setupResult) != nil || setupResult["reloaded"] != false || setupResult["requiresReconnect"] != true || setupResult["reconnectError"] == "" {
 		t.Fatalf("incomplete config save was reported as reloaded: %d %s", setupSave.Code, setupSave.Body.String())
 	}
-	if len(ws.listOpened()) != 0 {
-		t.Fatalf("workspace remained open without a model config: %+v", ws.listOpened())
+	if opened := ws.listOpened(); len(opened) != 1 {
+		t.Fatalf("old Core was not restored after invalid configuration: %+v", opened)
+	} else if entry := ws.entries[opened[0].ID]; !entry.stale || entry.reloadError == "" {
+		t.Fatalf("restored workspace is missing its stale configuration status: %+v", entry)
 	}
 	_ = ws.shutdown(t.Context())
 }
@@ -340,6 +378,22 @@ func TestWebWorkspacePersistenceAndSessionSync(t *testing.T) {
 	if viewA.ID == "" || viewB.ID == "" || viewA.ID == viewB.ID {
 		t.Fatalf("invalid workspace IDs: %q, %q", viewA.ID, viewB.ID)
 	}
+	entryA := ws.entries[viewA.ID]
+	oldestSessionID := ""
+	for range 501 {
+		created, err := entryA.core.CreateSession(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldestSessionID = created.ID
+	}
+	synced, err := ws.syncEntrySessions(t.Context(), entryA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(synced) != 501 || !slices.ContainsFunc(synced, func(item settings.WorkspaceSessionRecord) bool { return item.SessionID == oldestSessionID }) {
+		t.Fatalf("sync retained %d sessions but omitted the oldest session", len(synced))
+	}
 
 	// Create two sessions inside workspace B and remember one as active.
 	entryB := ws.entries[viewB.ID]
@@ -393,11 +447,11 @@ func TestWebWorkspacePersistenceAndSessionSync(t *testing.T) {
 			t.Fatalf("restore %s: %v", rec.Path, err)
 		}
 	}
-	restoredViews := wsRestarted.listOpenedDetailed()
+	restoredViews := wsRestarted.listOpenedDetailed(t.Context())
 	if len(restoredViews) != 2 || restoredViews[0].ID != viewB.ID || restoredViews[1].ID != viewA.ID {
 		t.Fatalf("restored order/IDs mismatch: %+v", restoredViews)
 	}
-	if restoredViews[0].LastSessionID != s1.ID || len(restoredViews[0].Sessions) < 2 {
+	if restoredViews[0].LastSessionID != s1.ID || len(restoredViews[0].Sessions) < 2 || len(restoredViews[1].Sessions) != 501 {
 		t.Fatalf("restored sessions mismatch: %+v", restoredViews[0])
 	}
 

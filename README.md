@@ -45,7 +45,7 @@ go test -trimpath ./...
 
 ## 按需 Lune A2A 容器
 
-`deploy/docker-compose.a2a.yml` 提供一个常驻轻代理和共享工作区的 Lune Web 工作台。代理在专用内网发布 A2A 1.0 Bearer 端点；收到请求后才启动原生 `lune --a2a-listen` worker。活动或等待交互的任务会保持 worker 运行，所有任务终态后一小时才卸载。A2A task 表是进程内状态，异常重启时代理不会自动重放结果不明的请求。
+`deploy/docker-compose.a2a.yml` 提供一个常驻轻代理和共享工作区的 Lune Web 工作台。代理在专用内网发布 A2A 1.0 Bearer 端点；收到请求后才启动原生 `lune --a2a-listen` worker。活动或等待交互的任务会保持 worker 运行，所有任务终态后一小时才卸载。Worker 从工作区 `.lune/a2a` 恢复任务索引，并向 Core 重新打开已确认的执行。Core 提交状态不明的任务会标记失败并要求检查会话，代理不会自动重放。
 
 要从 Lune Web 打开同一工作区的 A2A 会话，使用 `lune web --workspace <同一工作区> --shared-state`。Core 共享工作区状态，逐会话锁仍保证同一会话不会被两个执行器同时运行。
 

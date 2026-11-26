@@ -501,7 +501,7 @@ export function SettingsModal({
       const finalResult = { ...result, ...followup }
       setDelegationRevision((value) => value + 1)
       setStatus(finalResult.requiresReconnect
-        ? t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
+        ? finalResult.reconnectError || t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
         : finalResult.reloadPending
           ? t('Settings saved. Changes will apply when the current work finishes.')
           : message || t('Settings saved to SQLite database.'))
@@ -1521,7 +1521,7 @@ export function SettingsModal({
                       const finalResult = { ...result, ...followup }
                       setDelegationRevision((revision) => revision + 1)
                       setStatus(finalResult.requiresReconnect
-                        ? t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
+                        ? finalResult.reconnectError || t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
                         : finalResult.reloadPending
                           ? t('Settings saved. Changes will apply when the current work finishes.')
                           : t('Workspace now uses the default configuration.'))

@@ -53,20 +53,25 @@ func parseTerminalDimension(raw string, fallback uint16) uint16 {
 	return uint16(v)
 }
 
-func (s *webWorkspaces) trackTerminal(sess ptyterm.Session, add bool) {
+func (s *webWorkspaces) trackTerminal(sess ptyterm.Session, workspaceID string, add bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.activeTerminals == nil {
 		if !add {
-			return
+			return false
 		}
-		s.activeTerminals = make(map[ptyterm.Session]struct{})
+		s.activeTerminals = make(map[ptyterm.Session]string)
 	}
 	if add {
-		s.activeTerminals[sess] = struct{}{}
+		entry := s.entries[workspaceID]
+		if s.closing || entry == nil || entry.closing {
+			return false
+		}
+		s.activeTerminals[sess] = workspaceID
 	} else {
 		delete(s.activeTerminals, sess)
 	}
+	return true
 }
 
 func (s *webWorkspaces) closeAllTerminals() {
@@ -82,14 +87,34 @@ func (s *webWorkspaces) closeAllTerminals() {
 	}
 }
 
-func (s *webWorkspaces) serveTerminal(w http.ResponseWriter, r *http.Request, workspacePath string) {
+func (s *webWorkspaces) closeWorkspaceTerminals(workspaceID string) {
+	s.mu.Lock()
+	var sessions []ptyterm.Session
+	for sess, owner := range s.activeTerminals {
+		if owner == workspaceID {
+			sessions = append(sessions, sess)
+			delete(s.activeTerminals, sess)
+		}
+	}
+	s.mu.Unlock()
+	for _, sess := range sessions {
+		_ = sess.Close()
+	}
+}
+
+func (s *webWorkspaces) serveTerminal(w http.ResponseWriter, r *http.Request, workspaceID string) {
 	if !authorizeTerminalRequest(r, s.token) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	s.mu.Lock()
-	closing := s.closing
+	entry := s.entries[workspaceID]
+	closing := s.closing || entry == nil || entry.closing
+	workspacePath := ""
+	if entry != nil {
+		workspacePath = entry.workspace.Path
+	}
 	s.mu.Unlock()
 	if closing {
 		http.Error(w, "workspace host is shutting down", http.StatusServiceUnavailable)
@@ -120,9 +145,13 @@ func (s *webWorkspaces) serveTerminal(w http.ResponseWriter, r *http.Request, wo
 		_ = conn.Close(websocket.StatusInternalError, "failed to open terminal")
 		return
 	}
-	s.trackTerminal(sess, true)
+	if !s.trackTerminal(sess, workspaceID, true) {
+		_ = sess.Close()
+		_ = conn.Close(websocket.StatusTryAgainLater, "workspace is closing")
+		return
+	}
 	defer func() {
-		s.trackTerminal(sess, false)
+		s.trackTerminal(sess, workspaceID, false)
 		_ = sess.Close()
 	}()
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
 import { Folder, FolderOpen, KeyRound, Plus, Settings, ShieldAlert, X } from 'lucide-react'
 import type { WorkspaceSessionRecord } from '../shared/desktop-settings'
 import type { ThemePreference } from '../shared/theme'
@@ -23,6 +23,8 @@ interface Workspace {
   createdAt?: number
   updatedAt?: number
   lastOpenedAt?: number
+  configStale?: boolean
+  configError?: string
   sessions?: WorkspaceSessionRecord[]
 }
 interface WorkspacesResponse {
@@ -312,6 +314,18 @@ function Workbench({ theme }: { theme: ThemePreference }) {
     }
   }
 
+  const retryWorkspaceConfig = async (event: MouseEvent, id: string, path: string) => {
+    event.stopPropagation()
+    try {
+      await localRequest(credential, 'reload-workspace', { id })
+      setPairingError('')
+      await syncWorkspaces(credential, path)
+      setWorkspaceRevision((revision) => revision + 1)
+    } catch (err) {
+      setPairingError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const handleThemeChange = (nextTheme: ThemePreference) => {
     setTheme(nextTheme)
     applyTheme(nextTheme)
@@ -419,7 +433,22 @@ function Workbench({ theme }: { theme: ThemePreference }) {
                   {t(activity[item.id])}
                 </small>
               )}
+              {item.configStale && (
+                <small className="workspace-config-status" title={item.configError || t('Configuration will apply when this workspace is idle.')}>
+                  {t('Settings pending')}
+                </small>
+              )}
             </button>
+            {item.configStale && item.configError && (
+              <button
+                type="button"
+                className="workspace-config-retry mr-1 shrink-0 rounded px-1.5 py-1 text-[10px] text-ink-secondary hover:bg-active hover:text-ink"
+                title={item.configError}
+                onClick={(event) => void retryWorkspaceConfig(event, item.id, item.path)}
+              >
+                {t('Retry settings')}
+              </button>
+            )}
             <button
               type="button"
               className="workspace-close-btn mr-1 inline-grid h-6 w-6 cursor-pointer place-items-center rounded-[6px] border-0 bg-transparent text-ink-muted opacity-0 transition-[opacity,background,color] duration-120 hover:bg-active hover:text-ink group-hover/ws:opacity-100 group-focus-within/ws:opacity-100"

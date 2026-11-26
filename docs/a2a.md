@@ -24,7 +24,7 @@ SendMessage 接受按顺序排列的 text 和 JSON data parts。初始 data 作�
 
 需要重新规划的 execution blocker、预算暂停和无可映射交互的暂停会结束当前 A2A task，返回结构化原因；Core 会话和检查点保留。A2A 不自动增加预算或扩大授权，可通过支持该操作的宿主恢复会话。
 
-单进程最多保留 16 个非终态任务和 128 个终态任务；终态最多保留一小时，清理在任务访问、接收和完成时执行。到期查询返回 task not found。task 查询记录不跨服务重启保存；context 对应 Core 的持久会话，清理 task 不删除会话。
+单进程最多保留 16 个非终态任务和 128 个终态任务；终态最多保留一小时，清理在任务访问、接收和完成时执行。到期查询返回 task not found。任务索引保存在工作区 `.lune/a2a`，服务重启时恢复，并通过 Core 持久会话重新打开已确认的执行。提交状态不明的任务会标记失败，要求先检查会话。context 对应 Core 的持久会话，清理 task 不删除会话。
 
 ## 按需 Docker 代理
 
@@ -32,4 +32,4 @@ SendMessage 接受按顺序排列的 text 和 JSON data parts。初始 data 作�
 
 若要从 Lune Web 查看 MoonFei 委派创建的同一会话，在同一工作区启动 `lune web --workspace <工作区> --shared-state`。A2A task 的 `contextId` 就是 Core session ID。Lune Web 使用 `?sessionId=<contextId>` 打开对应会话；两个 Core 共享状态，Core 的会话锁仍会阻止同一会话并发执行。
 
-工作目录固定为 `/workspace`，默认绑定 Windows 宿主的 `D:\WorkSpace`，权限为 `workspace`。容器使用独立 Linux 配置，模型密钥通过 `apiKeyEnv` 提供；不得提交 `.env` 或 `deploy/lune-runtime.config.json`。A2A task 状态仍由原生 worker 保存在内存，强制重启时任务 ID 会失效；代理不会自动重放，MoonFei 将结果不明任务交给用户判断。
+工作目录固定为 `/workspace`，默认绑定 Windows 宿主的 `D:\WorkSpace`，权限为 `workspace`。容器使用独立 Linux 配置，模型密钥通过 `apiKeyEnv` 提供；不得提交 `.env` 或 `deploy/lune-runtime.config.json`。重启后，已确认交给 Core 的活动或等待交互任务会恢复原 task ID 与 context。Core 尚未确认接收的提交会标记失败，代理不会自动重放，MoonFei 将结果不明任务交给用户判断。

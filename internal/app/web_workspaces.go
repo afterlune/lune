@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,12 +31,15 @@ var errWebConfigRequired = errors.New("configure a model provider and default mo
 var errWebWorkspaceBusy = errors.New("workspace has running or queued work; retry after it finishes")
 
 type webWorkspaceEntry struct {
-	workspace core.Workspace
-	info      os.FileInfo
-	core      *core.Core
-	host      *runtimehost.Server
-	// stale is true when a saved configuration could not be applied yet
-	// because a task was running. Guarded by webWorkspaces.mu.
+	workspace   core.Workspace
+	info        os.FileInfo
+	project     core.ProjectConfig
+	core        *core.Core
+	host        *runtimehost.Server
+	closing     bool
+	reloadError string
+	// stale means the active Core does not yet reflect the saved configuration.
+	// reloadError is set when applying it failed. Guarded by webWorkspaces.mu.
 	stale bool
 }
 
@@ -53,7 +57,7 @@ type webWorkspaces struct {
 	pendingInitial  string
 	order           []string
 	entries         map[string]*webWorkspaceEntry
-	activeTerminals map[ptyterm.Session]struct{}
+	activeTerminals map[ptyterm.Session]string
 	idleReloads     map[string]bool
 }
 
@@ -66,40 +70,25 @@ type webWorkspaceView struct {
 	UpdatedAt     int64                             `json:"updatedAt"`
 	LastOpenedAt  int64                             `json:"lastOpenedAt"`
 	Sessions      []settings.WorkspaceSessionRecord `json:"sessions"`
+	ConfigStale   bool                              `json:"configStale,omitempty"`
+	ConfigError   string                            `json:"configError,omitempty"`
 }
 
 func coreHasPendingWork(ctx context.Context, client *core.Core) (bool, error) {
 	if client == nil {
 		return false, nil
 	}
-	if len(client.ActiveTasks()) > 0 {
-		return true, nil
+	snapshots, err := client.ListSessionTaskSnapshots(ctx)
+	if err != nil {
+		return false, err
 	}
-	const pageSize = 100
-	for offset := 0; ; {
-		sessions, err := client.ListSessionPage(ctx, offset, pageSize, true)
-		if err != nil {
-			return false, err
-		}
-		for _, session := range sessions {
-			runtime, err := client.OpenSessionRuntime(ctx, session.ID)
-			if err != nil {
-				return false, err
-			}
-			state, err := runtime.State(ctx)
-			closeErr := runtime.Close(ctx)
-			if err != nil || closeErr != nil {
-				return false, errors.Join(err, closeErr)
-			}
-			if state.Task.Status == core.TaskRunning || state.Task.Status == core.TaskQueued || state.Task.Status == core.TaskPaused || len(state.Queue) > 0 {
-				return true, nil
-			}
-		}
-		offset += len(sessions)
-		if len(sessions) < pageSize {
-			return len(client.ActiveTasks()) > 0, nil
+	for _, snapshot := range snapshots {
+		if snapshot.Status == core.TaskRunning || snapshot.Status == core.TaskQueued ||
+			snapshot.Status == core.TaskPaused || snapshot.QueueCount > 0 {
+			return true, nil
 		}
 	}
+	return len(client.ActiveTasks()) > 0, nil
 }
 
 func workspaceHasPendingWork(client *core.Core) (bool, error) {
@@ -126,6 +115,10 @@ func (s *webWorkspaces) openWithOptions(path string, touch bool) (core.Workspace
 }
 
 func (s *webWorkspaces) openLocked(path string, touch bool) (core.Workspace, *webWorkspaceEntry, error) {
+	return s.openLockedWithProject(path, touch, nil)
+}
+
+func (s *webWorkspaces) openLockedWithProject(path string, touch bool, override *core.ProjectConfig) (core.Workspace, *webWorkspaceEntry, error) {
 	if s.store == nil {
 		return core.Workspace{}, nil, errors.New("web settings store is unavailable")
 	}
@@ -177,6 +170,10 @@ func (s *webWorkspaces) openLocked(path string, touch bool) (core.Workspace, *we
 	projectConfig, configured, err := s.store.EffectiveWebConfig(canonical)
 	if err != nil {
 		return core.Workspace{}, nil, err
+	}
+	if override != nil {
+		projectConfig = *override
+		configured = true
 	}
 	if !configured {
 		s.mu.Lock()
@@ -244,7 +241,7 @@ func (s *webWorkspaces) openLocked(path string, touch bool) (core.Workspace, *we
 	}
 
 	ws := core.Workspace{ID: rec.ID, Path: canonical}
-	entry := &webWorkspaceEntry{workspace: ws, info: info, core: client, host: host}
+	entry := &webWorkspaceEntry{workspace: ws, info: info, project: projectConfig, core: client, host: host}
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -274,11 +271,22 @@ func (s *webWorkspaces) syncEntrySessions(ctx context.Context, entry *webWorkspa
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	sessions, err := entry.core.ListSessions(syncCtx, 500, true)
+	var sessions []core.Session
+	const pageSize = 100
+	for offset := 0; ; offset += pageSize {
+		page, err := entry.core.ListSessionPage(syncCtx, offset, pageSize, true)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, page...)
+		if len(page) < pageSize {
+			break
+		}
+	}
+	taskSnapshots, err := entry.core.ListSessionTaskSnapshots(syncCtx)
 	if err != nil {
 		return nil, err
 	}
-	taskSnapshots, _ := entry.core.ListSessionTaskSnapshots(syncCtx)
 	taskBySession := make(map[string]core.SessionTaskSnapshot, len(taskSnapshots))
 	for _, snapshot := range taskSnapshots {
 		taskBySession[snapshot.SessionID] = snapshot
@@ -343,6 +351,12 @@ func (s *webWorkspaces) workspaceView(ws core.Workspace) webWorkspaceView {
 			view.Sessions = sessions
 		}
 	}
+	s.mu.Lock()
+	if entry := s.entries[ws.ID]; entry != nil {
+		view.ConfigStale = entry.stale
+		view.ConfigError = entry.reloadError
+	}
+	s.mu.Unlock()
 	return view
 }
 
@@ -368,15 +382,31 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error
 	} else if busy {
 		return errWebWorkspaceBusy
 	}
+	s.mu.Lock()
+	if s.entries[id] != entry || entry.closing || s.closing {
+		s.mu.Unlock()
+		return errors.New("workspace is already closing")
+	}
+	entry.closing = true
+	s.mu.Unlock()
 	if s.store != nil {
-		_, _ = s.syncEntrySessions(ctx, entry)
+		if _, err := s.syncEntrySessions(ctx, entry); err != nil {
+			s.mu.Lock()
+			entry.closing = false
+			s.mu.Unlock()
+			return err
+		}
 	}
 	if err := entry.core.Close(ctx); err != nil {
+		s.mu.Lock()
+		entry.closing = false
+		s.mu.Unlock()
 		if strings.Contains(err.Error(), "cannot close core while a task is running") || strings.Contains(err.Error(), "runtime configuration changes are active") {
 			return errWebWorkspaceBusy
 		}
 		return err
 	}
+	s.closeWorkspaceTerminals(id)
 
 	s.mu.Lock()
 	if s.entries[id] == entry {
@@ -468,53 +498,149 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 		s.mu.Unlock()
 	}
 
+	pending := false
+	var failures []error
+	reloadedTargets := 0
 	for _, entry := range targets {
-		busy, err := workspaceHasPendingWork(entry.core)
-		if err != nil {
-			restoreWorkspaceOrder()
-			return s.listOpened(), false, err
-		}
-		if busy {
-			restoreWorkspaceOrder()
-			return s.listOpened(), false, errWebWorkspaceBusy
-		}
-	}
-
-	var opened []core.Workspace
-	reopenedTargets := 0
-	for _, entry := range targets {
-		if err := s.closeWorkspaceLocked(entry.workspace.ID, false); err != nil {
-			restoreWorkspaceOrder()
-			return s.listOpened(), false, err
-		}
-		ws, newEntry, err := s.openLocked(entry.workspace.Path, false)
-		if err != nil && !errors.Is(err, errWebConfigRequired) {
-			restoreWorkspaceOrder()
-			return s.listOpened(), false, err
-		}
-		if err == nil {
-			reopenedTargets++
-			if newEntry != nil && s.store != nil {
-				_, _ = s.syncEntrySessions(context.Background(), newEntry)
-			}
-			opened = append(opened, ws)
+		err := s.reloadWorkspaceEntryLocked(entry)
+		switch {
+		case errors.Is(err, errWebWorkspaceBusy):
+			pending = true
+			s.deferReload(entry.workspace.Path)
+		case err != nil:
+			failures = append(failures, fmt.Errorf("%s: %w", entry.workspace.Path, err))
+		default:
+			reloadedTargets++
 		}
 	}
 	restoreWorkspaceOrder()
-	pendingOpened := false
-	if len(targets) == 0 && len(s.listOpened()) == 0 && pendingPath != "" {
-		if ws, newEntry, err := s.openLocked(pendingPath, true); err != nil && !errors.Is(err, errWebConfigRequired) {
-			return s.listOpened(), false, err
-		} else if err == nil {
-			if newEntry != nil && s.store != nil {
-				_, _ = s.syncEntrySessions(context.Background(), newEntry)
+	reloaded := reloadedTargets == len(targets)
+	if len(targets) == 0 {
+		s.mu.Lock()
+		hasOpened := len(s.entries) != 0
+		s.mu.Unlock()
+		if !hasOpened && pendingPath != "" {
+			if _, newEntry, err := s.openLocked(pendingPath, true); err != nil {
+				if !errors.Is(err, errWebConfigRequired) {
+					failures = append(failures, fmt.Errorf("%s: %w", pendingPath, err))
+				}
+				reloaded = false
+			} else {
+				if newEntry != nil && s.store != nil {
+					_, _ = s.syncEntrySessions(context.Background(), newEntry)
+				}
+				reloaded = true
 			}
-			opened = append(opened, ws)
-			pendingOpened = true
+		} else {
+			reloaded = true
 		}
 	}
-	reloaded := pendingOpened || (len(targets) > 0 && reopenedTargets == len(targets))
+	if pending || len(failures) > 0 {
+		return s.listOpened(), reloaded, &webWorkspaceReloadError{pending: pending, failures: failures}
+	}
 	return s.listOpened(), reloaded, nil
+}
+
+type webWorkspaceReloadError struct {
+	pending  bool
+	failures []error
+}
+
+func (e *webWorkspaceReloadError) Error() string {
+	messages := make([]string, 0, len(e.failures)+1)
+	if e.pending {
+		messages = append(messages, "some workspaces are waiting for active work to finish")
+	}
+	for _, err := range e.failures {
+		messages = append(messages, err.Error())
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (e *webWorkspaceReloadError) Unwrap() []error {
+	errs := append([]error(nil), e.failures...)
+	if e.pending {
+		errs = append(errs, errWebWorkspaceBusy)
+	}
+	return errs
+}
+
+func (e *webWorkspaceReloadError) hasFailures() bool {
+	return len(e.failures) > 0
+}
+
+func (s *webWorkspaces) reloadWorkspaceEntryLocked(entry *webWorkspaceEntry) error {
+	if entry == nil {
+		return errors.New("workspace not found")
+	}
+	markStale := func(reloadErr error) {
+		s.mu.Lock()
+		entry.stale = true
+		entry.reloadError = ""
+		if reloadErr != nil {
+			entry.reloadError = reloadErr.Error()
+		}
+		s.mu.Unlock()
+	}
+	busy, err := workspaceHasPendingWork(entry.core)
+	if err != nil {
+		markStale(err)
+		return err
+	}
+	if busy {
+		markStale(nil)
+		return errWebWorkspaceBusy
+	}
+	var previous core.ProjectConfig
+	encoded, err := json.Marshal(entry.project)
+	if err != nil {
+		markStale(err)
+		return err
+	}
+	if err := json.Unmarshal(encoded, &previous); err != nil {
+		markStale(err)
+		return err
+	}
+	restorePrevious := func(cause error) error {
+		_, restored, restoreErr := s.openLockedWithProject(entry.workspace.Path, false, &previous)
+		if restoreErr != nil {
+			return fmt.Errorf("workspace reload failed (%v); previous configuration restore failed (%w)", cause, restoreErr)
+		}
+		s.mu.Lock()
+		restored.stale = true
+		restored.reloadError = cause.Error()
+		s.mu.Unlock()
+		if s.store != nil {
+			_, _ = s.syncEntrySessions(context.Background(), restored)
+		}
+		return fmt.Errorf("workspace reload failed; previous configuration restored: %w", cause)
+	}
+	if err := s.closeWorkspaceLocked(entry.workspace.ID, false); err != nil {
+		s.mu.Lock()
+		stillOpen := s.entries[entry.workspace.ID] == entry
+		s.mu.Unlock()
+		if stillOpen {
+			if errors.Is(err, errWebWorkspaceBusy) {
+				markStale(nil)
+			} else {
+				markStale(err)
+			}
+			return err
+		}
+		return restorePrevious(err)
+	}
+	_, reopened, reloadErr := s.openLocked(entry.workspace.Path, false)
+	if reloadErr == nil {
+		s.mu.Lock()
+		reopened.stale = false
+		reopened.reloadError = ""
+		s.mu.Unlock()
+		if s.store != nil {
+			_, _ = s.syncEntrySessions(context.Background(), reopened)
+		}
+		return nil
+	}
+	return restorePrevious(reloadErr)
 }
 
 func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) {
@@ -526,26 +652,30 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 	s.mu.Unlock()
 	reloaded := false
 	reloadPending := false
+	var reloadErr error
 	var reconnectError string
 	if (len(opened) == 0 && pendingPath != "") || len(opened) > 0 {
 		var err error
 		opened, reloaded, err = s.reloadAffected(scope)
 		if err != nil {
+			reloadErr = err
 			reconnectError = err.Error()
 			reloaded = false
 			opened = s.listOpened()
-			if errors.Is(err, errWebWorkspaceBusy) {
-				reloadPending = true
-				s.deferReload(scope)
-			}
+			reloadPending = errors.Is(err, errWebWorkspaceBusy)
 		}
 	}
 	s.mu.Lock()
 	initial = s.initial
 	needsSetup = s.needsSetup
 	s.mu.Unlock()
+	requiresReconnect := !reloaded && !reloadPending
+	var workspaceReloadErr *webWorkspaceReloadError
+	if errors.As(reloadErr, &workspaceReloadErr) && workspaceReloadErr.hasFailures() {
+		requiresReconnect = true
+	}
 	result := map[string]any{
-		"ok": true, "reloaded": reloaded, "reloadPending": reloadPending, "requiresReconnect": !reloaded && !reloadPending,
+		"ok": true, "reloaded": reloaded, "reloadPending": reloadPending, "requiresReconnect": requiresReconnect,
 		"initial": initial, "needsSetup": needsSetup, "workspaces": opened,
 	}
 	if reconnectError != "" {
@@ -594,8 +724,14 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 	}
 	s.mu.Lock()
 	entries := make(map[string]*webWorkspaceEntry, len(s.entries))
+	type configStatus struct {
+		stale bool
+		err   string
+	}
+	configStatuses := make(map[string]configStatus, len(s.entries))
 	for id, entry := range s.entries {
 		entries[id] = entry
+		configStatuses[id] = configStatus{stale: entry.stale, err: entry.reloadError}
 	}
 	s.mu.Unlock()
 	byID := make(map[string]settings.WorkspaceRecord)
@@ -613,7 +749,7 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 			if sessions == nil {
 				sessions = []settings.WorkspaceSessionRecord{}
 			}
-			views = append(views, webWorkspaceView{
+			view := webWorkspaceView{
 				ID:            ws.ID,
 				Path:          ws.Path,
 				Name:          rec.Name,
@@ -622,7 +758,12 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 				UpdatedAt:     rec.UpdatedAt,
 				LastOpenedAt:  rec.LastOpenedAt,
 				Sessions:      sessions,
-			})
+			}
+			if status, ok := configStatuses[ws.ID]; ok {
+				view.ConfigStale = status.stale
+				view.ConfigError = status.err
+			}
+			views = append(views, view)
 			continue
 		}
 		views = append(views, s.workspaceView(ws))
@@ -680,13 +821,35 @@ func (s *webWorkspaces) listOpenedDetailed(ctx context.Context) []webWorkspaceVi
 }
 
 func (s *webWorkspaces) reloadWorkspace(id string) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	entry := s.entries[id]
 	s.mu.Unlock()
 	if entry == nil {
-		return errors.New("workspace not found")
+		if s.store == nil {
+			return errors.New("workspace not found")
+		}
+		record, found, err := s.store.WorkspaceByID(id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("workspace not found")
+		}
+		_, entry, err = s.openLocked(record.Path, true)
+		if err != nil {
+			return err
+		}
+		if s.store != nil {
+			_, _ = s.syncEntrySessions(context.Background(), entry)
+		}
+		return nil
 	}
-	_, _, err := s.reloadAffected(entry.workspace.Path)
+	err := s.reloadWorkspaceEntryLocked(entry)
+	if errors.Is(err, errWebWorkspaceBusy) {
+		s.deferReload(entry.workspace.Path)
+	}
 	return err
 }
 
@@ -701,7 +864,7 @@ func (s *webWorkspaces) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if tail == "terminal" {
-			s.serveTerminal(w, r, entry.workspace.Path)
+			s.serveTerminal(w, r, entry.workspace.ID)
 			return
 		}
 		request := r.Clone(r.Context())
@@ -1061,7 +1224,6 @@ func (s *webWorkspaces) browse(path string) (any, error) {
 }
 
 func (s *webWorkspaces) shutdown(ctx context.Context) error {
-	s.closeAllTerminals()
 	s.mu.Lock()
 	s.closing = true
 	entries := make([]*webWorkspaceEntry, 0, len(s.entries))
@@ -1069,6 +1231,7 @@ func (s *webWorkspaces) shutdown(ctx context.Context) error {
 		entries = append(entries, entry)
 	}
 	s.mu.Unlock()
+	s.closeAllTerminals()
 	if s.store != nil {
 		for _, entry := range entries {
 			_, _ = s.syncEntrySessions(ctx, entry)
@@ -1150,6 +1313,7 @@ func (s *webWorkspaces) deferReload(scope string) {
 	for _, id := range s.order {
 		if entry := s.entries[id]; entry != nil && (canonicalScope == "" || entry.workspace.Path == canonicalScope) {
 			entry.stale = true
+			entry.reloadError = ""
 		}
 	}
 	if s.idleReloads == nil {
