@@ -1965,13 +1965,19 @@ export function SettingsModal({
                     <label className={formFieldCls}>{t('Context window (0 = automatic)')}
                       <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).contextWindow) || ''} onChange={(e) => updateConfigField('runtime', 'contextWindow', e.target.value ? Number(e.target.value) : '')} />
                     </label>
-                    <label className={formFieldCls}>{t('Children per agent (0 = default)')}
+                    <label className={formFieldCls}>{t('Children per agent (0 = disabled)')}
                       <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).maxTeamChildrenPerAgent) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamChildrenPerAgent', e.target.value ? Number(e.target.value) : '')} />
                     </label>
-                    <label className={formFieldCls}>{t('Delegation depth (0 = default)')}
+                    <label className={formFieldCls}>{t('Delegation depth (0 = default: 2)')}
                       <input type="number" className={fieldInput} min={0} placeholder="0" value={Number(asObject(doc.runtime).maxTeamDepth) || ''} onChange={(e) => updateConfigField('runtime', 'maxTeamDepth', e.target.value ? Number(e.target.value) : '')} />
                     </label>
                   </div>
+                  {(Number(asObject(doc.runtime).maxTeamChildrenPerAgent) || 0) <= 0 &&
+                    ((Number(asObject(doc.runtime).maxParallelAgents) || 0) > 0 || (Number(asObject(doc.runtime).maxTeamDepth) || 0) > 0) && (
+                      <p className="m-0 text-[12px] leading-[1.45] text-ink-secondary">
+                        {t('Set "Children per agent" above 0 (e.g. 4) to enable multi-agent delegation; 0 keeps delegation turned off.')}
+                      </p>
+                  )}
                 </div>
               </section>
 

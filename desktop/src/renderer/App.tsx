@@ -352,6 +352,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [timeline, setTimeline] = useState<TimelineEntry[]>([])
   const [history, setHistory] = useState<HistoryMessage[]>([])
   const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([])
+  const optimisticRef = useRef<OptimisticMessage[]>([])
+  optimisticRef.current = optimistic
   const [runtime, setRuntime] = useState<RuntimeState>(emptyRuntime)
   const [uiPreferences, setUiPreferences] = useState<UiPreferences>(defaultUiPreferences)
   const [commands, setCommands] = useState<CommandInfo[]>([])
@@ -1143,9 +1145,13 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         const identity = messageIdentity(message)
         counts.set(identity, (counts.get(identity) ?? 0) + 1)
       }
+      const terminalExecutionId = ['cancelled', 'discarded', 'failed'].includes(normalized.task.status)
+        ? normalized.task.executionId
+        : ''
       const seen = new Map<string, number>()
       return items.filter((item) => {
         if (item.sessionId !== sessionId) return true
+        if (terminalExecutionId && item.executionId === terminalExecutionId) return false
         const identity = messageIdentity(item)
         const count = counts.get(identity) ?? 0
         const alreadySeen = seen.get(identity) ?? 0
@@ -1347,8 +1353,17 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         setActivity((items) => [{ id: `${event.taskId}-started`, label: 'Working on your request', detail: event.executionId }, ...items].slice(0, 5))
       } else if (event.kind === 'task_finished' || event.kind === 'task_discarded') {
         flushSubagentStreams()
-        if (!event.taskId && event.status === 'cancelled' && event.executionId) {
+        const endedWithoutHistory =
+          event.kind === 'task_discarded' ||
+          ['cancelled', 'discarded', 'failed'].includes(event.status ?? '')
+        if (endedWithoutHistory && event.executionId) {
+          const stoppedMsg = optimisticRef.current.find(
+            (item) => item.sessionId === sessionId && item.executionId === event.executionId,
+          )
           setOptimistic((items) => items.filter((item) => item.executionId !== event.executionId))
+          if (stoppedMsg?.text && activeSessionIdRef.current === sessionId) {
+            setDraft((prev) => (prev.trim() ? prev : stoppedMsg.text))
+          }
         }
         if (event.executionId) setLatestExecutionId(event.executionId)
         if (event.executionId === streamingExecution.current) {
@@ -2097,7 +2112,17 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     if (!client || !activeSessionId) return
     setWorking(true)
     try {
+      const pausedExecutionId = runtime.task.executionId
+      const pausedMsg = pausedExecutionId
+        ? optimisticRef.current.find((item) => item.sessionId === activeSessionId && item.executionId === pausedExecutionId)
+        : undefined
       await client.request('turn.discardPaused', { sessionId: activeSessionId })
+      if (pausedExecutionId) {
+        setOptimistic((items) => items.filter((item) => item.executionId !== pausedExecutionId))
+        if (pausedMsg?.text && activeSessionIdRef.current === activeSessionId) {
+          setDraft((prev) => (prev.trim() ? prev : pausedMsg.text))
+        }
+      }
       await refreshSessionData(client, activeSessionId)
     } catch (error) { setActionError(errorMessage(error)) }
     finally { setWorking(false) }
