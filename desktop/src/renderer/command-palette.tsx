@@ -156,7 +156,7 @@ export function CommandPalette({
       }}
     >
       <section
-        className="command-palette flex w-[min(600px,calc(100vw-24px))] max-h-[min(520px,74dvh)] flex-col overflow-hidden rounded-[14px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-2xl shadow-elev-lg animate-[arrive_.14s_ease_both]"
+        className="command-palette flex w-[min(600px,calc(100vw-24px))] max-h-[min(520px,74dvh)] flex-col overflow-hidden rounded-[24px] border-0 bg-[var(--bg-glass-strong)] backdrop-blur-[40px] backdrop-saturate-150 shadow-elev-lg animate-[arrive_.14s_ease_both]"
         role="dialog"
         aria-modal="true"
         aria-label={t('Quick switcher')}
@@ -183,7 +183,7 @@ export function CommandPalette({
           }
         }}
       >
-        <div className="palette-input-row flex items-center gap-2.5 border-b border-line-subtle px-3.5 py-2.5 text-ink-muted">
+        <div className="palette-input-row flex items-center gap-2.5 border-b-[0.5px] border-line-subtle px-4 py-3 text-ink-muted">
           <Search size={16} aria-hidden="true" />
           <input
             ref={inputRef}

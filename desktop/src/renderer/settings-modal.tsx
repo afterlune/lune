@@ -1406,23 +1406,23 @@ export function SettingsModal({
       'min-h-[28px] cursor-pointer rounded-[6px] border-0 px-3 text-[12.5px] font-medium transition-[background,color,box-shadow] duration-120 disabled:cursor-not-allowed disabled:opacity-45',
       active ? 'active bg-canvas text-ink shadow-elev-sm' : 'bg-transparent text-ink-secondary hover:text-ink',
     )
-  const settingsCardCls = 'settings-card flex items-center justify-between gap-3 rounded-[11px] border border-line-subtle bg-subtle px-[15px] py-[13px] transition-[border-color] duration-150 hover:border-line'
-  const settingsRowCls = 'settings-row flex min-h-[50px] flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 sm:gap-4 px-3.5 py-2.5 text-[13px]'
+  const settingsCardCls = 'settings-card flex items-center justify-between gap-3 rounded-[20px] border-[0.5px] border-line-subtle bg-subtle px-4 py-3.5 transition-[border-color] duration-150 hover:border-line'
+  const settingsRowCls = 'settings-row flex min-h-[50px] flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 sm:gap-4 px-4 py-2.5 text-[13px]'
   const settingsRowControlCls = 'settings-row-control flex w-full sm:w-auto flex-none items-center justify-start sm:justify-end'
-  const settingsGroupCls = 'settings-group divide-y divide-line-subtle overflow-hidden rounded-[11px] border border-line-subtle bg-subtle'
-  const settingsSectionTitleCls = 'settings-section-title m-0 pl-0.5 text-[11.5px] font-semibold tracking-[0.02em] text-ink-muted'
+  const settingsGroupCls = 'settings-group divide-y divide-line-subtle overflow-hidden rounded-[20px] border-[0.5px] border-line-subtle bg-subtle'
+  const settingsSectionTitleCls = 'settings-section-title m-0 pl-0.5 text-[11.5px] font-medium tracking-[0.02em] text-ink-muted'
 
   return (
     <dialog
       ref={dialogRef}
-      className="settings-modal m-auto h-[min(700px,calc(100dvh-36px))] max-h-[calc(100dvh-24px)] w-[min(880px,calc(100vw-32px))] max-w-[calc(100vw-24px)] overflow-hidden rounded-[15px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-2xl p-0 text-ink shadow-elev-lg animate-[arrive_.18s_cubic-bezier(.22,1,.36,1)_both]"
+      className="settings-modal m-auto h-[min(700px,calc(100dvh-36px))] max-h-[calc(100dvh-24px)] w-[min(880px,calc(100vw-32px))] max-w-[calc(100vw-24px)] overflow-hidden rounded-[28px] border-0 bg-[var(--bg-glass-strong)] backdrop-blur-[40px] backdrop-saturate-150 p-0 text-ink shadow-elev-lg animate-[arrive_.18s_cubic-bezier(.22,1,.36,1)_both]"
       aria-labelledby="settings-modal-title"
       onClose={onClose}
       onCancel={(event) => { if (busy) event.preventDefault() }}
     >
-      <header className="settings-modal-head flex h-[52px] flex-none items-center justify-between gap-3 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-xl pr-4 pl-[22px]">
-        <h2 id="settings-modal-title" className="m-0 text-[15px] font-semibold tracking-[-0.015em] text-ink">{t('Settings')}</h2>
-        <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} /></button>
+      <header className="settings-modal-head flex h-[54px] flex-none items-center justify-between gap-3 border-b-[0.5px] border-line-subtle bg-transparent pr-4 pl-6">
+        <h2 id="settings-modal-title" className="m-0 text-[15.5px] font-medium tracking-[-0.015em] text-ink">{t('Settings')}</h2>
+        <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} strokeWidth={1.65} /></button>
       </header>
 
       {runtimeUnavailable && (
@@ -1447,7 +1447,7 @@ export function SettingsModal({
       )}
 
       <div className="settings-shell grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[218px_minmax(0,1fr)] sm:grid-rows-none" inert={runtimeUnavailable || undefined}>
-        <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b border-line-subtle bg-subtle px-2.5 py-2 sm:border-r sm:border-b-0 sm:pt-3 sm:pb-2.5">
+        <aside className="settings-sidebar flex min-h-0 flex-col justify-between border-b-[0.5px] border-line-subtle bg-subtle px-2.5 py-2 sm:border-r-[0.5px] sm:border-b-0 sm:pt-3 sm:pb-2.5">
           <nav className="settings-nav flex flex-row gap-1 overflow-x-auto sm:flex-col sm:gap-0.5" aria-label={t('Settings sections')}>
             {navItems.filter((item) => !item.hidden).map((item) => {
               const Icon = item.icon
@@ -1457,10 +1457,10 @@ export function SettingsModal({
                   key={item.id}
                   type="button"
                   className={cn(
-                    'flex h-[30px] sm:h-[34px] flex-none sm:w-full cursor-pointer items-center gap-[9px] whitespace-nowrap rounded-[8px] border-0 px-2.5 text-left text-[12.5px] sm:text-[13px] transition-[background,color,box-shadow] duration-120',
+                    'flex h-[30px] sm:h-[34px] flex-none sm:w-full cursor-pointer items-center gap-[9px] whitespace-nowrap rounded-[10px] border-0 px-2.5 text-left text-[12.5px] sm:text-[13px] transition-[background,color,box-shadow] duration-120',
                     active
-                      ? 'active bg-canvas font-semibold text-ink shadow-[0_1px_2px_light-dark(rgb(0_0_0/.05),rgb(0_0_0/.28)),inset_0_0_0_1px_var(--border-subtle)]'
-                      : 'bg-transparent font-medium text-ink-secondary hover:bg-hover hover:text-ink',
+                      ? 'active bg-canvas font-medium text-ink shadow-elev-sm'
+                      : 'bg-transparent font-normal text-ink-secondary hover:bg-hover hover:text-ink',
                   )}
                   onClick={() => { setError(''); setStatus(''); setTab(item.id) }}
                 >

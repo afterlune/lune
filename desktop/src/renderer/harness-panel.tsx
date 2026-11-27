@@ -280,7 +280,7 @@ export function HarnessPanel({
   return (
     <aside
       className={cn(
-        'harness-panel z-[5] h-full min-h-0 min-w-0 flex-col border-l border-line-subtle bg-sidebar',
+        'harness-panel z-[5] h-full min-h-0 min-w-0 flex-col border-l-[0.5px] border-line-subtle bg-sidebar',
         visible ? 'flex' : 'hidden',
         visible && fullScreen && 'fullscreen fixed inset-0 z-[60] h-dvh w-screen border-0',
       )}
@@ -292,7 +292,7 @@ export function HarnessPanel({
         onClose()
       }}
     >
-      <header className="harness-panel-header flex h-[52px] items-center justify-between gap-1.5 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md px-2.5">
+      <header className="harness-panel-header flex h-[52px] items-center justify-between gap-1.5 border-b-[0.5px] border-line-subtle bg-[var(--bg-glass)] backdrop-blur-[40px] px-2.5">
         <div
           ref={tabsRef}
           className={cn(
@@ -313,7 +313,7 @@ export function HarnessPanel({
                 aria-selected={active}
                 className={cn(
                   'inline-flex h-8 flex-none cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-[8px] border-0 px-2.5 text-[12.5px] font-medium transition-[background,color] duration-120',
-                  active ? 'active bg-active text-ink' : 'bg-transparent text-ink-secondary hover:bg-hover hover:text-ink',
+                  active ? 'active bg-hover text-focal' : 'bg-transparent text-ink-secondary hover:bg-hover hover:text-ink',
                 )}
                 onClick={() => onTabChange(item.id)}
               >

@@ -48,66 +48,80 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
- * Sample per-cell intensity (0..1) for a breaching crescent/wave silhouette rising
- * gracefully from a faint water line and subsiding into expanding surface ripples.
+ * Sample per-cell intensity (0..1) for a panoramic lunar tide breaching above the horizon:
+ * an asymmetric crest sweeping upward across the upper canvas above the composer, trailing
+ * fine spray droplets and wide concentric water ripples into the open flanks.
  */
 function sampleLunarTideMask(nx: number, ny: number, progress: number): number {
-  const waterY = 0.66
+  const waterY = 0.69
   const horizonDist = Math.abs(ny - waterY)
 
-  const arch = Math.sin(Math.min(1, progress / 0.88) * Math.PI)
-  const breach = Math.pow(Math.max(0, arch), 0.82)
+  // Sweeping left-to-right arc across upper open sky (clears center composer card)
+  const travel = smoothstep(0.04, 0.94, progress)
+  const arch = Math.sin(Math.min(1, progress / 0.9) * Math.PI)
+  const breach = Math.pow(Math.max(0, arch), 0.78)
 
-  const cx = 0.36 + progress * 0.28
-  const cy = waterY + 0.14 - breach * 0.45
-  const tilt = -0.58 + progress * 1.18
+  const cx = 0.19 + travel * 0.62
+  const cy = waterY + 0.11 - breach * 0.52
+  const tilt = -0.68 + travel * 1.38
   const cosT = Math.cos(tilt)
   const sinT = Math.sin(tilt)
-  const dx = (nx - cx) * 1.18
-  const dy = (ny - cy) * 1.48
+  const dx = (nx - cx) * 1.06
+  const dy = (ny - cy) * 1.44
   const rx = dx * cosT + dy * sinT
   const ry = -dx * sinT + dy * cosT
 
-  const outerR = 0.175
-  const innerR = 0.144
-  const outerDist = Math.hypot(rx, ry)
-  const innerDist = Math.hypot(rx - 0.056, ry + 0.048)
-  const outerAlpha = 1 - smoothstep(outerR - 0.025, outerR + 0.012, outerDist)
-  const innerCut = smoothstep(innerR - 0.022, innerR + 0.015, innerDist)
+  // Sculpted tapered crescent wing + sleek inner wake
+  const outerR = 0.21
+  const innerR = 0.168
+  const outerDist = Math.hypot(rx * 0.9, ry)
+  const innerDist = Math.hypot(rx * 0.94 - 0.068, ry + 0.056)
+  const outerAlpha = 1 - smoothstep(outerR - 0.028, outerR + 0.014, outerDist)
+  const innerCut = smoothstep(innerR - 0.024, innerR + 0.018, innerDist)
   let crescent = outerAlpha * innerCut
 
+  // Secondary luminous inner arc echo for fluid depth
+  const echoDist = Math.hypot(rx * 1.04 + 0.032, ry - 0.022)
+  const echoCut = smoothstep(0.11, 0.145, Math.hypot(rx * 1.04 - 0.025, ry + 0.022))
+  const echo = (1 - smoothstep(0.14, 0.175, echoDist)) * echoCut * 0.55
+  crescent = Math.max(crescent, echo)
+
   if (ny > waterY) {
-    const submergeFade = 1 - smoothstep(waterY, waterY + 0.12, ny)
-    const mirrorWave = Math.sin(nx * 56 - progress * 14) * 0.35 + 0.65
-    crescent *= submergeFade * 0.34 * mirrorWave
+    const submergeFade = 1 - smoothstep(waterY, waterY + 0.13, ny)
+    const mirrorWave = Math.sin(nx * 62 - progress * 16) * 0.35 + 0.65
+    crescent *= submergeFade * 0.38 * mirrorWave
   }
 
+  // Fine trailing spray droplets arcing behind the crest
   let trail = 0
-  if (breach > 0.15) {
-    for (let i = 0; i < 6; i++) {
-      const lag = (i + 1) * 0.052
-      const pTrail = Math.max(0, progress - lag)
-      const aTrail = Math.pow(Math.max(0, Math.sin(Math.min(1, pTrail / 0.88) * Math.PI)), 0.85)
-      const tx = 0.36 + pTrail * 0.28 + Math.sin(i * 2.7) * 0.032
-      const ty = waterY + 0.12 - aTrail * 0.43 + (i % 2 === 0 ? 0.022 : -0.015)
-      if (ty <= waterY + 0.02) {
-        const td = Math.hypot((nx - tx) * 1.2, (ny - ty) * 1.5)
-        trail = Math.max(trail, (1 - smoothstep(0.008, 0.032, td)) * (0.48 - i * 0.05))
+  if (breach > 0.1) {
+    for (let i = 0; i < 8; i++) {
+      const lag = (i + 1) * 0.044
+      const pTrail = Math.max(0, travel - lag)
+      const aTrail = Math.pow(Math.max(0, Math.sin(Math.min(1, pTrail / 0.9) * Math.PI)), 0.82)
+      const tx = 0.19 + pTrail * 0.62 + Math.sin(i * 2.4) * 0.028
+      const ty = waterY + 0.09 - aTrail * 0.49 + ((i % 2 === 0 ? 1 : -1) * (0.016 + (i % 3) * 0.009))
+      if (ty <= waterY + 0.025) {
+        const td = Math.hypot((nx - tx) * 1.15, (ny - ty) * 1.48)
+        trail = Math.max(trail, (1 - smoothstep(0.008, 0.034, td)) * (0.55 - i * 0.045))
       }
     }
   }
 
+  // Wide panoramic splash rings along water horizon
   const entrySplash = Math.exp(-Math.pow((progress - 0.16) / 0.16, 2))
-  const exitSplash = Math.exp(-Math.pow((progress - 0.78) / 0.18, 2))
-  const splashStrength = Math.max(entrySplash, exitSplash * 0.85, breach * 0.38)
-  const radialX = Math.abs(nx - (progress < 0.5 ? 0.41 : 0.57))
-  const waveRadius = (progress < 0.5 ? progress * 0.54 : (progress - 0.45) * 0.62) + 0.03
-  const ring = Math.exp(-Math.pow((radialX - waveRadius) / 0.045, 2))
-  const secondRing = Math.exp(-Math.pow((radialX - waveRadius * 0.58) / 0.035, 2)) * 0.65
-  const band = Math.exp(-Math.pow(horizonDist / 0.024, 2))
-  const ripple = band * splashStrength * (0.28 + 0.72 * Math.max(ring, secondRing))
+  const exitSplash = Math.exp(-Math.pow((progress - 0.8) / 0.17, 2))
+  const splashStrength = Math.max(entrySplash, exitSplash * 0.9, breach * 0.44)
+  const originX = progress < 0.5 ? 0.28 : 0.72
+  const radialX = Math.abs(nx - originX)
+  const waveRadius = (progress < 0.5 ? progress * 0.64 : (progress - 0.42) * 0.7) + 0.035
+  const ring = Math.exp(-Math.pow((radialX - waveRadius) / 0.052, 2))
+  const secondRing = Math.exp(-Math.pow((radialX - waveRadius * 0.56) / 0.038, 2)) * 0.7
+  const thirdRing = Math.exp(-Math.pow((radialX - waveRadius * 0.3) / 0.028, 2)) * 0.45
+  const band = Math.exp(-Math.pow(horizonDist / 0.026, 2))
+  const ripple = band * splashStrength * (0.26 + 0.74 * Math.max(ring, secondRing, thirdRing))
 
-  return Math.max(crescent, trail, ripple * 0.85)
+  return Math.max(crescent, trail, ripple * 0.92)
 }
 
 function attachHomeAmbient(canvas: HTMLCanvasElement): AmbientHandle {
@@ -197,7 +211,7 @@ function attachHomeAmbient(canvas: HTMLCanvasElement): AmbientHandle {
       }
       matte.putImageData(alphaImage, 0, 0)
       ctx.save()
-      ctx.globalAlpha = 0.85 * envelope
+      ctx.globalAlpha = 0.96 * envelope
       ctx.drawImage(lettering, sceneLeft, sceneTop, sceneW, sceneH)
       ctx.globalCompositeOperation = 'destination-in'
       ctx.drawImage(mask, sceneLeft, sceneTop, sceneW, sceneH)
@@ -207,16 +221,16 @@ function attachHomeAmbient(canvas: HTMLCanvasElement): AmbientHandle {
 
     const cellW = sceneW / CELL_COLS
     const cellH = sceneH / CELL_ROWS
-    const maxRadius = Math.min(cellW, cellH) * 0.44
-    ctx.fillStyle = getComputedStyle(canvas).color || '#52525b'
+    const maxRadius = Math.min(cellW, cellH) * 0.45
+    ctx.fillStyle = getComputedStyle(canvas).color || '#0f1115'
     for (let row = 0; row < CELL_ROWS; row++) {
       const ny = (row + 0.5) / CELL_ROWS
       for (let col = 0; col < CELL_COLS; col++) {
         const nx = (col + 0.5) / CELL_COLS
         const intensity = sampleLunarTideMask(nx, ny, progress)
-        if (intensity < 0.03) continue
-        const radius = maxRadius * (0.28 + 0.72 * intensity)
-        ctx.globalAlpha = intensity * 0.8 * envelope
+        if (intensity < 0.025) continue
+        const radius = maxRadius * (0.26 + 0.74 * intensity)
+        ctx.globalAlpha = intensity * 0.88 * envelope
         ctx.beginPath()
         ctx.arc(sceneLeft + col * cellW + cellW * 0.5, sceneTop + row * cellH + cellH * 0.5, radius, 0, Math.PI * 2)
         ctx.fill()
@@ -272,10 +286,10 @@ function attachHomeAmbient(canvas: HTMLCanvasElement): AmbientHandle {
     canvas.width = Math.round(width * dpr)
     canvas.height = Math.round(height * dpr)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    sceneW = Math.min(Math.max(width * 0.88, 560), height * 1.45, 980)
+    sceneW = Math.min(Math.max(width * 0.94, 700), height * 1.65, 1120)
     sceneH = sceneW * (CELL_ROWS / CELL_COLS)
     sceneLeft = (width - sceneW) / 2
-    sceneTop = height * 0.44 - sceneH / 2
+    sceneTop = height * 0.36 - sceneH / 2
     rebuildCodeLayer()
     resume()
   }
@@ -375,7 +389,7 @@ export function HomeAmbientStage({
       {active && (
         <canvas
           ref={canvasRef}
-          className="home-ambient-canvas pointer-events-none absolute inset-0 z-0 block h-full w-full font-mono text-ink-secondary grayscale opacity-[0.17]"
+          className="home-ambient-canvas pointer-events-none absolute inset-0 z-0 block h-full w-full font-mono text-ink grayscale opacity-[0.18]"
           aria-hidden="true"
         />
       )}

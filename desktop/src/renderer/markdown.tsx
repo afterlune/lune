@@ -45,19 +45,19 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="code-block my-3.5 overflow-hidden rounded-[12px] border border-line-subtle bg-code shadow-[0_1px_2px_light-dark(rgb(0_0_0/.03),rgb(0_0_0/.2))]">
-      <div className="code-block-header flex items-center justify-between border-b border-line-subtle bg-muted/85 shadow-[inset_0_1px_0_var(--glass-highlight)] px-3.5 py-[7px]">
-        <span className="code-lang rounded-[5px] border border-line-subtle bg-canvas/70 px-1.5 py-[1px] font-mono text-[11.5px] lowercase text-ink-secondary">{language}</span>
+    <div className="code-block my-4 overflow-hidden rounded-[16px] border-0 bg-code">
+      <div className="code-block-header flex items-center justify-between px-5 pt-2.5 pb-1.5 text-[11px] text-ink-muted">
+        <span className="code-lang font-mono lowercase text-ink-muted">{language}</span>
         <button
           type="button"
-          className="code-copy-button inline-flex cursor-pointer items-center gap-[5px] rounded-[6px] border-0 bg-transparent px-2 py-[3px] text-[12px] text-ink-secondary transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
+          className="code-copy-button inline-flex cursor-pointer items-center gap-1 rounded-[8px] border-0 bg-transparent px-1.5 py-0.5 text-[11.5px] text-ink-secondary transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
           onClick={() => void handleCopy()}
         >
           {copied ? <Check size={13} className="text-ok" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
           <span className={copied ? 'text-ok' : undefined}>{t(copied ? 'Copied' : 'Copy')}</span>
         </button>
       </div>
-      <pre className="m-0 overflow-auto bg-transparent px-4 py-3.5 text-ink">{children}</pre>
+      <pre className="m-0 overflow-auto bg-transparent px-5 pt-1 pb-4 text-ink">{children}</pre>
     </div>
   )
 }

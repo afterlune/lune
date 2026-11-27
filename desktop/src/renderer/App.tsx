@@ -3416,7 +3416,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           {!desktop && <LanguagePicker />}<ThemePicker value={theme} onChange={setTheme} />
         </div>
         <main
-          className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[16px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl px-5 pt-[26px] pb-[22px] shadow-elev-md animate-[arrive_.25s_ease_both] sm:rounded-[18px] sm:px-[34px] sm:pt-9 sm:pb-7"
+          className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[28px] border-0 bg-[var(--bg-glass-strong)] backdrop-blur-[40px] backdrop-saturate-150 px-6 pt-8 pb-6 shadow-elev-lg animate-[arrive_.25s_ease_both] sm:px-[34px] sm:pt-9 sm:pb-7"
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !connectDisabled && event.target instanceof HTMLInputElement && event.target.type !== 'checkbox') {
               event.preventDefault()
@@ -3618,7 +3618,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             <MoreHorizontal size={13} aria-hidden="true" />
           </button>
           {menuOpen && (
-            <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl p-[5px] shadow-elev-md" role="menu">
+            <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[16px] border-0 bg-[var(--bg-glass)] backdrop-blur-[40px] backdrop-saturate-150 p-1 shadow-elev-md" role="menu">
               <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
                 <Pencil size={13} aria-hidden="true" /><span>{t('Rename')}</span>
               </button>
@@ -3719,15 +3719,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
 
   const sessionNavigation = <>
     <button
-      className="new-chat-button mb-2.5 flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[9px] border-0 bg-transparent px-2.5 text-left text-[13.5px] font-medium text-ink transition-[background] duration-120 hover:not-disabled:bg-hover disabled:opacity-45"
+      className="new-chat-button mb-2.5 flex h-[38px] w-full cursor-pointer items-center justify-center gap-2 rounded-[12px] border-[0.5px] border-line bg-canvas/85 px-3 text-[13.5px] font-medium text-ink transition-[background,border-color] duration-120 hover:not-disabled:bg-hover disabled:opacity-45"
       disabled={working}
       onClick={() => void createSession()}
     >
-      <SquarePen size={16} aria-hidden="true" /><span>{t('New conversation')}</span>
+      <SquarePen size={15} strokeWidth={1.65} aria-hidden="true" /><span>{t('New conversation')}</span>
     </button>
     {showSearchBlock && (
       <div className="sidebar-search-block mb-2.5">
-        <div className="session-search flex h-[34px] items-center gap-2 rounded-[9px] border border-line bg-canvas px-2.5 text-ink-muted">
+        <div className="session-search flex h-[34px] items-center gap-2 rounded-[12px] border-[0.5px] border-line bg-canvas px-2.5 text-ink-muted">
           <Search size={14} aria-hidden="true" />
           <input
             autoFocus={searchOpen && !compactLayout}
@@ -3864,14 +3864,14 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                   <div
                     key={session.id}
                     className={cn(
-                      'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
+                      'session-row group/srow relative my-[1px] flex items-center rounded-[12px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
                       selected && 'selected bg-active',
                       menuOpen && 'menu-open bg-hover',
                     )}
                   >
                     <button
                       className={cn(
-                        'session-item m-0 min-h-[34px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent px-2.5 py-1.5 text-left text-[13.5px] text-ink',
+                        'session-item m-0 min-h-[34px] min-w-0 flex-1 cursor-pointer truncate rounded-[12px] border-0 bg-transparent px-2.5 py-1.5 text-left text-[13.5px] text-ink',
                         selected && 'font-medium',
                       )}
                       disabled={working}
@@ -3896,11 +3896,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       </>
     )}
     {drawerOpen && actionError && <div className={cn('action-error my-2 flex items-center gap-2', bannerError)} role="alert">{actionError}</div>}
-    <div className="sidebar-bottom mt-2 flex flex-col gap-2 pt-2">
-      <div className="core-card flex items-center gap-2.5 rounded-[10px] border border-line-subtle bg-subtle px-2.5 py-2">
-        <div className="core-card-icon grid h-7 w-7 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={15} /></div>
+    <div className="sidebar-bottom mt-2 flex flex-col gap-0.5 border-t-[0.5px] border-line-subtle pt-2">
+      <div className="core-card flex items-center gap-2.5 rounded-[12px] px-2.5 py-1.5">
+        <div className="core-card-icon grid h-6 w-6 shrink-0 place-items-center rounded-[7px] bg-muted text-ink-secondary"><Code2 size={14} strokeWidth={1.65} /></div>
         <div className="core-card-copy min-w-0 flex-1">
-          <strong className="block truncate text-[12px] font-semibold text-ink">{managed?.isRemoteOverride || connection?.mode === 'remote' ? t('Remote Core') : t('Local Core')}</strong>
+          <strong className="block truncate text-[12px] font-medium text-ink">{managed?.isRemoteOverride || connection?.mode === 'remote' ? t('Remote Core') : t('Local Core')}</strong>
           <span className="block truncate font-mono text-[11px] text-ink-muted">{workspaceName || (connection?.mode === 'remote' ? connection.url : connection?.mode === 'local' ? workspace.split(/[\\/]/).filter(Boolean).at(-1) || 'This computer' : workspacePath || 'Workspace')}</span>
         </div>
         <span className={cn('connection-light h-2 w-2 shrink-0 rounded-full', connectionStatus, statusDotCls)} />
@@ -3955,9 +3955,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const runningCommandsCount = commands.filter((cmd) => cmd.status === 'running').length
 
   const composerPillCls =
-    'composer-pill-btn inline-flex h-[30px] sm:h-[32px] cursor-pointer items-center gap-[5px] whitespace-nowrap rounded-full border border-line bg-subtle px-[10px] sm:px-[11px] text-[12px] sm:text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:not-disabled:border-line-strong hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40'
+    'composer-pill-btn inline-flex h-[28px] cursor-pointer items-center gap-[5px] whitespace-nowrap rounded-[8px] border-0 bg-transparent px-2 text-[13px] font-medium text-ink-secondary transition-[background,color] duration-120 hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-45'
   const composerPopoverCls =
-    'composer-popover absolute bottom-[calc(100%+8px)] right-0 z-30 flex w-[min(320px,calc(100vw-24px))] sm:w-[300px] flex-col gap-1.5 rounded-[14px] border border-line bg-composer p-2 shadow-elev-md'
+    'composer-popover absolute bottom-[calc(100%+8px)] right-0 z-30 flex w-[min(320px,calc(100vw-24px))] sm:w-[300px] flex-col gap-1.5 rounded-[16px] border-0 bg-[var(--bg-glass)] backdrop-blur-[40px] backdrop-saturate-150 p-1.5 shadow-elev-md'
   const composerItemCls = (active: boolean) =>
     cn(
       'composer-popover-item flex w-full cursor-pointer items-center justify-between gap-2 rounded-[9px] border-0 px-2.5 py-2 text-left transition-[background] duration-100',
@@ -3969,7 +3969,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       {!isEmptyConversation && showScrollBottom && slashMatches.length === 0 && !activeMention && (
         <button
           type="button"
-          className="scroll-bottom-btn absolute -top-[46px] left-1/2 z-25 grid h-[34px] w-[34px] -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line-strong bg-[var(--bg-glass-strong)] backdrop-blur-md text-ink shadow-elev-sm transition-[background,border-color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover active:translate-y-0"
+          className="scroll-bottom-btn absolute -top-[48px] left-1/2 z-25 grid h-[32px] w-[32px] -translate-x-1/2 cursor-pointer place-items-center rounded-full border-0 bg-[var(--bg-glass-strong)] backdrop-blur-md text-ink shadow-elev-md transition-[background,transform] duration-120 hover:-translate-y-px hover:bg-hover active:translate-y-0"
           aria-label={t('Scroll to bottom')}
           title={t('Scroll to bottom')}
           onClick={() => scrollToBottom(true)}
@@ -4172,7 +4172,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       )}
       <div
-        className="composer flex flex-col gap-2 rounded-[22px] sm:rounded-[24px] border border-line bg-composer backdrop-blur-xl px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 shadow-composer transition-[border-color,box-shadow] duration-150"
+        className="composer flex flex-col gap-3 rounded-[28px] border-0 bg-composer backdrop-blur-[40px] backdrop-saturate-150 px-4 pt-3 pb-2.5 shadow-composer transition-[box-shadow] duration-150"
         onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }}
         onDrop={(event) => {
           if (!has('turn.attachments')) return
@@ -4301,24 +4301,24 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               }} />
               <button
                 type="button"
-                className="composer-icon-btn inline-grid h-[30px] w-[30px] sm:h-[32px] sm:w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-transparent text-ink-secondary transition-[background,color] duration-120 hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                className="composer-icon-btn inline-grid h-[32px] w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-muted text-ink transition-[background,color] duration-120 hover:not-disabled:bg-active disabled:cursor-not-allowed disabled:opacity-45"
                 disabled={working}
                 onClick={() => fileInput.current?.click()}
                 aria-label={t('Attach')}
                 title={t('Attach')}
               >
-                <Plus size={18} aria-hidden="true" />
+                <Plus size={17} strokeWidth={1.75} aria-hidden="true" />
               </button>
               {desktop && modelOption?.supportsInputImages && (
                 <button
                   type="button"
-                  className="composer-icon-btn inline-grid h-[30px] w-[30px] sm:h-[32px] sm:w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-transparent text-ink-secondary transition-[background,color] duration-120 hover:not-disabled:bg-hover hover:not-disabled:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  className="composer-icon-btn inline-grid h-[32px] w-[32px] cursor-pointer place-items-center rounded-full border-0 bg-muted text-ink transition-[background,color] duration-120 hover:not-disabled:bg-active disabled:cursor-not-allowed disabled:opacity-45"
                   disabled={working}
                   onClick={captureScreenshot}
                   aria-label="Screenshot"
                   title="Screenshot"
                 >
-                  <Camera size={16} aria-hidden="true" />
+                  <Camera size={15} strokeWidth={1.75} aria-hidden="true" />
                 </button>
               )}
             </>}
@@ -4388,7 +4388,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                       className={cn(
                         composerPillCls,
                         'composer-picker-btn max-w-[196px] sm:max-w-[260px]',
-                        isMaxEffort && 'is-max border-ink bg-canvas text-ink',
+                        isMaxEffort && 'is-max text-ink',
                       )}
                       aria-haspopup="listbox"
                       aria-expanded={composerMenu === 'model'}
@@ -4485,34 +4485,34 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && (
               <button
                 type="button"
-                className="stop-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-canvas text-ink transition-[background,border-color,opacity,transform] duration-120 hover:not-disabled:bg-hover active:not-disabled:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+                className="stop-button inline-grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-muted text-ink shadow-[0_0_0_0.5px_var(--border-default)] transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-active active:not-disabled:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 disabled={working}
                 onClick={() => void stopRun()}
                 aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')}
                 title={t(taskIsQueued ? 'Cancel queued' : 'Stop')}
               >
-                <Square size={12} fill="currentColor" aria-hidden="true" />
+                <Square size={11} fill="currentColor" aria-hidden="true" />
               </button>
             )}
             <button
               type="button"
-              className="send-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-accent text-accent-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-accent-hover active:not-disabled:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
+              className="send-button inline-grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-focal text-focal-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-focal-hover active:not-disabled:scale-[0.94] disabled:cursor-default disabled:opacity-35"
               disabled={!activeSession || (!draft.trim() && !attachments.length) || working || configReloadPending || connectionStatus !== 'connected'}
               onClick={() => void sendMessage()}
               aria-label={t('Send message')}
               title={t('Send message')}
             >
-              {working ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}
+              {working ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={17} strokeWidth={2} />}
             </button>
           </div>
         </div>
       </div>
       {!isEmptyConversation && (
-        <div className="composer-telemetry mt-1.5 flex min-h-[28px] flex-wrap items-center justify-center gap-2">
+        <div className="composer-telemetry mt-1 flex min-h-[24px] flex-wrap items-center justify-center gap-3">
           {usageMetrics.hasUsage && (
             <button
               type="button"
-              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              className="telemetry-chip inline-flex min-h-[22px] cursor-pointer items-center gap-1.5 rounded-[8px] border-0 bg-transparent px-2 py-0.5 font-mono text-[11.5px] tabular-nums text-ink-muted transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
               title={`${t('input')} ${usageMetrics.input.toLocaleString()} · ${t('output')} ${usageMetrics.output.toLocaleString()} · ${t('Cache')} ${usageMetrics.cached.toLocaleString()} · ${t('Total')} ${usageMetrics.total.toLocaleString()} · ${t('Context usage')} ${usageMetrics.usedContext.toLocaleString()} / ${usageMetrics.contextWindow.toLocaleString()}`}
               onClick={() => openHarnessTab('context')}
             >
@@ -4533,7 +4533,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           {runtime.goal && (
             <button
               type="button"
-              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              className="telemetry-chip inline-flex min-h-[22px] cursor-pointer items-center gap-1.5 rounded-[8px] border-0 bg-transparent px-2 py-0.5 font-mono text-[11.5px] tabular-nums text-ink-muted transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
               onClick={() => openHarnessTab('goal')}
             >
               <Target size={11} aria-hidden="true" />
@@ -4543,7 +4543,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           {runningCommandsCount > 0 && (
             <button
               type="button"
-              className="telemetry-chip inline-flex min-h-[26px] cursor-pointer items-center gap-1.5 rounded-full border border-line-subtle bg-subtle px-2.5 py-0.5 font-mono text-[11.5px] text-ink-muted transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
+              className="telemetry-chip inline-flex min-h-[22px] cursor-pointer items-center gap-1.5 rounded-[8px] border-0 bg-transparent px-2 py-0.5 font-mono text-[11.5px] tabular-nums text-ink-muted transition-[background,color] duration-120 hover:bg-hover hover:text-ink"
               onClick={() => openHarnessTab('processes')}
             >
               <Terminal size={11} aria-hidden="true" />
@@ -4600,26 +4600,26 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         <aside
           className={cn(
             'sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar transition-opacity duration-150',
-            isSidebarCollapsed ? 'pointer-events-none p-0 opacity-0' : 'border-r border-line-subtle px-2.5 pt-0 pb-3',
+            isSidebarCollapsed ? 'pointer-events-none p-0 opacity-0' : 'border-r-[0.5px] border-line-subtle px-2.5 pt-0 pb-3',
           )}
           aria-label={t('Conversations')}
           aria-hidden={sidebarCollapsed || undefined}
         >
           <div className="sidebar-top flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between">
-            <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={18} /></button>
+            <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Toggle sidebar')} title={t('Toggle sidebar')} onClick={() => setSidebarCollapsed(true)}><PanelLeftClose size={17} strokeWidth={1.65} /></button>
             <div className="sidebar-top-actions flex items-center gap-0.5">
-              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Search conversations')} title={t('Search conversations')} aria-pressed={searchOpen} onClick={() => setSearchOpen((open) => !open)}><Search size={17} /></button>
-              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('New conversation')} title={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
+              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Search conversations')} title={t('Search conversations')} aria-pressed={searchOpen} onClick={() => setSearchOpen((open) => !open)}><Search size={16} strokeWidth={1.65} /></button>
+              <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('New conversation')} title={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={16} strokeWidth={1.65} /></button>
             </div>
           </div>
           {sessionNavigation}
         </aside>
       )}
       {!compactLayout && sidebarCollapsed && (
-        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] border-r border-line-subtle bg-sidebar pt-[10px] pb-3" aria-label={t('Quick navigation')}>
-          <button type="button" className={cn('icon-button', btnIcon)} title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
-          <button type="button" className={cn('icon-button', btnIcon)} title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
-          <button type="button" className={cn('icon-button sidebar-rail-settings mt-auto', btnIcon)} title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>
+        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] border-r-[0.5px] border-line-subtle bg-sidebar pt-[10px] pb-3" aria-label={t('Quick navigation')}>
+          <button type="button" className={cn('icon-button', btnIcon)} title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={17} strokeWidth={1.65} /></button>
+          <button type="button" className={cn('icon-button', btnIcon)} title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={16} strokeWidth={1.65} /></button>
+          <button type="button" className={cn('icon-button sidebar-rail-settings mt-auto', btnIcon)} title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={16} strokeWidth={1.65} /></button>
         </nav>
       )}
       {!compactLayout && !sidebarCollapsed && (
@@ -4660,15 +4660,22 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       )}
 
       <main className="chat-area flex h-dvh min-h-0 min-w-0 flex-col bg-canvas">
-        <header className="chat-header relative z-[2] flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between gap-1.5 sm:gap-3 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md px-2.5 sm:px-4">
+        <header
+          className={cn(
+            'chat-header relative z-[2] flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between gap-1.5 sm:gap-3 px-2.5 sm:px-5 transition-[border-color,background] duration-150',
+            isEmptyConversation
+              ? 'border-b-0 bg-transparent'
+              : 'border-b-[0.5px] border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md',
+          )}
+        >
           <div className="header-left flex min-w-0 flex-1 items-center gap-2">
             {compactLayout && (
-              <button type="button" className={cn('icon-button drawer-toggle', btnIcon)} title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={18} /></button>
+              <button type="button" className={cn('icon-button drawer-toggle', btnIcon)} title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={17} strokeWidth={1.65} /></button>
             )}
             {workspaceName ? (
               <span className="header-workspace hidden truncate text-[13.5px] font-medium text-ink-secondary sm:inline" title={workspacePath}>{workspaceName}</span>
             ) : (
-              <span className="header-brand-title text-[14.5px] font-semibold tracking-[-0.015em] text-ink">Lune</span>
+              <span className="header-brand-title text-[14.5px] font-medium tracking-[-0.015em] text-ink">Lune</span>
             )}
             {activeSession?.title && (
               <>
@@ -4679,7 +4686,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           </div>
           <div className="header-actions flex shrink-0 items-center gap-1">
             {connectionStatus !== 'connected' && (
-              <span className={cn('connection-pill mr-1 inline-flex items-center gap-1.5 rounded-full border border-line bg-subtle px-2.5 py-0.5 text-[11.5px] text-ink-secondary', connectionStatus)}>
+              <span className={cn('connection-pill mr-1 inline-flex items-center gap-1.5 rounded-full border-[0.5px] border-line bg-subtle px-2.5 py-0.5 text-[11.5px] text-ink-secondary', connectionStatus)}>
                 {statusIcon}{t(statusLabel)}
               </span>
             )}
@@ -4692,7 +4699,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               title={t('Open folder as file tree')}
               onClick={() => void openWorkspaceAsFileTree(true)}
             >
-              <FolderOpen size={17} />
+              <FolderOpen size={16} strokeWidth={1.65} />
             </button>
             <button
               type="button"
@@ -4702,7 +4709,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
               title={`${t('Harness')} (Ctrl+B)`}
               onClick={() => setHarnessOpen((open) => !open)}
             >
-              <PanelRight size={17} />
+              <PanelRight size={16} strokeWidth={1.65} />
             </button>
           </div>
         </header>
@@ -4743,25 +4750,25 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         )}
 
         {isEmptyConversation ? (
-          <HomeAmbientStage active={isEmptyConversation} className="empty-stage relative flex flex-1 flex-col items-center justify-center overflow-hidden px-3 pb-10">
-            <h1 className="empty-headline relative z-[1] m-0 mb-5 sm:mb-7 text-center text-[22px] sm:text-[28px] font-semibold tracking-[-0.025em] text-ink">
+          <HomeAmbientStage active={isEmptyConversation} className="empty-stage relative flex flex-1 flex-col items-center justify-center overflow-hidden px-3 pt-10 pb-12">
+            <h1 className="empty-headline relative z-[1] m-0 mb-6 text-center text-[23px] sm:text-[26px] font-medium leading-[1.25] tracking-[-0.02em] text-ink">
               {t('What would you like to work through?')}
             </h1>
             <div className="relative z-[1] w-full">{composerNode}</div>
             <div className="suggestion-row relative z-[1] mt-4 flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-[var(--bg-glass)] backdrop-blur-md px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary [box-shadow:inset_0_1px_0_var(--glass-highlight),var(--elev-sm)] transition-[background,border-color,color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover hover:text-ink active:translate-y-0"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border-[0.5px] border-line-subtle bg-canvas/80 px-3.5 py-1.5 text-[12.5px] font-normal text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
                 onClick={() => setDraft(t('Help me understand this project.'))}
               >
-                {t('Understand a project')}<ArrowUpRight size={14} aria-hidden="true" />
+                {t('Understand a project')}<ArrowUpRight size={13.5} strokeWidth={1.65} aria-hidden="true" />
               </button>
               <button
                 type="button"
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-[var(--bg-glass)] backdrop-blur-md px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary [box-shadow:inset_0_1px_0_var(--glass-highlight),var(--elev-sm)] transition-[background,border-color,color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover hover:text-ink active:translate-y-0"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border-[0.5px] border-line-subtle bg-canvas/80 px-3.5 py-1.5 text-[12.5px] font-normal text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line hover:bg-hover hover:text-ink"
                 onClick={() => setDraft(t('Help me make a plan for…'))}
               >
-                {t('Make a plan')}<ArrowUpRight size={14} aria-hidden="true" />
+                {t('Make a plan')}<ArrowUpRight size={13.5} strokeWidth={1.65} aria-hidden="true" />
               </button>
             </div>
           </HomeAmbientStage>
@@ -4892,8 +4899,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                       />
                     ))}
                   </div>
-                  <div className="turn-outline-popover absolute top-1/2 right-6 flex max-h-[min(380px,60vh)] w-[256px] flex-col overflow-hidden rounded-[12px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl shadow-elev-md" role="region" aria-label={t('Conversation outline')}>
-                    <div className="turn-outline-head flex items-center justify-between border-b border-line-subtle px-3 pt-[9px] pb-[7px] text-[11.5px] font-semibold text-ink-muted">
+                  <div className="turn-outline-popover absolute top-1/2 right-6 flex max-h-[min(380px,60vh)] w-[256px] flex-col overflow-hidden rounded-[16px] border-0 bg-[var(--bg-glass)] backdrop-blur-[40px] backdrop-saturate-150 shadow-elev-md" role="region" aria-label={t('Conversation outline')}>
+                    <div className="turn-outline-head flex items-center justify-between border-b-[0.5px] border-line-subtle px-3 pt-[9px] pb-[7px] text-[11.5px] font-medium text-ink-muted">
                       <span>{t('Conversation outline')}</span>
                       <small className="font-mono text-[11px] text-ink-faint">{userTurns.length}</small>
                     </div>
@@ -4921,7 +4928,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                 </nav>
               )}
             </div>
-            {composerNode}
+            <div className="composer-seat relative z-[9] -mt-5 pt-5 bg-[linear-gradient(180deg,transparent_0px,var(--bg-canvas)_26px)]">
+              {composerNode}
+            </div>
           </>
         )}
       </main>
