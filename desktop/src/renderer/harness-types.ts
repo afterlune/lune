@@ -481,6 +481,16 @@ export function extractProposedPlan(text: string): { before: string; plan: strin
   }
 }
 
+const HOST_INTERNAL_USER_PROMPTS = new Set([
+  'Commands are still running. Use command_status until they finish, or explicitly command_stop them before submitting a final answer. A command start receipt is not evidence of success.',
+])
+
+function isHostInternalMessage(role: unknown, text: string): boolean {
+  if (role !== 'user') return false
+  const trimmed = text.trim()
+  return trimmed.startsWith('[Lune runtime context]\n') || HOST_INTERNAL_USER_PROMPTS.has(trimmed)
+}
+
 export function buildTimeline(history: unknown): TimelineEntry[] {
   const entries: TimelineEntry[] = []
   const byCallId = new Map<string, ToolCallItem>()
@@ -512,7 +522,7 @@ export function buildTimeline(history: unknown): TimelineEntry[] {
         }
       }
       const text = contentText(Array.isArray(parts) ? textParts : parts)
-      if (!text.trim() && !attachments.length) continue
+      if ((!text.trim() && !attachments.length) || isHostInternalMessage(item.role, text)) continue
       entries.push({
         kind: 'message',
         id: `${index}-${String(item.role)}`,
