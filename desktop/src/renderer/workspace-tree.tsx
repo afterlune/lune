@@ -274,15 +274,15 @@ export function WorkspaceTree({
                           <div
                             key={session.id}
                             className={cn(
-                              'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background] duration-120 hover:bg-hover focus-within:bg-hover',
-                              selected && 'selected bg-active',
+                              'session-row group/srow relative my-[1px] flex items-center rounded-[9px] transition-[background,box-shadow] duration-120 hover:bg-hover focus-within:bg-hover',
+                              selected && 'selected bg-canvas shadow-[inset_0_0_0_1px_var(--border-subtle),0_1px_2px_light-dark(rgb(0_0_0/.04),rgb(0_0_0/.2))] before:absolute before:top-[7px] before:bottom-[7px] before:left-1 before:w-[2.5px] before:rounded-full before:bg-ink',
                             )}
                           >
                             <button
                               type="button"
                               className={cn(
-                                'session-item m-0 min-h-[32px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent px-2 py-1 text-left text-[13px] text-ink',
-                                selected && 'font-medium',
+                                'session-item m-0 min-h-[32px] min-w-0 flex-1 cursor-pointer truncate rounded-[9px] border-0 bg-transparent py-1 pr-2 text-left text-[13px] text-ink',
+                                selected ? 'pl-3 font-medium' : 'px-2',
                               )}
                               disabled={working}
                               aria-current={selected ? 'true' : undefined}

@@ -12,7 +12,7 @@ export const btnPrimaryDanger =
   'inline-flex items-center justify-center gap-1.5 min-h-[32px] px-3 text-white border border-danger rounded-[8px] bg-danger cursor-pointer text-[12.5px] font-medium transition-[opacity,transform] duration-150 hover:not-disabled:opacity-90 active:not-disabled:scale-[0.985] disabled:opacity-40 disabled:cursor-not-allowed'
 
 export const btnSecondary =
-  'inline-flex items-center justify-center gap-1.5 min-h-[32px] px-3 text-ink border border-line rounded-[8px] bg-canvas shadow-[0_1px_2px_light-dark(rgb(0_0_0/.035),rgb(0_0_0/.22))] cursor-pointer text-[12.5px] font-medium transition-[background,border-color,transform] duration-150 hover:not-disabled:border-line-strong hover:not-disabled:bg-hover active:not-disabled:scale-[0.985] disabled:opacity-40 disabled:cursor-not-allowed'
+  'inline-flex items-center justify-center gap-1.5 min-h-[32px] px-3 text-ink border border-line rounded-[8px] bg-canvas shadow-[inset_0_1px_0_var(--glass-highlight),0_1px_2px_light-dark(rgb(0_0_0/.04),rgb(0_0_0/.24))] cursor-pointer text-[12.5px] font-medium transition-[background,border-color,transform] duration-150 hover:not-disabled:border-line-strong hover:not-disabled:bg-hover active:not-disabled:scale-[0.985] disabled:opacity-40 disabled:cursor-not-allowed'
 
 export const btnPlain =
   'inline-flex items-center justify-center gap-1.5 min-h-[28px] px-[9px] text-ink-secondary border border-transparent rounded-[7px] bg-transparent cursor-pointer text-[12.5px] font-medium transition-[background,color] duration-120 hover:not-disabled:text-ink hover:not-disabled:bg-hover disabled:opacity-40 disabled:cursor-not-allowed'
@@ -42,13 +42,13 @@ export const surfaceCard =
   'border border-line rounded-[11px] bg-canvas'
 
 export const statusPill =
-  'inline-flex items-center px-[7px] py-[1px] border border-line rounded-full bg-canvas text-ink-secondary font-mono text-[11px] whitespace-nowrap'
+  'inline-flex items-center px-[7px] py-[1px] border border-line rounded-full bg-canvas shadow-[inset_0_1px_0_var(--glass-highlight)] text-ink-secondary font-mono text-[11px] tabular-nums whitespace-nowrap'
 
 export const badgeMono =
-  'inline-flex items-center px-[6px] py-[1px] border border-line-subtle rounded-[6px] bg-muted text-ink-secondary font-mono text-[11px] whitespace-nowrap'
+  'inline-flex items-center px-[6px] py-[1px] border border-line-subtle rounded-[6px] bg-muted text-ink-secondary font-mono text-[11px] tabular-nums whitespace-nowrap'
 
 export const popoverSurface =
-  'border border-line rounded-[12px] bg-composer shadow-elev-md'
+  'border border-line rounded-[12px] bg-[var(--bg-glass)] backdrop-blur-xl shadow-elev-md'
 
 export const bannerError =
   'm-0 px-[12px] py-[9px] rounded-[9px] border border-danger-border bg-danger-bg text-danger text-[12.5px] leading-[1.45]'
@@ -57,4 +57,4 @@ export const bannerStatus =
   'm-0 px-[12px] py-[9px] rounded-[9px] border border-line bg-subtle text-ink-secondary text-[12.5px] leading-[1.45]'
 
 export const backdropOverlay =
-  'fixed inset-0 z-30 grid place-items-center p-5 bg-black/45 backdrop-blur-[4px] animate-[fade_.15s_ease_both]'
+  'fixed inset-0 z-30 grid place-items-center p-5 bg-black/40 backdrop-blur-[6px] animate-[fade_.15s_ease_both]'

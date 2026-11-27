@@ -23,6 +23,7 @@ import type { ThemePreference } from '../shared/theme'
 import { defaultUiPreferences, type UiPreferences } from '../shared/ui-preferences'
 import { MarkdownContent } from './markdown'
 import { HarnessPanel } from './harness-panel'
+import { HomeAmbientStage } from './home-ambient'
 import { deriveAgentSnapshots } from './agent-state'
 import type { TerminalTarget } from './terminal-transport'
 import { TimelineView } from './timeline'
@@ -3405,7 +3406,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       )
     }
     return (
-      <div className="connect-page relative flex min-h-screen items-center justify-center bg-canvas px-4 pt-[72px] pb-[60px] sm:px-6 sm:pt-[88px] sm:pb-[72px]">
+      <HomeAmbientStage active className="connect-page relative flex min-h-screen items-center justify-center overflow-hidden bg-canvas px-4 pt-[72px] pb-[60px] sm:px-6 sm:pt-[88px] sm:pb-[72px]">
         <div className="connect-top absolute top-[18px] left-4 z-[1] flex items-center gap-2.5 text-[16px] font-semibold tracking-[-0.02em] text-ink sm:top-6 sm:left-8">
           <div className="brand-mark grid h-[30px] w-[30px] place-items-center rounded-[8px] bg-accent text-accent-fg"><Sparkles size={16} /></div>
           <span>Lune</span>
@@ -3415,7 +3416,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           {!desktop && <LanguagePicker />}<ThemePicker value={theme} onChange={setTheme} />
         </div>
         <main
-          className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[16px] border border-line bg-canvas px-5 pt-[26px] pb-[22px] shadow-elev-md animate-[arrive_.25s_ease_both] sm:rounded-[18px] sm:px-[34px] sm:pt-9 sm:pb-7"
+          className="connect-card relative z-[1] w-[min(100%,430px)] rounded-[16px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl px-5 pt-[26px] pb-[22px] shadow-elev-md animate-[arrive_.25s_ease_both] sm:rounded-[18px] sm:px-[34px] sm:pt-9 sm:pb-7"
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !connectDisabled && event.target instanceof HTMLInputElement && event.target.type !== 'checkbox') {
               event.preventDefault()
@@ -3549,11 +3550,11 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </main>
         {settingsDialogNode}
         {desktop && (
-          <div className="connect-bottom absolute right-4 bottom-[18px] left-4 flex items-center justify-between font-mono text-[10.5px] tracking-[0.06em] text-ink-faint sm:right-8 sm:bottom-6 sm:left-8 sm:text-[11px]">
+          <div className="connect-bottom absolute right-4 bottom-[18px] left-4 z-[1] flex items-center justify-between font-mono text-[10.5px] tracking-[0.06em] text-ink-faint sm:right-8 sm:bottom-6 sm:left-8 sm:text-[11px]">
             <span>CORE RUNS WHERE YOU CHOOSE</span><span>WEB · DESKTOP · MULTI-DEVICE</span>
           </div>
         )}
-      </div>
+      </HomeAmbientStage>
     )
   }
 
@@ -3617,7 +3618,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             <MoreHorizontal size={13} aria-hidden="true" />
           </button>
           {menuOpen && (
-            <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-composer p-[5px] shadow-elev-md" role="menu">
+            <div className="session-row-popover absolute top-[calc(100%+4px)] right-0 z-40 flex min-w-[175px] flex-col gap-0.5 rounded-[11px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl p-[5px] shadow-elev-md" role="menu">
               <button type="button" className={popoverBtnCls} disabled={working} onClick={() => { setRowMenuId(''); setSessionDialog({ kind: 'rename', sessionId: session.id, value: session.title || '' }) }}>
                 <Pencil size={13} aria-hidden="true" /><span>{t('Rename')}</span>
               </button>
@@ -3968,7 +3969,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       {!isEmptyConversation && showScrollBottom && slashMatches.length === 0 && !activeMention && (
         <button
           type="button"
-          className="scroll-bottom-btn absolute -top-[46px] left-1/2 z-25 grid h-[34px] w-[34px] -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line-strong bg-canvas text-ink shadow-elev-sm transition-[background,transform] duration-120 hover:bg-hover"
+          className="scroll-bottom-btn absolute -top-[46px] left-1/2 z-25 grid h-[34px] w-[34px] -translate-x-1/2 cursor-pointer place-items-center rounded-full border border-line-strong bg-[var(--bg-glass-strong)] backdrop-blur-md text-ink shadow-elev-sm transition-[background,border-color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover active:translate-y-0"
           aria-label={t('Scroll to bottom')}
           title={t('Scroll to bottom')}
           onClick={() => scrollToBottom(true)}
@@ -4171,7 +4172,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </div>
       )}
       <div
-        className="composer flex flex-col gap-2 rounded-[22px] sm:rounded-[24px] border border-line bg-composer px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 shadow-composer transition-[border-color,box-shadow] duration-150"
+        className="composer flex flex-col gap-2 rounded-[22px] sm:rounded-[24px] border border-line bg-composer backdrop-blur-xl px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 shadow-composer transition-[border-color,box-shadow] duration-150"
         onDragOver={(event) => { if (has('turn.attachments')) event.preventDefault() }}
         onDrop={(event) => {
           if (!has('turn.attachments')) return
@@ -4484,7 +4485,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             {((taskIsRunning && runtime.task.executionId) || (taskIsQueued && !has('turn.cancelQueued'))) && (
               <button
                 type="button"
-                className="stop-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-canvas text-ink transition-[background,border-color,opacity] duration-120 hover:not-disabled:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                className="stop-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-canvas text-ink transition-[background,border-color,opacity,transform] duration-120 hover:not-disabled:bg-hover active:not-disabled:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
                 disabled={working}
                 onClick={() => void stopRun()}
                 aria-label={t(taskIsQueued ? 'Cancel queued' : 'Stop')}
@@ -4495,7 +4496,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
             )}
             <button
               type="button"
-              className="send-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-accent text-accent-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              className="send-button inline-grid h-[30px] w-[30px] sm:h-8 sm:w-8 shrink-0 cursor-pointer place-items-center rounded-full border-0 bg-accent text-accent-fg transition-[background,opacity,transform] duration-120 hover:not-disabled:bg-accent-hover active:not-disabled:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!activeSession || (!draft.trim() && !attachments.length) || working || configReloadPending || connectionStatus !== 'connected'}
               onClick={() => void sendMessage()}
               aria-label={t('Send message')}
@@ -4599,7 +4600,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         <aside
           className={cn(
             'sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar transition-opacity duration-150',
-            isSidebarCollapsed ? 'pointer-events-none p-0 opacity-0' : 'px-2.5 pt-0 pb-3',
+            isSidebarCollapsed ? 'pointer-events-none p-0 opacity-0' : 'border-r border-line-subtle px-2.5 pt-0 pb-3',
           )}
           aria-label={t('Conversations')}
           aria-hidden={sidebarCollapsed || undefined}
@@ -4615,7 +4616,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         </aside>
       )}
       {!compactLayout && sidebarCollapsed && (
-        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] bg-sidebar pt-[10px] pb-3" aria-label={t('Quick navigation')}>
+        <nav className="sidebar-rail absolute inset-y-0 left-0 z-12 flex w-[56px] flex-col items-center gap-[5px] border-r border-line-subtle bg-sidebar pt-[10px] pb-3" aria-label={t('Quick navigation')}>
           <button type="button" className={cn('icon-button', btnIcon)} title={t('Expand conversations')} aria-label={t('Expand conversations')} onClick={() => setSidebarCollapsed(false)}><PanelLeftOpen size={18} /></button>
           <button type="button" className={cn('icon-button', btnIcon)} title={t('New conversation')} aria-label={t('New conversation')} disabled={working} onClick={() => void createSession()}><SquarePen size={17} /></button>
           <button type="button" className={cn('icon-button sidebar-rail-settings mt-auto', btnIcon)} title={t('Settings')} aria-label={t('Settings')} onClick={() => { setSettingsTab(settingsAPI.supportsModelConfig ? 'models' : 'remote'); setSettingsOpen(true) }}><Settings size={17} /></button>
@@ -4659,7 +4660,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       )}
 
       <main className="chat-area flex h-dvh min-h-0 min-w-0 flex-col bg-canvas">
-        <header className="chat-header flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between gap-1.5 sm:gap-3 px-2.5 sm:px-4">
+        <header className="chat-header relative z-[2] flex h-[50px] sm:h-[52px] shrink-0 items-center justify-between gap-1.5 sm:gap-3 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md px-2.5 sm:px-4">
           <div className="header-left flex min-w-0 flex-1 items-center gap-2">
             {compactLayout && (
               <button type="button" className={cn('icon-button drawer-toggle', btnIcon)} title={t('Open conversations')} aria-label={t('Open conversations')} aria-haspopup="dialog" aria-controls={accessibilityId + '-drawer'} aria-expanded={drawerOpen} onClick={openDrawer} ref={drawerButtonRef}><PanelLeftOpen size={18} /></button>
@@ -4742,28 +4743,28 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         )}
 
         {isEmptyConversation ? (
-          <div className="empty-stage flex flex-1 flex-col items-center justify-center px-3 pb-10">
-            <h1 className="empty-headline m-0 mb-5 sm:mb-7 text-center text-[22px] sm:text-[28px] font-semibold tracking-[-0.025em] text-ink">
+          <HomeAmbientStage active={isEmptyConversation} className="empty-stage relative flex flex-1 flex-col items-center justify-center overflow-hidden px-3 pb-10">
+            <h1 className="empty-headline relative z-[1] m-0 mb-5 sm:mb-7 text-center text-[22px] sm:text-[28px] font-semibold tracking-[-0.025em] text-ink">
               {t('What would you like to work through?')}
             </h1>
-            {composerNode}
-            <div className="suggestion-row mt-4 flex flex-wrap items-center justify-center gap-2">
+            <div className="relative z-[1] w-full">{composerNode}</div>
+            <div className="suggestion-row relative z-[1] mt-4 flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-canvas px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line-strong hover:bg-hover hover:text-ink"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-[var(--bg-glass)] backdrop-blur-md px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary [box-shadow:inset_0_1px_0_var(--glass-highlight),var(--elev-sm)] transition-[background,border-color,color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover hover:text-ink active:translate-y-0"
                 onClick={() => setDraft(t('Help me understand this project.'))}
               >
                 {t('Understand a project')}<ArrowUpRight size={14} aria-hidden="true" />
               </button>
               <button
                 type="button"
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-canvas px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary transition-[background,border-color,color] duration-120 hover:border-line-strong hover:bg-hover hover:text-ink"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line bg-[var(--bg-glass)] backdrop-blur-md px-3.5 py-1.5 text-[12.5px] font-medium text-ink-secondary [box-shadow:inset_0_1px_0_var(--glass-highlight),var(--elev-sm)] transition-[background,border-color,color,transform] duration-120 hover:-translate-y-px hover:border-line-strong hover:bg-hover hover:text-ink active:translate-y-0"
                 onClick={() => setDraft(t('Help me make a plan for…'))}
               >
                 {t('Make a plan')}<ArrowUpRight size={14} aria-hidden="true" />
               </button>
             </div>
-          </div>
+          </HomeAmbientStage>
         ) : (
           <>
             <div className="conversation-stage relative flex min-h-0 flex-1 flex-col">
@@ -4891,7 +4892,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
                       />
                     ))}
                   </div>
-                  <div className="turn-outline-popover absolute top-1/2 right-6 flex max-h-[min(380px,60vh)] w-[256px] flex-col overflow-hidden rounded-[12px] border border-line bg-canvas shadow-elev-md" role="region" aria-label={t('Conversation outline')}>
+                  <div className="turn-outline-popover absolute top-1/2 right-6 flex max-h-[min(380px,60vh)] w-[256px] flex-col overflow-hidden rounded-[12px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-xl shadow-elev-md" role="region" aria-label={t('Conversation outline')}>
                     <div className="turn-outline-head flex items-center justify-between border-b border-line-subtle px-3 pt-[9px] pb-[7px] text-[11.5px] font-semibold text-ink-muted">
                       <span>{t('Conversation outline')}</span>
                       <small className="font-mono text-[11px] text-ink-faint">{userTurns.length}</small>

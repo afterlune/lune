@@ -13,6 +13,7 @@ import type { RuntimeConnection } from './runtime'
 import { createWebHostSettingsAPI, type FrontendSettingsAPI, type SaveConfigResult } from './settings-api'
 import { SettingsModal } from './settings-modal'
 import { applyTheme } from './theme'
+import { HomeAmbientStage } from './home-ambient'
 import { bannerError, btnIcon, btnPlain, btnPrimary, btnPrimaryCompact, btnSecondary, cn, fieldInput } from './ui'
 
 interface Workspace {
@@ -547,7 +548,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
 
     {!remoteOverride && selectedRecovery && (
       <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
-        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
           <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>
           <div className="sidebar-bottom mt-2 pt-2">
             <button
@@ -585,7 +586,7 @@ function Workbench({ theme }: { theme: ThemePreference }) {
 
     {!remoteOverride && workspaces.length === 0 && (
       <div className="app-shell web-workbench relative grid h-dvh min-h-0 bg-canvas">
-        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
+        <aside className="sidebar flex h-full min-h-0 flex-col overflow-hidden border-r border-line-subtle bg-sidebar px-2.5 pt-2.5 pb-3" aria-label={t('Conversations')}>
           <div className="sidebar-scroll-region min-h-0 flex-1 overflow-y-auto">{navigation}</div>
           <div className="sidebar-bottom mt-2 pt-2">
             <button
@@ -598,24 +599,26 @@ function Workbench({ theme }: { theme: ThemePreference }) {
           </div>
         </aside>
         <main className="chat-area flex min-h-0 min-w-0 flex-col bg-canvas">
-          <div className="empty-stage m-auto flex max-w-[560px] flex-col items-center px-6 py-10 text-center">
-            <h1 className="empty-headline m-0 mb-4 text-[26px] font-semibold tracking-[-0.025em] text-ink">
-              {needsSetup ? t('Configure models to start') : t('Choose a workspace')}
-            </h1>
-            <p className="connect-intro m-0 mb-6 text-[13.5px] leading-[1.6] text-ink-secondary">
-              {needsSetup
-                ? t('Model providers, API keys, models, and remote connections are stored in your Web SQLite database (TUI/CLI config.json stays separate).')
-                : t('Select a local project directory to start conversations and inspect files.')}
-            </p>
-            <div className="suggestion-row flex flex-wrap items-center justify-center gap-2.5">
-              <button type="button" className={btnSecondary} onClick={() => setSetupSettingsOpen(true)}>
-                <Settings size={14} />{t('Open Settings')}
-              </button>
-              <button type="button" className={btnSecondary} onClick={() => openDirectoryPicker(true)}>
-                <FolderOpen size={14} />{t('Open workspace')}
-              </button>
+          <HomeAmbientStage active className="empty-stage relative flex flex-1 flex-col items-center justify-center overflow-hidden px-6 py-10 text-center">
+            <div className="relative z-[1] flex max-w-[560px] flex-col items-center">
+              <h1 className="empty-headline m-0 mb-4 text-[26px] font-semibold tracking-[-0.025em] text-ink">
+                {needsSetup ? t('Configure models to start') : t('Choose a workspace')}
+              </h1>
+              <p className="connect-intro m-0 mb-6 text-[13.5px] leading-[1.6] text-ink-secondary">
+                {needsSetup
+                  ? t('Model providers, API keys, models, and remote connections are stored in your Web SQLite database (TUI/CLI config.json stays separate).')
+                  : t('Select a local project directory to start conversations and inspect files.')}
+              </p>
+              <div className="suggestion-row flex flex-wrap items-center justify-center gap-2.5">
+                <button type="button" className={btnSecondary} onClick={() => setSetupSettingsOpen(true)}>
+                  <Settings size={14} />{t('Open Settings')}
+                </button>
+                <button type="button" className={btnSecondary} onClick={() => openDirectoryPicker(true)}>
+                  <FolderOpen size={14} />{t('Open workspace')}
+                </button>
+              </div>
             </div>
-          </div>
+          </HomeAmbientStage>
         </main>
       </div>
     )}

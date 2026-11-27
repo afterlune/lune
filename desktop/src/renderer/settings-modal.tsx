@@ -1415,12 +1415,12 @@ export function SettingsModal({
   return (
     <dialog
       ref={dialogRef}
-      className="settings-modal m-auto h-[min(700px,calc(100dvh-36px))] max-h-[calc(100dvh-24px)] w-[min(880px,calc(100vw-32px))] max-w-[calc(100vw-24px)] overflow-hidden rounded-[14px] border border-line bg-canvas p-0 text-ink shadow-elev-lg animate-[arrive_.18s_cubic-bezier(.22,1,.36,1)_both]"
+      className="settings-modal m-auto h-[min(700px,calc(100dvh-36px))] max-h-[calc(100dvh-24px)] w-[min(880px,calc(100vw-32px))] max-w-[calc(100vw-24px)] overflow-hidden rounded-[15px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-2xl p-0 text-ink shadow-elev-lg animate-[arrive_.18s_cubic-bezier(.22,1,.36,1)_both]"
       aria-labelledby="settings-modal-title"
       onClose={onClose}
       onCancel={(event) => { if (busy) event.preventDefault() }}
     >
-      <header className="settings-modal-head flex h-[52px] flex-none items-center justify-between gap-3 border-b border-line-subtle bg-canvas pr-4 pl-[22px]">
+      <header className="settings-modal-head flex h-[52px] flex-none items-center justify-between gap-3 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-xl pr-4 pl-[22px]">
         <h2 id="settings-modal-title" className="m-0 text-[15px] font-semibold tracking-[-0.015em] text-ink">{t('Settings')}</h2>
         <button type="button" className={cn('icon-button', btnIcon)} aria-label={t('Close')} disabled={busy} onClick={onClose}><X size={17} /></button>
       </header>

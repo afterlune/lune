@@ -157,7 +157,7 @@ const TimelineHistory = memo(function TimelineHistory({
       {entries.map((entry) => {
         if (entry.kind === 'reasoning') {
           return (
-            <details className="reasoning-block mb-3.5 rounded-[10px] border border-line-subtle bg-subtle" key={entry.id}>
+            <details className="reasoning-block mb-3.5 rounded-[10px] border border-line-subtle bg-subtle transition-[border-color] duration-150 hover:border-line" key={entry.id}>
               <summary className="group/sum flex cursor-pointer select-none items-center gap-[7px] px-3 py-2 text-[12.5px] font-medium text-ink-muted hover:text-ink">
                 <ChevronRight size={13} className="disclosure-chevron" aria-hidden="true" />
                 <Brain size={13} aria-hidden="true" />
@@ -182,8 +182,8 @@ const TimelineHistory = memo(function TimelineHistory({
           return (
             <details
               className={cn(
-                'tool-record my-3 overflow-hidden rounded-[10px] border bg-subtle text-[13px]',
-                hasFailure ? 'has-failure border-danger-border' : 'border-line-subtle',
+                'tool-record my-3 overflow-hidden rounded-[10px] border bg-subtle text-[13px] transition-[border-color] duration-150',
+                hasFailure ? 'has-failure border-danger-border' : 'border-line-subtle hover:border-line',
               )}
               key={entry.id}
             >
@@ -268,8 +268,8 @@ const TimelineHistory = memo(function TimelineHistory({
                 'message-content',
                 entry.role === 'user'
                   ? (isEditingUser
-                      ? 'w-[min(100%,560px)] max-w-[min(92%,560px)] rounded-[16px] border border-line bg-composer px-3 py-2.5 shadow-elev-sm'
-                      : 'max-w-[min(88%,560px)] sm:max-w-[min(74%,560px)] rounded-[20px] bg-user-pill px-4 py-2.5')
+                      ? 'w-[min(100%,560px)] max-w-[min(92%,560px)] rounded-[16px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-lg px-3 py-2.5 shadow-elev-sm'
+                      : 'max-w-[min(88%,560px)] sm:max-w-[min(74%,560px)] rounded-[19px] border border-line-subtle bg-user-pill px-4 py-2.5 shadow-[inset_0_1px_0_var(--glass-highlight),0_1px_2px_light-dark(rgb(0_0_0/.03),rgb(0_0_0/.18))]')
                   : 'w-full min-w-0',
               )}
             >
@@ -371,7 +371,7 @@ const TimelineHistory = memo(function TimelineHistory({
               )}
             </div>
             {entry.role === 'user' && !isEditingUser && (
-              <div className="message-actions user-actions mt-1 flex items-center justify-end gap-1 pr-1 opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
+              <div className="message-actions user-actions mt-1 inline-flex items-center justify-end gap-0.5 rounded-[9px] border border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md p-0.5 shadow-elev-sm opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100">
                 {entry.text.trim() && <CopyMessageButton text={entry.text} />}
                 {canEditHistoricalMessages && (
                   <button
@@ -406,7 +406,7 @@ const TimelineHistory = memo(function TimelineHistory({
             className={cn(
               'message-content',
               message.role === 'user'
-                ? 'max-w-[min(88%,560px)] sm:max-w-[min(74%,560px)] rounded-[20px] bg-user-pill px-4 py-2.5'
+                ? 'max-w-[min(88%,560px)] sm:max-w-[min(74%,560px)] rounded-[19px] border border-line-subtle bg-user-pill px-4 py-2.5 shadow-[inset_0_1px_0_var(--glass-highlight),0_1px_2px_light-dark(rgb(0_0_0/.03),rgb(0_0_0/.18))]'
                 : 'w-full min-w-0',
             )}
           >

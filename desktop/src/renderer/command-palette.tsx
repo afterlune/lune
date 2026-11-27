@@ -156,7 +156,7 @@ export function CommandPalette({
       }}
     >
       <section
-        className="command-palette flex w-[min(600px,calc(100vw-24px))] max-h-[min(520px,74dvh)] flex-col overflow-hidden rounded-[14px] border border-line bg-canvas shadow-elev-lg animate-[arrive_.14s_ease_both]"
+        className="command-palette flex w-[min(600px,calc(100vw-24px))] max-h-[min(520px,74dvh)] flex-col overflow-hidden rounded-[14px] border border-line bg-[var(--bg-glass-strong)] backdrop-blur-2xl shadow-elev-lg animate-[arrive_.14s_ease_both]"
         role="dialog"
         aria-modal="true"
         aria-label={t('Quick switcher')}

@@ -292,7 +292,7 @@ export function HarnessPanel({
         onClose()
       }}
     >
-      <header className="harness-panel-header flex h-[52px] items-center justify-between gap-1.5 border-b border-line-subtle bg-canvas px-2.5">
+      <header className="harness-panel-header flex h-[52px] items-center justify-between gap-1.5 border-b border-line-subtle bg-[var(--bg-glass)] backdrop-blur-md px-2.5">
         <div
           ref={tabsRef}
           className={cn(
