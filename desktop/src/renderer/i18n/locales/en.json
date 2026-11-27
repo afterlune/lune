@@ -500,6 +500,7 @@
   "Settings saved to SQLite database.": "Settings saved to SQLite database.",
   "Settings saved. Reconnect this workspace after the current task finishes to apply the changes.": "Settings saved. Reconnect this workspace after the current task finishes to apply the changes.",
   "Settings saved. Changes will apply when the current work finishes.": "Settings saved. Changes will apply when the current work finishes.",
+  "Settings saved, but some MCP servers failed to reconnect:": "Settings saved, but some MCP servers failed to reconnect:",
   "Settings are being applied after the current work finishes. New turns are paused briefly.": "Settings are being applied after the current work finishes. New turns are paused briefly.",
   "Settings sections": "Settings sections",
   "Show file tree": "Show file tree",

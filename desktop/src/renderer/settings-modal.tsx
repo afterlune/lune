@@ -211,6 +211,7 @@ export function SettingsModal({
   onConnectRemote,
   onDisconnectRemote,
   onReturnToLocal,
+  onBeforeSaveConfig,
   onSavedConfig,
   runtimeConnectionStatus = 'connected',
   runtimeConnectionError = '',
@@ -231,6 +232,7 @@ export function SettingsModal({
   onConnectRemote: (options: { url: string; token: string; name?: string; rememberToken?: boolean }) => Promise<void>
   onDisconnectRemote?: () => Promise<void>
   onReturnToLocal?: () => Promise<void>
+  onBeforeSaveConfig?: () => void
   onSavedConfig?: (result: SaveConfigResult) => SaveConfigResult | void | Promise<SaveConfigResult | void>
   runtimeConnectionStatus?: 'connected' | 'connecting' | 'reconnecting' | 'offline'
   runtimeConnectionError?: string
@@ -488,10 +490,28 @@ export function SettingsModal({
     setProviderTestMessage('')
   }
 
+  const applySaveStatus = (finalResult: SaveConfigResult, fallbackMessage: string) => {
+    if (finalResult.requiresReconnect) {
+      setStatus(finalResult.reconnectError || t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.'))
+      return
+    }
+    if (finalResult.mcpWarnings?.length) {
+      const warningText = `${t('Settings saved, but some MCP servers failed to reconnect:')} ${finalResult.mcpWarnings.join('; ')}`
+      setStatus(finalResult.reloadPending
+        ? `${warningText} (${t('Settings saved. Changes will apply when the current work finishes.')})`
+        : warningText)
+      return
+    }
+    setStatus(finalResult.reloadPending
+      ? t('Settings saved. Changes will apply when the current work finishes.')
+      : fallbackMessage)
+  }
+
   const commitDocument = async (nextDoc: ConfigDocument, importId?: string, message?: string) => {
     setBusy(true)
     setError('')
     setStatus('')
+    onBeforeSaveConfig?.()
     try {
       const result = await api.saveConfig(scope, nextDoc, importId)
       const [followup] = await Promise.all([
@@ -500,11 +520,7 @@ export function SettingsModal({
       ])
       const finalResult = { ...result, ...followup }
       setDelegationRevision((value) => value + 1)
-      setStatus(finalResult.requiresReconnect
-        ? finalResult.reconnectError || t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
-        : finalResult.reloadPending
-          ? t('Settings saved. Changes will apply when the current work finishes.')
-          : message || t('Settings saved to SQLite database.'))
+      applySaveStatus(finalResult, message || t('Settings saved to SQLite database.'))
       return true
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1514,18 +1530,17 @@ export function SettingsModal({
                     type="button"
                     className={btnPlain}
                     disabled={busy}
-                    onClick={() => void api.resetWorkspaceConfig(scope).then(async (result) => {
-                      closeEditor()
-                      await loadConfig(scope)
-                      const followup = await onSavedConfig?.(result)
-                      const finalResult = { ...result, ...followup }
-                      setDelegationRevision((revision) => revision + 1)
-                      setStatus(finalResult.requiresReconnect
-                        ? finalResult.reconnectError || t('Settings saved. Reconnect this workspace after the current task finishes to apply the changes.')
-                        : finalResult.reloadPending
-                          ? t('Settings saved. Changes will apply when the current work finishes.')
-                          : t('Workspace now uses the default configuration.'))
-                    }).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+                    onClick={() => {
+                      onBeforeSaveConfig?.()
+                      void api.resetWorkspaceConfig(scope).then(async (result) => {
+                        closeEditor()
+                        await loadConfig(scope)
+                        const followup = await onSavedConfig?.(result)
+                        const finalResult = { ...result, ...followup }
+                        setDelegationRevision((revision) => revision + 1)
+                        applySaveStatus(finalResult, t('Workspace now uses the default configuration.'))
+                      }).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                    }}
                   >
                     {t('Use defaults')}
                   </button>

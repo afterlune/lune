@@ -500,6 +500,7 @@
   "Settings saved to SQLite database.": "配置已保存到 SQLite 数据库。",
   "Settings saved. Reconnect this workspace after the current task finishes to apply the changes.": "设置已保存。当前任务结束后重新连接工作区即可应用。",
   "Settings saved. Changes will apply when the current work finishes.": "设置已保存，当前工作结束后将自动应用。",
+  "Settings saved, but some MCP servers failed to reconnect:": "设置已保存，但部分 MCP 服务重连失败：",
   "Settings are being applied after the current work finishes. New turns are paused briefly.": "设置将在当前工作完成后应用；此期间暂时不能开始新轮次。",
   "Settings sections": "设置分类",
   "Show file tree": "显示文件树",

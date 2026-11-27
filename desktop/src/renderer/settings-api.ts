@@ -13,9 +13,11 @@ export interface SaveRemoteInput {
 
 export interface SaveConfigResult {
   reloaded?: boolean
+  hotReloaded?: boolean
   reloadPending?: boolean
   requiresReconnect?: boolean
   reconnectError?: string
+  mcpWarnings?: string[]
   initial?: string
   needsSetup?: boolean
 }

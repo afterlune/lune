@@ -163,14 +163,19 @@ export function HarnessPanel({
   const tabsRef = useRef<HTMLDivElement | null>(null)
   const [tabFade, setTabFade] = useState({ left: false, right: false })
   const targetKey = terminalTargetKey(terminalTarget)
-  const [mountedTargetKey, setMountedTargetKey] = useState('')
-  const terminalMounted = Boolean(terminalTarget) && mountedTargetKey === targetKey
+  const [mountedTargets, setMountedTargets] = useState<Array<{ key: string; target: TerminalTarget }>>([])
+  const terminalMounted = mountedTargets.length > 0
 
   useEffect(() => {
-    if (visible && effectiveTab === 'terminal' && targetKey) {
-      setMountedTargetKey(targetKey)
-    }
-  }, [visible, effectiveTab, targetKey])
+    if (!visible || effectiveTab !== 'terminal' || !terminalTarget || !targetKey) return
+    setMountedTargets((prev) => {
+      const existing = prev.find((item) => item.key === targetKey)
+      if (existing && existing.target === terminalTarget) return prev
+      const filtered = prev.filter((item) => item.key !== targetKey)
+      const next = [...filtered, { key: targetKey, target: terminalTarget }]
+      return next.length > 6 ? next.slice(next.length - 6) : next
+    })
+  }, [visible, effectiveTab, terminalTarget, targetKey])
 
   useEffect(() => {
     if (!visible) return
@@ -385,11 +390,14 @@ export function HarnessPanel({
             visible={visible && effectiveTab === 'processes'}
           />
         )}
-        {terminalMounted && terminalTarget && (
-          <div className={cn('min-h-0 flex-1 flex-col overflow-hidden', visible && effectiveTab === 'terminal' ? 'flex' : 'hidden')}>
-            <TerminalPanel key={targetKey} target={terminalTarget} visible={visible && effectiveTab === 'terminal'} />
-          </div>
-        )}
+        {mountedTargets.map((item) => {
+          const isCurrent = visible && effectiveTab === 'terminal' && item.key === targetKey
+          return (
+            <div key={item.key} className={cn('min-h-0 flex-1 flex-col overflow-hidden', isCurrent ? 'flex' : 'hidden')}>
+              <TerminalPanel key={item.key} target={item.target} visible={isCurrent} />
+            </div>
+          )
+        })}
         {visible && effectiveTab === 'mcp' && (
           <MCPInspector
             client={client}

@@ -254,38 +254,49 @@ export function TerminalPanel({
 }) {
   const { t } = useTranslation()
   const nextNumRef = useRef(2)
-  const [tabs, setTabs] = useState<TerminalTabItem[]>([
-    { id: 'term-1', num: 1, runKey: 1, status: 'connecting' },
-  ])
-  const [activeId, setActiveId] = useState('term-1')
+  const [panelState, setPanelState] = useState<{ tabs: TerminalTabItem[]; activeId: string }>({
+    tabs: [{ id: 'term-1', num: 1, runKey: 1, status: 'connecting' }],
+    activeId: 'term-1',
+  })
+  const { tabs, activeId } = panelState
+  const panelStateRef = useRef(panelState)
+  panelStateRef.current = panelState
   const [clearTokens, setClearTokens] = useState<Record<string, number>>({})
 
   const handleStatusChange = useCallback((id: string, patch: Partial<TerminalTabItem>) => {
-    setTabs((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+    setPanelState((prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    }))
   }, [])
 
   const addTab = () => {
     const num = nextNumRef.current++
     const id = `term-${num}-${Date.now()}`
-    setTabs((prev) => [...prev, { id, num, runKey: 1, status: 'connecting' }])
-    setActiveId(id)
+    setPanelState((prev) => ({
+      tabs: [...prev.tabs, { id, num, runKey: 1, status: 'connecting' }],
+      activeId: id,
+    }))
   }
 
   const closeTab = (id: string) => {
-    setTabs((prev) => {
-      if (prev.length <= 1) {
-        const num = nextNumRef.current++
-        const nextId = `term-${num}-${Date.now()}`
-        setActiveId(nextId)
-        return [{ id: nextId, num, runKey: 1, status: 'connecting' }]
-      }
-      const idx = prev.findIndex((item) => item.id === id)
-      const filtered = prev.filter((item) => item.id !== id)
-      if (activeId === id) {
-        const fallback = filtered[Math.max(0, idx - 1)] ?? filtered[0]
-        if (fallback) setActiveId(fallback.id)
-      }
-      return filtered
+    const current = panelStateRef.current
+    if (current.tabs.length <= 1) {
+      const num = nextNumRef.current++
+      const nextId = `term-${num}-${Date.now()}`
+      setPanelState({
+        tabs: [{ id: nextId, num, runKey: 1, status: 'connecting' }],
+        activeId: nextId,
+      })
+      return
+    }
+    const idx = current.tabs.findIndex((item) => item.id === id)
+    if (idx < 0) return
+    const filtered = current.tabs.filter((item) => item.id !== id)
+    const fallback = filtered[Math.max(0, idx - 1)] ?? filtered[0]
+    setPanelState({
+      tabs: filtered,
+      activeId: current.activeId === id ? (fallback?.id ?? current.activeId) : current.activeId,
     })
   }
 
@@ -293,11 +304,14 @@ export function TerminalPanel({
 
   const restartActive = () => {
     if (!activeTab) return
-    setTabs((prev) => prev.map((item) => (
-      item.id === activeTab.id
-        ? { ...item, runKey: item.runKey + 1, status: 'connecting', exitCode: undefined, error: undefined }
-        : item
-    )))
+    setPanelState((prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((item) => (
+        item.id === activeTab.id
+          ? { ...item, runKey: item.runKey + 1, status: 'connecting', exitCode: undefined, error: undefined }
+          : item
+      )),
+    }))
   }
 
   const clearActive = () => {
@@ -332,7 +346,7 @@ export function TerminalPanel({
                   role="tab"
                   aria-selected={isActive}
                   className="inline-flex cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-inherit"
-                  onClick={() => setActiveId(item.id)}
+                  onClick={() => setPanelState((prev) => ({ ...prev, activeId: item.id }))}
                 >
                   <span className={cn('h-1.5 w-1.5 rounded-full', dotCls)} aria-hidden="true" />
                   <span>{t('Terminal')} {item.num}</span>

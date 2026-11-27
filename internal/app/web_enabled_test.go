@@ -194,9 +194,16 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 	}
 	oldWorkspaceID := workspaceList.Items[0].ID
 	oldCore := ws.entries[oldWorkspaceID].core
+	activeTerm := &workspaceTerminalStub{}
+	if !ws.trackTerminal(activeTerm, oldWorkspaceID, true) {
+		t.Fatal("failed to register active terminal")
+	}
 	reloadRes := post("/_lune/reload-workspace", map[string]any{"id": oldWorkspaceID}, "Bearer lan-secret", "https://10.0.0.5:5173")
 	if reloadRes.Code != http.StatusOK {
 		t.Fatalf("reload-workspace = %d %s", reloadRes.Code, reloadRes.Body.String())
+	}
+	if activeTerm.closed {
+		t.Fatal("reload-workspace closed an active interactive terminal")
 	}
 	workspacesRes = post("/_lune/workspaces", map[string]any{}, "Bearer lan-secret", "https://10.0.0.5:5173")
 	if workspacesRes.Code != http.StatusOK || json.Unmarshal(workspacesRes.Body.Bytes(), &workspaceList) != nil || len(workspaceList.Items) != 1 || workspaceList.Items[0].ID != oldWorkspaceID {
@@ -226,13 +233,20 @@ func TestWebHostTLSAndSQLiteEndpoints(t *testing.T) {
 	if configRes.Code != http.StatusOK || json.Unmarshal(configRes.Body.Bytes(), &configView) != nil || configView.Document == nil {
 		t.Fatalf("config/get before runtime update = %d %s", configRes.Code, configRes.Body.String())
 	}
+	beforeHotReloadCore := ws.entries[oldWorkspaceID].core
 	configView.Document["runtime"] = map[string]any{"maxParallelAgents": 6, "maxTeamChildrenPerAgent": 3, "maxTeamDepth": 2}
 	runtimeSave := post("/_lune/config/save", map[string]any{
 		"scope":    "",
 		"document": configView.Document,
 	}, "Bearer lan-secret", "https://10.0.0.5:5173")
-	if runtimeSave.Code != http.StatusOK || !strings.Contains(runtimeSave.Body.String(), `"reloaded":true`) {
+	if runtimeSave.Code != http.StatusOK || !strings.Contains(runtimeSave.Body.String(), `"reloaded":true`) || !strings.Contains(runtimeSave.Body.String(), `"hotReloaded":true`) {
 		t.Fatalf("runtime config/save = %d %s", runtimeSave.Code, runtimeSave.Body.String())
+	}
+	if ws.entries[oldWorkspaceID].core != beforeHotReloadCore {
+		t.Fatal("runtime config/save tore down and recreated Core instead of hot-reloading")
+	}
+	if activeTerm.closed {
+		t.Fatal("hot-reloading config closed an active terminal")
 	}
 	if got := delegationOf(); got["enabled"] != true || got["childrenPerAgent"] != float64(3) || got["depth"] != float64(2) || got["parallel"] != float64(6) {
 		t.Fatalf("saved delegation limits were not applied: %#v", got)

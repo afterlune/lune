@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type webWorkspaceEntry struct {
 	host        *runtimehost.Server
 	closing     bool
 	reloadError string
+	// mcpPending means non-MCP project settings are current, while MCP server
+	// updates are waiting for active/queued/paused work to finish.
+	mcpPending bool
 	// stale means the active Core does not yet reflect the saved configuration.
 	// reloadError is set when applying it failed. Guarded by webWorkspaces.mu.
 	stale bool
@@ -453,7 +457,9 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error
 		}
 		return err
 	}
-	s.closeWorkspaceTerminals(id)
+	if persistClose {
+		s.closeWorkspaceTerminals(id)
+	}
 
 	s.mu.Lock()
 	if s.entries[id] == entry {
@@ -487,13 +493,13 @@ func (s *webWorkspaces) closeWorkspaceLocked(id string, persistClose bool) error
 	return entry.host.Shutdown(ctx)
 }
 
-func (s *webWorkspaces) reloadAffected(scope string) ([]core.Workspace, bool, error) {
+func (s *webWorkspaces) reloadAffected(scope string) ([]core.Workspace, bool, bool, []string, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.reloadAffectedLocked(scope)
 }
 
-func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bool, error) {
+func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bool, bool, []string, error) {
 	canonicalScope := strings.TrimSpace(scope)
 	if canonicalScope != "" {
 		if resolved, err := filepath.EvalSymlinks(canonicalScope); err == nil {
@@ -547,21 +553,33 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 
 	pending := false
 	var failures []error
+	var mcpWarnings []string
 	reloadedTargets := 0
+	hotReloadedTargets := 0
 	for _, entry := range targets {
-		err := s.reloadWorkspaceEntryLocked(entry)
+		hotReloaded, mcpPending, entryWarnings, err := s.reloadConfigEntryLocked(entry)
+		if len(entryWarnings) > 0 {
+			mcpWarnings = append(mcpWarnings, entryWarnings...)
+		}
 		switch {
-		case errors.Is(err, errWebWorkspaceBusy):
+		case errors.Is(err, errWebWorkspaceBusy) || mcpPending:
 			pending = true
+			if hotReloaded {
+				hotReloadedTargets++
+			}
 			s.deferReload(entry.workspace.Path)
 		case err != nil:
 			failures = append(failures, fmt.Errorf("%s: %w", entry.workspace.Path, err))
 		default:
 			reloadedTargets++
+			if hotReloaded {
+				hotReloadedTargets++
+			}
 		}
 	}
 	restoreWorkspaceOrder()
 	reloaded := reloadedTargets == len(targets)
+	hotReloaded := len(targets) > 0 && hotReloadedTargets == len(targets) && len(failures) == 0
 	if len(targets) == 0 {
 		s.mu.Lock()
 		hasOpened := len(s.entries) != 0
@@ -580,12 +598,62 @@ func (s *webWorkspaces) reloadAffectedLocked(scope string) ([]core.Workspace, bo
 			}
 		} else {
 			reloaded = true
+			hotReloaded = true
 		}
 	}
 	if pending || len(failures) > 0 {
-		return s.listOpened(), reloaded, &webWorkspaceReloadError{pending: pending, failures: failures}
+		return s.listOpened(), reloaded, hotReloaded, mcpWarnings, &webWorkspaceReloadError{pending: pending, failures: failures}
 	}
-	return s.listOpened(), reloaded, nil
+	return s.listOpened(), reloaded, hotReloaded, mcpWarnings, nil
+}
+
+// reloadConfigEntryLocked applies updated configuration in-place when the
+// workspace Core supports it, skipping unchanged workspaces and preserving
+// active WebSockets and terminals. It falls back to full Core rebuild when
+// configuration removes required fields or Core is not yet running.
+func (s *webWorkspaces) reloadConfigEntryLocked(entry *webWorkspaceEntry) (hotReloaded bool, mcpPending bool, mcpWarnings []string, err error) {
+	if entry == nil {
+		return false, false, nil, errors.New("workspace not found")
+	}
+	nextProject, configured, cfgErr := s.store.EffectiveWebConfig(entry.workspace.Path)
+	if cfgErr != nil || !configured || entry.core == nil {
+		return false, false, nil, s.reloadWorkspaceEntryLocked(entry)
+	}
+	s.mu.Lock()
+	prevProject := entry.project
+	prevStale := entry.stale
+	prevMCPPending := entry.mcpPending
+	s.mu.Unlock()
+	if !prevStale && !prevMCPPending && reflect.DeepEqual(prevProject, nextProject) {
+		s.mu.Lock()
+		entry.reloadError = ""
+		s.mu.Unlock()
+		return true, false, nil, nil
+	}
+	if prevMCPPending && reflect.DeepEqual(prevProject, nextProject) {
+		if busy, busyErr := workspaceHasPendingWork(entry.core); busyErr == nil && busy {
+			return true, true, nil, nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, reloadErr := entry.core.ReloadProjectConfig(ctx, nextProject, engram.Instructions(nextProject.MCPServers))
+	if reloadErr != nil {
+		s.mu.Lock()
+		entry.stale = true
+		entry.mcpPending = false
+		entry.reloadError = reloadErr.Error()
+		s.mu.Unlock()
+		return false, false, nil, reloadErr
+	}
+	s.mu.Lock()
+	entry.project = nextProject
+	entry.mcpPending = res.MCPPending
+	entry.stale = res.MCPPending
+	entry.reloadError = strings.Join(res.MCPWarnings, "; ")
+	s.mu.Unlock()
+	return true, res.MCPPending, res.MCPWarnings, nil
 }
 
 type webWorkspaceReloadError struct {
@@ -623,6 +691,7 @@ func (s *webWorkspaces) reloadWorkspaceEntryLocked(entry *webWorkspaceEntry) err
 	markStale := func(reloadErr error) {
 		s.mu.Lock()
 		entry.stale = true
+		entry.mcpPending = false
 		entry.reloadError = ""
 		if reloadErr != nil {
 			entry.reloadError = reloadErr.Error()
@@ -700,18 +769,22 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 	needsSetup := s.needsSetup
 	s.mu.Unlock()
 	reloaded := false
+	hotReloaded := false
 	reloadPending := false
 	var reloadErr error
 	var reconnectError string
+	var mcpWarnings []string
 	if (len(opened) == 0 && pendingPath != "") || len(opened) > 0 {
 		var err error
-		opened, reloaded, err = s.reloadAffected(scope)
+		opened, reloaded, hotReloaded, mcpWarnings, err = s.reloadAffected(scope)
 		if err != nil {
 			reloadErr = err
 			reconnectError = err.Error()
-			reloaded = false
-			opened = s.listOpened()
 			reloadPending = errors.Is(err, errWebWorkspaceBusy)
+			if !hotReloaded {
+				reloaded = false
+			}
+			opened = s.listOpened()
 		}
 	}
 	s.mu.Lock()
@@ -723,12 +796,18 @@ func (s *webWorkspaces) configSavedResult(scope string) (map[string]any, error) 
 	if errors.As(reloadErr, &workspaceReloadErr) && workspaceReloadErr.hasFailures() {
 		requiresReconnect = true
 	}
+	if reconnectError == "" && len(mcpWarnings) > 0 {
+		reconnectError = strings.Join(mcpWarnings, "; ")
+	}
 	result := map[string]any{
-		"ok": true, "reloaded": reloaded, "reloadPending": reloadPending, "requiresReconnect": requiresReconnect,
+		"ok": true, "reloaded": reloaded, "hotReloaded": hotReloaded, "reloadPending": reloadPending, "requiresReconnect": requiresReconnect,
 		"initial": initial, "needsSetup": needsSetup, "workspaces": opened,
 	}
 	if reconnectError != "" {
 		result["reconnectError"] = reconnectError
+	}
+	if len(mcpWarnings) > 0 {
+		result["mcpWarnings"] = mcpWarnings
 	}
 	return result, nil
 }
@@ -1412,21 +1491,22 @@ func (s *webWorkspaces) deferReload(scope string) {
 			s.mu.Unlock()
 		}()
 		deadline := time.Now().Add(6 * time.Hour)
+		delay := time.Second
 		for time.Now().Before(deadline) {
-			time.Sleep(time.Second)
+			time.Sleep(delay)
 			s.mu.Lock()
 			closing := s.closing
 			s.mu.Unlock()
 			if closing {
 				return
 			}
-			if _, reloaded, err := s.reloadAffected(canonicalScope); err == nil {
-				if reloaded {
-					return
-				}
+			if _, _, _, _, err := s.reloadAffected(canonicalScope); err == nil {
 				return
 			} else if !errors.Is(err, errWebWorkspaceBusy) {
 				return
+			}
+			if delay < 5*time.Second {
+				delay += time.Second
 			}
 		}
 	}()

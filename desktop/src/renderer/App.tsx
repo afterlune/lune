@@ -336,6 +336,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const [configReconnectRequired, setConfigReconnectRequired] = useState(false)
   const [applyingConfig, setApplyingConfig] = useState(false)
   const [webConfigReconnectPending, setWebConfigReconnectPending] = useState(false)
+  const connectionEpochRef = useRef(0)
+  const configSaveEpochRef = useRef(-1)
   const [harnessOpen, setHarnessOpen] = useState(false)
   const [harnessTab, setHarnessTab] = useState<HarnessTab>('files')
   const [requestedFile, setRequestedFile] = useState('')
@@ -696,7 +698,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     keepOptionInView(mentionPopoverRef.current, mentionIndex)
   }, [mentionIndex, mentionMatches.length, activeMention])
   const displayedMessages = useMemo(() => [...history, ...optimistic.filter((message) => message.sessionId === activeSessionId)], [history, optimistic, activeSessionId])
-  const selectedModel = activeSession?.settings.modelProfile || models[0]?.profile || ''
+  const sessionModelProfile = activeSession?.settings.modelProfile || ''
+  const sessionModelMissing = Boolean(sessionModelProfile) && models.length > 0 && !models.some((option) => option.profile === sessionModelProfile)
+  const selectedModel = sessionModelMissing ? (models[0]?.profile || '') : (sessionModelProfile || models[0]?.profile || '')
   const taskIsRunning = runtime.task.status === 'running'
   const taskIsQueued = runtime.task.status === 'queued'
   const taskIsPaused = runtime.task.status === 'paused'
@@ -770,7 +774,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   const scheduleReconnect = useCallback(() => {
     if (!autoReconnect.current || !connectionRef.current) return
     if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current)
-    const delay = Math.min(1000 * 2 ** reconnectCount.current, 30_000)
+    const attempt = reconnectCount.current
+    const delay = attempt === 0 ? 120 : Math.min(1000 * 2 ** (attempt - 1), 30_000)
     reconnectCount.current += 1
     setConnectionStatus('reconnecting')
     reconnectTimer.current = window.setTimeout(() => {
@@ -829,6 +834,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       if (!preserveManagedSession) setActiveSession(null)
       setClient(candidate)
       setConnection(savedOptions)
+      connectionEpochRef.current += 1
       setConnectionStatus('connected')
       setWebConfigReconnectPending(false)
       setConfigReloadPending(false)
@@ -887,7 +893,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
   }, [managed?.active])
   const canBrowse = has('workspace.files')
   useEffect(() => {
-    setWorkspaceInfo(null)
+    if (!managedWorkspaceRef.current || !connectionRef.current) {
+      setWorkspaceInfo(null)
+    }
     if (!client || !canBrowse) return
     let active = true
     void client.request<WorkspaceInfo>('workspace.info').then(
@@ -1159,6 +1167,15 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
     })
     return messages
   }, [streamStore])
+
+  const refreshModelList = useCallback((targetClient: RuntimeClient | null) => {
+    if (!targetClient) return
+    void targetClient.request<ModelOption[]>('model.list').then((nextModels) => {
+      if (clientRef.current !== targetClient) return
+      modelsRef.current = nextModels ?? []
+      setModels(modelsRef.current)
+    }).catch(() => undefined)
+  }, [])
 
   const refreshRuntime = useCallback(async (targetClient: RuntimeClient, sessionId: string) => {
     const canCommands = capabilitiesRef.current.includes('command.control')
@@ -1517,6 +1534,8 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         }, ...items].slice(0, 5))
       } else if (['approval_required', 'user_question_required', 'user_interaction_required', 'tool_recovery_required', 'execution_blocked'].includes(event.kind)) {
         void refreshLiveState()
+      } else if (event.kind === 'config_reloaded') {
+        refreshModelList(targetClient)
       } else if (event.kind === 'runtime_replay_complete') {
         void refreshAll()
       }
@@ -1867,6 +1886,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         }
       }
       const submitted = await client.request<{ executionId: string }>('turn.submit', { sessionId: activeSessionId, submissionId, input: text, mode: submissionMode,
+        ...(sessionModelMissing && selectedModel ? { model: selectedModel } : {}),
         ...(plan ? { planMode: true } : {}),
         ...(attachments.length ? { attachments: attachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
       })
@@ -1924,6 +1944,7 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         historyDigest,
         input: trimmed,
         mode: 'start_if_idle',
+        ...(sessionModelMissing && selectedModel ? { model: selectedModel } : {}),
         ...(plan ? { planMode: true } : {}),
         ...(nextAttachments.length ? { attachments: nextAttachments.map(({ name, mediaType, data }) => ({ name, mediaType, data })) } : {}),
       })
@@ -2128,6 +2149,22 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       setActionError(errorMessage(error))
     }
   }
+  useEffect(() => {
+    if (!webConfigReconnectPending) return
+    const timer = window.setTimeout(() => {
+      setWebConfigReconnectPending(false)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [webConfigReconnectPending])
+  const repairedModelRef = useRef('')
+  useEffect(() => {
+    if (!client || !sessionModelMissing || !selectedModel || !activeSession?.id || activeSession.id !== activeSessionId || sessionBusy) return
+    const repairKey = `${activeSessionId}:${sessionModelProfile}->${selectedModel}`
+    if (repairedModelRef.current === repairKey) return
+    repairedModelRef.current = repairKey
+    void changeSettings({ modelProfile: selectedModel })
+  }, [client, sessionModelMissing, sessionModelProfile, selectedModel, activeSession?.id, activeSessionId, sessionBusy])
+
   const changePermissionMode = async (mode: PermissionMode) => {
     if (!client) return
     try {
@@ -3194,6 +3231,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
       }}
       onDisconnectRemote={async () => { await disconnect() }}
       onReturnToLocal={managed?.onReturnToLocal}
+      onBeforeSaveConfig={() => {
+        configSaveEpochRef.current = connectionEpochRef.current
+      }}
       onSavedConfig={async (savedResult) => {
         if (desktop && connection?.mode === 'local') {
           const currentClient = clientRef.current
@@ -3221,7 +3261,12 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
           setConfigReconnectRequired(true)
           return { ...savedResult, requiresReconnect: true }
         }
-        if (settingsAPI.kind === 'web-host' && savedResult.reloadPending) {
+        if (settingsAPI.kind === 'web-host' && savedResult.hotReloaded) {
+          setConfigReloadPending(Boolean(savedResult.reloadPending))
+          setConfigReconnectRequired(false)
+          setWebConfigReconnectPending(false)
+          refreshModelList(clientRef.current)
+        } else if (settingsAPI.kind === 'web-host' && savedResult.reloadPending) {
           setConfigReloadPending(true)
           setConfigReconnectRequired(false)
         } else if (settingsAPI.kind === 'web-host' && savedResult.requiresReconnect) {
@@ -3231,7 +3276,9 @@ export default function App({ initialTheme, managed, pairingError, onThemeChange
         } else if (settingsAPI.kind === 'web-host' && savedResult.reloaded) {
           setConfigReloadPending(false)
           setConfigReconnectRequired(false)
-          setWebConfigReconnectPending(true)
+          if (configSaveEpochRef.current === connectionEpochRef.current) {
+            setWebConfigReconnectPending(true)
+          }
         }
         return savedResult
       }}
